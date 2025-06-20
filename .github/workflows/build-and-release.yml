@@ -396,8 +396,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           token: ${{ secrets.NMC_RELEASE_PAT }}
-          owner: neuralmimicry
-          repo: aarnn-network
+          repository: neuralmimicry/aarnn-network # Corrected input
           tag_name: ${{ steps.release_info.outputs.release_tag }}
           name: ${{ steps.release_info.outputs.release_name }}
           body: |
