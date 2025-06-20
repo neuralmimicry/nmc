@@ -73,62 +73,63 @@ jobs:
           arch: x64
 
       # Step 3: Create a dedicated directory for the build output.
-      - name: Create Build Directory
-        run: mkdir build
+      # This build directory will be *inside* the nmc_client folder.
+      - name: Create Build Directory (nmc_client)
+        run: mkdir nmc_client/build
 
       # Step 4: Configure CMake project (Linux x64)
       - name: Configure CMake (Linux x64)
         if: startsWith(matrix.os, 'ubuntu') && matrix.arch == 'x64'
         run: cmake ..
-        working-directory: build
+        working-directory: nmc_client/build # Adjusted working directory
 
       # Step 4: Configure CMake project (Linux ARM64 Cross-Compile)
       - name: Configure CMake (Linux ARM64 Cross-Compile)
         if: startsWith(matrix.os, 'ubuntu') && matrix.arch == 'arm64'
         run: cmake -DCMAKE_TOOLCHAIN_FILE=${{ env.CMAKE_TOOLCHAIN_FILE }} ..
-        working-directory: build
+        working-directory: nmc_client/build # Adjusted working directory
 
       # Step 4: Configure CMake project (Windows x64)
       - name: Configure CMake (Windows x64)
         if: startsWith(matrix.os, 'windows') && matrix.arch == 'x64'
         run: cmake ..
-        working-directory: build
+        working-directory: nmc_client/build # Adjusted working directory
 
       # Step 5: Build the 'nmc' executable using Make (Linux) or MSBuild (Windows).
       - name: Build NMC executable (Linux)
         if: startsWith(matrix.os, 'ubuntu')
         run: make
-        working-directory: build
+        working-directory: nmc_client/build # Adjusted working directory
 
       - name: Build NMC executable (Windows)
         if: startsWith(matrix.os, 'windows')
         # On Windows, 'cmake --build .' will use MSBuild by default if MSVC is configured.
         run: cmake --build . --config Release
-        working-directory: build
+        working-directory: nmc_client/build # Adjusted working directory
 
       # Step 6: Package the compiled executable into a platform-specific archive with a dedicated directory.
       # This ensures the installer scripts can find the executable within an extracted folder.
       - name: Package build artifacts (Linux)
         if: startsWith(matrix.os, 'ubuntu')
         run: |
-          # Create a directory named like 'nmc-Linux-x64' or 'nmc-Linux-arm64'
+          # Create a directory named like 'nmc-Linux-x64' or 'nmc-Linux-arm64' at the root
           mkdir -p nmc-${{ runner.os }}-${{ matrix.arch }}
-          # Copy the executable into this directory
-          cp build/nmc nmc-${{ runner.os }}-${{ matrix.arch }}/nmc_client
+          # Copy the executable from nmc_client/build into this new directory
+          cp nmc_client/build/nmc nmc-${{ runner.os }}-${{ matrix.arch }}/nmc
           # Create the tar.gz archive of this directory
           tar -czvf nmc-${{ runner.os }}-${{ matrix.arch }}.tar.gz nmc-${{ runner.os }}-${{ matrix.arch }}
-        working-directory: .
+        working-directory: . # Still run from root to easily find created directory
 
       - name: Package build artifacts (Windows)
         if: startsWith(matrix.os, 'windows')
         run: |
-          # Create a directory named like 'nmc-Windows-x64'
+          # Create a directory named like 'nmc-Windows-x64' at the root
           mkdir -p nmc-${{ runner.os }}-${{ matrix.arch }}
-          # Copy the executable into this directory (assuming build/Release/nmc.exe for Release builds)
-          cp build\Release\nmc.exe nmc-${{ runner.os }}-${{ matrix.arch }}\nmc.exe
+          # Copy the executable from nmc_client/build/Release into this new directory
+          cp nmc_client\build\Release\nmc.exe nmc-${{ runner.os }}-${{ matrix.arch }}\nmc.exe
           # Create the zip archive of this directory
           7z a nmc-${{ runner.os }}-${{ matrix.arch }}.zip .\nmc-${{ runner.os }}-${{ matrix.arch }}
-        working-directory: .
+        working-directory: . # Still run from root to easily find created directory
 
       # Step 7: Upload the created archive as a workflow artifact.
       # The artifact name now uniquely identifies the OS and architecture.
@@ -479,11 +480,11 @@ jobs:
             4. Open PowerShell *as Administrator* and navigate to the directory where you extracted the files.
             5. Run the installation script:
                ```powershell
-               .\install-windows.ps1
+               .\\install-windows.ps1
                ```
             6. (Optional) Install to a custom directory:
                ```powershell
-               .\install-windows.ps1 -InstallDir "C:\Custom\Path\nmc-cli"
+               .\\install-windows.ps1 -InstallDir "C:\Custom\Path\nmc-cli"
                ```
             *Note: You may need to restart your terminal for `nmc.exe` to be accessible from any directory.*
 
