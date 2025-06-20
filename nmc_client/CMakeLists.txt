@@ -30,7 +30,6 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(httplib)
 
-find_package(Curl REQUIRED)
 find_package(OpenSSL REQUIRED)
 
 # Define source files
