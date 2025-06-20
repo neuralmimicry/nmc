@@ -405,11 +405,15 @@ jobs:
           
           # The display name for the GitHub Release.
           RELEASE_DISPLAY_NAME="NMC CLI Release $BASE_VERSION"
+
+          # Calculate the full curl command URL for the release body
+          CURL_INSTALL_COMMAND="curl -sSL https://raw.githubusercontent.com/neuralmimicry/aarnn-network/${TARGET_REPO_TAG}/install-linux.sh | sudo bash"
           
           # Output variables
           echo "base_version=${BASE_VERSION}" >> $GITHUB_OUTPUT
           echo "target_repo_tag=${TARGET_REPO_TAG}" >> $GITHUB_OUTPUT
           echo "release_display_name=${RELEASE_DISPLAY_NAME}" >> $GITHUB_OUTPUT
+          echo "curl_install_command=${CURL_INSTALL_COMMAND}" >> $GITHUB_OUTPUT
 
       # Step 4: List all files to be uploaded as release assets.
       - name: List Artifact Files for Release
@@ -451,7 +455,7 @@ jobs:
             **For Linux (x64, ARM64):**
             To quickly install the latest version, run the following command in your terminal:
             ```bash
-            curl -sSL [https://raw.githubusercontent.com/neuralmimicry/aarnn-network/$](https://raw.githubusercontent.com/neuralmimicry/aarnn-network/$){{ steps.release_info.outputs.target_repo_tag }}/install-linux.sh | sudo bash
+            ${{ steps.release_info.outputs.curl_install_command }}
             ```
             Alternatively, to download and run manually:
             1. Download `nmc-linux-<arch>.tar.gz` and `install-linux.sh` from this release.
