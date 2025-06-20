@@ -30,6 +30,8 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(httplib)
 
+find_package(OpenSSL REQUIRED)
+
 # Add source files based on the provided directory structure
 set(NMC_SERVER_SOURCES
         src/main.cpp
@@ -50,8 +52,7 @@ target_include_directories(nmc_server PRIVATE
 
 # Link against the interface targets provided by the fetched libraries.
 # This ensures that their public headers are transitively included and necessary dependencies are met.
-target_link_libraries(nmc_server PRIVATE nlohmann_json::nlohmann_json httplib)
-
+target_link_libraries(nmc_server PRIVATE nlohmann_json::nlohmann_json httplib OpenSSL::SSL OpenSSL::Crypto)
 
 # Optional: Add compiler warnings for best practices
 if (CMAKE_CXX_COMPILER_ID MATCHES "(GNU|Clang)")
@@ -63,6 +64,3 @@ if (CMAKE_CXX_COMPILER_ID MATCHES "(GNU|Clang)")
     )
 endif()
 
-# If using SSL (HTTPS), you would link against OpenSSL:
-# find_package(OpenSSL REQUIRED)
-# target_link_libraries(nmc_server PRIVATE OpenSSL::SSL OpenSSL::Crypto)

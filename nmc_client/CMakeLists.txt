@@ -30,6 +30,9 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(httplib)
 
+find_package(Curl REQUIRED)
+find_package(OpenSSL REQUIRED)
+
 # Define source files
 set(NMC_SOURCES
         src/main.cpp
@@ -60,7 +63,7 @@ add_executable(nmc ${NMC_SOURCES})
 
 # Link against the interface targets provided by the fetched libraries.
 # This ensures that their public headers are transitively included and necessary dependencies are met.
-target_link_libraries(nmc PRIVATE nlohmann_json::nlohmann_json httplib)
+target_link_libraries(nmc PRIVATE nlohmann_json::nlohmann_json httplib ${CURL_LIBRARIES} OpenSSL::SSL OpenSSL::Crypto)
 
 # Optional: Add compiler warnings for best practices
 if (CMAKE_CXX_COMPILER_ID MATCHES "(GNU|Clang)")
@@ -72,9 +75,3 @@ if (CMAKE_CXX_COMPILER_ID MATCHES "(GNU|Clang)")
     )
 endif()
 
-# Link any necessary libraries (e.g., for HTTP requests, JSON parsing)
-# For a real application, you might add:
-# find_package(Curl REQUIRED)
-# target_link_libraries(nmc PRIVATE ${CURL_LIBRARIES})
-# find_package(JsonCpp REQUIRED) # Or any other JSON library
-# target_link_libraries(nmc PRIVATE JsonCpp::JsonCpp)
