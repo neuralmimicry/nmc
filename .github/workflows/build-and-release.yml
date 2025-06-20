@@ -265,90 +265,92 @@ jobs:
       # Windows Installer Script (install.ps1)
       - name: Create Windows Installation Script
         id: create_windows_install_script
+        shell: pwsh # Explicitly use PowerShell for this step
         run: |
-          cat << 'EOF' > install-windows.ps1
+          $scriptContent = @"
           # Requires PowerShell 5.1 or later
           # Default installation directory. Using Program Files as a common location.
-          $InstallDir = "$env:ProgramFiles\nmc-cli"
-          $NmcExecutable = "nmc.exe"
+          `$InstallDir = "`$env:ProgramFiles\nmc-cli`""
+          `$NmcExecutable = "nmc.exe"
 
           # Function to print usage instructions
           function Show-Usage {
-              Write-Host "Usage: ." + "$((Get-Variable MyInvocation).Value.MyCommand.Definition) [-InstallDir <path>] [-Help]"
+              Write-Host "Usage: ." + "`$((Get-Variable MyInvocation).Value.MyCommand.Definition) [-InstallDir <path>] [-Help]"
               Write-Host "Options:"
-              Write-Host "  -InstallDir <path>  Specify a custom installation directory (default: $env:ProgramFiles\nmc-cli)"
+              Write-Host "  -InstallDir <path>  Specify a custom installation directory (default: `$env:ProgramFiles\nmc-cli`)"
               Write-Host "  -Help               Display this help message and exit"
           }
 
           # Parse command line arguments
-          $Script:Args = $PSBoundParameters.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" }
+          `$Script:Args = `$PSBoundParameters.GetEnumerator() | ForEach-Object { "`"$(`$_.Key)=`$(`$_.Value)`"" }"
           [CmdletBinding()]
           param (
-              [Parameter(Mandatory=$false)]
-              [string]$InstallDirParam,
-              [Parameter(Mandatory=$false)]
-              [switch]$Help
+              [Parameter(Mandatory=`$false)]
+              [string]`$InstallDirParam,
+              [Parameter(Mandatory=`$false)]
+              [switch]`$Help
           )
 
-          if ($Help) {
+          if (`$Help) {
               Show-Usage
               exit 0
           }
 
-          if ($PSBoundParameters.ContainsKey('InstallDirParam')) {
-              $InstallDir = $InstallDirParam
+          if (`$PSBoundParameters.ContainsKey('InstallDirParam')) {
+              `$InstallDir = `$InstallDirParam
           }
 
-          Write-Host "Attempting to install '$NmcExecutable' to '$InstallDir'..."
+          Write-Host "Attempting to install '`$NmcExecutable' to '`$InstallDir'..."
 
           # The installer assumes the archives were extracted in the same directory.
           # So, 'nmc-Windows-x64' directory should exist after extraction.
-          $ExecutableSource = ".\nmc-cli-archive-Windows-x64\nmc-Windows-x64\$NmcExecutable"
+          `$ExecutableSource = ".`\nmc-cli-archive-Windows-x64`\nmc-Windows-x64\`$NmcExecutable"
 
-          if (-not (Test-Path $ExecutableSource)) {
-              Write-Error "'$NmcExecutable' executable not found at '$ExecutableSource'."
+          if (-not (Test-Path `$ExecutableSource)) {
+              Write-Error "'`$NmcExecutable' executable not found at '`$ExecutableSource'."
               Write-Error "Please ensure the correct archive was downloaded and extracted into the current directory."
               exit 1
           }
 
           # Create the installation directory if it doesn't exist.
-          if (-not (Test-Path $InstallDir)) {
-              Write-Host "Creating installation directory: $InstallDir"
+          if (-not (Test-Path `$InstallDir)) {
+              Write-Host "Creating installation directory: `$InstallDir"
               try {
-                  New-Item -Path $InstallDir -ItemType Directory -Force | Out-Null
+                  New-Item -Path `$InstallDir -ItemType Directory -Force | Out-Null
               }
               catch {
-                  Write-Error "Failed to create directory '$InstallDir'. Ensure you have administrative privileges (Run as Administrator)."
+                  Write-Error "Failed to create directory '`$InstallDir'. Ensure you have administrative privileges (Run as Administrator)."
                   exit 1
               }
           }
 
           # Copy the executable to the target directory.
           try {
-              Copy-Item -Path $ExecutableSource -Destination "$InstallDir\$NmcExecutable" -Force
+              Copy-Item -Path `$ExecutableSource -Destination "`$InstallDir\`$NmcExecutable" -Force
           }
           catch {
-              Write-Error "Failed to copy executable to '$InstallDir'. Ensure you have administrative privileges (Run as Administrator)."
+              Write-Error "Failed to copy executable to '`$InstallDir'. Ensure you have administrative privileges (Run as Administrator)."
               exit 1
           }
 
           # Add the installation directory to the system PATH for the current user (optional, but convenient)
           # Note: For system-wide PATH, administrative privileges are needed and it requires a restart of CMD/PowerShell.
           # For a robust solution, you might consider modifying system PATH or advising user to add manually.
-          # $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + $InstallDir
-          # [System.Environment]::SetEnvironmentVariable("Path", $env:Path, "Machine")
+          # `$env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + `$InstallDir
+          # [System.Environment]::SetEnvironmentVariable("Path", `$env:Path, "Machine")
 
           Write-Host ""
           Write-Host "========================================"
           Write-Host "'nmc' CLI Installation Complete!"
-          Write-Host "The '$NmcExecutable' executable has been installed to: $InstallDir"
+          Write-Host "The '`$NmcExecutable' executable has been installed to: `$InstallDir"
           Write-Host "You may need to restart your terminal (Command Prompt/PowerShell) for 'nmc' to be directly accessible from any location."
           Write-Host ""
-          Write-Host "To verify, try navigating to the installation directory and running: $InstallDir\$NmcExecutable --help"
+          Write-Host "To verify, try navigating to the installation directory and running: `$InstallDir\`$NmcExecutable --help"
           Write-Host "========================================"
           Write-Host ""
-          EOF
-        shell: pwsh # Use PowerShell for this step
+          "@
+
+          $scriptContent | Set-Content -Path install-windows.ps1
 
       # Step 3: Determine the release version and name.
       # If triggered by a GitHub Release, use its tag. Otherwise, generate a timestamped version.
