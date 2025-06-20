@@ -407,7 +407,8 @@ jobs:
           RELEASE_DISPLAY_NAME="NMC CLI Release $BASE_VERSION"
 
           # Calculate the full curl command URL for the release body
-          CURL_INSTALL_COMMAND="curl -sSL https://raw.githubusercontent.com/neuralmimicry/aarnn-network/${TARGET_REPO_TAG}/install-linux.sh | sudo bash"
+          # Corrected URL to point to the release asset for install-linux.sh
+          CURL_INSTALL_COMMAND="curl -sSL https://github.com/neuralmimicry/aarnn-network/releases/download/${TARGET_REPO_TAG}/install-linux.sh | sudo bash"
           
           # Output variables
           echo "base_version=${BASE_VERSION}" >> $GITHUB_OUTPUT
