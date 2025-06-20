@@ -214,40 +214,72 @@ jobs:
 
           echo "Attempting to install '${NMC_EXECUTABLE}' to '${INSTALL_DIR}'..."
 
-          # Determine system architecture and executable name
+          # Determine system architecture and executable filename within the archive
           ARCH=$(uname -m)
-          EXECUTABLE_SOURCE=""
+          case "$ARCH" in
+              "x86_64")
+                  TARGET_OS_ARCH="Linux-x64"
+                  ;;
+              "aarch64")
+                  TARGET_OS_ARCH="Linux-arm64"
+                  ;;
+              *)
+                  echo "Error: Unsupported architecture: $ARCH. This installer supports x86_64 and aarch64 Linux."
+                  exit 1
+                  ;;
+          esac
 
-          if [ "$ARCH" = "x86_64" ]; then
-              # Adjusted path: downloaded artifact is in nmc-cli-archive-Linux-x64/nmc-Linux-x64.tar.gz
-              # After extraction, it creates a folder nmc-Linux-x64, containing the 'nmc' executable.
-              EXECUTABLE_SOURCE="nmc-cli-archive-Linux-x64/nmc-Linux-x64/${NMC_EXECUTABLE}"
-          elif [ "$ARCH" = "aarch64" ]; then
-              EXECUTABLE_SOURCE="nmc-cli-archive-Linux-arm64/nmc-Linux-arm64/${NMC_EXECUTABLE}"
-          else
-              echo "Error: Unsupported architecture: $ARCH. This installer supports x86_64 and aarch64 Linux."
+          DOWNLOAD_FILENAME="nmc-${TARGET_OS_ARCH}.tar.gz"
+          EXTRACTED_DIR_NAME="nmc-${TARGET_OS_ARCH}" # The folder created by tar -xzvf
+
+          echo "Fetching latest release information from neuralmimicry/aarnn-network..."
+          LATEST_RELEASE_INFO=$(curl -s "https://api.github.com/repos/neuralmimicry/aarnn-network/releases/latest")
+          if [ -z "$LATEST_RELEASE_INFO" ]; then
+              echo "Error: Could not fetch latest release information. Check network connectivity or repository access."
               exit 1
           fi
 
-          # The installer assumes the archives were extracted in the same directory.
-          # So, 'nmc-Linux-x64' or 'nmc-Linux-arm64' directories should exist after extraction.
-          if [ ! -f "${EXECUTABLE_SOURCE}" ]; then
-              echo "Error: '${NMC_EXECUTABLE}' executable for '$ARCH' not found at '${EXECUTABLE_SOURCE}'."
-              echo "Please ensure the correct archive was downloaded and extracted into the current directory."
+          # Extract tag_name using grep and parameter expansion/cut (more robust than simple cut for complex JSON)
+          RELEASE_TAG=$(echo "$LATEST_RELEASE_INFO" | grep '"tag_name":' | head -n 1 | cut -d '"' -f 4)
+          if [ -z "$RELEASE_TAG" ]; then
+              echo "Error: Could not parse release tag from GitHub API response."
               exit 1
           fi
 
+          DOWNLOAD_URL="https://github.com/neuralmimicry/aarnn-network/releases/download/${RELEASE_TAG}/${DOWNLOAD_FILENAME}"
+          
+          echo "Downloading ${DOWNLOAD_FILENAME} from ${DOWNLOAD_URL}..."
+          curl -LJO "$DOWNLOAD_URL" # -L for redirects, -J for remote name, -O for output to file
+          
+          if [ ! -f "$DOWNLOAD_FILENAME" ]; then
+              echo "Error: Downloaded archive file '$DOWNLOAD_FILENAME' not found. Download might have failed."
+              exit 1
+          fi
+
+          echo "Extracting ${DOWNLOAD_FILENAME}..."
+          tar -xzvf "$DOWNLOAD_FILENAME"
+          
+          if [ ! -d "$EXTRACTED_DIR_NAME" ]; then
+              echo "Error: Expected extracted directory '$EXTRACTED_DIR_NAME' not found after extraction. Archive content might be different than expected."
+              exit 1
+          fi
+          
+          echo "Attempting to install '${NMC_EXECUTABLE}' to '${INSTALL_DIR}'..."
+          
           # Create the installation directory if it doesn't exist.
           if [ ! -d "${INSTALL_DIR}" ]; then
               echo "Creating installation directory: ${INSTALL_DIR}"
               sudo mkdir -p "${INSTALL_DIR}" || { echo "Failed to create directory '${INSTALL_DIR}'. Do you have sufficient permissions (e.g., sudo)?"; exit 1; }
           fi
-
+          
           # Copy the executable to the target directory.
-          sudo cp "${EXECUTABLE_SOURCE}" "${INSTALL_DIR}/${NMC_EXECUTABLE}" || { echo "Failed to copy executable to '${INSTALL_DIR}'. Do you have sufficient permissions (e.g., sudo)?"; exit 1; }
-
+          sudo cp "${EXTRACTED_DIR_NAME}/${NMC_EXECUTABLE}" "${INSTALL_DIR}/${NMC_EXECUTABLE}" || { echo "Failed to copy executable to '${INSTALL_DIR}'. Do you have sufficient permissions (e.g., sudo)?"; exit 1; }
+          
           # Make the copied executable runnable.
           sudo chmod +x "${INSTALL_DIR}/${NMC_EXECUTABLE}" || { echo "Failed to set executable permissions for '${INSTALL_DIR}/${NMC_EXECUTABLE}'."; exit 1; }
+          
+          echo "Cleaning up downloaded files..."
+          rm -rf "$DOWNLOAD_FILENAME" "$EXTRACTED_DIR_NAME"
 
           echo ""
           echo "========================================"
@@ -302,9 +334,9 @@ jobs:
 
           Write-Host "Attempting to install '`$NmcExecutable' to '`$InstallDir'..."
 
-          # The installer assumes the archives were extracted in the same directory.
-          # So, 'nmc-Windows-x64' directory should exist after extraction.
-          `$ExecutableSource = ".`\nmc-cli-archive-Windows-x64`\nmc-Windows-x64\`$NmcExecutable"
+          # The installer assumes the user has downloaded and extracted the nmc-windows-x64.zip
+          # which creates a folder named 'nmc-Windows-x64' containing the executable.
+          `$ExecutableSource = ".`\nmc-Windows-x64\`$NmcExecutable"
 
           if (-not (Test-Path `$ExecutableSource)) {
               Write-Error "'`$NmcExecutable' executable not found at '`$ExecutableSource'."
@@ -417,32 +449,28 @@ jobs:
             **Installation Instructions:**
 
             **For Linux (x64, ARM64):**
-            1. Download the appropriate `.tar.gz` archive (e.g., `nmc-linux-x64.tar.gz` or `nmc-linux-arm64.tar.gz`) from this release.
-            2. Extract its contents. This will create a directory (e.g., `nmc-Linux-x64` or `nmc-Linux-arm64`) containing the `nmc` executable.
+            1. Run the following command in your terminal:
                ```bash
-               tar -xzvf nmc-linux-<arch>.tar.gz
+               curl -sSL [https://raw.githubusercontent.com/neuralmimicry/aarnn-network/$](https://raw.githubusercontent.com/neuralmimicry/aarnn-network/$){{ steps.release_info.outputs.target_repo_tag }}/install-linux.sh | sudo bash
                ```
-            3. Download `install-linux.sh` from this release and place it in the *same directory* as the extracted `nmc-Linux-<arch>` folder (i.e., at the level of `nmc-Linux-x64/` or `nmc-Linux-arm64/`).
-            4. Make the install script executable:
-               ```bash
-               chmod +x install-linux.sh
-               ```
-            5. Run the installation script:
-               ```bash
-               ./install-linux.sh
-               ```
+               Alternatively, download and run manually:
+               1. Download `nmc-linux-<arch>.tar.gz` and `install-linux.sh` from this release.
+               2. Extract the archive: `tar -xzvf nmc-linux-<arch>.tar.gz`
+               3. Place `install-linux.sh` in the same directory as the extracted `nmc-Linux-<arch>` folder.
+               4. Make executable: `chmod +x install-linux.sh`
+               5. Run: `./install-linux.sh`
             6. (Optional) Install to a custom directory:
                ```bash
                ./install-linux.sh --install-dir /opt/nmc-cli
                ```
 
             **For Windows (x64):**
-            1. Download the `nmc-windows-x64.zip` archive from this release.
-            2. Extract its contents. This will create a directory (e.g., `nmc-Windows-x64`) containing `nmc.exe`.
+            1. Download the `nmc-windows-x64.zip` archive and `install-windows.ps1` from this release.
+            2. Extract the archive. This will create a directory (e.g., `nmc-Windows-x64`) containing `nmc.exe`.
                ```powershell
                Expand-Archive -Path nmc-windows-x64.zip -DestinationPath .
                ```
-            3. Download `install-windows.ps1` from this release and place it in the *same directory* as the extracted `nmc-Windows-x64` folder.
+            3. Place `install-windows.ps1` in the *same directory* as the extracted `nmc-Windows-x64` folder.
             4. Open PowerShell *as Administrator* and navigate to the directory where you extracted the files.
             5. Run the installation script:
                ```powershell
