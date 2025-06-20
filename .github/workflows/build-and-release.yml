@@ -49,10 +49,14 @@ jobs:
         if: startsWith(matrix.os, 'ubuntu') && matrix.arch == 'arm64'
         run: |
           sudo apt-get update
+          # Enable ARM64 multiarch support
+          sudo dpkg --add-architecture arm64
+          sudo apt-get update # Update package lists after enabling multiarch
           # Install qemu-user-static for ARM64 emulation
           sudo apt-get install -y qemu-user-static
-          # Install ARM64 cross-compilation toolchain and OpenSSL dev libraries for ARM64
-          sudo apt-get install -y g++-aarch64-linux-gnu cmake libssl-dev:arm64
+          # Install ARM64 cross-compilation toolchain
+          # We are removing libssl-dev:arm64 here as we will disable SSL in httplib build
+          sudo apt-get install -y g++-aarch64-linux-gnu cmake
           # Configure CMake for cross-compilation
           echo "CMAKE_TOOLCHAIN_FILE=$(pwd)/arm64-toolchain.cmake" >> $GITHUB_ENV
           cat << 'EOF' > arm64-toolchain.cmake
