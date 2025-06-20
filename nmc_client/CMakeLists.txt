@@ -31,8 +31,6 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(httplib)
 
-find_package(OpenSSL REQUIRED)
-
 # Define source files
 set(NMC_SOURCES
         src/main.cpp
