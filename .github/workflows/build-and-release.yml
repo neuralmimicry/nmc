@@ -449,16 +449,16 @@ jobs:
             **Installation Instructions:**
 
             **For Linux (x64, ARM64):**
-            1. Run the following command in your terminal:
-               ```bash
-               curl -sSL [https://raw.githubusercontent.com/neuralmimicry/aarnn-network/$](https://raw.githubusercontent.com/neuralmimicry/aarnn-network/$){{ steps.release_info.outputs.target_repo_tag }}/install-linux.sh | sudo bash
-               ```
-               Alternatively, download and run manually:
-               1. Download `nmc-linux-<arch>.tar.gz` and `install-linux.sh` from this release.
-               2. Extract the archive: `tar -xzvf nmc-linux-<arch>.tar.gz`
-               3. Place `install-linux.sh` in the same directory as the extracted `nmc-Linux-<arch>` folder.
-               4. Make executable: `chmod +x install-linux.sh`
-               5. Run: `./install-linux.sh`
+            To quickly install the latest version, run the following command in your terminal:
+            ```bash
+            curl -sSL [https://raw.githubusercontent.com/neuralmimicry/aarnn-network/$](https://raw.githubusercontent.com/neuralmimicry/aarnn-network/$){{ steps.release_info.outputs.target_repo_tag }}/install-linux.sh | sudo bash
+            ```
+            Alternatively, to download and run manually:
+            1. Download `nmc-linux-<arch>.tar.gz` and `install-linux.sh` from this release.
+            2. Extract the archive: `tar -xzvf nmc-linux-<arch>.tar.gz`
+            3. Place `install-linux.sh` in the same directory as the extracted `nmc-Linux-<arch>` folder.
+            4. Make executable: `chmod +x install-linux.sh`
+            5. Run: `./install-linux.sh`
             6. (Optional) Install to a custom directory:
                ```bash
                ./install-linux.sh --install-dir /opt/nmc-cli
