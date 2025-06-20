@@ -76,15 +76,22 @@ jobs:
       - name: Create Build Directory
         run: mkdir build
 
-      # Step 4: Configure the CMake project.
-      # 'working-directory' ensures commands run in the 'build' folder.
-      - name: Configure CMake
-        run: |
-          if [ "${{ matrix.arch }}" == "arm64" ]; then
-            cmake -DCMAKE_TOOLCHAIN_FILE=${{ env.CMAKE_TOOLCHAIN_FILE }} ..
-          else
-            cmake ..
-          fi
+      # Step 4: Configure CMake project (Linux x64)
+      - name: Configure CMake (Linux x64)
+        if: startsWith(matrix.os, 'ubuntu') && matrix.arch == 'x64'
+        run: cmake ..
+        working-directory: build
+
+      # Step 4: Configure CMake project (Linux ARM64 Cross-Compile)
+      - name: Configure CMake (Linux ARM64 Cross-Compile)
+        if: startsWith(matrix.os, 'ubuntu') && matrix.arch == 'arm64'
+        run: cmake -DCMAKE_TOOLCHAIN_FILE=${{ env.CMAKE_TOOLCHAIN_FILE }} ..
+        working-directory: build
+
+      # Step 4: Configure CMake project (Windows x64)
+      - name: Configure CMake (Windows x64)
+        if: startsWith(matrix.os, 'windows') && matrix.arch == 'x64'
+        run: cmake ..
         working-directory: build
 
       # Step 5: Build the 'nmc' executable using Make (Linux) or MSBuild (Windows).
@@ -212,9 +219,11 @@ jobs:
           EXECUTABLE_SOURCE=""
 
           if [ "$ARCH" = "x86_64" ]; then
-              EXECUTABLE_SOURCE="nmc-Linux-x64/${NMC_EXECUTABLE}"
+              # Adjusted path: downloaded artifact is in nmc-cli-archive-Linux-x64/nmc-Linux-x64.tar.gz
+              # After extraction, it creates a folder nmc-Linux-x64, containing the 'nmc' executable.
+              EXECUTABLE_SOURCE="nmc-cli-archive-Linux-x64/nmc-Linux-x64/${NMC_EXECUTABLE}"
           elif [ "$ARCH" = "aarch64" ]; then
-              EXECUTABLE_SOURCE="nmc-Linux-arm64/${NMC_EXECUTABLE}"
+              EXECUTABLE_SOURCE="nmc-cli-archive-Linux-arm64/nmc-Linux-arm64/${NMC_EXECUTABLE}"
           else
               echo "Error: Unsupported architecture: $ARCH. This installer supports x86_64 and aarch64 Linux."
               exit 1
@@ -294,7 +303,7 @@ jobs:
 
           # The installer assumes the archives were extracted in the same directory.
           # So, 'nmc-Windows-x64' directory should exist after extraction.
-          $ExecutableSource = ".\nmc-Windows-x64\$NmcExecutable"
+          $ExecutableSource = ".\nmc-cli-archive-Windows-x64\nmc-Windows-x64\$NmcExecutable"
 
           if (-not (Test-Path $ExecutableSource)) {
               Write-Error "'$NmcExecutable' executable not found at '$ExecutableSource'."
