@@ -275,14 +275,14 @@ jobs:
 
           # Function to print usage instructions
           function Show-Usage {
-              Write-Host "Usage: ." + "`$((Get-Variable MyInvocation).Value.MyCommand.Definition) [-InstallDir <path>] [-Help]"
+              Write-Host "Usage: ." + "`$(`$((Get-Variable MyInvocation).Value.MyCommand.Definition))) [-InstallDir <path>] [-Help]"
               Write-Host "Options:"
               Write-Host "  -InstallDir <path>  Specify a custom installation directory (default: `$env:ProgramFiles\nmc-cli`)"
               Write-Host "  -Help               Display this help message and exit"
           }
 
           # Parse command line arguments
-          `$Script:Args = `$PSBoundParameters.GetEnumerator() | ForEach-Object { "`"$(`$_.Key)=`$(`$_.Value)`"" }"
+          `$Script:Args = `$PSBoundParameters.GetEnumerator() | ForEach-Object { "`"`$(`$_.Key)=`$`$(`$_.Value)`"`" }"
           [CmdletBinding()]
           param (
               [Parameter(Mandatory=`$false)]
