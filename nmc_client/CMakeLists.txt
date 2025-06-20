@@ -27,7 +27,7 @@ FetchContent_Declare(
         GIT_REPOSITORY https://github.com/yhirose/cpp-httplib.git
         GIT_TAG        v0.15.3 # Using the tag specified by the user
         # IMPORTANT: Disable SSL to avoid OpenSSL dependencies in cross-compilation environments
-        CMAKE_ARGS     -DCMAKE_POLICY_VERSION_MINIMUM=3.14 -DHTTPPEBLIB_WITH_SSL=OFF
+        CMAKE_ARGS     -DCMAKE_POLICY_VERSION_MINIMUM=3.14 -DCPPHTTPLIB_OPENSSL_SUPPORT=OFF
 )
 FetchContent_MakeAvailable(httplib)
 
