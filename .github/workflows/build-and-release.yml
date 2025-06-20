@@ -99,28 +99,37 @@ jobs:
         run: cmake --build . --config Release
         working-directory: build
 
-      # Step 6: Package the compiled executable into a platform-specific archive.
-      # The executable name differs (nmc for Linux, nmc.exe for Windows).
+      # Step 6: Package the compiled executable into a platform-specific archive with a dedicated directory.
+      # This ensures the installer scripts can find the executable within an extracted folder.
       - name: Package build artifacts (Linux)
         if: startsWith(matrix.os, 'ubuntu')
         run: |
-          tar -czvf nmc-${{ runner.os }}-${{ matrix.arch }}.tar.gz -C build nmc
+          # Create a directory named like 'nmc-Linux-x64' or 'nmc-Linux-arm64'
+          mkdir -p nmc-${{ runner.os }}-${{ matrix.arch }}
+          # Copy the executable into this directory
+          cp build/nmc nmc-${{ runner.os }}-${{ matrix.arch }}/nmc
+          # Create the tar.gz archive of this directory
+          tar -czvf nmc-${{ runner.os }}-${{ matrix.arch }}.tar.gz nmc-${{ runner.os }}-${{ matrix.arch }}
         working-directory: .
 
       - name: Package build artifacts (Windows)
         if: startsWith(matrix.os, 'windows')
         run: |
-          # The executable will be in build/Release/nmc.exe for MSVC Release config
-          7z a nmc-${{ runner.os }}-${{ matrix.arch }}.zip build\Release\nmc.exe
+          # Create a directory named like 'nmc-Windows-x64'
+          mkdir -p nmc-${{ runner.os }}-${{ matrix.arch }}
+          # Copy the executable into this directory (assuming build/Release/nmc.exe for Release builds)
+          cp build\Release\nmc.exe nmc-${{ runner.os }}-${{ matrix.arch }}\nmc.exe
+          # Create the zip archive of this directory
+          7z a nmc-${{ runner.os }}-${{ matrix.arch }}.zip .\nmc-${{ runner.os }}-${{ matrix.arch }}
         working-directory: .
 
       # Step 7: Upload the created archive as a workflow artifact.
-      # The artifact name now includes OS and architecture for uniqueness.
+      # The artifact name now uniquely identifies the OS and architecture.
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: nmc-cli-artifacts-${{ runner.os }}-${{ matrix.arch }} # Unique name per OS/Arch
-          path: nmc-${{ runner.os }}-${{ matrix.arch }}.* # Matches .tar.gz or .zip
+          name: nmc-cli-archive-${{ runner.os }}-${{ matrix.arch }} # Unique name for each archive artifact
+          path: nmc-${{ runner.os }}-${{ matrix.arch }}.* # Matches the .tar.gz or .zip file created
           retention-days: 1 # How long to keep the artifact (1 day for temporary storage)
 
   release:
@@ -137,15 +146,21 @@ jobs:
     if: success() && (github.event_name == 'push' || github.event_name == 'release')
 
     steps:
+      # Install 7zip on Linux runner to handle Windows .zip files for listing
+      - name: Install 7zip (Linux)
+        run: sudo apt-get update && sudo apt-get install -y p7zip-full
+
       # Step 1: Download all build artifacts created by the 'build' job's matrix runs.
-      - name: Download all build artifacts
+      - name: Download all build archives
         uses: actions/download-artifact@v4
         with:
-          # This downloads all artifacts that start with 'nmc-cli-artifacts-'
-          path: ./artifacts/
+          # This downloads each artifact into its own subdirectory, named after the artifact.
+          # Example: ./nmc-cli-archive-Linux-x64/nmc-Linux-x64.tar.gz
+          # Example: ./nmc-cli-archive-Windows-x64/nmc-Windows-x64.zip
+          path: ./ # Download to the root of the workspace to easily find them
 
       # Step 2: Prepare installer scripts for different platforms.
-      # Linux Installer Script (install.sh)
+      # Linux Installer Script (install-linux.sh)
       - name: Create Linux Installation Script
         id: create_linux_install_script
         run: |
@@ -197,17 +212,19 @@ jobs:
           EXECUTABLE_SOURCE=""
 
           if [ "$ARCH" = "x86_64" ]; then
-              EXECUTABLE_SOURCE="./nmc-linux-x64/nmc"
+              EXECUTABLE_SOURCE="nmc-Linux-x64/${NMC_EXECUTABLE}"
           elif [ "$ARCH" = "aarch64" ]; then
-              EXECUTABLE_SOURCE="./nmc-linux-arm64/nmc"
+              EXECUTABLE_SOURCE="nmc-Linux-arm64/${NMC_EXECUTABLE}"
           else
               echo "Error: Unsupported architecture: $ARCH. This installer supports x86_64 and aarch64 Linux."
               exit 1
           fi
 
+          # The installer assumes the archives were extracted in the same directory.
+          # So, 'nmc-Linux-x64' or 'nmc-Linux-arm64' directories should exist after extraction.
           if [ ! -f "${EXECUTABLE_SOURCE}" ]; then
               echo "Error: '${NMC_EXECUTABLE}' executable for '$ARCH' not found at '${EXECUTABLE_SOURCE}'."
-              echo "Please ensure the correct archive was extracted and this script is run from the correct directory."
+              echo "Please ensure the correct archive was downloaded and extracted into the current directory."
               exit 1
           fi
 
@@ -275,12 +292,13 @@ jobs:
 
           Write-Host "Attempting to install '$NmcExecutable' to '$InstallDir'..."
 
-          # Path to the executable within the extracted archive
-          $ExecutableSource = ".\nmc-windows-x64\$NmcExecutable" # Assuming x64 for Windows hosted runner
+          # The installer assumes the archives were extracted in the same directory.
+          # So, 'nmc-Windows-x64' directory should exist after extraction.
+          $ExecutableSource = ".\nmc-Windows-x64\$NmcExecutable"
 
           if (-not (Test-Path $ExecutableSource)) {
               Write-Error "'$NmcExecutable' executable not found at '$ExecutableSource'."
-              Write-Error "Please ensure this script is run from the same directory where the '$NmcExecutable' is located after extraction."
+              Write-Error "Please ensure the correct archive was downloaded and extracted into the current directory."
               exit 1
           }
 
@@ -344,25 +362,25 @@ jobs:
           # Use a specific tag prefix for CLI releases in the 'aarnn-network' repo to avoid conflicts.
           echo "release_tag=cli-${RELEASE_VERSION}" >> $GITHUB_OUTPUT
 
-      # Step 4: List all files in the artifacts directory to prepare for upload.
-      - name: List Artifact Files
+      # Step 4: List all files to be uploaded as release assets.
+      - name: List Artifact Files for Release
         id: list_files
         run: |
-          # Find all packaged executables and store their paths for the release asset upload
-          # Adjust the find command to specifically list the .tar.gz and .zip files.
-          # The paths will be relative to the workspace root.
-          find ./artifacts -type f \( -name "*.tar.gz" -o -name "*.zip" \) > files_to_upload.txt
-          # Also add the install scripts
-          echo "install-linux.sh" >> files_to_upload.txt
-          echo "install-windows.ps1" >> files_to_upload.txt
+          # Find all downloaded archives (these are the .tar.gz and .zip files themselves)
+          # These are located in subdirectories named after their artifact name.
+          # Example path: ./nmc-cli-archive-Linux-x64/nmc-Linux-x64.tar.gz
+          ARCHIVES_TO_UPLOAD=$(find . -type f \( -name "nmc-*.tar.gz" -o -name "nmc-*.zip" \))
           
-          # Read the content of the file into a GitHub Action output variable.
-          # This allows passing a multiline string to 'softprops/action-gh-release'.
-          files_list=$(cat files_to_upload.txt | tr '\n' ',')
-          echo "files_to_upload=$files_list" >> $GITHUB_OUTPUT
+          # Combine archives and installer scripts
+          ALL_FILES_TO_UPLOAD="${ARCHIVES_TO_UPLOAD}"$'\n'"install-linux.sh"$'\n'"install-windows.ps1"
+          
+          # Output as a multiline string for softprops/action-gh-release
+          echo "files_to_upload<<EOF" >> $GITHUB_OUTPUT
+          echo "${ALL_FILES_TO_UPLOAD}" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
 
       # Step 5: Create a GitHub Release in the target public repository ('aarnn-network')
-      # and upload the executable archive and install script as assets.
+      # and upload the executable archives and install scripts as assets.
       - name: Create GitHub Release in aarnn-network
         uses: softprops/action-gh-release@v2
         with:
@@ -384,12 +402,11 @@ jobs:
 
             **For Linux (x64, ARM64):**
             1. Download the appropriate `.tar.gz` archive (e.g., `nmc-linux-x64.tar.gz` or `nmc-linux-arm64.tar.gz`) from this release.
-            2. Extract its contents:
+            2. Extract its contents. This will create a directory (e.g., `nmc-Linux-x64` or `nmc-Linux-arm64`) containing the `nmc` executable.
                ```bash
                tar -xzvf nmc-linux-<arch>.tar.gz
                ```
-               (This will create a directory like `nmc-linux-<arch>` containing the `nmc` executable.)
-            3. Download `install-linux.sh` from this release and place it in the *same directory* as the extracted `nmc-linux-<arch>` folder.
+            3. Download `install-linux.sh` from this release and place it in the *same directory* as the extracted `nmc-Linux-<arch>` folder (i.e., at the level of `nmc-Linux-x64/` or `nmc-Linux-arm64/`).
             4. Make the install script executable:
                ```bash
                chmod +x install-linux.sh
@@ -405,8 +422,11 @@ jobs:
 
             **For Windows (x64):**
             1. Download the `nmc-windows-x64.zip` archive from this release.
-            2. Extract its contents. (This will create a directory `nmc-windows-x64` containing `nmc.exe`.)
-            3. Download `install-windows.ps1` from this release and place it in the *same directory* as the extracted `nmc-windows-x64` folder.
+            2. Extract its contents. This will create a directory (e.g., `nmc-Windows-x64`) containing `nmc.exe`.
+               ```powershell
+               Expand-Archive -Path nmc-windows-x64.zip -DestinationPath .
+               ```
+            3. Download `install-windows.ps1` from this release and place it in the *same directory* as the extracted `nmc-Windows-x64` folder.
             4. Open PowerShell *as Administrator* and navigate to the directory where you extracted the files.
             5. Run the installation script:
                ```powershell
