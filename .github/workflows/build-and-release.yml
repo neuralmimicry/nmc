@@ -1,0 +1,423 @@
+name: Build and Release NMC CLI
+
+# This workflow is triggered on:
+# 1. Pushes to the 'main' branch (for continuous builds, though releases will be tagged).
+# 2. Manual trigger via 'workflow_dispatch'.
+# 3. When a GitHub Release is published in the 'neuralmimicry/nmc' repository itself.
+#    This allows you to control the official release version by creating a tag (e.g., v1.0.0)
+#    and then publishing a release from that tag in the private 'nmc' repo.
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+  release:
+    types: [published]
+
+# Define two jobs: 'build' and 'release'
+jobs:
+  build:
+    # Use a matrix strategy to build for different OS and architectures.
+    strategy:
+      fail-fast: false # Don't cancel other matrix jobs if one fails
+      matrix:
+        # Define operating systems: Ubuntu for Linux, Windows for Windows.
+        # RHEL and native ARM64 runners typically require self-hosted runners,
+        # but ARM64 for Linux can be cross-compiled on Ubuntu x64.
+        os: [ubuntu-latest, windows-latest]
+        # Define architectures: x64 for both OS, arm64 only for Linux (cross-compiled).
+        arch: [x64]
+        include:
+          - os: ubuntu-latest
+            arch: arm64
+
+    # The runner environment depends on the current matrix OS.
+    runs-on: ${{ matrix.os }}
+    steps:
+      # Step 1: Checkout the source code from the repository.
+      - name: Checkout NMC repository
+        uses: actions/checkout@v4
+
+      # Step 2: Set up the C++ development environment based on OS and architecture.
+      - name: Setup C++ environment (Linux x64)
+        if: startsWith(matrix.os, 'ubuntu') && matrix.arch == 'x64'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake
+
+      - name: Setup C++ environment (Linux ARM64 Cross-Compile)
+        if: startsWith(matrix.os, 'ubuntu') && matrix.arch == 'arm64'
+        run: |
+          sudo apt-get update
+          # Install qemu-user-static for ARM64 emulation
+          sudo apt-get install -y qemu-user-static
+          # Install ARM64 cross-compilation toolchain
+          sudo apt-get install -y g++-aarch64-linux-gnu cmake
+          # Configure CMake for cross-compilation
+          echo "CMAKE_TOOLCHAIN_FILE=$(pwd)/arm64-toolchain.cmake" >> $GITHUB_ENV
+          cat << 'EOF' > arm64-toolchain.cmake
+          set(CMAKE_SYSTEM_NAME Linux)
+          set(CMAKE_SYSTEM_PROCESSOR aarch64)
+
+          set(CMAKE_C_COMPILER aarch64-linux-gnu-gcc)
+          set(CMAKE_CXX_COMPILER aarch64-linux-gnu-g++)
+          set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
+          set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
+          set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
+          EOF
+
+      - name: Setup C++ environment (Windows x64)
+        if: startsWith(matrix.os, 'windows') && matrix.arch == 'x64'
+        uses: ilammy/msvc-dev-cmd@v1 # Use this action to configure MSVC environment
+        with:
+          arch: x64
+
+      # Step 3: Create a dedicated directory for the build output.
+      - name: Create Build Directory
+        run: mkdir build
+
+      # Step 4: Configure the CMake project.
+      # 'working-directory' ensures commands run in the 'build' folder.
+      - name: Configure CMake
+        run: |
+          if [ "${{ matrix.arch }}" == "arm64" ]; then
+            cmake -DCMAKE_TOOLCHAIN_FILE=${{ env.CMAKE_TOOLCHAIN_FILE }} ..
+          else
+            cmake ..
+          fi
+        working-directory: build
+
+      # Step 5: Build the 'nmc' executable using Make (Linux) or MSBuild (Windows).
+      - name: Build NMC executable (Linux)
+        if: startsWith(matrix.os, 'ubuntu')
+        run: make
+        working-directory: build
+
+      - name: Build NMC executable (Windows)
+        if: startsWith(matrix.os, 'windows')
+        # On Windows, 'cmake --build .' will use MSBuild by default if MSVC is configured.
+        run: cmake --build . --config Release
+        working-directory: build
+
+      # Step 6: Package the compiled executable into a platform-specific archive.
+      # The executable name differs (nmc for Linux, nmc.exe for Windows).
+      - name: Package build artifacts (Linux)
+        if: startsWith(matrix.os, 'ubuntu')
+        run: |
+          tar -czvf nmc-${{ runner.os }}-${{ matrix.arch }}.tar.gz -C build nmc
+        working-directory: .
+
+      - name: Package build artifacts (Windows)
+        if: startsWith(matrix.os, 'windows')
+        run: |
+          # The executable will be in build/Release/nmc.exe for MSVC Release config
+          7z a nmc-${{ runner.os }}-${{ matrix.arch }}.zip build\Release\nmc.exe
+        working-directory: .
+
+      # Step 7: Upload the created archive as a workflow artifact.
+      # The artifact name now includes OS and architecture for uniqueness.
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nmc-cli-artifacts-${{ runner.os }}-${{ matrix.arch }} # Unique name per OS/Arch
+          path: nmc-${{ runner.os }}-${{ matrix.arch }}.* # Matches .tar.gz or .zip
+          retention-days: 1 # How long to keep the artifact (1 day for temporary storage)
+
+  release:
+    # This job depends on the 'build' job completing successfully.
+    needs: build
+    runs-on: ubuntu-latest # This job runs on a single runner to consolidate assets.
+    # Define permissions required for this job. 'contents: write' is needed to create a release
+    # and upload assets to the target repository.
+    permissions:
+      contents: write
+
+    # This job will only run if the 'build' job succeeded and
+    # if the trigger was a 'push' to main or a 'release' was published.
+    if: success() && (github.event_name == 'push' || github.event_name == 'release')
+
+    steps:
+      # Step 1: Download all build artifacts created by the 'build' job's matrix runs.
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          # This downloads all artifacts that start with 'nmc-cli-artifacts-'
+          path: ./artifacts/
+
+      # Step 2: Prepare installer scripts for different platforms.
+      # Linux Installer Script (install.sh)
+      - name: Create Linux Installation Script
+        id: create_linux_install_script
+        run: |
+          cat << 'EOF' > install-linux.sh
+          #!/bin/bash
+
+          set -e # Exit immediately if a command exits with a non-zero status
+
+          INSTALL_DIR="/usr/local/bin" # Default installation directory for the executable
+          NMC_EXECUTABLE="nmc"        # Name of the executable file
+
+          # Function to print usage instructions
+          print_usage() {
+              echo "Usage: $0 [--install-dir <path>] [--help]"
+              echo "Options:"
+              echo "  --install-dir <path>  Specify a custom installation directory (default: /usr/local/bin)"
+              echo "  --help                Display this help message and exit"
+          }
+
+          # Parse command line arguments provided to the install script
+          while [[ "$#" -gt 0 ]]; do
+              case "$1" in
+                  --install-dir)
+                      if [ -z "$2" ]; then
+                          echo "Error: --install-dir requires a path."
+                          print_usage
+                          exit 1
+                      fi
+                      INSTALL_DIR="$2"
+                      shift # Consume the argument value
+                      ;;
+                  --help)
+                      print_usage
+                      exit 0
+                      ;;
+                  *)
+                      echo "Error: Unknown option '$1'"
+                      print_usage
+                      exit 1
+                      ;;
+              esac
+              shift # Consume the option itself
+          done
+
+          echo "Attempting to install '${NMC_EXECUTABLE}' to '${INSTALL_DIR}'..."
+
+          # Determine system architecture and executable name
+          ARCH=$(uname -m)
+          EXECUTABLE_SOURCE=""
+
+          if [ "$ARCH" = "x86_64" ]; then
+              EXECUTABLE_SOURCE="./nmc-linux-x64/nmc"
+          elif [ "$ARCH" = "aarch64" ]; then
+              EXECUTABLE_SOURCE="./nmc-linux-arm64/nmc"
+          else
+              echo "Error: Unsupported architecture: $ARCH. This installer supports x86_64 and aarch64 Linux."
+              exit 1
+          fi
+
+          if [ ! -f "${EXECUTABLE_SOURCE}" ]; then
+              echo "Error: '${NMC_EXECUTABLE}' executable for '$ARCH' not found at '${EXECUTABLE_SOURCE}'."
+              echo "Please ensure the correct archive was extracted and this script is run from the correct directory."
+              exit 1
+          fi
+
+          # Create the installation directory if it doesn't exist.
+          if [ ! -d "${INSTALL_DIR}" ]; then
+              echo "Creating installation directory: ${INSTALL_DIR}"
+              sudo mkdir -p "${INSTALL_DIR}" || { echo "Failed to create directory '${INSTALL_DIR}'. Do you have sufficient permissions (e.g., sudo)?"; exit 1; }
+          fi
+
+          # Copy the executable to the target directory.
+          sudo cp "${EXECUTABLE_SOURCE}" "${INSTALL_DIR}/${NMC_EXECUTABLE}" || { echo "Failed to copy executable to '${INSTALL_DIR}'. Do you have sufficient permissions (e.g., sudo)?"; exit 1; }
+
+          # Make the copied executable runnable.
+          sudo chmod +x "${INSTALL_DIR}/${NMC_EXECUTABLE}" || { echo "Failed to set executable permissions for '${INSTALL_DIR}/${NMC_EXECUTABLE}'."; exit 1; }
+
+          echo ""
+          echo "========================================"
+          echo "'nmc' CLI Installation Complete!"
+          echo "The 'nmc' executable has been installed to: ${INSTALL_DIR}"
+          echo "You can now run 'nmc' from any directory in your terminal."
+          echo ""
+          echo "To verify, try running: ${INSTALL_DIR}/${NMC_EXECUTABLE} --help"
+          echo "========================================"
+          echo ""
+
+          EOF
+          chmod +x install-linux.sh
+
+      # Windows Installer Script (install.ps1)
+      - name: Create Windows Installation Script
+        id: create_windows_install_script
+        run: |
+          cat << 'EOF' > install-windows.ps1
+          # Requires PowerShell 5.1 or later
+          # Default installation directory. Using Program Files as a common location.
+          $InstallDir = "$env:ProgramFiles\nmc-cli"
+          $NmcExecutable = "nmc.exe"
+
+          # Function to print usage instructions
+          function Show-Usage {
+              Write-Host "Usage: ." + "$((Get-Variable MyInvocation).Value.MyCommand.Definition) [-InstallDir <path>] [-Help]"
+              Write-Host "Options:"
+              Write-Host "  -InstallDir <path>  Specify a custom installation directory (default: $env:ProgramFiles\nmc-cli)"
+              Write-Host "  -Help               Display this help message and exit"
+          }
+
+          # Parse command line arguments
+          $Script:Args = $PSBoundParameters.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" }
+          [CmdletBinding()]
+          param (
+              [Parameter(Mandatory=$false)]
+              [string]$InstallDirParam,
+              [Parameter(Mandatory=$false)]
+              [switch]$Help
+          )
+
+          if ($Help) {
+              Show-Usage
+              exit 0
+          }
+
+          if ($PSBoundParameters.ContainsKey('InstallDirParam')) {
+              $InstallDir = $InstallDirParam
+          }
+
+          Write-Host "Attempting to install '$NmcExecutable' to '$InstallDir'..."
+
+          # Path to the executable within the extracted archive
+          $ExecutableSource = ".\nmc-windows-x64\$NmcExecutable" # Assuming x64 for Windows hosted runner
+
+          if (-not (Test-Path $ExecutableSource)) {
+              Write-Error "'$NmcExecutable' executable not found at '$ExecutableSource'."
+              Write-Error "Please ensure this script is run from the same directory where the '$NmcExecutable' is located after extraction."
+              exit 1
+          }
+
+          # Create the installation directory if it doesn't exist.
+          if (-not (Test-Path $InstallDir)) {
+              Write-Host "Creating installation directory: $InstallDir"
+              try {
+                  New-Item -Path $InstallDir -ItemType Directory -Force | Out-Null
+              }
+              catch {
+                  Write-Error "Failed to create directory '$InstallDir'. Ensure you have administrative privileges (Run as Administrator)."
+                  exit 1
+              }
+          }
+
+          # Copy the executable to the target directory.
+          try {
+              Copy-Item -Path $ExecutableSource -Destination "$InstallDir\$NmcExecutable" -Force
+          }
+          catch {
+              Write-Error "Failed to copy executable to '$InstallDir'. Ensure you have administrative privileges (Run as Administrator)."
+              exit 1
+          }
+
+          # Add the installation directory to the system PATH for the current user (optional, but convenient)
+          # Note: For system-wide PATH, administrative privileges are needed and it requires a restart of CMD/PowerShell.
+          # For a robust solution, you might consider modifying system PATH or advising user to add manually.
+          # $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + $InstallDir
+          # [System.Environment]::SetEnvironmentVariable("Path", $env:Path, "Machine")
+
+          Write-Host ""
+          Write-Host "========================================"
+          Write-Host "'nmc' CLI Installation Complete!"
+          Write-Host "The '$NmcExecutable' executable has been installed to: $InstallDir"
+          Write-Host "You may need to restart your terminal (Command Prompt/PowerShell) for 'nmc' to be directly accessible from any location."
+          Write-Host ""
+          Write-Host "To verify, try navigating to the installation directory and running: $InstallDir\$NmcExecutable --help"
+          Write-Host "========================================"
+          Write-Host ""
+          EOF
+        shell: pwsh # Use PowerShell for this step
+
+      # Step 3: Determine the release version and name.
+      # If triggered by a GitHub Release, use its tag. Otherwise, generate a timestamped version.
+      - name: Determine Release Version and Name
+        id: release_info
+        run: |
+          # Default version: current date and time + GitHub run number for uniqueness.
+          RELEASE_VERSION="v$(date +%Y%m%d%H%M%S)-${{ github.run_number }}"
+          # If the workflow was triggered by a 'release' event (meaning a tag was pushed),
+          # use the tag name directly as the release version.
+          if [[ "${{ github.event_name }}" == "release" ]]; then
+            RELEASE_VERSION="${{ github.event.release.tag_name }}"
+          fi
+
+          RELEASE_NAME="NMC CLI Release ${RELEASE_VERSION}"
+
+          # Output variables for use in subsequent steps.
+          echo "release_version=${RELEASE_VERSION}" >> $GITHUB_OUTPUT
+          echo "release_name=${RELEASE_NAME}" >> $GITHUB_OUTPUT
+          # Use a specific tag prefix for CLI releases in the 'aarnn-network' repo to avoid conflicts.
+          echo "release_tag=cli-${RELEASE_VERSION}" >> $GITHUB_OUTPUT
+
+      # Step 4: List all files in the artifacts directory to prepare for upload.
+      - name: List Artifact Files
+        id: list_files
+        run: |
+          # Find all packaged executables and store their paths for the release asset upload
+          # Adjust the find command to specifically list the .tar.gz and .zip files.
+          # The paths will be relative to the workspace root.
+          find ./artifacts -type f \( -name "*.tar.gz" -o -name "*.zip" \) > files_to_upload.txt
+          # Also add the install scripts
+          echo "install-linux.sh" >> files_to_upload.txt
+          echo "install-windows.ps1" >> files_to_upload.txt
+          
+          # Read the content of the file into a GitHub Action output variable.
+          # This allows passing a multiline string to 'softprops/action-gh-release'.
+          files_list=$(cat files_to_upload.txt | tr '\n' ',')
+          echo "files_to_upload=$files_list" >> $GITHUB_OUTPUT
+
+      # Step 5: Create a GitHub Release in the target public repository ('aarnn-network')
+      # and upload the executable archive and install script as assets.
+      - name: Create GitHub Release in aarnn-network
+        uses: softprops/action-gh-release@v2
+        with:
+          token: ${{ secrets.NMC_RELEASE_PAT }}
+          owner: neuralmimicry
+          repo: aarnn-network
+          tag_name: ${{ steps.release_info.outputs.release_tag }}
+          name: ${{ steps.release_info.outputs.release_name }}
+          body: |
+            NMC CLI executable and installation scripts for version ${{ steps.release_info.outputs.release_version }}.
+            This release provides binaries for Linux (x64, ARM64) and Windows (x64), along with platform-specific installation scripts.
+
+            **Supported Platforms:**
+            * Linux (x64)
+            * Linux (ARM64) - Requires cross-compilation on x64 runner
+            * Windows (x64)
+
+            **Installation Instructions:**
+
+            **For Linux (x64, ARM64):**
+            1. Download the appropriate `.tar.gz` archive (e.g., `nmc-linux-x64.tar.gz` or `nmc-linux-arm64.tar.gz`) from this release.
+            2. Extract its contents:
+               ```bash
+               tar -xzvf nmc-linux-<arch>.tar.gz
+               ```
+               (This will create a directory like `nmc-linux-<arch>` containing the `nmc` executable.)
+            3. Download `install-linux.sh` from this release and place it in the *same directory* as the extracted `nmc-linux-<arch>` folder.
+            4. Make the install script executable:
+               ```bash
+               chmod +x install-linux.sh
+               ```
+            5. Run the installation script:
+               ```bash
+               ./install-linux.sh
+               ```
+            6. (Optional) Install to a custom directory:
+               ```bash
+               ./install-linux.sh --install-dir /opt/nmc-cli
+               ```
+
+            **For Windows (x64):**
+            1. Download the `nmc-windows-x64.zip` archive from this release.
+            2. Extract its contents. (This will create a directory `nmc-windows-x64` containing `nmc.exe`.)
+            3. Download `install-windows.ps1` from this release and place it in the *same directory* as the extracted `nmc-windows-x64` folder.
+            4. Open PowerShell *as Administrator* and navigate to the directory where you extracted the files.
+            5. Run the installation script:
+               ```powershell
+               .\install-windows.ps1
+               ```
+            6. (Optional) Install to a custom directory:
+               ```powershell
+               .\install-windows.ps1 -InstallDir "C:\Custom\Path\nmc-cli"
+               ```
+            *Note: You may need to restart your terminal for `nmc.exe` to be accessible from any directory.*
+
+          files: ${{ steps.list_files.outputs.files_to_upload }} # All collected files for upload
+          draft: false
+          prerelease: false
