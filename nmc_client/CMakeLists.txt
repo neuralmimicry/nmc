@@ -26,7 +26,8 @@ FetchContent_Declare(
         httplib
         GIT_REPOSITORY https://github.com/yhirose/cpp-httplib.git
         GIT_TAG        v0.15.3 # Using the tag specified by the user
-        CMAKE_ARGS     -DCMAKE_POLICY_VERSION_MINIMUM=3.14 # Force a modern policy context for the subproject
+        # IMPORTANT: Disable SSL to avoid OpenSSL dependencies in cross-compilation environments
+        CMAKE_ARGS     -DCMAKE_POLICY_VERSION_MINIMUM=3.14 -DHTTPPEBLIB_WITH_SSL=OFF
 )
 FetchContent_MakeAvailable(httplib)
 
@@ -62,7 +63,7 @@ add_executable(nmc ${NMC_SOURCES})
 
 # Link against the interface targets provided by the fetched libraries.
 # This ensures that their public headers are transitively included and necessary dependencies are met.
-target_link_libraries(nmc PRIVATE nlohmann_json::nlohmann_json httplib ${CURL_LIBRARIES} OpenSSL::SSL OpenSSL::Crypto)
+target_link_libraries(nmc PRIVATE nlohmann_json::nlohmann_json httplib)
 
 # Optional: Add compiler warnings for best practices
 if (CMAKE_CXX_COMPILER_ID MATCHES "(GNU|Clang)")
