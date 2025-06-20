@@ -353,25 +353,31 @@ jobs:
           $scriptContent | Set-Content -Path install-windows.ps1
 
       # Step 3: Determine the release version and name.
-      # If triggered by a GitHub Release, use its tag. Otherwise, generate a timestamped version.
       - name: Determine Release Version and Name
         id: release_info
         run: |
-          # Default version: current date and time + GitHub run number for uniqueness.
-          RELEASE_VERSION="v$(date +%Y%m%d%H%M%S)-${{ github.run_number }}"
-          # If the workflow was triggered by a 'release' event (meaning a tag was pushed),
-          # use the tag name directly as the release version.
+          # Default base version for push/workflow_dispatch events
+          BASE_VERSION="v$(date +%Y%m%d%H%M%S)-${{ github.run_number }}"
+          
+          # If triggered by a GitHub Release from the source repo, use its tag.
+          # Crucially, strip any existing 'cli-' prefix from the tag name
+          # to prevent 'cli-cli-vX.Y.Z' in future cascading releases.
           if [[ "${{ github.event_name }}" == "release" ]]; then
-            RELEASE_VERSION="${{ github.event.release.tag_name }}"
+            RAW_TAG_NAME="${{ github.event.release.tag_name }}"
+            # Use bash parameter expansion to remove longest match of 'cli-' from the beginning
+            BASE_VERSION="${RAW_TAG_NAME##cli-}"
           fi
-
-          RELEASE_NAME="NMC CLI Release ${RELEASE_VERSION}"
-
-          # Output variables for use in subsequent steps.
-          echo "release_version=${RELEASE_VERSION}" >> $GITHUB_OUTPUT
-          echo "release_name=${RELEASE_NAME}" >> $GITHUB_OUTPUT
-          # Use a specific tag prefix for CLI releases in the 'aarnn-network' repo to avoid conflicts.
-          echo "release_tag=cli-${RELEASE_VERSION}" >> $GITHUB_OUTPUT
+          
+          # The tag name to be used in the *target* repository (aarnn-network), always prefixed with 'cli-'.
+          TARGET_REPO_TAG="cli-$BASE_VERSION"
+          
+          # The display name for the GitHub Release.
+          RELEASE_DISPLAY_NAME="NMC CLI Release $BASE_VERSION"
+          
+          # Output variables
+          echo "base_version=${BASE_VERSION}" >> $GITHUB_OUTPUT
+          echo "target_repo_tag=${TARGET_REPO_TAG}" >> $GITHUB_OUTPUT
+          echo "release_display_name=${RELEASE_DISPLAY_NAME}" >> $GITHUB_OUTPUT
 
       # Step 4: List all files to be uploaded as release assets.
       - name: List Artifact Files for Release
@@ -396,11 +402,11 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           token: ${{ secrets.NMC_RELEASE_PAT }}
-          repository: neuralmimicry/aarnn-network # Corrected input
-          tag_name: ${{ steps.release_info.outputs.release_tag }}
-          name: ${{ steps.release_info.outputs.release_name }}
+          repository: neuralmimicry/aarnn-network
+          tag_name: ${{ steps.release_info.outputs.target_repo_tag }}
+          name: ${{ steps.release_info.outputs.release_display_name }}
           body: |
-            NMC CLI executable and installation scripts for version ${{ steps.release_info.outputs.release_version }}.
+            NMC CLI executable and installation scripts for version ${{ steps.release_info.outputs.base_version }}.
             This release provides binaries for Linux (x64, ARM64) and Windows (x64), along with platform-specific installation scripts.
 
             **Supported Platforms:**
