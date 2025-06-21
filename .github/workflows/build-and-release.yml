@@ -48,11 +48,16 @@ jobs:
       - name: Setup C++ environment (Linux ARM64 Cross-Compile)
         if: startsWith(matrix.os, 'ubuntu') && matrix.arch == 'arm64'
         run: |
+          sudo dpkg --add-architecture arm64
           sudo apt-get update
-          # Install qemu-user-static for ARM64 emulation
-          sudo apt-get install -y qemu-user-static
-          # Install ARM64 cross-compilation toolchain
-          sudo apt-get install -y g++-aarch64-linux-gnu cmake
+          # QEMU for ARM64 emulation, cross toolchain, and ARM64 OpenSSL headers
+          sudo apt-get install -y \
+          qemu-user-static \
+          g++-aarch64-linux-gnu cmake \
+          libssl-dev:arm64
+  
+          # (Alternatively, on some Ubuntu images you can use:)
+          #   sudo apt-get install -y libssl-dev-arm64-cross
           # Configure CMake for cross-compilation
           echo "CMAKE_TOOLCHAIN_FILE=$(pwd)/arm64-toolchain.cmake" >> $GITHUB_ENV
           cat << 'EOF' > arm64-toolchain.cmake
