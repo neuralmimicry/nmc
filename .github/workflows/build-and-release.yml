@@ -48,23 +48,25 @@ jobs:
       - name: Setup C++ environment (Linux ARM64 Cross-Compile)
         if: startsWith(matrix.os, 'ubuntu') && matrix.arch == 'arm64'
         run: |
-          # 1) Enable ARM64 multi-arch
-          sudo dpkg --add-architecture arm64
-
-          # 2) Point ARM64 requests at Ubuntu’s ports.ubuntu.com mirror
-          cat << 'EOF' | sudo tee /etc/apt/sources.list.d/arm64.list
-          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports noble           main restricted universe multiverse
-          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports noble-updates   main restricted universe multiverse
-          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports noble-security  main restricted universe multiverse
-          EOF
-
-          # 3) Refresh indexes and install
           sudo apt-get update
           sudo apt-get install -y \
             qemu-user-static \
             g++-aarch64-linux-gnu \
             cmake \
-            libssl-dev:arm64
+            make \
+            perl \
+            wget
+  
+          # 1) Download and cross-compile OpenSSL for ARM64
+          wget https://www.openssl.org/source/openssl-3.1.3.tar.gz
+          tar xzf openssl-3.1.3.tar.gz
+          cd openssl-3.1.3
+          ./Configure linux-aarch64 \
+            --prefix=/usr/aarch64-linux-gnu \
+            no-shared
+          make -j"$(nproc)"
+          sudo make install_sw
+          cd ..
           # Configure CMake for cross-compilation
           echo "CMAKE_TOOLCHAIN_FILE=$(pwd)/arm64-toolchain.cmake" >> $GITHUB_ENV
           cat << 'EOF' > arm64-toolchain.cmake
