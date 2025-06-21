@@ -22,13 +22,12 @@ jobs:
       fail-fast: false # Don't cancel other matrix jobs if one fails
       matrix:
         # Define operating systems: Ubuntu for Linux, Windows for Windows.
-        # RHEL and native ARM64 runners typically require self-hosted runners,
-        # but ARM64 for Linux can be cross-compiled on Ubuntu x64.
+        # RHEL and native ARM64 runners typically require self-hosted runners.
         os: [ubuntu-latest, windows-latest]
-        # Define architectures: x64 for both OS, arm64 only for Linux (cross-compiled).
+        # Define architectures: x64 for both OS, arm64 only for Linux (self-hosted).
         arch: [x64]
         include:
-          - os: ubuntu-latest
+          - os: self-hosted,linux,arm64 # Changed to use a self-hosted ARM64 runner
             arch: arm64
 
     # The runner environment depends on the current matrix OS.
@@ -45,74 +44,17 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential cmake
 
-      - name: Setup C++ environment (Linux ARM64 Cross-Compile)
-        if: startsWith(matrix.os, 'ubuntu') && matrix.arch == 'arm64'
+      - name: Setup C++ environment (Linux ARM64 Native Build) # Updated name for native build
+        if: startsWith(matrix.os, 'self-hosted') && matrix.arch == 'arm64' # Condition changed for self-hosted ARM64
         run: |
           sudo apt-get update
-          # Removed libssl-dev:arm64 as it was causing 'Unable to locate package' error.
-          # OpenSSL is built from source below.
+          # Install build tools for native ARM64 compilation.
+          # All cross-compilation specific steps (OpenSSL build, toolchain file creation) are removed.
           sudo apt-get install -y \
-            qemu-user-static \
-            g++-aarch64-linux-gnu \
+            build-essential \
             cmake \
-            make \
-            perl \
             wget \
-            libc6-arm64-cross \
-            libc6-dev-arm64-cross \
-            libgcc-s1-arm64-cross \
-            libstdc++6-arm64-cross \
-            libstdc++-13-dev-arm64-cross
-          
-          # 1) Download and cross-compile OpenSSL for ARM64
-          wget https://www.openssl.org/source/openssl-3.1.3.tar.gz
-          tar xzf openssl-3.1.3.tar.gz
-          cd openssl-3.1.3
-          
-          # 2) Tell Configure exactly which cross-tools to invoke
-          export CC=aarch64-linux-gnu-gcc
-          export AR=aarch64-linux-gnu-ar
-          export RANLIB=aarch64-linux-gnu-ranlib
-          
-          # 3) Configure for a generic 64-bit target, disable hand-tuned ASM,
-          #    and install into /usr/aarch64-linux-gnu
-          ./Configure linux-generic64 no-asm \
-            --prefix=/usr/aarch64-linux-gnu \
-            no-shared
-          make -j"$(nproc)"
-          sudo make install_sw
-          cd ..
-          # Configure CMake for cross-compilation
-          echo "CMAKE_TOOLCHAIN_FILE=$(pwd)/arm64-toolchain.cmake" >> $GITHUB_ENV
-          cat << 'EOF' > arm64-toolchain.cmake
-          set(CMAKE_SYSTEM_NAME Linux)
-          set(CMAKE_SYSTEM_PROCESSOR aarch64)
-          set(CMAKE_SYSROOT /usr/aarch64-linux-gnu) # This is the base for finding libraries
-
-          # Add explicit paths within the sysroot where common libraries might reside.
-          # This helps the linker find libraries like libm.so.6 and libmvec.so.1
-          # which are typically found under architecture-specific subdirectories within the sysroot.
-          set(CMAKE_FIND_ROOT_PATH
-              /usr/aarch64-linux-gnu
-              /usr/aarch64-linux-gnu/usr/lib/aarch64-linux-gnu
-              /usr/aarch64-linux-gnu/lib/aarch64-linux-gnu
-          )
-
-          set(CMAKE_C_COMPILER aarch64-linux-gnu-gcc)
-          set(CMAKE_CXX_COMPILER aarch64-linux-gnu-g++)
-
-          # Explicitly link standard libraries for the compiler test to succeed
-          # This helps if the cross-compiler's default library paths are not fully configured
-          # to find these common libraries within the sysroot during the initial check.
-          # These flags ensure that -lm (math library) and -pthread (POSIX threads library) are included.
-          set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -lm -pthread")
-          set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -lm -pthread")
-
-          set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER) # Do not search for programs in the sysroot
-          set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)  # Only search for libraries in the sysroot and CMAKE_FIND_ROOT_PATH
-          set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)  # Only search for includes in the sysroot and CMAKE_FIND_ROOT_PATH
-          set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)  # Only search for packages in the sysroot and CMAKE_FIND_ROOT_PATH
-          EOF
+            libssl-dev # libssl-dev is now installed directly for native ARM64
 
       - name: Setup C++ environment (Windows x64)
         if: startsWith(matrix.os, 'windows') && matrix.arch == 'x64'
@@ -131,10 +73,9 @@ jobs:
         run: cmake ..
         working-directory: nmc_client/build # Adjusted working directory
 
-      # Step 4: Configure CMake project (Linux ARM64 Cross-Compile)
-      - name: Configure CMake (Linux ARM64 Cross-Compile)
-        if: startsWith(matrix.os, 'ubuntu') && matrix.arch == 'arm64'
-        run: cmake -DCMAKE_TOOLCHAIN_FILE=${{ env.CMAKE_TOOLCHAIN_FILE }} ..
+        # Step 4: Configure CMake project (Linux ARM64 Native Build) # Updated name
+        if: startsWith(matrix.os, 'self-hosted') && matrix.arch == 'arm64' # Condition changed for self-hosted ARM64
+        run: cmake .. # Removed CMAKE_TOOLCHAIN_FILE as it's a native build
         working-directory: nmc_client/build # Adjusted working directory
 
       # Step 4: Configure CMake project (Windows x64)
@@ -145,7 +86,7 @@ jobs:
 
       # Step 5: Build the 'nmc' executable using Make (Linux) or MSBuild (Windows).
       - name: Build NMC executable (Linux)
-        if: startsWith(matrix.os, 'ubuntu')
+        if: startsWith(matrix.os, 'ubuntu') || startsWith(matrix.os, 'self-hosted') # Apply to both Linux builds
         run: make
         working-directory: nmc_client/build # Adjusted working directory
 
@@ -158,7 +99,7 @@ jobs:
       # Step 6: Package the compiled executable into a platform-specific archive with a dedicated directory.
       # This ensures the installer scripts can find the executable within an extracted folder.
       - name: Package build artifacts (Linux)
-        if: startsWith(matrix.os, 'ubuntu')
+        if: startsWith(matrix.os, 'ubuntu') || startsWith(matrix.os, 'self-hosted') # Apply to both Linux builds
         run: |
           # Create a directory named like 'nmc-Linux-x64' or 'nmc-Linux-arm64' at the root
           mkdir -p nmc-${{ runner.os }}-${{ matrix.arch }}
