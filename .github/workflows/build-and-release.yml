@@ -73,7 +73,7 @@ jobs:
         run: cmake ..
         working-directory: nmc_client/build # Adjusted working directory
 
-        # Step 4: Configure CMake project (Linux ARM64 Native Build) # Updated name
+      - name: Configure CMake project (Linux ARM64 Native Build) # Updated name
         if: startsWith(matrix.os, 'self-hosted') && matrix.arch == 'arm64' # Condition changed for self-hosted ARM64
         run: cmake .. # Removed CMAKE_TOOLCHAIN_FILE as it's a native build
         working-directory: nmc_client/build # Adjusted working directory
@@ -114,7 +114,7 @@ jobs:
         run: |
           # Create a directory named like 'nmc-Windows-x64' at the root
           mkdir -p nmc-${{ runner.os }}-${{ matrix.arch }}
-          # Copy the executable from nmc_client/build/Release into this new directory
+          # Copy the executable from nmc_client\build\Release into this new directory
           cp nmc_client\build\Release\nmc.exe nmc-${{ runner.os }}-${{ matrix.arch }}\nmc.exe
           # Create the zip archive of this directory
           7z a nmc-${{ runner.os }}-${{ matrix.arch }}.zip .\nmc-${{ runner.os }}-${{ matrix.arch }}
