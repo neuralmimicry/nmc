@@ -87,21 +87,31 @@ jobs:
           cat << 'EOF' > arm64-toolchain.cmake
           set(CMAKE_SYSTEM_NAME Linux)
           set(CMAKE_SYSTEM_PROCESSOR aarch64)
-          set(CMAKE_SYSROOT /usr/aarch64-linux-gnu)
-          set(CMAKE_FIND_ROOT_PATH /usr/aarch64-linux-gnu)
+          set(CMAKE_SYSROOT /usr/aarch64-linux-gnu) # This is the base for finding libraries
+
+          # Add explicit paths within the sysroot where common libraries might reside.
+          # This helps the linker find libraries like libm.so.6 and libmvec.so.1
+          # which are typically found under architecture-specific subdirectories within the sysroot.
+          set(CMAKE_FIND_ROOT_PATH
+              /usr/aarch64-linux-gnu
+              /usr/aarch64-linux-gnu/usr/lib/aarch64-linux-gnu
+              /usr/aarch64-linux-gnu/lib/aarch64-linux-gnu
+          )
+
           set(CMAKE_C_COMPILER aarch64-linux-gnu-gcc)
           set(CMAKE_CXX_COMPILER aarch64-linux-gnu-g++)
 
           # Explicitly link standard libraries for the compiler test to succeed
           # This helps if the cross-compiler's default library paths are not fully configured
           # to find these common libraries within the sysroot during the initial check.
+          # These flags ensure that -lm (math library) and -pthread (POSIX threads library) are included.
           set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -lm -pthread")
           set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -lm -pthread")
 
-          set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
-          set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
-          set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
-          set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
+          set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER) # Do not search for programs in the sysroot
+          set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)  # Only search for libraries in the sysroot and CMAKE_FIND_ROOT_PATH
+          set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)  # Only search for includes in the sysroot and CMAKE_FIND_ROOT_PATH
+          set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)  # Only search for packages in the sysroot and CMAKE_FIND_ROOT_PATH
           EOF
 
       - name: Setup C++ environment (Windows x64)
