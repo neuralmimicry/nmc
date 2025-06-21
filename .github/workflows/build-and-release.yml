@@ -27,7 +27,7 @@ jobs:
         # Define architectures: x64 for both OS, ARM64 only for Linux (self-hosted).
         arch: [x64]
         include:
-          - os: self-hosted,Linux,ARM64 # Changed to use a self-hosted ARM64 runner
+          - os: self-hosted,ubuntu # Changed to use a self-hosted ARM64 runner
             arch: arm64
 
     # The runner environment depends on the current matrix OS.
