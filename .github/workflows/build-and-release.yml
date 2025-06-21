@@ -24,10 +24,10 @@ jobs:
         # Define operating systems: Ubuntu for Linux, Windows for Windows.
         # RHEL and native ARM64 runners typically require self-hosted runners.
         os: [ubuntu-latest, windows-latest]
-        # Define architectures: x64 for both OS, arm64 only for Linux (self-hosted).
+        # Define architectures: x64 for both OS, ARM64 only for Linux (self-hosted).
         arch: [x64]
         include:
-          - os: self-hosted,linux,arm64 # Changed to use a self-hosted ARM64 runner
+          - os: self-hosted,Linux,ARM64 # Changed to use a self-hosted ARM64 runner
             arch: arm64
 
     # The runner environment depends on the current matrix OS.
@@ -438,7 +438,7 @@ jobs:
 
             **Supported Platforms:**
             * Linux (x64)
-            * Linux (ARM64) - Requires cross-compilation on x64 runner
+            * Linux (ARM64) - Requires self-hosted ARM64 runner due to libssl not being configured in crosscompilation on x64 runners.
             * Windows (x64)
 
             **Installation Instructions:**
