@@ -8,6 +8,7 @@
 #include "Commands/VersionCommand.h"
 #include <memory> // For std::make_shared
 
+
 int main(int argc, char* argv[]) {
     NMC::CLI::CLIParser parser;
 
