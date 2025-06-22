@@ -27,7 +27,8 @@ jobs:
         # Define architectures: x64 for both OS, arm64 only for Linux (self-hosted).
         arch: [x64]
         include:
-          - os: self-hosted,Linux,ARM64 # Changed to use a self-hosted ARM64 runner with corrected casing
+          - # CORRECTED: 'os' is now a list of labels for the self-hosted runner
+            os: [self-hosted, Linux, ARM64]
             arch: arm64
 
     # The runner environment depends on the current matrix OS.
@@ -39,13 +40,14 @@ jobs:
 
       # Step 2: Set up the C++ development environment based on OS and architecture.
       - name: Setup C++ environment (Linux x64)
-        if: startsWith(matrix.os, 'ubuntu') && matrix.arch == 'x64'
+        if: ${{ matrix.os == 'ubuntu-latest' && matrix.arch == 'x64' }}
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential cmake
 
       - name: Setup C++ environment (Linux ARM64 Native Build) # Updated name for native build
-        if: startsWith(matrix.os, 'self-hosted') && matrix.arch == 'arm64' # Condition changed for self-hosted ARM64
+        # CORRECTED: Use 'contains' for labels in the 'os' list
+        if: contains(matrix.os, 'self-hosted') && contains(matrix.os, 'ARM64') && matrix.arch == 'arm64'
         run: |
           sudo apt-get update
           # Install build tools for native ARM64 compilation.
@@ -57,7 +59,7 @@ jobs:
             libssl-dev # libssl-dev is now installed directly for native ARM64
 
       - name: Setup C++ environment (Windows x64)
-        if: startsWith(matrix.os, 'windows') && matrix.arch == 'x64'
+        if: ${{ matrix.os == 'windows-latest' && matrix.arch == 'x64' }}
         uses: ilammy/msvc-dev-cmd@v1 # Use this action to configure MSVC environment
         with:
           arch: x64
@@ -69,29 +71,31 @@ jobs:
 
       # Step 4: Configure CMake project (Linux x64)
       - name: Configure CMake (Linux x64)
-        if: startsWith(matrix.os, 'ubuntu') && matrix.arch == 'x64'
+        if: ${{ matrix.os == 'ubuntu-latest' && matrix.arch == 'x64' }}
         run: cmake ..
         working-directory: nmc_client/build # Adjusted working directory
 
       - name: Configure CMake project (Linux ARM64 Native Build) # Updated name
-        if: startsWith(matrix.os, 'self-hosted') && matrix.arch == 'arm64' # Condition changed for self-hosted ARM64
+        # CORRECTED: Use 'contains' for labels in the 'os' list
+        if: contains(matrix.os, 'self-hosted') && contains(matrix.os, 'ARM64') && matrix.arch == 'arm64'
         run: cmake .. # Removed CMAKE_TOOLCHAIN_FILE as it's a native build
         working-directory: nmc_client/build # Adjusted working directory
 
       # Step 4: Configure CMake project (Windows x64)
       - name: Configure CMake (Windows x64)
-        if: startsWith(matrix.os, 'windows') && matrix.arch == 'x64'
+        if: ${{ matrix.os == 'windows-latest' && matrix.arch == 'x64' }}
         run: cmake ..
         working-directory: nmc_client/build # Adjusted working directory
 
       # Step 5: Build the 'nmc' executable using Make (Linux) or MSBuild (Windows).
       - name: Build NMC executable (Linux)
-        if: startsWith(matrix.os, 'ubuntu') || startsWith(matrix.os, 'self-hosted') # Apply to both Linux builds
+        # CORRECTED: Use 'contains' for self-hosted check
+        if: contains(matrix.os, 'ubuntu-latest') || contains(matrix.os, 'self-hosted')
         run: make
         working-directory: nmc_client/build # Adjusted working directory
 
       - name: Build NMC executable (Windows)
-        if: startsWith(matrix.os, 'windows')
+        if: ${{ matrix.os == 'windows-latest' }}
         # On Windows, 'cmake --build .' will use MSBuild by default if MSVC is configured.
         run: cmake --build . --config Release
         working-directory: nmc_client/build # Adjusted working directory
@@ -99,7 +103,8 @@ jobs:
       # Step 6: Package the compiled executable into a platform-specific archive with a dedicated directory.
       # This ensures the installer scripts can find the executable within an extracted folder.
       - name: Package build artifacts (Linux)
-        if: startsWith(matrix.os, 'ubuntu') || startsWith(matrix.os, 'self-hosted') # Apply to both Linux builds
+        # CORRECTED: Use 'contains' for self-hosted check
+        if: contains(matrix.os, 'ubuntu-latest') || contains(matrix.os, 'self-hosted')
         run: |
           # Create a directory named like 'nmc-Linux-x64' or 'nmc-Linux-arm64' at the root
           mkdir -p nmc-${{ runner.os }}-${{ matrix.arch }}
@@ -110,7 +115,7 @@ jobs:
         working-directory: . # Still run from root to easily find created directory
 
       - name: Package build artifacts (Windows)
-        if: startsWith(matrix.os, 'windows')
+        if: ${{ matrix.os == 'windows-latest' }}
         run: |
           # Create a directory named like 'nmc-Windows-x64' at the root
           mkdir -p nmc-${{ runner.os }}-${{ matrix.arch }}
