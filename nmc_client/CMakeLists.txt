@@ -4,7 +4,7 @@ project(nmc CXX) # Project name is 'nmc' for the client executable
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
-
+set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 # Include FetchContent module for automatic dependency downloading
 include(FetchContent)
 
