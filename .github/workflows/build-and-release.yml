@@ -227,20 +227,6 @@ jobs:
           DOWNLOAD_FILENAME="nmc-${TARGET_OS_ARCH}.tar.gz"
           EXTRACTED_DIR_NAME="nmc-${TARGET_OS_ARCH}" # The folder created by tar -xzvf
 
-          # --- REMOVE THIS SECTION (no longer needed to fetch tag_name) ---
-          # echo "Fetching latest release information from neuralmimicry/aarnn-network..."
-          # LATEST_RELEASE_INFO=$(curl -s "https://api.github.com/repos/neuralmimicry/aarnn-network/releases/latest")
-          # if [ -z "$LATEST_RELEASE_INFO" ]; then
-          #     echo "Error: Could not fetch latest release information. Check network connectivity or repository access."
-          #     exit 1
-          # fi
-          # RELEASE_TAG=$(echo "$LATEST_RELEASE_INFO" | grep '"tag_name":' | head -n 1 | cut -d '"' -f 4)
-          # if [ -z "$RELEASE_TAG" ]; then
-          #     echo "Error: Could not parse release tag from GitHub API response."
-          #     exit 1
-          # fi
-          # --- END REMOVED SECTION ---
-
           # CORRECTED: Use the /latest/download URL
           DOWNLOAD_URL="https://github.com/neuralmimicry/aarnn-network/releases/latest/download/${DOWNLOAD_FILENAME}"
           
