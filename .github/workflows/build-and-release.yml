@@ -78,7 +78,7 @@ jobs:
       - name: Configure CMake project (Linux ARM64 Native Build) # Updated name
         # CORRECTED: Use 'contains' for labels in the 'os' list
         if: contains(matrix.os, 'self-hosted') && contains(matrix.os, 'ARM64') && matrix.arch == 'arm64'
-        run: cmake .. # Removed CMAKE_TOOLCHAIN_FILE as it's a native build
+        run: cmake ..
         working-directory: nmc_client/build # Adjusted working directory
 
       # Step 4: Configure CMake project (Windows x64)
