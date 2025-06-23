@@ -1,0 +1,265 @@
+
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kubernetes (K8s) API Documentation</title>
+    <link rel="stylesheet" href="style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+<div class="container">
+    <header>
+        <h1>Kubernetes (K8s) API Endpoints</h1>
+        <p class="tagline">Manage and interact with Kubernetes clusters</p>
+        <a href="index.html" class="back-link">&larr; Back to API Home</a>
+    </header>
+
+    <section>
+        <h2>Create K8s Cluster</h2>
+        <p><strong>Endpoint:</strong> <code>POST /k8s/create</code></p>
+        <p>Provisions a new Kubernetes cluster.</p>
+        <h3>Request Body:</h3>
+        <pre><code class="language-json">
+{
+    "name": "my-prod-cluster",
+    "region": "rugby-1"
+}
+            </code></pre>
+        <h3>Successful Response (HTTP 200 OK):</h3>
+        <pre><code class="language-json">
+{
+    "success": true,
+    "message": "K8s cluster 'my-prod-cluster' created successfully.",
+    "data": {
+        "id": "k8s-abc123def456",
+        "name": "my-prod-cluster",
+        "region": "rugby-1",
+        "status": "Provisioning"
+    }
+}
+            </code></pre>
+        <h3>Error Response (HTTP 400 Bad Request if parameters missing):</h3>
+        <pre><code class="language-json">
+{
+    "success": false,
+    "message": "Missing required parameters: name or region.",
+    "data": {}
+}
+            </code></pre>
+        <h3>Error Response (HTTP 409 Conflict if cluster exists):</h3>
+        <pre><code class="language-json">
+{
+    "success": false,
+    "message": "K8s cluster 'my-prod-cluster' already exists.",
+    "data": {}
+}
+            </code></pre>
+    </section>
+
+    <section>
+        <h2>Delete K8s Cluster</h2>
+        <p><strong>Endpoint:</strong> <code>DELETE /k8s/delete/{id}</code></p>
+        <p>Deletes a specific Kubernetes cluster by its ID.</p>
+        <h3>Path Parameters:</h3>
+        <ul>
+            <li><code>id</code> (string): The unique ID of the Kubernetes cluster to delete.</li>
+        </ul>
+        <h3>Successful Response (HTTP 200 OK):</h3>
+        <pre><code class="language-json">
+{
+    "success": true,
+    "message": "K8s cluster 'k8s-abc123def456' deleted successfully.",
+    "data": null
+}
+            </code></pre>
+        <h3>Error Response (HTTP 404 Not Found):</h3>
+        <pre><code class="language-json">
+{
+    "success": false,
+    "message": "K8s cluster 'non-existent-id' not found.",
+    "data": {}
+}
+            </code></pre>
+    </section>
+
+    <section>
+        <h2>Get K8s Cluster Details</h2>
+        <p><strong>Endpoint:</strong> <code>GET /k8s/get/{id}</code></p>
+        <p>Retrieves detailed information about a specific Kubernetes cluster.</p>
+        <h3>Path Parameters:</h3>
+        <ul>
+            <li><code>id</code> (string): The unique ID of the Kubernetes cluster.</li>
+        </ul>
+        <h3>Successful Response (HTTP 200 OK):</h3>
+        <pre><code class="language-json">
+{
+    "success": true,
+    "message": "K8s cluster details retrieved.",
+    "data": {
+        "id": "k8s-abc123def456",
+        "name": "my-prod-cluster",
+        "region": "rugby-1",
+        "status": "Running"
+    }
+}
+            </code></pre>
+        <h3>Error Response (HTTP 404 Not Found):</h3>
+        <pre><code class="language-json">
+{
+    "success": false,
+    "message": "K8s cluster 'non-existent-id' not found.",
+    "data": {}
+}
+            </code></pre>
+    </section>
+
+    <section>
+        <h2>Get KubeConfig</h2>
+        <p><strong>Endpoint:</strong> <code>GET /k8s/get-config/{id}</code></p>
+        <p>Retrieves the KubeConfig YAML for a specific Kubernetes cluster, allowing CLI tools (like <code>kubectl</code>) to connect.</p>
+        <h3>Path Parameters:</h3>
+        <ul>
+            <li><code>id</code> (string): The unique ID of the Kubernetes cluster.</li>
+        </ul>
+        <h3>Successful Response (HTTP 200 OK):</h3>
+        <pre><code class="language-yaml">
+{
+    "success": true,
+    "message": "KubeConfig retrieved successfully.",
+    "data": "apiVersion: v1\nclusters:\n- cluster:\n    server: https://kube.k8s-abc123def456.example.com\n    certificate-authority-data: REDACTED\n  name: my-prod-cluster\ncontexts:\n- context:\n    cluster: my-prod-cluster\n    user: my-prod-cluster-user\n  name: my-prod-cluster-context\ncurrent-context: my-prod-cluster-context\nkind: Config\npreferences: {}\nusers:\n- name: my-prod-cluster-user\n  user:\n    token: REDACTED-TOKEN-FOR-my-prod-cluster\n"
+}
+            </code></pre>
+        <h3>Error Response (HTTP 404 Not Found):</h3>
+        <pre><code class="language-json">
+{
+    "success": false,
+    "message": "K8s cluster 'non-existent-id' not found.",
+    "data": {}
+}
+            </code></pre>
+    </section>
+
+    <section>
+        <h2>List K8s Clusters</h2>
+        <p><strong>Endpoint:</strong> <code>GET /k8s/list</code></p>
+        <p>Lists all available Kubernetes clusters. Supports optional filtering by name.</p>
+        <h3>Query Parameters:</h3>
+        <ul>
+            <li><code>filter-name</code> (optional, string): Filters clusters whose names contain the provided string.</li>
+        </ul>
+        <h3>Successful Response (HTTP 200 OK):</h3>
+        <pre><code class="language-json">
+{
+    "success": true,
+    "message": "K8s clusters listed successfully.",
+    "data": [
+        {
+            "id": "k8s-abc123def456",
+            "name": "my-prod-cluster",
+            "region": "rugby-1",
+            "status": "Running"
+        },
+        {
+            "id": "k8s-xyz789uvw012",
+            "name": "dev-cluster",
+            "region": "london-1-1",
+            "status": "Suspended"
+        }
+    ]
+}
+            </code></pre>
+    </section>
+
+    <section>
+        <h2>List K8s Locations</h2>
+        <p><strong>Endpoint:</strong> <code>GET /k8s/list-locations</code></p>
+        <p>Lists available regions where Kubernetes clusters can be deployed.</p>
+        <h3>Successful Response (HTTP 200 OK):</h3>
+        <pre><code class="language-json">
+{
+    "success": true,
+    "message": "K8s cluster locations listed successfully.",
+    "data": [
+        {
+            "name": "rugby-1"
+        },
+        {
+            "name": "london-1-1"
+        },
+        {
+            "name": "frankfurt-3"
+        }
+    ]
+}
+            </code></pre>
+    </section>
+
+    <section>
+        <h2>Resume K8s Cluster</h2>
+        <p><strong>Endpoint:</strong> <code>POST /k8s/resume/{id}</code></p>
+        <p>Resumes a suspended Kubernetes cluster.</p>
+        <h3>Path Parameters:</h3>
+        <ul>
+            <li><code>id</code> (string): The unique ID of the Kubernetes cluster to resume.</li>
+        </ul>
+        <h3>Successful Response (HTTP 200 OK):</h3>
+        <pre><code class="language-json">
+{
+    "success": true,
+    "message": "K8s cluster 'k8s-xyz789uvw012' resumed successfully.",
+    "data": {
+        "id": "k8s-xyz789uvw012",
+        "name": "dev-cluster",
+        "region": "london-1-1",
+        "status": "Running"
+    }
+}
+            </code></pre>
+        <h3>Error Response (HTTP 404 Not Found):</h3>
+        <pre><code class="language-json">
+{
+    "success": false,
+    "message": "K8s cluster 'non-existent-id' not found.",
+    "data": {}
+}
+            </code></pre>
+    </section>
+
+    <section>
+        <h2>Suspend K8s Cluster</h2>
+        <p><strong>Endpoint:</strong> <code>POST /k8s/suspend/{id}</code></p>
+        <p>Suspends a running Kubernetes cluster, freeing up resources while preserving its configuration.</p>
+        <h3>Path Parameters:</h3>
+        <ul>
+            <li><code>id</code> (string): The unique ID of the Kubernetes cluster to suspend.</li>
+        </ul>
+        <h3>Successful Response (HTTP 200 OK):</h3>
+        <pre><code class="language-json">
+{
+    "success": true,
+    "message": "K8s cluster 'k8s-abc123def456' suspended successfully.",
+    "data": {
+        "id": "k8s-abc123def456",
+        "name": "my-prod-cluster",
+        "region": "rugby-1",
+        "status": "Suspended"
+    }
+}
+            </code></pre>
+        <h3>Error Response (HTTP 404 Not Found):</h3>
+        <pre><code class="language-json">
+{
+    "success": false,
+    "message": "K8s cluster 'non-existent-id' not found.",
+    "data": {}
+}
+            </code></pre>
+    </section>
+
+    <footer>
+        <p>&copy; 2025 NMC Server. All rights reserved.</p>
+    </footer>
+</div>
+</body>
+</html>

@@ -15,8 +15,8 @@ int K8sCommand::execute(const std::map<std::string, std::string>& parsedFlags, c
 
 // --- K8sCreateCommand ---
 K8sCreateCommand::K8sCreateCommand() : BaseCommand("create", "Creates a new k8s cluster") {
-    usage = "nmc k8s create NAME --region lille-4";
-    examples = "nmc k8s create NAME --region lille-4";
+    usage = "nmc k8s create NAME --region rugby-1";
+    examples = "nmc k8s create NAME --region rugby-1";
     addArgument(CLI::Argument("NAME", "Name of the k8s cluster", true, 0));
     addFlag(CLI::Flag("r", "region", "Region", CLI::FlagType::String, true));
 }

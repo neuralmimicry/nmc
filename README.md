@@ -11,7 +11,7 @@ It provides a modular and extensible framework for building command-line interfa
 * Positional arguments.
 * Generated help messages for root, top-level, and subcommands.
 * Placeholder for interaction with a cloud API (`CloudAPIClient`).
-* Mock implementations for cloud operations (Bucket, K8s, Model, SSH, VM).
+* implementations for cloud operations (Bucket, K8s, Model, SSH, VM).
 
 **Project Structure:**
 

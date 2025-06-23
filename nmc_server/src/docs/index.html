@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NMC Server API Documentation</title>
+    <link rel="stylesheet" href="style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+<div class="container">
+    <header>
+        <h1>NMC Server API Documentation</h1>
+        <p class="tagline">Comprehensive guide to available API endpoints</p>
+    </header>
+
+    <nav class="api-navigation">
+        <h2>API Categories</h2>
+        <ul>
+            <li><a href="bucket.html">Bucket API</a> - Manage cloud storage buckets.</li>
+            <li><a href="k8s.html">Kubernetes (K8s) API</a> - Control Kubernetes clusters.</li>
+            <li><a href="model.html">Model API</a> - Upload and manage machine learning models.</li>
+            <li><a href="ssh.html">SSH Key API</a> - Manage SSH public keys.</li>
+            <li><a href="vm.html">Virtual Machine (VM) API</a> - Provision and manage virtual machines.</li>
+        </ul>
+    </nav>
+
+    <section class="introduction">
+        <h2>Introduction</h2>
+        <p>Welcome to the NMC Server API Documentation. This server provides a simulated environment for various cloud resource management operations, including storage buckets, Kubernetes clusters, machine learning models, SSH keys, and virtual machines.</p>
+        <p>This documentation details each available API endpoint, including the HTTP method, request parameters, example request bodies, and expected successful and error responses. Use these examples to understand how to interact with the server.</p>
+        <h3>Base URL</h3>
+        <p>All API calls should be made relative to the server's base URL, which is typically <code>http://localhost:8080</code> (or the host and port your server is running on).</p>
+    </section>
+
+    <section class="general-response">
+        <h2>General Response Structure</h2>
+        <p>All successful API responses from this server will follow a consistent JSON structure:</p>
+        <pre><code class="language-json">
+{
+    "success": true,
+    "message": "A descriptive message about the operation.",
+    "data": {
+        // Relevant data for the specific operation (can be an object or array)
+    }
+}
+            </code></pre>
+        <p>Error responses will also follow a similar structure, but with <code>"success": false</code> and an appropriate HTTP status code:</p>
+        <pre><code class="language-json">
+{
+    "success": false,
+    "message": "A descriptive error message.",
+    "data": {} // Typically an empty object for errors
+}
+            </code></pre>
+        <p>HTTP Status Codes will indicate the general outcome of the request:</p>
+        <ul>
+            <li><code>200 OK</code>: The request was successful.</li>
+            <li><code>400 Bad Request</code>: The request was malformed or missing required parameters.</li>
+            <li><code>404 Not Found</code>: The requested resource could not be found.</li>
+            <li><code>409 Conflict</code>: The request could not be completed due to a conflict (e.g., resource already exists).</li>
+            <li><code>500 Internal Server Error</code>: An unexpected error occurred on the server side.</li>
+        </ul>
+    </section>
+
+    <footer>
+        <p>&copy; 2025 NMC Server. All rights reserved.</p>
+    </footer>
+</div>
+</body>
+</html>

@@ -1,82 +1,112 @@
 // server/APIRoutes.h
-#ifndef NMC_SERVER_API_ROUTES_H
-#define NMC_SERVER_API_ROUTES_H
+#pragma once
 
 #include <httplib.h>
-#include <nlohmann/json.hpp>
-#include "Models/CloudResponse.h"
-#include "Models/Bucket.h"
-#include "Models/K8sCluster.h"
-#include "Models/SSHKey.h"
-#include "Models/VM.h"
 #include <vector>
-#include <map>
-#include <mutex> // For thread-safe access to mock data
+#include <mutex>
+#include <nlohmann/json.hpp>
+#include <memory> // Required for std::unique_ptr
 
-namespace NMC {
-    namespace Server {
+// Include data models
+#include "../Models/Bucket.h"
+#include "../Models/K8sCluster.h"
+#include "../Models/SSHKey.h"
+#include "../Models/VM.h"
+#include "../Models/CloudResponse.h"
 
-// This class will register all API endpoints with the httplib server.
-        class APIRoutes {
-        public:
-            APIRoutes(httplib::Server& svr);
+// Forward declaration for K8sHandlers to avoid circular includes
 
-        private:
-            // Mock data storage
-            std::vector<Models::Bucket> mockBuckets;
-            std::vector<Models::K8sCluster> mockK8sClusters;
-            std::vector<Models::SSHKey> mockSshKeys;
-            std::vector<Models::VM> mockVMs;
+namespace NMC::Server {
+    class K8sHandlers; // Forward declaration
+}
 
-            // Mutex for thread-safe access to mock data
-            std::mutex dataMutex;
 
-            // Helper to send JSON responses
-            void sendJsonResponse(httplib::Response& res, const Models::CloudResponse& apiResponse) const;
-            void sendErrorResponse(httplib::Response& res, int status, const std::string& message) const;
-            void logRequest(const httplib::Request& req) const;
 
-            // --- Bucket Handlers ---
-            void handleCreateBucket(const httplib::Request& req, httplib::Response& res);
-            void handleDeleteBucket(const httplib::Request& req, httplib::Response& res);
-            void handleGetBucket(const httplib::Request& req, httplib::Response& res);
-            void handleListBuckets(const httplib::Request& req, httplib::Response& res);
-            void handleListBucketLocations(const httplib::Request& req, httplib::Response& res);
-            void handleListBucketTypes(const httplib::Request& req, httplib::Response& res);
-            void handleResetBucketKey(const httplib::Request& req, httplib::Response& res);
+namespace NMC::Server {
 
-            // --- K8s Handlers ---
-            void handleCreateK8sCluster(const httplib::Request& req, httplib::Response& res);
-            void handleDeleteK8sCluster(const httplib::Request& req, httplib::Response& res);
-            void handleGetK8sCluster(const httplib::Request& req, httplib::Response& res);
-            void handleGetKubeConfig(const httplib::Request& req, httplib::Response& res);
-            void handleListK8sClusters(const httplib::Request& req, httplib::Response& res);
-            void handleListK8sLocations(const httplib::Request& req, httplib::Response& res);
-            void handleResumeK8sCluster(const httplib::Request& req, httplib::Response& res);
-            void handleSuspendK8sCluster(const httplib::Request& req, httplib::Response& res);
+    /**
+     * @brief APIRoutes class manages and registers all API endpoints for the server.
+     *
+     * This class is responsible for setting up HTTP route handlers, processing requests,
+     * and managing data for various cloud resources (Buckets, K8s, Models, SSH, VMs).
+     * It also provides utility functions for logging and sending structured JSON responses.
+     */
+    class APIRoutes {
+    public:
+        /**
+         * @brief Constructor for APIRoutes.
+         * @param svr Reference to the httplib::Server instance to register routes on.
+         */
+        APIRoutes(httplib::Server& svr);
 
-            // --- Model Handlers ---
-            void handleUploadModel(const httplib::Request& req, httplib::Response& res);
+        /**
+         * @brief Destructor for APIRoutes.
+         *
+         * This destructor is explicitly declared here and defined in APIRoutes.cpp
+         * to allow for proper destruction of members like std::unique_ptr<K8sHandlers>
+         * where the full definition of K8sHandlers is needed.
+         */
+        ~APIRoutes();
 
-            // --- SSH Handlers ---
-            void handleCreateSSHKey(const httplib::Request& req, httplib::Response& res);
-            void handleDeleteSSHKey(const httplib::Request& req, httplib::Response& res);
-            void handleListSSHKeys(const httplib::Request& req, httplib::Response& res);
+    private:
+        // data storage for various resources
+        std::vector<Models::Bucket> mockBuckets;
+        std::vector<Models::K8sCluster> mockK8sClusters;
+        std::vector<Models::SSHKey> mockSshKeys;
+        std::vector<Models::VM> mockVMs;
 
-            // --- VM Handlers ---
-            void handleCreateVM(const httplib::Request& req, httplib::Response& res);
-            void handleDeleteVM(const httplib::Request& req, httplib::Response& res);
-            void handleGetVM(const httplib::Request& req, httplib::Response& res);
-            void handleListVMs(const httplib::Request& req, httplib::Response& res);
-            void handleListVMLocations(const httplib::Request& req, httplib::Response& res);
-            void handleListVMOSImages(const httplib::Request& req, httplib::Response& res);
-            void handleListVMSKUs(const httplib::Request& req, httplib::Response& res);
-            void handleRestartVM(const httplib::Request& req, httplib::Response& res);
-            void handleResumeVM(const httplib::Request& req, httplib::Response& res);
-            void handleSuspendVM(const httplib::Request& req, httplib::Response& res);
-        };
+        std::mutex dataMutex; // Mutex to protect access to data in a multi-threaded environment
 
-    } // namespace Server
-} // namespace NMC
+        // Utility methods for common server operations
+        void logRequest(const httplib::Request& req) const;
 
-#endif // NMC_SERVER_API_ROUTES_H
+        /**
+         * @brief Sends a JSON response to the client.
+         * @param res The HTTP response object.
+         * @param apiResponse The CloudResponse object containing success status, message, and data.
+         */
+        void sendJsonResponse(httplib::Response& res, const Models::CloudResponse& apiResponse) const;
+
+        /**
+         * @brief Sends an error JSON response to the client with a specific HTTP status code.
+         * @param res The HTTP response object.
+         * @param status The HTTP status code to send (e.g., 400, 404, 500).
+         * @param message The error message.
+         */
+        void sendErrorResponse(httplib::Response& res, int status, const std::string& message) const;
+
+        // --- Bucket Handlers ---
+        void handleCreateBucket(const httplib::Request& req, httplib::Response& res);
+        void handleDeleteBucket(const httplib::Request& req, httplib::Response& res);
+        void handleGetBucket(const httplib::Request& req, httplib::Response& res);
+        void handleListBuckets(const httplib::Request& req, httplib::Response& res);
+        void handleListBucketLocations(const httplib::Request& req, httplib::Response& res);
+        void handleListBucketTypes(const httplib::Request& req, httplib::Response& res);
+        void handleResetBucketKey(const httplib::Request& req, httplib::Response& res);
+
+        // --- Model Handlers ---
+        void handleUploadModel(const httplib::Request& req, httplib::Response& res);
+
+        // --- SSH Key Handlers ---
+        void handleCreateSSHKey(const httplib::Request& req, httplib::Response& res);
+        void handleDeleteSSHKey(const httplib::Request& req, httplib::Response& res);
+        void handleListSSHKeys(const httplib::Request& req, httplib::Response& res);
+
+        // --- VM Handlers ---
+        void handleCreateVM(const httplib::Request& req, httplib::Response& res);
+        void handleDeleteVM(const httplib::Request& req, httplib::Response& res);
+        void handleGetVM(const httplib::Request& req, httplib::Response& res);
+        void handleListVMs(const httplib::Request& req, httplib::Response& res);
+        void handleListVMLocations(const httplib::Request& req, httplib::Response& res);
+        void handleListVMOSImages(const httplib::Request& req, httplib::Response& res);
+        void handleListVMSKUs(const httplib::Request& req, httplib::Response& res);
+        void handleRestartVM(const httplib::Request& req, httplib::Response& res);
+        void handleResumeVM(const httplib::Request& req, httplib::Response& res);
+        void handleSuspendVM(const httplib::Request& req, httplib::Response& res);
+
+        // Declare an instance of K8sHandlers
+        std::unique_ptr<K8sHandlers> k8sHandlers;
+    };
+
+} // namespace NMC::Server
+

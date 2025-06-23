@@ -18,7 +18,7 @@ int main() {
     const char* host = "0.0.0.0"; // Listen on all available network interfaces
     int port = 8080;
 
-    std::cout << "NMC Mock Server listening on http://" << host << ":" << port << std::endl;
+    std::cout << "NMC Server listening on http://" << host << ":" << port << std::endl;
     std::cout << "Press Ctrl+C to stop the server." << std::endl;
 
     // Start the server (blocking call)

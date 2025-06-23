@@ -36,6 +36,7 @@ find_package(OpenSSL REQUIRED)
 set(NMC_SERVER_SOURCES
         src/main.cpp
         src/Core/APIRoutes.cpp
+        src/Core/K8sHandlers.cpp
         src/Core/Utils.cpp
 )
 
@@ -46,7 +47,7 @@ add_executable(nmc_server ${NMC_SERVER_SOURCES})
 # typically handle their include paths.
 target_include_directories(nmc_server PRIVATE
         ${CMAKE_SOURCE_DIR}/src
-        ${CMAKE_SOURCE_DIR}/src/Core # For APIRoutes.h, Utils.h
+        ${CMAKE_SOURCE_DIR}/src/Core # For APIRoutes.h, K8sHandlers.h, Utils.h
         ${CMAKE_SOURCE_DIR}/src/Models # For all model headers
 )
 
@@ -64,3 +65,9 @@ if (CMAKE_CXX_COMPILER_ID MATCHES "(GNU|Clang)")
     )
 endif()
 
+# --- Copy documentation files to the build directory ---
+# This command ensures that the 'docs' folder and its contents
+# are copied from the source directory to the build directory.
+# The server's APIRoutes is configured to look for docs in './docs'.
+file(COPY "${CMAKE_SOURCE_DIR}/src/docs"
+        DESTINATION "${CMAKE_CURRENT_BINARY_DIR}") # CMAKE_CURRENT_BINARY_DIR is usually the 'build' directory
