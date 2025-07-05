@@ -22,16 +22,6 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(nlohmann_json)
 
-# --- Fetch cpp-httplib ---
-FetchContent_Declare(
-        httplib
-        GIT_REPOSITORY https://github.com/yhirose/cpp-httplib.git
-        GIT_TAG        v0.21.0
-        # Force a modern policy context for the subproject and disable its zstd support
-        CMAKE_ARGS     -DCMAKE_POLICY_VERSION_MINIMUM=3.14 -DCMAKE_DISABLE_FIND_PACKAGE_zstd=TRUE
-)
-FetchContent_MakeAvailable(httplib)
-
 # --- Find Zstandard (libzstd) ---
 # Use the system-provided zstd development package (e.g. libzstd-dev).
 find_package(zstd REQUIRED) #
@@ -53,6 +43,16 @@ endif()
 
 # Disable zstd discovery in httplib to avoid unintended targets
 # (httplib was already configured with -DCMAKE_DISABLE_FIND_PACKAGE_zstd=TRUE)
+
+# --- Fetch cpp-httplib ---
+FetchContent_Declare(
+        httplib
+        GIT_REPOSITORY https://github.com/yhirose/cpp-httplib.git
+        GIT_TAG        v0.21.0
+        # Force a modern policy context for the subproject and disable its zstd support
+        CMAKE_ARGS     -DCMAKE_POLICY_VERSION_MINIMUM=3.14 -DCMAKE_DISABLE_FIND_PACKAGE_zstd=TRUE
+)
+FetchContent_MakeAvailable(httplib)
 
 # --- Find OpenSSL (typically system-wide) ---
 # httplib already depends on OpenSSL, so this should already be present.
