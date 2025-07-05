@@ -34,7 +34,24 @@ FetchContent_MakeAvailable(httplib)
 
 # --- Find Zstandard (libzstd) ---
 # Use the system-provided zstd development package (e.g. libzstd-dev).
+# --- Find Zstandard (libzstd) ---
+# Use the system-provided zstd development package (e.g. libzstd-dev).
 find_package(zstd REQUIRED)
+
+# Create an imported target for zstd if it's not already provided by find_package
+if (ZSTD_FOUND AND NOT TARGET zstd::libzstd)
+    # Check if ZSTD_LIBRARIES contains a path to a library file
+    # This helps in cases where ZSTD_LIBRARIES might be empty or not a direct path
+    if (ZSTD_LIBRARIES)
+        add_library(zstd::libzstd UNKNOWN IMPORTED)
+        set_target_properties(zstd::libzstd PROPERTIES
+        IMPORTED_LOCATION "${ZSTD_LIBRARIES}"
+        INTERFACE_INCLUDE_DIRECTORIES "${ZSTD_INCLUDE_DIRS}"
+    )
+    else()
+        message(WARNING "ZSTD_LIBRARIES not set, cannot create zstd::libzstd imported target.")
+    endif()
+endif()
 
 # Disable zstd discovery in httplib to avoid unintended targets
 # (httplib was already configured with -DCMAKE_DISABLE_FIND_PACKAGE_zstd=TRUE)
