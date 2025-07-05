@@ -50,10 +50,10 @@ namespace NMC::Server {
 
     private:
         // data storage for various resources
-        std::vector<Models::Bucket> mockBuckets;
-        std::vector<Models::K8sCluster> mockK8sClusters;
-        std::vector<Models::SSHKey> mockSshKeys;
-        std::vector<Models::VM> mockVMs;
+        std::vector<Models::Bucket> buckets;
+        std::vector<Models::K8sCluster> k8sClusters;
+        std::vector<Models::SSHKey> sshKeys;
+        std::vector<Models::VM> vms;
 
         std::mutex dataMutex; // Mutex to protect access to data in a multi-threaded environment
 

@@ -11,8 +11,20 @@ namespace NMC::Server {
 
     APIRoutes::APIRoutes(httplib::Server& svr) {
         // Initialize K8sHandlers, passing necessary references and callbacks
+// Original incorrect code:
+// k8sHandlers = std::make_unique<K8sHandlers>(
+//                             k8sClusters, // <-- INCORRECT ARGUMENT TYPE
+//                             "", // Placeholder for kubeconfig path, can be set later
+//                             dataMutex,
+//                             // ... callbacks ...
+//                         );
+
+// Corrected section:
+        const std::string api_server_url_value = "http://localhost:8080"; // Replace with your actual Kubernetes API server URL
+
         k8sHandlers = std::make_unique<K8sHandlers>(
-                mockK8sClusters,
+                api_server_url_value, // Corrected: Pass api_server_url
+                "", // Placeholder for kubeconfig path, can be set later
                 dataMutex,
                 [this](httplib::Response& res, const Models::CloudResponse& apiResponse) {
                     sendJsonResponse(res, apiResponse);
@@ -233,9 +245,9 @@ namespace NMC::Server {
 
             std::lock_guard<std::mutex> lock(dataMutex);
             // Check if bucket already exists
-            auto it = std::find_if(mockBuckets.begin(), mockBuckets.end(),
+            auto it = std::find_if(buckets.begin(), buckets.end(),
                                    [&](const Models::Bucket& b) { return b.name == name; });
-            if (it != mockBuckets.end()) {
+            if (it != buckets.end()) {
                 return sendErrorResponse(res, 409, "Bucket '" + name + "' already exists."); // Conflict
             }
 
@@ -244,7 +256,7 @@ namespace NMC::Server {
             newBucket.location = location;
             newBucket.type = type;
             newBucket.status = "Active";
-            mockBuckets.push_back(newBucket);
+            buckets.push_back(newBucket);
 
             Models::CloudResponse apiResponse;
             apiResponse.success = true;
@@ -273,12 +285,12 @@ namespace NMC::Server {
         std::string name = req.matches[1]; // Get name from regex capture
 
         std::lock_guard<std::mutex> lock(dataMutex);
-        auto initial_size = mockBuckets.size();
-        mockBuckets.erase(std::remove_if(mockBuckets.begin(), mockBuckets.end(),
+        auto initial_size = buckets.size();
+        buckets.erase(std::remove_if(buckets.begin(), buckets.end(),
                                          [&](const Models::Bucket& b) { return b.name == name; }),
-                          mockBuckets.end());
+                          buckets.end());
 
-        if (mockBuckets.size() < initial_size) {
+        if (buckets.size() < initial_size) {
             Models::CloudResponse apiResponse;
             apiResponse.success = true;
             apiResponse.message = "Bucket '" + name + "' deleted successfully.";
@@ -302,10 +314,10 @@ namespace NMC::Server {
         std::string name = req.matches[1];
 
         std::lock_guard<std::mutex> lock(dataMutex);
-        auto it = std::find_if(mockBuckets.begin(), mockBuckets.end(),
+        auto it = std::find_if(buckets.begin(), buckets.end(),
                                [&](const Models::Bucket& b) { return b.name == name; });
 
-        if (it != mockBuckets.end()) {
+        if (it != buckets.end()) {
             Models::CloudResponse apiResponse;
             apiResponse.success = true;
             apiResponse.message = "Bucket details retrieved.";
@@ -330,7 +342,7 @@ namespace NMC::Server {
 
         std::lock_guard<std::mutex> lock(dataMutex);
         nlohmann::json bucketList = nlohmann::json::array();
-        for (const auto& bucket : mockBuckets) {
+        for (const auto& bucket : buckets) {
             if (filterName.empty() || bucket.name.find(filterName) != std::string::npos) {
                 bucketList.push_back(bucket.toJson());
             }
@@ -406,10 +418,10 @@ namespace NMC::Server {
         std::string name = req.matches[1];
 
         std::lock_guard<std::mutex> lock(dataMutex);
-        auto it = std::find_if(mockBuckets.begin(), mockBuckets.end(),
+        auto it = std::find_if(buckets.begin(), buckets.end(),
                                [&](const Models::Bucket& b) { return b.name == name; });
 
-        if (it != mockBuckets.end()) {
+        if (it != buckets.end()) {
             Models::CloudResponse apiResponse;
             apiResponse.success = true;
             apiResponse.message = "Bucket '" + name + "' access credentials reset successfully.";
@@ -486,9 +498,9 @@ namespace NMC::Server {
             }
 
             std::lock_guard<std::mutex> lock(dataMutex);
-            auto it = std::find_if(mockSshKeys.begin(), mockSshKeys.end(),
+            auto it = std::find_if(sshKeys.begin(), sshKeys.end(),
                                    [&](const Models::SSHKey& k) { return k.name == name; });
-            if (it != mockSshKeys.end()) {
+            if (it != sshKeys.end()) {
                 return sendErrorResponse(res, 409, "SSH key '" + name + "' already exists.");
             }
 
@@ -497,7 +509,7 @@ namespace NMC::Server {
             newKey.name = name;
             newKey.publicKey = publicKey;
             newKey.description = description;
-            mockSshKeys.push_back(newKey);
+            sshKeys.push_back(newKey);
 
             Models::CloudResponse apiResponse;
             apiResponse.success = true;
@@ -526,12 +538,12 @@ namespace NMC::Server {
         std::string id = req.matches[1];
 
         std::lock_guard<std::mutex> lock(dataMutex);
-        auto initial_size = mockSshKeys.size();
-        mockSshKeys.erase(std::remove_if(mockSshKeys.begin(), mockSshKeys.end(),
+        auto initial_size = sshKeys.size();
+        sshKeys.erase(std::remove_if(sshKeys.begin(), sshKeys.end(),
                                          [&](const Models::SSHKey& k) { return k.id == id; }),
-                          mockSshKeys.end());
+                          sshKeys.end());
 
-        if (mockSshKeys.size() < initial_size) {
+        if (sshKeys.size() < initial_size) {
             Models::CloudResponse apiResponse;
             apiResponse.success = true;
             apiResponse.message = "SSH key '" + id + "' deleted successfully.";
@@ -555,7 +567,7 @@ namespace NMC::Server {
 
         std::lock_guard<std::mutex> lock(dataMutex);
         nlohmann::json keyList = nlohmann::json::array();
-        for (const auto& key : mockSshKeys) {
+        for (const auto& key : sshKeys) {
             if (filterName.empty() || key.name.find(filterName) != std::string::npos) {
                 keyList.push_back(key.toJson());
             }
@@ -596,16 +608,16 @@ namespace NMC::Server {
             }
 
             std::lock_guard<std::mutex> lock(dataMutex);
-            auto it = std::find_if(mockVMs.begin(), mockVMs.end(),
+            auto it = std::find_if(vms.begin(), vms.end(),
                                    [&](const Models::VM& vm) { return vm.name == name; });
-            if (it != mockVMs.end()) {
+            if (it != vms.end()) {
                 return sendErrorResponse(res, 409, "VM '" + name + "' already exists.");
             }
 
-            // Check if publicKeyId exists in mockSshKeys
-            auto sshKeyIt = std::find_if(mockSshKeys.begin(), mockSshKeys.end(),
+            // Check if publicKeyId exists in sshKeys
+            auto sshKeyIt = std::find_if(sshKeys.begin(), sshKeys.end(),
                                          [&](const Models::SSHKey& k) { return k.id == publicKeyId; });
-            if (sshKeyIt == mockSshKeys.end()) {
+            if (sshKeyIt == sshKeys.end()) {
                 return sendErrorResponse(res, 400, "Invalid publicKeyId: '" + publicKeyId + "' not found.");
             }
 
@@ -619,7 +631,7 @@ namespace NMC::Server {
             newVM.publicKeyId = publicKeyId;
             newVM.initScript = initScript;
             newVM.status = "Creating";
-            mockVMs.push_back(newVM);
+            vms.push_back(newVM);
 
             Models::CloudResponse apiResponse;
             apiResponse.success = true;
@@ -648,12 +660,12 @@ namespace NMC::Server {
         std::string id = req.matches[1];
 
         std::lock_guard<std::mutex> lock(dataMutex);
-        auto initial_size = mockVMs.size();
-        mockVMs.erase(std::remove_if(mockVMs.begin(), mockVMs.end(),
+        auto initial_size = vms.size();
+        vms.erase(std::remove_if(vms.begin(), vms.end(),
                                      [&](const Models::VM& vm) { return vm.id == id; }),
-                      mockVMs.end());
+                      vms.end());
 
-        if (mockVMs.size() < initial_size) {
+        if (vms.size() < initial_size) {
             Models::CloudResponse apiResponse;
             apiResponse.success = true;
             apiResponse.message = "VM '" + id + "' deleted successfully.";
@@ -677,10 +689,10 @@ namespace NMC::Server {
         std::string id = req.matches[1];
 
         std::lock_guard<std::mutex> lock(dataMutex);
-        auto it = std::find_if(mockVMs.begin(), mockVMs.end(),
+        auto it = std::find_if(vms.begin(), vms.end(),
                                [&](const Models::VM& vm) { return vm.id == id; });
 
-        if (it != mockVMs.end()) {
+        if (it != vms.end()) {
             Models::CloudResponse apiResponse;
             apiResponse.success = true;
             apiResponse.message = "VM details retrieved.";
@@ -705,7 +717,7 @@ namespace NMC::Server {
 
         std::lock_guard<std::mutex> lock(dataMutex);
         nlohmann::json vmList = nlohmann::json::array();
-        for (const auto& vm : mockVMs) {
+        for (const auto& vm : vms) {
             if (filterName.empty() || vm.name.find(filterName) != std::string::npos) {
                 vmList.push_back(vm.toJson());
             }
@@ -801,10 +813,10 @@ namespace NMC::Server {
         std::string id = req.matches[1];
 
         std::lock_guard<std::mutex> lock(dataMutex);
-        auto it = std::find_if(mockVMs.begin(), mockVMs.end(),
+        auto it = std::find_if(vms.begin(), vms.end(),
                                [&](const Models::VM& vm) { return vm.id == id; });
 
-        if (it != mockVMs.end()) {
+        if (it != vms.end()) {
             it->status = "Restarting"; // Change status
             Models::CloudResponse apiResponse;
             apiResponse.success = true;
@@ -830,10 +842,10 @@ namespace NMC::Server {
         std::string id = req.matches[1];
 
         std::lock_guard<std::mutex> lock(dataMutex);
-        auto it = std::find_if(mockVMs.begin(), mockVMs.end(),
+        auto it = std::find_if(vms.begin(), vms.end(),
                                [&](const Models::VM& vm) { return vm.id == id; });
 
-        if (it != mockVMs.end()) {
+        if (it != vms.end()) {
             it->status = "Running"; // Change status
             Models::CloudResponse apiResponse;
             apiResponse.success = true;
@@ -859,10 +871,10 @@ namespace NMC::Server {
         std::string id = req.matches[1];
 
         std::lock_guard<std::mutex> lock(dataMutex);
-        auto it = std::find_if(mockVMs.begin(), mockVMs.end(),
+        auto it = std::find_if(vms.begin(), vms.end(),
                                [&](const Models::VM& vm) { return vm.id == id; });
 
-        if (it != mockVMs.end()) {
+        if (it != vms.end()) {
             it->status = "Suspended"; // Change status
             Models::CloudResponse apiResponse;
             apiResponse.success = true;

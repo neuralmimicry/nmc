@@ -127,7 +127,7 @@
 {
     "success": true,
     "message": "KubeConfig retrieved successfully.",
-    "data": "apiVersion: v1\nclusters:\n- cluster:\n    server: https://kube.k8s-abc123def456.example.com\n    certificate-authority-data: REDACTED\n  name: my-prod-cluster\ncontexts:\n- context:\n    cluster: my-prod-cluster\n    user: my-prod-cluster-user\n  name: my-prod-cluster-context\ncurrent-context: my-prod-cluster-context\nkind: Config\npreferences: {}\nusers:\n- name: my-prod-cluster-user\n  user:\n    token: REDACTED-TOKEN-FOR-my-prod-cluster\n"
+    "data": "apiVersion: v1\nclusters:\n- cluster:\n    server: https://kube.k8s-abc123def456.aarnn.network\n    certificate-authority-data: REDACTED\n  name: my-prod-cluster\ncontexts:\n- context:\n    cluster: my-prod-cluster\n    user: my-prod-cluster-user\n  name: my-prod-cluster-context\ncurrent-context: my-prod-cluster-context\nkind: Config\npreferences: {}\nusers:\n- name: my-prod-cluster-user\n  user:\n    token: REDACTED-TOKEN-FOR-my-prod-cluster\n"
 }
             </code></pre>
         <h3>Error Response (HTTP 404 Not Found):</h3>
@@ -163,7 +163,7 @@
         {
             "id": "k8s-xyz789uvw012",
             "name": "dev-cluster",
-            "region": "london-1-1",
+            "region": "london-1",
             "status": "Suspended"
         }
     ]
@@ -185,7 +185,7 @@
             "name": "rugby-1"
         },
         {
-            "name": "london-1-1"
+            "name": "london-1"
         },
         {
             "name": "frankfurt-3"
@@ -211,7 +211,7 @@
     "data": {
         "id": "k8s-xyz789uvw012",
         "name": "dev-cluster",
-        "region": "london-1-1",
+        "region": "london-1",
         "status": "Running"
     }
 }

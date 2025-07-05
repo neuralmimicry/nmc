@@ -2,8 +2,14 @@
 #include <iostream>
 #include <httplib.h>
 #include "APIRoutes.h" // Our route handler class
+#include "K8sHandlers.h"
 
 int main() {
+    // 1. Kubernetes C Client Global Environment Setup
+    // Must be called ONCE before any worker threads are created.
+    apiClient_setupGlobalEnv();
+    std::cout << "Kubernetes C client global environment set up." << std::endl;
+
     httplib::Server svr; // Create an HTTP server instance
 
     // Set up API routes
@@ -28,6 +34,12 @@ int main() {
         std::cerr << "Error: Could not start server on " << host << ":" << port << std::endl;
         return 1;
     }
+
+    // 2. Kubernetes C Client Global Environment Teardown
+    // Must be called ONCE after all worker threads (including HTTP server threads) have finished.
+    // This is typically after svr.listen() returns or on application shutdown.
+    apiClient_unsetupGlobalEnv();
+    std::cout << "Kubernetes C client global environment torn down." << std::endl;
 
     return 0;
 }

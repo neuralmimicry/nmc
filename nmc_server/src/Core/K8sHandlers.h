@@ -6,10 +6,30 @@
 #include <vector>
 #include <mutex>
 #include <functional> // For std::function
+#include <optional>   // For std::optional
 
 #include "../Models/K8sCluster.h"
 #include "../Models/CloudResponse.h"
 #include "Utils.h" // For Utils::generateUniqueId
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+// Include Kubernetes C client headers
+#include <kubernetes/include/apiClient.h>
+#include <kubernetes/include/generic.h> // For genericClient_t, Generic_create, genericClient_free
+#include <kubernetes/include/keyValuePair.h> // Correct header for keyValuePair_t
+#include <kubernetes/include/list.h>
+#include <kubernetes/config/kube_config.h>
+#include <kubernetes/api/CoreV1API.h>     // For CoreV1API_t, CoreV1API_create, CoreV1API_free
+// Required for Kubernetes C client data structures
+#include <kubernetes/model/v1_object_meta.h>
+#include <kubernetes/model/v1_node.h>
+#include <kubernetes/model/v1_node_list.h>
+#include <kubernetes/model/v1_label_selector.h> // Potentially needed for labels
+#ifdef __cplusplus
+} // End of extern "C" block
+#endif
 
 namespace NMC {
     namespace Server {
@@ -18,32 +38,28 @@ namespace NMC {
          * @brief A class to encapsulate Kubernetes (K8s) API handler logic.
          *
          * This class manages the data for K8s clusters and provides
-         * methods to handle API requests related to K8s operations. It is designed
-         * to be instantiated by APIRoutes and provided with necessary dependencies
-         * like shared data and response sending functions.
+         * methods to handle API requests related to K8s operations by communicating
+         * with a live Kubernetes API server using the official C client.
          */
         class K8sHandlers {
         public:
             /**
              * @brief Constructor for K8sHandlers.
              *
-             * Initializes the K8sHandlers with references to shared data,
-             * a mutex for thread safety, and callback functions for sending
-             * JSON and error responses.
-             *
-             * @param clusters_ref A reference to the vector of K8sCluster objects.
-             * @param mutex_ref A reference to the mutex protecting the shared data.
-             * @param send_json_cb A callback function to send a successful JSON response.
-             * @param send_error_cb A callback function to send an error JSON response.
+             * Initializes the K8sHandlers with Kubernetes API client configuration,
+             * a mutex for thread safety.
              */
             K8sHandlers(
-                    std::vector<Models::K8sCluster>& clusters_ref,
+                    const std::string& api_server_url,
+                    const std::string& kubeconfig_path,
                     std::mutex& mutex_ref,
                     std::function<void(httplib::Response&, const Models::CloudResponse&)> send_json_cb,
             std::function<void(httplib::Response&, int, const std::string&)> send_error_cb
             );
 
-            // K8s API Handlers
+            ~K8sHandlers();
+
+            // Handlers for K8s API operations
             void handleCreateK8sCluster(const httplib::Request& req, httplib::Response& res);
             void handleDeleteK8sCluster(const httplib::Request& req, httplib::Response& res);
             void handleGetK8sCluster(const httplib::Request& req, httplib::Response& res);
@@ -54,12 +70,27 @@ namespace NMC {
             void handleSuspendK8sCluster(const httplib::Request& req, httplib::Response& res);
 
         private:
-            std::vector<Models::K8sCluster>& mockK8sClusters; /**< Reference to shared K8s cluster data. */
-            std::mutex& dataMutex; /**< Reference to the mutex protecting shared data. */
+            // Kubernetes C client related members
+            apiClient_t *apiClient;
+            char *basePath;
+            sslConfig_t *sslConfig;
+            list_t *apiKeys; // List of apiKey_t for authentication
+
+            // Internal helper to convert K8s JSON (from generic client) to Models::K8sCluster
+            std::optional<Models::K8sCluster> parseKubernetesObjectToK8sCluster(const nlohmann::json& k8sObject);
+            // Internal helper for generic client calls
+            genericClient_t *getGenericClient(const std::string& group, const std::string& version, const std::string& plural);
+
+            std::mutex& dataMutex; /**< Reference to the mutex (still useful for general thread safety). */
 
             // Callbacks for sending responses, provided by APIRoutes
             std::function<void(httplib::Response&, const Models::CloudResponse&)> sendJsonResponse;
             std::function<void(httplib::Response&, int, const std::string&)> sendErrorResponse;
+
+            // CRD Group, Version, Plural for our hypothetical K8sCluster
+            const std::string K8S_CLUSTER_CRD_GROUP = "aarnn.network";
+            const std::string K8S_CLUSTER_CRD_VERSION = "v1";
+            const std::string K8S_CLUSTER_CRD_PLURAL = "k8sclusters";
         };
 
     } // namespace Server
