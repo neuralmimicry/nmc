@@ -27,25 +27,17 @@ FetchContent_Declare(
         httplib
         GIT_REPOSITORY https://github.com/yhirose/cpp-httplib.git
         GIT_TAG        v0.21.0
-        # Force a modern policy context for the subproject
-        CMAKE_ARGS     -DCMAKE_POLICY_VERSION_MINIMUM=3.14
+        # Force a modern policy context for the subproject and disable its zstd support
+        CMAKE_ARGS     -DCMAKE_POLICY_VERSION_MINIMUM=3.14 -DCMAKE_DISABLE_FIND_PACKAGE_zstd=TRUE
 )
 FetchContent_MakeAvailable(httplib)
 
-# --- Fetch Zstandard (libzstd) ---
-# This ensures a consistent zstd library across all platforms without relying on system packages
-FetchContent_Declare(
-        zstd
-        GIT_REPOSITORY https://github.com/facebook/zstd.git
-        GIT_TAG        v1.5.5
-        # Build static zstd; change to ON if you want shared instead
-        CMAKE_ARGS     -DZSTD_BUILD_SHARED=OFF
-)
-FetchContent_MakeAvailable(zstd)
-# --- Alias zstd targets for compatibility ---
-# The zstd subproject builds a static library target named libzstd_static
-add_library(zstd::libzstd ALIAS libzstd_static)
-add_library(ZSTD::ZSTD ALIAS libzstd_static)
+# --- Find Zstandard (libzstd) ---
+# Use the system-provided zstd development package (e.g. libzstd-dev).
+find_package(zstd REQUIRED)
+
+# Disable zstd discovery in httplib to avoid unintended targets
+# (httplib was already configured with -DCMAKE_DISABLE_FIND_PACKAGE_zstd=TRUE)
 
 # --- Find OpenSSL (typically system-wide) ---
 # httplib already depends on OpenSSL, so this should already be present.
@@ -181,7 +173,8 @@ target_link_libraries(nmc_server PRIVATE
         OpenSSL::SSL
         OpenSSL::Crypto
         yaml
-        ZSTD::ZSTD
+        # Link against Zstandard via the imported target
+        ${ZSTD_LIBRARIES}
 )
 
 # Add compiler warnings for best practices
