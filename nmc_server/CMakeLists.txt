@@ -23,26 +23,47 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(nlohmann_json)
 
 # --- Find Zstandard (libzstd) ---
+message(STATUS "--- ZSTD Debug Info (Before find_package) ---")
+message(STATUS "ZSTD_FOUND: ${ZSTD_FOUND}")
+message(STATUS "ZSTD_LIBRARIES: ${ZSTD_LIBRARIES}")
+message(STATUS "ZSTD_INCLUDE_DIRS: ${ZSTD_INCLUDE_DIRS}")
+if (TARGET zstd::libzstd)
+    message(STATUS "Target zstd::libzstd exists (before find_package): YES")
+else()
+    message(STATUS "Target zstd::libzstd exists (before find_package): NO")
+endif()
+
 # Use the system-provided zstd development package (e.g. libzstd-dev).
-find_package(zstd REQUIRED) #
+find_package(zstd REQUIRED)
+
+message(STATUS "--- ZSTD Debug Info (After find_package) ---")
+message(STATUS "ZSTD_FOUND: ${ZSTD_FOUND}")
+message(STATUS "ZSTD_LIBRARIES: ${ZSTD_LIBRARIES}")
+message(STATUS "ZSTD_INCLUDE_DIRS: ${ZSTD_INCLUDE_DIRS}")
 
 # Create an imported target for zstd if it's not already provided by find_package
 if (ZSTD_FOUND AND NOT TARGET zstd::libzstd)
     # Check if ZSTD_LIBRARIES contains a path to a library file
-    # This helps in cases where ZSTD_LIBRARIES might be empty or not a direct path
     if (ZSTD_LIBRARIES)
         add_library(zstd::libzstd UNKNOWN IMPORTED)
         set_target_properties(zstd::libzstd PROPERTIES
                 IMPORTED_LOCATION "${ZSTD_LIBRARIES}"
                 INTERFACE_INCLUDE_DIRECTORIES "${ZSTD_INCLUDE_DIRS}"
         )
-    else() # [cite: 5]
+        message(STATUS "Manually created zstd::libzstd imported target.")
+    else()
         message(WARNING "ZSTD_LIBRARIES not set, cannot create zstd::libzstd imported target.")
     endif()
+else()
+    message(STATUS "zstd::libzstd target already exists or ZSTD not found (after find_package).")
 endif()
 
-# Disable zstd discovery in httplib to avoid unintended targets
-# (httplib was already configured with -DCMAKE_DISABLE_FIND_PACKAGE_zstd=TRUE)
+message(STATUS "--- ZSTD Debug Info (After target creation) ---")
+if (TARGET zstd::libzstd)
+    message(STATUS "Target zstd::libzstd exists (after creation attempt): YES")
+else()
+    message(STATUS "Target zstd::libzstd exists (after creation attempt): NO")
+endif()
 
 # --- Fetch cpp-httplib ---
 FetchContent_Declare(
