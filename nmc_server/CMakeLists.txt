@@ -38,6 +38,9 @@ FetchContent_MakeAvailable(httplib)
 # expects it to be available via find_package.
 find_package(OpenSSL REQUIRED)
 
+# --- Find zstd::libzstd ---
+# This is a compression library used by the Kubernetes C client.
+find_package(zstd REQUIRED)
 
 # --- Build and Install libyaml (Autotools project) ---
 # This library is a prerequisite for the Kubernetes C client.
@@ -213,6 +216,7 @@ target_link_libraries(nmc_server PRIVATE
         OpenSSL::SSL
         OpenSSL::Crypto
         yaml
+        zstd::libzstd
 )
 
 # Add compiler warnings for best practices
