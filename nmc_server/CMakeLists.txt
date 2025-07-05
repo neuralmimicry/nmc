@@ -42,6 +42,10 @@ FetchContent_Declare(
         CMAKE_ARGS     -DZSTD_BUILD_SHARED=OFF
 )
 FetchContent_MakeAvailable(zstd)
+# --- Alias zstd targets for compatibility ---
+# The zstd subproject builds a static library target named libzstd_static
+add_library(zstd::libzstd ALIAS libzstd_static)
+add_library(ZSTD::ZSTD ALIAS libzstd_static)
 
 # --- Find OpenSSL (typically system-wide) ---
 # httplib already depends on OpenSSL, so this should already be present.
