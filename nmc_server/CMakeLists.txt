@@ -34,9 +34,7 @@ FetchContent_MakeAvailable(httplib)
 
 # --- Find Zstandard (libzstd) ---
 # Use the system-provided zstd development package (e.g. libzstd-dev).
-# --- Find Zstandard (libzstd) ---
-# Use the system-provided zstd development package (e.g. libzstd-dev).
-find_package(zstd REQUIRED)
+find_package(zstd REQUIRED) #
 
 # Create an imported target for zstd if it's not already provided by find_package
 if (ZSTD_FOUND AND NOT TARGET zstd::libzstd)
@@ -45,10 +43,10 @@ if (ZSTD_FOUND AND NOT TARGET zstd::libzstd)
     if (ZSTD_LIBRARIES)
         add_library(zstd::libzstd UNKNOWN IMPORTED)
         set_target_properties(zstd::libzstd PROPERTIES
-        IMPORTED_LOCATION "${ZSTD_LIBRARIES}"
-        INTERFACE_INCLUDE_DIRECTORIES "${ZSTD_INCLUDE_DIRS}"
-    )
-    else()
+                IMPORTED_LOCATION "${ZSTD_LIBRARIES}"
+                INTERFACE_INCLUDE_DIRECTORIES "${ZSTD_INCLUDE_DIRS}"
+        )
+    else() # [cite: 5]
         message(WARNING "ZSTD_LIBRARIES not set, cannot create zstd::libzstd imported target.")
     endif()
 endif()
