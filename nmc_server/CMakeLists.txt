@@ -41,6 +41,12 @@ find_package(OpenSSL REQUIRED)
 # --- Find zstd::libzstd ---
 # This is a compression library used by the Kubernetes C client.
 find_package(zstd REQUIRED)
+if (ZSTD_BUILD_STATIC)
+    add_library(libzstd_static STATIC ${Sources} ${Headers})
+    target_include_directories(libzstd_static
+        PUBLIC $<BUILD_INTERFACE:${LIBRARY_DIR}>
+        INTERFACE $<BUILD_INTERFACE:${LIBRARY_DIR}/common>
+)
 
 # --- Build and Install libyaml (Autotools project) ---
 # This library is a prerequisite for the Kubernetes C client.
@@ -216,7 +222,7 @@ target_link_libraries(nmc_server PRIVATE
         OpenSSL::SSL
         OpenSSL::Crypto
         yaml
-        zstd::libzstd
+        libzstd_static
 )
 
 # Add compiler warnings for best practices
