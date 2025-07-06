@@ -44,6 +44,9 @@ set_target_properties(zstd PROPERTIES
         IMPORTED_LOCATION "${ZSTD_INSTALL_DIR}/lib/libzstd.a"
         INTERFACE_INCLUDE_DIRECTORIES "${ZSTD_INSTALL_DIR}/include"
 )
+add_library(zstd::libzstd ALIAS zstd)
+add_library(zstd::libzstd_shared ALIAS zstd)
+add_library(zstd::libzstd_static ALIAS zstd)
 add_dependencies(zstd zstd_project)
 list(APPEND CMAKE_PREFIX_PATH "${ZSTD_INSTALL_DIR}")
 
