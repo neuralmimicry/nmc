@@ -1,77 +1,39 @@
-cmake_minimum_required(VERSION 3.14) # Changed to 3.14 for broader FetchContent compatibility
+cmake_minimum_required(VERSION 3.14)
 project(nmc_server CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
-set(CMAKE_POLICY_VERSION_MINIMUM 3.14) # Ensure policies are consistent with CMAKE_MINIMUM_REQUIRED
+set(CMAKE_POLICY_VERSION_MINIMUM 3.14)
 set(CMAKE_FIND_PACKAGE_PREFER_CONFIG TRUE)
 set(CMAKE_FIND_PACKAGE_NO_SYSTEM_PACKAGE_REGISTRY TRUE)
 set(CMAKE_FIND_PACKAGE_NO_DEFAULT_PATH TRUE)
 
 # Include necessary CMake modules
 include(FetchContent)
-include(ExternalProject) # Required for building autotools-based projects like libyaml
+include(ExternalProject)
+
+find_package(zstd REQUIRED)
+if (ZSTD_FOUND)
+    set(ZSTD_LIB ${ZSTD_LIBRARY})
+endif (ZSTD_FOUND)
 
 # --- Fetch nlohmann/json ---
 FetchContent_Declare(
         nlohmann_json
         GIT_REPOSITORY https://github.com/nlohmann/json.git
         GIT_TAG        v3.12.0
-        # Force a modern policy context for the subproject if its CMakeLists.txt is older
         CMAKE_ARGS     -DCMAKE_POLICY_VERSION_MINIMUM=3.14
 )
 FetchContent_MakeAvailable(nlohmann_json)
-
-# --- Find Zstandard (libzstd) ---
-message(STATUS "--- ZSTD Debug Info (Before find_package) ---")
-message(STATUS "ZSTD_FOUND: ${ZSTD_FOUND}")
-message(STATUS "ZSTD_LIBRARIES: ${ZSTD_LIBRARIES}")
-message(STATUS "ZSTD_INCLUDE_DIRS: ${ZSTD_INCLUDE_DIRS}")
-if (TARGET zstd::libzstd)
-    message(STATUS "Target zstd::libzstd exists (before find_package): YES")
-else()
-    message(STATUS "Target zstd::libzstd exists (before find_package): NO")
-endif()
-
-# Use the system-provided zstd development package (e.g. libzstd-dev).
-find_package(zstd REQUIRED)
-
-message(STATUS "--- ZSTD Debug Info (After find_package) ---")
-message(STATUS "ZSTD_FOUND: ${ZSTD_FOUND}")
-message(STATUS "ZSTD_LIBRARIES: ${ZSTD_LIBRARIES}")
-message(STATUS "ZSTD_INCLUDE_DIRS: ${ZSTD_INCLUDE_DIRS}")
-
-# Create an imported target for zstd if it's not already provided by find_package
-if (ZSTD_FOUND AND NOT TARGET zstd::libzstd)
-    # Check if ZSTD_LIBRARIES contains a path to a library file
-    if (ZSTD_LIBRARIES)
-        add_library(zstd::libzstd UNKNOWN IMPORTED)
-        set_target_properties(zstd::libzstd PROPERTIES
-                IMPORTED_LOCATION "${ZSTD_LIBRARIES}"
-                INTERFACE_INCLUDE_DIRECTORIES "${ZSTD_INCLUDE_DIRS}"
-        )
-        message(STATUS "Manually created zstd::libzstd imported target.")
-    else()
-        message(WARNING "ZSTD_LIBRARIES not set, cannot create zstd::libzstd imported target.")
-    endif()
-else()
-    message(STATUS "zstd::libzstd target already exists or ZSTD not found (after find_package).")
-endif()
-
-message(STATUS "--- ZSTD Debug Info (After target creation) ---")
-if (TARGET zstd::libzstd)
-    message(STATUS "Target zstd::libzstd exists (after creation attempt): YES")
-else()
-    message(STATUS "Target zstd::libzstd exists (after creation attempt): NO")
-endif()
 
 # --- Fetch cpp-httplib ---
 FetchContent_Declare(
         httplib
         GIT_REPOSITORY https://github.com/yhirose/cpp-httplib.git
         GIT_TAG        v0.21.0
-        # Force a modern policy context for the subproject and disable its zstd support
-        CMAKE_ARGS     -DCMAKE_POLICY_VERSION_MINIMUM=3.14 -DCMAKE_DISABLE_FIND_PACKAGE_zstd=TRUE
+        # Force a modern policy context for the subproject.
+        # REMOVE -DHTTPLIB_USE_ZSTD_IF_AVAILABLE=OFF here, we want httplib to use the found Zstd
+        CMAKE_ARGS     -DCMAKE_POLICY_VERSION_MINIMUM=3.14
 )
 FetchContent_MakeAvailable(httplib)
 
