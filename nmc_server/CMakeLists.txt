@@ -22,29 +22,43 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(nlohmann_json)
 
-# --- Fetch Zstandard (libzstd) ---
-# Required by httplib and Kubernetes C client for compression support
-FetchContent_Declare(
-        zstd
-        GIT_REPOSITORY https://github.com/facebook/zstd.git
-        GIT_TAG        v1.5.5
-        # Build static by default; switch to ON for shared if needed
-        CMAKE_ARGS     -DZSTD_BUILD_SHARED=OFF
-)
-FetchContent_MakeAvailable(zstd)
+# --- Build Zstandard (libzstd) using make ---
+include(ExternalProject)
 
-# --- Fetch cpp-httplib ---
+set(ZSTD_INSTALL_DIR "${CMAKE_BINARY_DIR}/_deps/zstd-install")
+ExternalProject_Add(
+        zstd_project
+        GIT_REPOSITORY https://github.com/facebook/zstd.git
+        GIT_TAG        v1.5.7
+        PREFIX         "${CMAKE_BINARY_DIR}/_deps/zstd"
+        # Zstd has its own Makefile; no configure step needed
+        CONFIGURE_COMMAND ""
+        BUILD_COMMAND    make -C "<SOURCE_DIR>"
+        INSTALL_COMMAND  make -C "<SOURCE_DIR>" PREFIX="${ZSTD_INSTALL_DIR}" install
+        STEP_TARGETS     build install
+)
+
+# Create an IMPORTED target for the static lib
+add_library(zstd STATIC IMPORTED GLOBAL)
+set_target_properties(zstd PROPERTIES
+        IMPORTED_LOCATION "${ZSTD_INSTALL_DIR}/lib/libzstd.a"
+        INTERFACE_INCLUDE_DIRECTORIES "${ZSTD_INSTALL_DIR}/include"
+)
+add_dependencies(zstd zstd_project)
+list(APPEND CMAKE_PREFIX_PATH "${ZSTD_INSTALL_DIR}")
+
+# --- Now configure httplib to pick up our make‐built ZSTD ---
 FetchContent_Declare(
         httplib
         GIT_REPOSITORY https://github.com/yhirose/cpp-httplib.git
         GIT_TAG        v0.21.0
-        # Enable zstd support by pointing httplib to our zstd build
-        CMAKE_ARGS -DCMAKE_POLICY_VERSION_MINIMUM=3.14
-                   -DHTTPLIB_USE_ZSTD_IF_AVAILABLE=ON
-                   -DHTTPLIB_REQUIRE_ZSTD=ON
-                   -DZSTD_ROOT=${zstd_SOURCE_DIR}
-                   -DZSTD_LIBRARY=${zstd_BINARY_DIR}/lib/libzstd.a
-                   -DZSTD_INCLUDE_DIR=${zstd_SOURCE_DIR}/lib
+        CMAKE_ARGS
+        -DCMAKE_POLICY_VERSION_MINIMUM=3.14
+        -DHTTPLIB_USE_ZSTD_IF_AVAILABLE=ON
+        -DHTTPLIB_REQUIRE_ZSTD=ON
+        -DZSTD_ROOT=${ZSTD_INSTALL_DIR}
+        -DZSTD_LIBRARY=${ZSTD_INSTALL_DIR}/lib/libzstd.a
+        -DZSTD_INCLUDE_DIR=${ZSTD_INSTALL_DIR}/include
 )
 FetchContent_MakeAvailable(httplib)
 
