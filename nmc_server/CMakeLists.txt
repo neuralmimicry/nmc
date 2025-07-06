@@ -1,39 +1,50 @@
-cmake_minimum_required(VERSION 3.14)
+cmake_minimum_required(VERSION 3.14) # Changed to 3.14 for broader FetchContent compatibility
 project(nmc_server CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
-set(CMAKE_POLICY_VERSION_MINIMUM 3.14)
+set(CMAKE_POLICY_VERSION_MINIMUM 3.14) # Ensure policies are consistent with CMAKE_MINIMUM_REQUIRED
 set(CMAKE_FIND_PACKAGE_PREFER_CONFIG TRUE)
 set(CMAKE_FIND_PACKAGE_NO_SYSTEM_PACKAGE_REGISTRY TRUE)
 set(CMAKE_FIND_PACKAGE_NO_DEFAULT_PATH TRUE)
 
 # Include necessary CMake modules
 include(FetchContent)
-include(ExternalProject)
-
-find_package(zstd REQUIRED)
-if (ZSTD_FOUND)
-    set(ZSTD_LIB ${ZSTD_LIBRARY})
-endif (ZSTD_FOUND)
+include(ExternalProject) # Required for building autotools-based projects like libyaml
 
 # --- Fetch nlohmann/json ---
 FetchContent_Declare(
         nlohmann_json
         GIT_REPOSITORY https://github.com/nlohmann/json.git
         GIT_TAG        v3.12.0
+        # Force a modern policy context for the subproject if its CMakeLists.txt is older
         CMAKE_ARGS     -DCMAKE_POLICY_VERSION_MINIMUM=3.14
 )
 FetchContent_MakeAvailable(nlohmann_json)
+
+# --- Fetch Zstandard (libzstd) ---
+# Required by httplib and Kubernetes C client for compression support
+FetchContent_Declare(
+        zstd
+        GIT_REPOSITORY https://github.com/facebook/zstd.git
+        GIT_TAG        v1.5.5
+        # Build static by default; switch to ON for shared if needed
+        CMAKE_ARGS     -DZSTD_BUILD_SHARED=OFF
+)
+FetchContent_MakeAvailable(zstd)
 
 # --- Fetch cpp-httplib ---
 FetchContent_Declare(
         httplib
         GIT_REPOSITORY https://github.com/yhirose/cpp-httplib.git
         GIT_TAG        v0.21.0
-        # Force a modern policy context for the subproject.
-        # REMOVE -DHTTPLIB_USE_ZSTD_IF_AVAILABLE=OFF here, we want httplib to use the found Zstd
-        CMAKE_ARGS     -DCMAKE_POLICY_VERSION_MINIMUM=3.14
+        # Enable zstd support by pointing httplib to our zstd build
+        CMAKE_ARGS -DCMAKE_POLICY_VERSION_MINIMUM=3.14
+                   -DHTTPLIB_USE_ZSTD_IF_AVAILABLE=ON
+                   -DHTTPLIB_REQUIRE_ZSTD=ON
+                   -DZSTD_ROOT=${zstd_SOURCE_DIR}
+                   -DZSTD_LIBRARY=${zstd_BINARY_DIR}/lib/libzstd.a
+                   -DZSTD_INCLUDE_DIR=${zstd_SOURCE_DIR}/lib
 )
 FetchContent_MakeAvailable(httplib)
 
