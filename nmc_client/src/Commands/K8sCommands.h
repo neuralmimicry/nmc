@@ -7,55 +7,55 @@ namespace NMC::Commands {
 
 class K8sCommand : public BaseCommand {
 public:
-    K8sCommand();
+    K8sCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client);
     int execute(const std::map<std::string, std::string>& parsedFlags, const std::vector<std::string>& parsedArgs, const CLI::GlobalFlags& globalFlags) override;
 };
 
 class K8sCreateCommand : public BaseCommand {
 public:
-    K8sCreateCommand();
+    K8sCreateCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client);
     int execute(const std::map<std::string, std::string>& parsedFlags, const std::vector<std::string>& parsedArgs, const CLI::GlobalFlags& globalFlags) override;
 };
 
 class K8sDeleteCommand : public BaseCommand {
 public:
-    K8sDeleteCommand();
+    K8sDeleteCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client);
     int execute(const std::map<std::string, std::string>& parsedFlags, const std::vector<std::string>& parsedArgs, const CLI::GlobalFlags& globalFlags) override;
 };
 
 class K8sGetCommand : public BaseCommand {
 public:
-    K8sGetCommand();
+    K8sGetCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client);
     int execute(const std::map<std::string, std::string>& parsedFlags, const std::vector<std::string>& parsedArgs, const CLI::GlobalFlags& globalFlags) override;
 };
 
 class K8sGetConfigCommand : public BaseCommand {
 public:
-    K8sGetConfigCommand();
+    K8sGetConfigCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client);
     int execute(const std::map<std::string, std::string>& parsedFlags, const std::vector<std::string>& parsedArgs, const CLI::GlobalFlags& globalFlags) override;
 };
 
 class K8sListCommand : public BaseCommand {
 public:
-    K8sListCommand();
+    K8sListCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client);
     int execute(const std::map<std::string, std::string>& parsedFlags, const std::vector<std::string>& parsedArgs, const CLI::GlobalFlags& globalFlags) override;
 };
 
 class K8sListLocationsCommand : public BaseCommand {
 public:
-    K8sListLocationsCommand();
+    K8sListLocationsCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client);
     int execute(const std::map<std::string, std::string>& parsedFlags, const std::vector<std::string>& parsedArgs, const CLI::GlobalFlags& globalFlags) override;
 };
 
 class K8sResumeCommand : public BaseCommand {
 public:
-    K8sResumeCommand();
+    K8sResumeCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client);
     int execute(const std::map<std::string, std::string>& parsedFlags, const std::vector<std::string>& parsedArgs, const CLI::GlobalFlags& globalFlags) override;
 };
 
 class K8sSuspendCommand : public BaseCommand {
 public:
-    K8sSuspendCommand();
+    K8sSuspendCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client);
     int execute(const std::map<std::string, std::string>& parsedFlags, const std::vector<std::string>& parsedArgs, const CLI::GlobalFlags& globalFlags) override;
 };
 

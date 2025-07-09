@@ -13,6 +13,7 @@ namespace NMC {
             bool success;
             std::string message;
             nlohmann::json data; // Change this to nlohmann::json to match server
+            int statusCode; // Optional: HTTP status code, if needed
 
             // Helper to convert to JSON (if needed, mainly for debugging or re-serializing)
             nlohmann::json toJson() const {

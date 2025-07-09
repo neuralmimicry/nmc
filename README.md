@@ -59,6 +59,16 @@ From the `build` directory:
     ./nmc
     ```
 
+nmc connection status: Displays the name and endpoint of the current active connection.
+
+nmc connection make <NAME> --endpoint <URL> [--default]: Creates a new connection with a specified name and API endpoint. The --default flag allows setting this new connection as the default one immediately.
+
+nmc connection drop <NAME>: Removes an existing connection by its name. If the dropped connection was the active one, the CLI will no longer have an active connection.
+
+nmc connection list (alias ls): Lists all configured connections, indicating whether each is active or inactive.
+
+nmc connection select <NAME>: Sets an existing connection as the default active connection.
+
 * **Bucket command help:**
     ```bash
     ./nmc bucket --help
@@ -119,6 +129,7 @@ src/Commands/:
 BaseCommand.h / BaseCommand.cpp: A base class for all nmc commands, inheriting from CLI::Command. It can hold common logic or member variables.
 RootCommand.h / RootCommand.cpp: Represents the top-level nmc command.
 BucketCommands.h / BucketCommands.cpp: Encapsulates all nmc bucket related commands (create, delete, get, list, etc.). Each subcommand (e.g., create, delete) will be its own class inheriting from BaseCommand.
+ConnectionCommands.h / ConnectionCommands.cpp: For nmc connection related commands (e.g., connect, disconnect).
 K8sCommands.h / K8sCommands.cpp: Similar to BucketCommands, but for nmc k8s.
 ModelCommands.h / ModelCommands.cpp: For nmc model.
 SSHCommands.h / SSHCommands.cpp: For nmc ssh.

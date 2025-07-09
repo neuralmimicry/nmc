@@ -1,6 +1,7 @@
 // server/APIRoutes.cpp
 #include "APIRoutes.h"
 #include "K8sHandlers.h"
+#include "ConnectionHandlers.h"
 #include "Utils.h"
 #include <iostream>
 #include <algorithm> // For std::remove_if, std::find_if
@@ -11,15 +12,6 @@ namespace NMC::Server {
 
     APIRoutes::APIRoutes(httplib::Server& svr) {
         // Initialize K8sHandlers, passing necessary references and callbacks
-// Original incorrect code:
-// k8sHandlers = std::make_unique<K8sHandlers>(
-//                             k8sClusters, // <-- INCORRECT ARGUMENT TYPE
-//                             "", // Placeholder for kubeconfig path, can be set later
-//                             dataMutex,
-//                             // ... callbacks ...
-//                         );
-
-// Corrected section:
         const std::string api_server_url_value = "http://localhost:8080"; // Replace with your actual Kubernetes API server URL
 
         k8sHandlers = std::make_unique<K8sHandlers>(
@@ -82,6 +74,25 @@ namespace NMC::Server {
         svr.Post(R"(/bucket/reset-key/(.*))", [this](const httplib::Request& req, httplib::Response& res) {
             handleResetBucketKey(req, res);
         });
+
+        // --- Connection Routes ---
+        // GET /connections/status
+        svr.Get("/connections/status", ConnectionHandlers::handleGetConnectionStatus);
+
+        // POST /connections/make
+        svr.Post("/connections/make", ConnectionHandlers::handleMakeConnection);
+
+        // DELETE /connections/:name
+        // svr.Delete(R"(/connections/(?P<name>[^/]+))", ConnectionHandlers::handleDropConnection);
+        svr.Delete(R"(^/connections/([^/]+)$)",  ConnectionHandlers::handleDropConnection);
+
+        // GET /connections
+        svr.Get("/connections", ConnectionHandlers::handleListConnections);
+
+        // POST /connections/select
+        svr.Post("/connections/select", ConnectionHandlers::handleSelectConnection);
+
+        std::cout << "Connection API routes registered." << std::endl;
 
         // --- K8s Routes ---
         svr.Post("/k8s/create", [this](const httplib::Request& req, httplib::Response& res) {
@@ -196,7 +207,7 @@ namespace NMC::Server {
     void APIRoutes::sendJsonResponse(httplib::Response& res, const Models::CloudResponse& apiResponse) const {
         res.set_header("Content-Type", "application/json");
         res.status = apiResponse.success ? 200 : 400; // 200 for success, 400 for client error
-        res.body = apiResponse.toJson().dump(4); // Pretty print JSON
+        res.body = apiResponse.toJsonString().dump(4); // Pretty print JSON
     }
 
     /**
@@ -261,7 +272,7 @@ namespace NMC::Server {
             Models::CloudResponse apiResponse;
             apiResponse.success = true;
             apiResponse.message = "Bucket '" + name + "' created successfully.";
-            apiResponse.data = newBucket.toJson();
+            apiResponse.data = newBucket.toJsonString();
             sendJsonResponse(res, apiResponse);
 
         } catch (const nlohmann::json::parse_error& e) {
@@ -321,7 +332,7 @@ namespace NMC::Server {
             Models::CloudResponse apiResponse;
             apiResponse.success = true;
             apiResponse.message = "Bucket details retrieved.";
-            apiResponse.data = it->toJson();
+            apiResponse.data = it->toJsonString();
             sendJsonResponse(res, apiResponse);
         } else {
             sendErrorResponse(res, 404, "Bucket '" + name + "' not found.");
@@ -344,7 +355,7 @@ namespace NMC::Server {
         nlohmann::json bucketList = nlohmann::json::array();
         for (const auto& bucket : buckets) {
             if (filterName.empty() || bucket.name.find(filterName) != std::string::npos) {
-                bucketList.push_back(bucket.toJson());
+                bucketList.push_back(bucket.toJsonString());
             }
         }
 
@@ -514,7 +525,7 @@ namespace NMC::Server {
             Models::CloudResponse apiResponse;
             apiResponse.success = true;
             apiResponse.message = "SSH key '" + name + "' created successfully.";
-            apiResponse.data = newKey.toJson();
+            apiResponse.data = newKey.toJsonString();
             sendJsonResponse(res, apiResponse);
 
         } catch (const nlohmann::json::parse_error& e) {
@@ -569,7 +580,7 @@ namespace NMC::Server {
         nlohmann::json keyList = nlohmann::json::array();
         for (const auto& key : sshKeys) {
             if (filterName.empty() || key.name.find(filterName) != std::string::npos) {
-                keyList.push_back(key.toJson());
+                keyList.push_back(key.toJsonString());
             }
         }
 
@@ -636,7 +647,7 @@ namespace NMC::Server {
             Models::CloudResponse apiResponse;
             apiResponse.success = true;
             apiResponse.message = "VM '" + name + "' created successfully.";
-            apiResponse.data = newVM.toJson();
+            apiResponse.data = newVM.toJsonString();
             sendJsonResponse(res, apiResponse);
 
         } catch (const nlohmann::json::parse_error& e) {
@@ -696,7 +707,7 @@ namespace NMC::Server {
             Models::CloudResponse apiResponse;
             apiResponse.success = true;
             apiResponse.message = "VM details retrieved.";
-            apiResponse.data = it->toJson();
+            apiResponse.data = it->toJsonString();
             sendJsonResponse(res, apiResponse);
         } else {
             sendErrorResponse(res, 404, "VM '" + id + "' not found.");
@@ -719,7 +730,7 @@ namespace NMC::Server {
         nlohmann::json vmList = nlohmann::json::array();
         for (const auto& vm : vms) {
             if (filterName.empty() || vm.name.find(filterName) != std::string::npos) {
-                vmList.push_back(vm.toJson());
+                vmList.push_back(vm.toJsonString());
             }
         }
 
@@ -821,7 +832,7 @@ namespace NMC::Server {
             Models::CloudResponse apiResponse;
             apiResponse.success = true;
             apiResponse.message = "VM '" + id + "' is restarting.";
-            apiResponse.data = it->toJson();
+            apiResponse.data = it->toJsonString();
             sendJsonResponse(res, apiResponse);
         } else {
             sendErrorResponse(res, 404, "VM '" + id + "' not found.");
@@ -850,7 +861,7 @@ namespace NMC::Server {
             Models::CloudResponse apiResponse;
             apiResponse.success = true;
             apiResponse.message = "VM '" + id + "' resumed successfully.";
-            apiResponse.data = it->toJson();
+            apiResponse.data = it->toJsonString();
             sendJsonResponse(res, apiResponse);
         } else {
             sendErrorResponse(res, 404, "VM '" + id + "' not found.");
@@ -879,7 +890,7 @@ namespace NMC::Server {
             Models::CloudResponse apiResponse;
             apiResponse.success = true;
             apiResponse.message = "VM '" + id + "' suspended successfully.";
-            apiResponse.data = it->toJson();
+            apiResponse.data = it->toJsonString();
             sendJsonResponse(res, apiResponse);
         } else {
             sendErrorResponse(res, 404, "VM '" + id + "' not found.");

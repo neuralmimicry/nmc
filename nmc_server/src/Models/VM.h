@@ -19,7 +19,7 @@ namespace NMC {
                 std::string initScript;
                 std::string status;
 
-                nlohmann::json toJson() const {
+                nlohmann::json toJsonString() const {
                     return {
                             {"id", id},
                             {"name", name},

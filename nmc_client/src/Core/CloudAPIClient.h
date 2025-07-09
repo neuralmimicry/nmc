@@ -10,7 +10,15 @@
 #include "Models/K8sCluster.h"
 #include "Models/SSHKey.h"
 #include "Models/VM.h"
-#include "Models/CloudResponse.h" // Assuming a generic response structure
+#include "Models/CloudResponse.h"
+#include "Models/Connection.h"
+#include <optional> // Added for std::optional
+#include <nlohmann/json.hpp>
+
+// Forward declaration for httplib
+namespace httplib {
+    class Client;
+}
 
 namespace NMC::Core {
 
@@ -18,7 +26,8 @@ namespace NMC::Core {
     class CloudAPIClient {
     public:
         // Constructor to initialize the HTTP client with server host and port.
-        CloudAPIClient(const std::string& host, int port);
+        // Add a constructor that also takes the config file path
+        CloudAPIClient(const std::string& host, int port, const std::string& configFilePath);
         ~CloudAPIClient();
 
         // Bucket Operations
@@ -47,6 +56,7 @@ namespace NMC::Core {
         Models::CloudResponse createSSHKey(const std::string& name, const std::string& publicKey, const std::string& description);
         Models::CloudResponse deleteSSHKey(const std::string& id);
         Models::CloudResponse listSSHKeys(const std::string& filterName = "");
+        Models::CloudResponse getSSHKey(const std::string& id);
 
         // VM Operations
         Models::CloudResponse createVM(const std::string& name, const std::string& sku, const std::string& region, const std::string& osImage, const std::string& publicKeyId, const std::string& initScript);
@@ -60,10 +70,37 @@ namespace NMC::Core {
         Models::CloudResponse resumeVM(const std::string& id);
         Models::CloudResponse suspendVM(const std::string& id);
 
+        // Connection Management
+        Models::CloudResponse getConnectionStatus();
+        Models::CloudResponse makeConnection(const std::string& name, const std::string& endpoint, bool setDefault);
+        Models::CloudResponse dropConnection(const std::string& name);
+        Models::CloudResponse listConnections();
+        Models::CloudResponse selectConnection(const std::string& name);
+        Models::CloudResponse unsetDefaultConnection(); // Added new method to unset default
+        bool hasDefaultConnection() const; // Added new method to check if default connection exists
+        std::optional<Models::Connection> getDefaultConnection() const; // Added to get default connection
+
     private:
         std::unique_ptr<httplib::Client> cli; // HTTP client instance
         // Helper function to process HTTP responses into Models::CloudResponse
         Models::CloudResponse processHttpResponse(httplib::Result& res, const std::string& successMessage) const;
+        // Overload to allow custom data payload (e.g., for local operations)
+        Models::CloudResponse processHttpResponse(httplib::Result& res, const std::string& successMessage, const nlohmann::json& dataPayload) const;
+
+        std::vector<Models::Connection> connections;
+        std::string currentConnectionName; // Name of the currently active connection
+        std::string configFilePath; // Added to store the path to the config file
+
+        // Persistence methods
+        void loadConnections(bool showMessage);
+        void saveConnections(bool showMessage);
+
+        // holds the parsed JSON of all saved connections
+        nlohmann::json connectionsConfig;
+
+        // Host and port for the HTTP client
+        std::string host;
+        int port;
     };
 
 } // namespace NMC::Core

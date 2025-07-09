@@ -15,7 +15,7 @@ namespace NMC {
                 std::string publicKey;
                 std::string description;
 
-                nlohmann::json toJson() const {
+                nlohmann::json toJsonString() const {
                     return {
                             {"id", id},
                             {"name", name},

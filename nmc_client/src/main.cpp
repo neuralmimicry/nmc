@@ -6,62 +6,79 @@
 #include "Commands/SSHCommands.h"
 #include "Commands/VMCommands.h"
 #include "Commands/VersionCommand.h"
+#include "Commands/ConnectionCommands.h"
 #include <memory> // For std::make_shared
+#include "Core/Utils.h"
 
+auto apiClient = std::make_shared<NMC::Core::CloudAPIClient>(
+        "127.0.0.1",
+        8080,
+        NMC::Core::Utils::getConfigPath()
+);
 
 int main(int argc, char* argv[]) {
     NMC::CLI::CLIParser parser;
 
+    auto apiClient = std::make_shared<NMC::Core::CloudAPIClient>("127.0.0.1", 8080, NMC::Core::Utils::getConfigPath());
+
     // Register Root Command (mainly for help output)
-    auto rootCmd = std::make_shared<NMC::Commands::RootCommand>();
+    auto rootCmd = std::make_shared<NMC::Commands::RootCommand>(apiClient);
 
     // Register top-level commands
-    auto bucketCmd = std::make_shared<NMC::Commands::BucketCommand>();
-    bucketCmd->addSubcommand(std::make_shared<NMC::Commands::BucketCreateCommand>());
-    bucketCmd->addSubcommand(std::make_shared<NMC::Commands::BucketDeleteCommand>());
-    bucketCmd->addSubcommand(std::make_shared<NMC::Commands::BucketGetCommand>());
-    bucketCmd->addSubcommand(std::make_shared<NMC::Commands::BucketListCommand>());
-    bucketCmd->addSubcommand(std::make_shared<NMC::Commands::BucketListLocationsCommand>());
-    bucketCmd->addSubcommand(std::make_shared<NMC::Commands::BucketListTypesCommand>());
-    bucketCmd->addSubcommand(std::make_shared<NMC::Commands::BucketResetKeyCommand>());
+    auto bucketCmd = std::make_shared<NMC::Commands::BucketCommand>(apiClient);
+    bucketCmd->addSubcommand(std::make_shared<NMC::Commands::BucketCreateCommand>(apiClient));
+    bucketCmd->addSubcommand(std::make_shared<NMC::Commands::BucketDeleteCommand>(apiClient));
+    bucketCmd->addSubcommand(std::make_shared<NMC::Commands::BucketGetCommand>(apiClient));
+    bucketCmd->addSubcommand(std::make_shared<NMC::Commands::BucketListCommand>(apiClient));
+    bucketCmd->addSubcommand(std::make_shared<NMC::Commands::BucketListLocationsCommand>(apiClient));
+    bucketCmd->addSubcommand(std::make_shared<NMC::Commands::BucketListTypesCommand>(apiClient));
+    bucketCmd->addSubcommand(std::make_shared<NMC::Commands::BucketResetKeyCommand>(apiClient));
     parser.registerCommand(bucketCmd);
 
-    auto k8sCmd = std::make_shared<NMC::Commands::K8sCommand>();
-    k8sCmd->addSubcommand(std::make_shared<NMC::Commands::K8sCreateCommand>());
-    k8sCmd->addSubcommand(std::make_shared<NMC::Commands::K8sDeleteCommand>());
-    k8sCmd->addSubcommand(std::make_shared<NMC::Commands::K8sGetCommand>());
-    k8sCmd->addSubcommand(std::make_shared<NMC::Commands::K8sGetConfigCommand>());
-    k8sCmd->addSubcommand(std::make_shared<NMC::Commands::K8sListCommand>());
-    k8sCmd->addSubcommand(std::make_shared<NMC::Commands::K8sListLocationsCommand>());
-    k8sCmd->addSubcommand(std::make_shared<NMC::Commands::K8sResumeCommand>());
-    k8sCmd->addSubcommand(std::make_shared<NMC::Commands::K8sSuspendCommand>());
+    auto k8sCmd = std::make_shared<NMC::Commands::K8sCommand>(apiClient);
+    k8sCmd->addSubcommand(std::make_shared<NMC::Commands::K8sCreateCommand>(apiClient));
+    k8sCmd->addSubcommand(std::make_shared<NMC::Commands::K8sDeleteCommand>(apiClient));
+    k8sCmd->addSubcommand(std::make_shared<NMC::Commands::K8sGetCommand>(apiClient));
+    k8sCmd->addSubcommand(std::make_shared<NMC::Commands::K8sGetConfigCommand>(apiClient));
+    k8sCmd->addSubcommand(std::make_shared<NMC::Commands::K8sListCommand>(apiClient));
+    k8sCmd->addSubcommand(std::make_shared<NMC::Commands::K8sListLocationsCommand>(apiClient));
+    k8sCmd->addSubcommand(std::make_shared<NMC::Commands::K8sResumeCommand>(apiClient));
+    k8sCmd->addSubcommand(std::make_shared<NMC::Commands::K8sSuspendCommand>(apiClient));
     parser.registerCommand(k8sCmd);
 
-    auto modelCmd = std::make_shared<NMC::Commands::ModelCommand>();
-    modelCmd->addSubcommand(std::make_shared<NMC::Commands::ModelUploadCommand>());
+    auto modelCmd = std::make_shared<NMC::Commands::ModelCommand>(apiClient);
+    modelCmd->addSubcommand(std::make_shared<NMC::Commands::ModelUploadCommand>(apiClient));
     parser.registerCommand(modelCmd);
 
-    auto sshCmd = std::make_shared<NMC::Commands::SSHCommand>();
-    sshCmd->addSubcommand(std::make_shared<NMC::Commands::SSHCreateCommand>());
-    sshCmd->addSubcommand(std::make_shared<NMC::Commands::SSHDeleteCommand>());
-    sshCmd->addSubcommand(std::make_shared<NMC::Commands::SSHListCommand>());
+    auto sshCmd = std::make_shared<NMC::Commands::SSHCommand>(apiClient);
+    sshCmd->addSubcommand(std::make_shared<NMC::Commands::SSHCreateCommand>(apiClient));
+    sshCmd->addSubcommand(std::make_shared<NMC::Commands::SSHDeleteCommand>(apiClient));
+    sshCmd->addSubcommand(std::make_shared<NMC::Commands::SSHListCommand>(apiClient));
     parser.registerCommand(sshCmd);
 
-    auto vmCmd = std::make_shared<NMC::Commands::VmCommand>();
-    vmCmd->addSubcommand(std::make_shared<NMC::Commands::VmCreateCommand>());
-    vmCmd->addSubcommand(std::make_shared<NMC::Commands::VmDeleteCommand>());
-    vmCmd->addSubcommand(std::make_shared<NMC::Commands::VmGetCommand>());
-    vmCmd->addSubcommand(std::make_shared<NMC::Commands::VmListCommand>());
-    vmCmd->addSubcommand(std::make_shared<NMC::Commands::VmListLocationsCommand>());
-    vmCmd->addSubcommand(std::make_shared<NMC::Commands::VmListOSCommand>());
-    vmCmd->addSubcommand(std::make_shared<NMC::Commands::VmListSkuCommand>());
-    vmCmd->addSubcommand(std::make_shared<NMC::Commands::VmRestartCommand>());
-    vmCmd->addSubcommand(std::make_shared<NMC::Commands::VmResumeCommand>());
-    vmCmd->addSubcommand(std::make_shared<NMC::Commands::VmSuspendCommand>());
+    auto vmCmd = std::make_shared<NMC::Commands::VmCommand>(apiClient);
+    vmCmd->addSubcommand(std::make_shared<NMC::Commands::VmCreateCommand>(apiClient));
+    vmCmd->addSubcommand(std::make_shared<NMC::Commands::VmDeleteCommand>(apiClient));
+    vmCmd->addSubcommand(std::make_shared<NMC::Commands::VmGetCommand>(apiClient));
+    vmCmd->addSubcommand(std::make_shared<NMC::Commands::VmListCommand>(apiClient));
+    vmCmd->addSubcommand(std::make_shared<NMC::Commands::VmListLocationsCommand>(apiClient));
+    vmCmd->addSubcommand(std::make_shared<NMC::Commands::VmListOSCommand>(apiClient));
+    vmCmd->addSubcommand(std::make_shared<NMC::Commands::VmListSkuCommand>(apiClient));
+    vmCmd->addSubcommand(std::make_shared<NMC::Commands::VmRestartCommand>(apiClient));
+    vmCmd->addSubcommand(std::make_shared<NMC::Commands::VmResumeCommand>(apiClient));
+    vmCmd->addSubcommand(std::make_shared<NMC::Commands::VmSuspendCommand>(apiClient));
     parser.registerCommand(vmCmd);
 
+    auto connectionCmd = std::make_shared<NMC::Commands::ConnectionCommand>(apiClient);
+    connectionCmd->addSubcommand(std::make_shared<NMC::Commands::ConnectionStatusCommand>(apiClient));
+    connectionCmd->addSubcommand(std::make_shared<NMC::Commands::ConnectionMakeCommand>(apiClient));
+    connectionCmd->addSubcommand(std::make_shared<NMC::Commands::ConnectionDropCommand>(apiClient));
+    connectionCmd->addSubcommand(std::make_shared<NMC::Commands::ConnectionListCommand>(apiClient));
+    connectionCmd->addSubcommand(std::make_shared<NMC::Commands::ConnectionSelectCommand>(apiClient));
+    parser.registerCommand(connectionCmd);
+
     // Register standalone commands
-    parser.registerCommand(std::make_shared<NMC::Commands::VersionCommand>());
+    parser.registerCommand(std::make_shared<NMC::Commands::VersionCommand>(apiClient));
 
     // Note: "completion" command would typically involve shell-specific script generation,
     // which is beyond the scope of this core CLI structure.

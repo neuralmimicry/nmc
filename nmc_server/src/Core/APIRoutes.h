@@ -12,6 +12,7 @@
 #include "../Models/K8sCluster.h"
 #include "../Models/SSHKey.h"
 #include "../Models/VM.h"
+#include "../Models/Connection.h"
 #include "../Models/CloudResponse.h"
 
 // Forward declaration for K8sHandlers to avoid circular includes
@@ -54,6 +55,7 @@ namespace NMC::Server {
         std::vector<Models::K8sCluster> k8sClusters;
         std::vector<Models::SSHKey> sshKeys;
         std::vector<Models::VM> vms;
+        std::vector<Models::Connection> connections;
 
         std::mutex dataMutex; // Mutex to protect access to data in a multi-threaded environment
 

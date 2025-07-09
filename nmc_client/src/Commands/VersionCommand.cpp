@@ -3,7 +3,7 @@
 
 namespace NMC::Commands {
 
-VersionCommand::VersionCommand() : BaseCommand("version", "CLI version") {
+VersionCommand::VersionCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client) : BaseCommand("version", "CLI version", std::move(client)) {
     usage = "nmc version";
 }
 

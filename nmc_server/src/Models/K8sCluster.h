@@ -15,7 +15,7 @@ namespace NMC {
                 std::string region;
                 std::string status;
 
-                nlohmann::json toJson() const {
+                nlohmann::json toJsonString() const {
                     return {
                             {"id", id},
                             {"name", name},

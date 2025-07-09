@@ -1,23 +1,63 @@
 // nmc_client/src/Core/CloudAPIClient.cpp
 #include "CloudAPIClient.h"
+#include "httplib.h"
 #include <iostream>
 #include <nlohmann/json.hpp> // For JSON parsing and creation
+#include <algorithm> // For std::find_if, std::remove_if
+#include <fstream>   // For file operations (std::ifstream, std::ofstream)
+#include <filesystem> // For creating directories (C++17)
+
 
 namespace NMC::Core {
 
-// Constructor: Initializes the httplib client with the server's host and port.
-    CloudAPIClient::CloudAPIClient(const std::string& host, int port) {
+    //------------------------------------------------------------------------------
+// Helper: parse "http://host:port/..." into host+port and rebuild cli
+    static void initCliFromUrl(std::unique_ptr<httplib::Client>& cli,
+                               const std::string& url,
+                               int fallbackPort)
+    {
+        // strip scheme
+        std::string s = url;
+        if (s.rfind("http://",0)==0)  s.erase(0,7);
+        else if (s.rfind("https://",0)==0) s.erase(0,8);
+
+        // drop any path
+        auto slash = s.find('/');
+        if (slash != std::string::npos) s.resize(slash);
+
+        // split host:port
+        auto colon = s.find(':');
+        std::string host = s.substr(0, colon);
+        int port = (colon==std::string::npos)
+                   ? fallbackPort
+                   : std::stoi(s.substr(colon+1));
+
         cli = std::make_unique<httplib::Client>(host, port);
-        // Optional: Set client-side timeouts if necessary
-        cli->set_connection_timeout(5); // 5 seconds
-        cli->set_read_timeout(180);     // 3 minutes, for potentially long operations like model uploads
-        cli->set_write_timeout(180);    // 3 minutes
+        cli->set_connection_timeout(5);
+        cli->set_read_timeout(180);
+        cli->set_write_timeout(180);
+    }
+
+    // Constructor: Initializes the httplib client with the server's host and port.
+    CloudAPIClient::CloudAPIClient(const std::string& host, int port, const std::string& filePath)
+            : host(host), port(port), configFilePath(filePath) { // Initialize configFilePath
+        loadConnections(false); // Load connections on construction
+        cli = std::make_unique<httplib::Client>(host, port);
+        for (const auto& conn : connectionsConfig["connections"]) {
+            if (conn["name"] == currentConnectionName) {
+                // Assuming endpoint is a full URL like "http://192.168.1.72:8080"
+                initCliFromUrl(cli, conn["endpoint"].get<std::string>(), port);
+                break;
+            }
+        }
     }
 
 // Destructor: Cleans up the httplib client.
     CloudAPIClient::~CloudAPIClient() {
         // std::unique_ptr automatically handles deletion, so nothing explicit needed here
+        // connections are saved automatically on modification, so no need to save here.
     }
+
 
 // Helper function to process the HTTP response and convert it into a CloudResponse model.
     Models::CloudResponse CloudAPIClient::processHttpResponse(httplib::Result& res, const std::string& successMessage) const {
@@ -57,6 +97,35 @@ namespace NMC::Core {
         }
         return apiResponse;
     }
+
+    // Overload for processHttpResponse to allow custom data payload (e.g., for local operations)
+    Models::CloudResponse CloudAPIClient::processHttpResponse(httplib::Result& res, const std::string& successMessage, const nlohmann::json& dataPayload) const {
+        Models::CloudResponse apiResponse;
+        apiResponse.success = true; // Assume success for local data processing, errors handled by message
+        apiResponse.message = successMessage;
+        apiResponse.data = dataPayload;
+        // If the original 'res' was not successful, propagate that status if applicable,
+        // but for locally generated data, 'success' typically comes from the logic, not HTTP status.
+        if (res && res->status != 200) {
+            apiResponse.success = false;
+            apiResponse.message = "Operation completed with warnings: " + successMessage + " (HTTP Status: " + std::to_string(res->status) + ")";
+            if (res->body.empty()) {
+                apiResponse.data = nlohmann::json(); // Empty JSON object if no body
+            } else {
+                try {
+                    apiResponse.data = nlohmann::json::parse(res->body); // Still try to parse the actual response body for more info
+                } catch (const nlohmann::json::parse_error& e) {
+                    apiResponse.data = res->body;
+                }
+            }
+        } else if (!res) {
+            apiResponse.success = false; // The original res was an error
+            apiResponse.message = "Operation failed: " + successMessage + " (HTTP error: " + httplib::to_string(res.error()) + ")";
+        }
+
+        return apiResponse;
+    }
+
 
 // --- Bucket Operations ---
 
@@ -134,9 +203,35 @@ namespace NMC::Core {
         if (!filterName.empty()) {
             path += "?filter-name=" + filterName;
         }
-        auto res = cli->Get(path);
-        return processHttpResponse(res, "K8s clusters listed.");
-    }
+        // 1) do the call
+        auto raw = cli->Get(path);
+        auto apiResp = processHttpResponse(raw, "K8s clusters listed.");
+
+        // 2) extract the array
+        nlohmann::json clusters = nlohmann::json::array();
+        if (apiResp.success) {
+            // success case: may be old shape or new envelope
+            if (apiResp.data.contains("clusters") && apiResp.data["clusters"].is_array()) {
+                clusters = apiResp.data["clusters"];
+            }
+            else if (apiResp.data.contains("data")
+                && apiResp.data["data"].contains("clusters")
+                && apiResp.data["data"]["clusters"].is_array()) {
+                    clusters = apiResp.data["data"]["clusters"];
+                }
+            } else {
+                // even on failure we might still have data.data.clusters
+                if (apiResp.data.contains("data")
+                    && apiResp.data["data"].contains("clusters")
+                    && apiResp.data["data"]["clusters"].is_array()) {
+                        clusters = apiResp.data["data"]["clusters"];
+                    }
+            }
+
+            // 3) overwrite .data so everyone downstream just sees an array
+            apiResp.data = std::move(clusters);
+            return apiResp;
+        }
 
     Models::CloudResponse CloudAPIClient::listK8sLocations(const std::string& filterSku) {
         // The server-side listK8sLocations does not use filterSku, but keeping it for now
@@ -194,6 +289,11 @@ namespace NMC::Core {
         }
         auto res = cli->Get(path);
         return processHttpResponse(res, "SSH keys listed.");
+    }
+
+    Models::CloudResponse CloudAPIClient::getSSHKey(const std::string& id) {
+        auto res = cli->Get("/ssh/get/" + id);
+        return processHttpResponse(res, "SSH key details retrieved.");
     }
 
 // --- VM Operations ---
@@ -271,5 +371,243 @@ namespace NMC::Core {
         auto res = cli->Post("/vm/suspend/" + id, "", "application/json");
         return processHttpResponse(res, "VM '" + id + "' suspended successfully.");
     }
+
+// --- Connection Management ---
+    Models::CloudResponse CloudAPIClient::getConnectionStatus() {
+        if (currentConnectionName.empty()) {
+            return {false, "No default connection set. Please use 'nmc connection make --default' or 'nmc connection select' to set one.", nlohmann::json::parse("{\"isActive\": false, \"status\": \"unset\"}")};
+        }
+
+        auto it = std::find_if(connections.begin(), connections.end(),
+                               [this](const Models::Connection& conn) { return conn.name == currentConnectionName; });
+
+        if (it == connections.end()) {
+            // This indicates an inconsistency where currentConnectionName is set but the connection itself is not in the list.
+            currentConnectionName = ""; // Clear inconsistent state
+            saveConnections(true); // Save to reflect the cleared state
+            return {false, "Current connection details not found, though a name was set. This indicates an inconsistency. Resetting default. Please select a connection.", nlohmann::json::parse("{\"isActive\": false, \"status\": \"inconsistent\"}")};
+        }
+
+        // Now, attempt to ping the endpoint to check health
+        // Create a temporary httplib client for the specific connection's endpoint
+        // Use a host and port derived from the connection's endpoint URL
+        httplib::Client temp_cli(it->endpoint);
+        temp_cli.set_connection_timeout(5);
+        temp_cli.set_read_timeout(10);
+        temp_cli.set_write_timeout(10);
+
+        httplib::Result res = temp_cli.Get("/health"); // Assuming a /health endpoint for basic check
+
+        Models::CloudResponse response;
+        if (res && res->status == 200) {
+            response.success = true;
+            response.message = "Current connection: " + it->name + " (" + it->endpoint + ") is active and healthy.";
+            response.data = nlohmann::json::parse("{\"name\": \"" + it->name + "\", \"endpoint\": \"" + it->endpoint + "\", \"isActive\": " + (it->isActive ? "true" : "false") + ", \"status\": \"healthy\"}");
+        } else {
+            response.success = false;
+            response.message = "Connection to " + it->name + " (" + it->endpoint + ") failed or is unhealthy. Error: " + (res ? std::to_string(res->status) : httplib::to_string(res.error()));
+            response.data = nlohmann::json::parse("{\"name\": \"" + it->name + "\", \"endpoint\": \"" + it->endpoint + "\", \"isActive\": " + (it->isActive ? "true" : "false") + ", \"status\": \"unhealthy\"}");
+        }
+        return response;
+    }
+
+    Models::CloudResponse CloudAPIClient::makeConnection(const std::string& name, const std::string& endpoint, bool setDefault) {
+        auto it = std::find_if(connections.begin(), connections.end(),
+                               [&name](const Models::Connection& conn) { return conn.name == name; });
+
+        if (it != connections.end()) {
+            return {false, "Connection with name '" + name + "' already exists. Use 'drop' first or choose a different name.", nlohmann::json()};
+        }
+
+        connections.emplace_back(name, endpoint, setDefault); // New connection
+        if (setDefault) {
+            // Deactivate old default connection and set new one
+            for (auto& conn : connections) {
+                if (conn.name != name) {
+                    conn.isActive = false;
+                }
+            }
+            currentConnectionName = name;
+        }
+        saveConnections(true); // Save changes after making a connection
+        auto& newConn = connections.back();
+        initCliFromUrl(cli, newConn.endpoint, port);
+        return {true, "Connection '" + name + "' created" + (setDefault ? " and set as default." : "."), nlohmann::json::parse("{\"name\": \"" + name + "\", \"endpoint\": \"" + endpoint + "\", \"default_set\": " + (setDefault ? "true" : "false") + "}")};
+    }
+
+    Models::CloudResponse CloudAPIClient::dropConnection(const std::string& name) {
+        auto initial_size = connections.size();
+        connections.erase(std::remove_if(connections.begin(), connections.end(),
+                                         [&name](const Models::Connection& conn) { return conn.name == name; }),
+                          connections.end());
+
+        if (connections.size() < initial_size) {
+            if (currentConnectionName == name) {
+                currentConnectionName = ""; // Dropped the current active connection
+                saveConnections(true); // Save to reflect the cleared state
+                return {true, "Connection '" + name + "' dropped. No default connection now.", nlohmann::json::parse("{\"dropped_name\": \"" + name + "\", \"default_unset\": true}")};
+            }
+            saveConnections(true); // Save changes after dropping a connection
+            return {true, "Connection '" + name + "' dropped.", nlohmann::json::parse("{\"dropped_name\": \"" + name + "\", \"default_unset\": false}")};
+        }
+        return {false, "Connection with name '" + name + "' not found.", nlohmann::json()};
+    }
+
+    Models::CloudResponse CloudAPIClient::listConnections() {
+        /// loadConnections(false); // Load latest connections from file
+        nlohmann::json connections_json = nlohmann::json::array();
+        for (const auto& conn : connections) {
+            connections_json.push_back({
+                                               {"name", conn.name},
+                                               {"endpoint", conn.endpoint},
+                                               {"isActive", conn.isActive},
+                                               {"isDefault", conn.isActive && (conn.name == currentConnectionName)}
+                                       });
+        }
+        std::string message;
+        if (connections_json.empty()) {
+            message = "No connections available.";
+        } else {
+            message = "Connections: " + std::to_string(connections_json.size());
+        }
+        return {true, message, connections_json};
+    }
+
+    Models::CloudResponse CloudAPIClient::selectConnection(const std::string& name) {
+        auto it = std::find_if(connections.begin(), connections.end(),
+                               [&name](const Models::Connection& conn) { return conn.name == name; });
+
+        if (it == connections.end()) {
+            return {false, "Connection with name '" + name + "' not found.", nlohmann::json()};
+        }
+
+        // Deactivate old active connection
+        for (auto& conn : connections) {
+            conn.isActive = false;
+        }
+        // Set new active connection
+        it->isActive = true;
+        currentConnectionName = name;
+        saveConnections(true); // Save changes after selecting a connection
+
+        return {true, "Connection '" + name + "' selected as default.", nlohmann::json::parse("{\"selected_name\": \"" + name + "\", \"endpoint\": \"" + it->endpoint + "\"}")};
+    }
+
+    Models::CloudResponse CloudAPIClient::unsetDefaultConnection() {
+        if (currentConnectionName.empty()) {
+            return {true, "No default connection is currently set.", nlohmann::json()};
+        }
+
+        // Find the current active connection and deactivate it
+        auto it = std::find_if(connections.begin(), connections.end(),
+                               [this](const Models::Connection& conn) { return conn.name == currentConnectionName; });
+        if (it != connections.end()) {
+            it->isActive = false;
+        }
+        std::string unset_name = currentConnectionName;
+        currentConnectionName = ""; // Clear the default connection name
+        saveConnections(true); // Save changes after unsetting default
+        // no default: go back to the original host:port
+        cli = std::make_unique<httplib::Client>(host, port);
+        cli->set_connection_timeout(5);
+        cli->set_read_timeout(180);
+        cli->set_write_timeout(180);
+        return {true, "Default connection '" + unset_name + "' unset successfully.", nlohmann::json::parse("{\"unset_name\": \"" + unset_name + "\"}")};
+    }
+
+    // Method to check if a default connection is set
+    bool CloudAPIClient::hasDefaultConnection() const {
+        return !currentConnectionName.empty();
+    }
+
+    // Method to get the current default connection details
+    std::optional<Models::Connection> CloudAPIClient::getDefaultConnection() const {
+        if (currentConnectionName.empty()) {
+            return std::nullopt;
+        }
+        auto it = std::find_if(connections.begin(), connections.end(),
+                               [this](const Models::Connection& conn) { return conn.name == currentConnectionName; });
+        if (it != connections.end()) {
+            return *it;
+        }
+        return std::nullopt; // Should not happen if currentConnectionName is consistent
+    }
+
+    // --- Persistence Methods ---
+
+    void CloudAPIClient::loadConnections(bool showMessage) {
+        std::ifstream configFile(configFilePath);
+        if (!configFile.is_open()) {
+            if (showMessage == true) {
+                std::cout << "Info: Configuration file not found. Creating a new one at " << configFilePath
+                          << std::endl;
+            }
+
+            // Ensure the directory exists (e.g., ~/.nmc/)
+            try {
+                std::filesystem::path path(configFilePath);
+                if (path.has_parent_path()) {
+                    std::filesystem::create_directories(path.parent_path());
+                }
+            } catch (const std::filesystem::filesystem_error &e) {
+                std::cerr << "Error: Could not create directory for config file: " << e.what() << std::endl;
+                // Even if directory creation fails, proceed to create an in-memory config
+            }
+
+            // Create a default, empty configuration structure
+            connectionsConfig["connections"] = nlohmann::json::array();
+            connectionsConfig["default_connection"] = "";
+
+            // Save the new empty config file, but don't show a "saved" message
+            saveConnections(false);
+            return;
+        }
+
+        try {
+            configFile >> connectionsConfig;
+            std::cout << "Info: Connections loaded from " << configFilePath << std::endl;
+        } catch (const nlohmann::json::parse_error &e) {
+            std::cerr << "Error: Could not parse config file " << configFilePath << ". It might be corrupted. "
+                      << e.what() << std::endl;
+            // Initialize with an empty config to prevent crashes
+            connectionsConfig["connections"] = nlohmann::json::array();
+            connectionsConfig["default_connection"] = "";
+        }
+        // --- SYNC JSON → VECTOR + DEFAULT NAME ---
+        connections.clear();
+        for (auto &j: connectionsConfig["connections"]) {
+            Models::Connection c;
+            c.name = j["name"].get<std::string>();
+            c.endpoint = j["endpoint"].get<std::string>();
+            c.isActive = j.value("isActive", false);
+            connections.push_back(std::move(c));
+        }
+        currentConnectionName = connectionsConfig.value("default_connection", "");
+    }
+
+    void CloudAPIClient::saveConnections(bool showMessage) {
+        // --- SYNC VECTOR + DEFAULT NAME → JSON ---
+        nlohmann::json arr = nlohmann::json::array();
+            for (auto& conn : connections) {
+                arr.push_back({
+                    {"name",     conn.name},
+                    {"endpoint", conn.endpoint},
+                    {"isActive", conn.isActive}
+                 });
+            }
+        connectionsConfig["connections"]           = std::move(arr);
+        connectionsConfig["default_connection"] = currentConnectionName;
+
+        std::ofstream configFile(configFilePath);
+        if (!configFile.is_open()) {
+            std::cerr << "Error: Could not open config file for writing at " << configFilePath << std::endl;
+            return;
+        }
+        configFile << connectionsConfig.dump(4); // Pretty-print JSON with 4-space indent
+        if (showMessage) {
+            std::cout << "Info: Connections saved to " << configFilePath << std::endl;
+        }
+    }
+
 
 } // namespace NMC::Core

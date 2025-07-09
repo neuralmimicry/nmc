@@ -167,6 +167,7 @@ message(STATUS "kubernetes_client_c_ext_SOURCE_DIR: ${kubernetes_client_c_ext_SO
 set(NMC_SERVER_SOURCES
         src/main.cpp
         src/Core/APIRoutes.cpp
+        src/Core/ConnectionHandlers.cpp
         src/Core/K8sHandlers.cpp
         src/Core/Utils.cpp
 )

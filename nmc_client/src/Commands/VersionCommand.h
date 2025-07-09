@@ -7,7 +7,7 @@ namespace NMC::Commands {
 
 class VersionCommand : public BaseCommand {
 public:
-    VersionCommand();
+    VersionCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client);
     int execute(const std::map<std::string, std::string>& parsedFlags, const std::vector<std::string>& parsedArgs, const CLI::GlobalFlags& globalFlags) override;
 };
 

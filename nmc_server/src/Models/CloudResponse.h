@@ -15,9 +15,12 @@ namespace NMC {
                 bool success;
                 std::string message;
                 nlohmann::json data; // Now can hold any JSON data
+                int statusCode; // HTTP status code
+
+                CloudResponse() : success(false), message(""), data(""), statusCode(200) {}
 
                 // Helper to convert to JSON
-                nlohmann::json toJson() const {
+                nlohmann::json toJsonString() const {
                     return {
                             {"success", success},
                             {"message", message},

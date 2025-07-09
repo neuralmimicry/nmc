@@ -165,7 +165,7 @@ namespace NMC {
                         Models::CloudResponse apiResponse;
                         apiResponse.success = true;
                         apiResponse.message = "K8s cluster '" + name + "' created successfully.";
-                        apiResponse.data = newCluster->toJson();
+                        apiResponse.data = newCluster->toJsonString();
                         sendJsonResponse(res, apiResponse);
                     } else {
                         sendErrorResponse(res, 500, "Failed to parse created Kubernetes object for cluster '" + name + "'.");
@@ -253,7 +253,7 @@ namespace NMC {
                         Models::CloudResponse apiResponse;
                         apiResponse.success = true;
                         apiResponse.message = "K8s cluster '" + id + "' retrieved successfully.";
-                        apiResponse.data = foundCluster->toJson();
+                        apiResponse.data = foundCluster->toJsonString();
                         sendJsonResponse(res, apiResponse);
                     } else {
                         sendErrorResponse(res, 500, "Failed to parse retrieved Kubernetes object for cluster '" + id + "'.");
@@ -349,49 +349,63 @@ users:
 
         void K8sHandlers::handleListK8sClusters(const httplib::Request& req, httplib::Response& res) {
             try {
-                genericClient_t *genericClient = getGenericClient(K8S_CLUSTER_CRD_GROUP, K8S_CLUSTER_CRD_VERSION, K8S_CLUSTER_CRD_PLURAL);
+                genericClient_t* genericClient = getGenericClient(
+                    K8S_CLUSTER_CRD_GROUP,
+                    K8S_CLUSTER_CRD_VERSION,
+                    K8S_CLUSTER_CRD_PLURAL
+                );
                 if (!genericClient) {
-                    return sendErrorResponse(res, 500, "Failed to create generic Kubernetes client.");
+                    return sendErrorResponse(res, 500, "Failed to create Kubernetes client.");
                 }
 
-                // FIX: Removed extra NULL arguments from the function call.
-                char *list_object_str = Generic_listNamespaced(
-                        genericClient,
-                        (char*)"default"
-                );
+                // Attempt to fetch the CRD list
+                char* list_str = Generic_listNamespaced(
+                    genericClient,
+                    (char*)"default"
+                    );
 
-                std::vector<Models::K8sCluster> clusters;
-                if (list_object_str) {
-                    auto list_obj = nlohmann::json::parse(list_object_str);
+                Models::CloudResponse apiResponse;
+                apiResponse.data["clusters"] = nlohmann::json::array();
+
+                if (list_str) {
+                    // Got a response—parse items[]
+                    auto list_obj = nlohmann::json::parse(list_str);
                     if (list_obj.contains("items") && list_obj["items"].is_array()) {
-                        for (const auto& item : list_obj["items"]) {
-                            if (auto cluster = parseKubernetesObjectToK8sCluster(item)) {
-                                clusters.push_back(*cluster);
+                        for (auto& item : list_obj["items"]) {
+                            if (auto c = parseKubernetesObjectToK8sCluster(item)) {
+                                auto j = c->toJsonString();
+                                // ensure status is explicit
+                                j["status"] = c->status;
+                                apiResponse.data["clusters"].push_back(j);
                             }
                         }
                     }
-                    Models::CloudResponse apiResponse;
                     apiResponse.success = true;
                     apiResponse.message = "Successfully listed K8s clusters.";
-                    apiResponse.data["clusters"] = nlohmann::json::array();
-                    for (const auto& cluster : clusters) {
-                        apiResponse.data["clusters"].push_back(cluster.toJson());
-                    }
-                    sendJsonResponse(res, apiResponse);
-                } else {
-                    std::string error_message = "Failed to list K8s clusters.";
-                    if (apiClient->response_code >= 400) {
-                        error_message += " Error code: " + std::to_string(apiClient->response_code);
-                    }
-                    sendErrorResponse(res, apiClient->response_code, error_message);
                 }
-                if (list_object_str) free(list_object_str);
-                genericClient_free(genericClient);
+                else {
+                    // Failure (e.g. DNS resolution): still return a valid JSON
+                    std::string serverId = basePath ? basePath : "unknown";
+                    apiResponse.success = false;
+                    apiResponse.message = "K8s clusters unavailable for server: " + serverId;
+                    // build a JSON object for the unavailable cluster
+                    nlohmann::json unavailable;
+                    unavailable["name"]   = serverId;
+                    unavailable["status"] = "unavailable";
+                    unavailable["error"]  = "Couldn’t resolve host name";
 
-            } catch (const std::exception& e) {
-                sendErrorResponse(res, 500, "Server error: " + std::string(e.what()));
+                    apiResponse.data["clusters"].push_back(unavailable);
+                }
+
+                    sendJsonResponse(res, apiResponse);
+
+                    if (list_str)         free(list_str);
+                    genericClient_free(genericClient);
+                }
+                catch (const std::exception& e) {
+                    sendErrorResponse(res, 500, "Server error: " + std::string(e.what()));
+                }
             }
-        }
 
         void K8sHandlers::handleListK8sLocations(const httplib::Request& req, httplib::Response& res) {
             try {
@@ -502,7 +516,7 @@ users:
                         Models::CloudResponse apiResponse;
                         apiResponse.success = true;
                         apiResponse.message = "K8s cluster '" + id + "' resumed successfully.";
-                        apiResponse.data = updatedCluster->toJson();
+                        apiResponse.data = updatedCluster->toJsonString();
                         sendJsonResponse(res, apiResponse);
                     } else {
                         sendErrorResponse(res, 500, "Failed to parse patched Kubernetes object for cluster '" + id + "'.");
@@ -562,7 +576,7 @@ users:
                         Models::CloudResponse apiResponse;
                         apiResponse.success = true;
                         apiResponse.message = "K8s cluster '" + id + "' suspended successfully.";
-                        apiResponse.data = updatedCluster->toJson();
+                        apiResponse.data = updatedCluster->toJsonString();
                         sendJsonResponse(res, apiResponse);
                     } else {
                         sendErrorResponse(res, 500, "Failed to parse patched Kubernetes object for cluster '" + id + "'.");

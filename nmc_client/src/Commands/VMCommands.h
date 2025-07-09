@@ -7,67 +7,67 @@ namespace NMC::Commands {
 
 class VmCommand : public BaseCommand {
 public:
-    VmCommand();
+    VmCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client);
     int execute(const std::map<std::string, std::string>& parsedFlags, const std::vector<std::string>& parsedArgs, const CLI::GlobalFlags& globalFlags) override;
 };
 
 class VmCreateCommand : public BaseCommand {
 public:
-    VmCreateCommand();
+    VmCreateCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client);
     int execute(const std::map<std::string, std::string>& parsedFlags, const std::vector<std::string>& parsedArgs, const CLI::GlobalFlags& globalFlags) override;
 };
 
 class VmDeleteCommand : public BaseCommand {
 public:
-    VmDeleteCommand();
+    VmDeleteCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client);
     int execute(const std::map<std::string, std::string>& parsedFlags, const std::vector<std::string>& parsedArgs, const CLI::GlobalFlags& globalFlags) override;
 };
 
 class VmGetCommand : public BaseCommand {
 public:
-    VmGetCommand();
+    VmGetCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client);
     int execute(const std::map<std::string, std::string>& parsedFlags, const std::vector<std::string>& parsedArgs, const CLI::GlobalFlags& globalFlags) override;
 };
 
 class VmListCommand : public BaseCommand {
 public:
-    VmListCommand();
+    VmListCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client);
     int execute(const std::map<std::string, std::string>& parsedFlags, const std::vector<std::string>& parsedArgs, const CLI::GlobalFlags& globalFlags) override;
 };
 
 class VmListLocationsCommand : public BaseCommand {
 public:
-    VmListLocationsCommand();
+    VmListLocationsCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client);
     int execute(const std::map<std::string, std::string>& parsedFlags, const std::vector<std::string>& parsedArgs, const CLI::GlobalFlags& globalFlags) override;
 };
 
 class VmListOSCommand : public BaseCommand {
 public:
-    VmListOSCommand();
+    VmListOSCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client);
     int execute(const std::map<std::string, std::string>& parsedFlags, const std::vector<std::string>& parsedArgs, const CLI::GlobalFlags& globalFlags) override;
 };
 
 class VmListSkuCommand : public BaseCommand {
 public:
-    VmListSkuCommand();
+    VmListSkuCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client);
     int execute(const std::map<std::string, std::string>& parsedFlags, const std::vector<std::string>& parsedArgs, const CLI::GlobalFlags& globalFlags) override;
 };
 
 class VmRestartCommand : public BaseCommand {
 public:
-    VmRestartCommand();
+    VmRestartCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client);
     int execute(const std::map<std::string, std::string>& parsedFlags, const std::vector<std::string>& parsedArgs, const CLI::GlobalFlags& globalFlags) override;
 };
 
 class VmResumeCommand : public BaseCommand {
 public:
-    VmResumeCommand();
+    VmResumeCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client);
     int execute(const std::map<std::string, std::string>& parsedFlags, const std::vector<std::string>& parsedArgs, const CLI::GlobalFlags& globalFlags) override;
 };
 
 class VmSuspendCommand : public BaseCommand {
 public:
-    VmSuspendCommand();
+    VmSuspendCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client);
     int execute(const std::map<std::string, std::string>& parsedFlags, const std::vector<std::string>& parsedArgs, const CLI::GlobalFlags& globalFlags) override;
 };
 

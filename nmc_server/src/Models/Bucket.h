@@ -17,7 +17,7 @@ namespace NMC {
                 std::string status;
 
                 // Convert Bucket object to JSON
-                nlohmann::json toJson() const {
+                nlohmann::json toJsonString() const {
                     return {
                             {"name", name},
                             {"location", location},

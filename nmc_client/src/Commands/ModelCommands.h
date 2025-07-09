@@ -7,13 +7,13 @@ namespace NMC::Commands {
 
 class ModelCommand : public BaseCommand {
 public:
-    ModelCommand();
+    ModelCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client);
     int execute(const std::map<std::string, std::string>& parsedFlags, const std::vector<std::string>& parsedArgs, const CLI::GlobalFlags& globalFlags) override;
 };
 
 class ModelUploadCommand : public BaseCommand {
 public:
-    ModelUploadCommand();
+    ModelUploadCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client);
     int execute(const std::map<std::string, std::string>& parsedFlags, const std::vector<std::string>& parsedArgs, const CLI::GlobalFlags& globalFlags) override;
 };
 

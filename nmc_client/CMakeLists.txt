@@ -36,6 +36,7 @@ set(NMC_CLIENT_SOURCES
         src/CLI/Command.cpp
         src/Commands/BaseCommand.cpp
         src/Commands/BucketCommands.cpp
+        src/Commands/ConnectionCommands.cpp
         src/Commands/K8sCommands.cpp
         src/Commands/ModelCommands.cpp
         src/Commands/RootCommand.cpp

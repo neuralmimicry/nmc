@@ -3,7 +3,7 @@
 
 namespace NMC::Commands {
 
-RootCommand::RootCommand() : CLI::Command("nmc", "CLI tool for NeuralMimicry Cloud") {
+RootCommand::RootCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client) : CLI::Command("nmc", "CLI tool for NeuralMimicry Cloud") {
     // Root command doesn't have direct execution logic, it just lists subcommands.
     // Its `execute` method should typically not be called directly if subcommands are found.
     // The help flag is added by the base CLI::Command.
