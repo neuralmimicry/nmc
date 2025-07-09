@@ -409,14 +409,12 @@ users:
 
         void K8sHandlers::handleListK8sLocations(const httplib::Request& req, httplib::Response& res) {
             try {
-                // FIX: Removed CoreV1API_t object creation.
                 // The CoreV1API functions take the apiClient_t directly.
                 if (!apiClient) {
                     return sendErrorResponse(res, 500, "Kubernetes API client not initialized.");
                 }
 
                 // List all nodes
-                // FIX: Pass apiClient directly to the API function.
                 v1_node_list_t *node_list = CoreV1API_listNode(
                         apiClient,
                         NULL, // pretty
@@ -475,6 +473,18 @@ users:
             }
         }
 
+        // Handler for liveness/readiness probe
+        void K8sHandlers::handleK8sHealthCheck(const httplib::Request& req, httplib::Response& res) {
+            try {
+                // This is a simple health check that returns 200 OK
+                Models::CloudResponse apiResponse;
+                apiResponse.success = true;
+                apiResponse.message = "K8s API server is healthy.";
+                sendJsonResponse(res, apiResponse);
+            } catch (const std::exception& e) {
+                sendErrorResponse(res, 500, "Server error: " + std::string(e.what()));
+            }
+        }
 
         void K8sHandlers::handleResumeK8sCluster(const httplib::Request& req, httplib::Response& res) {
             try {

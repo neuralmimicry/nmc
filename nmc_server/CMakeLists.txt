@@ -71,6 +71,9 @@ FetchContent_MakeAvailable(httplib)
 # expects it to be available via find_package.
 find_package(OpenSSL REQUIRED)
 
+# Logger - https://github.com/gabime/spdlog
+find_package(spdlog REQUIRED)
+
 # --- Build and Install libyaml (Autotools project) ---
 # This library is a prerequisite for the Kubernetes C client.
 # Since libyaml at this tag is an autotools project, we use ExternalProject_Add
@@ -199,6 +202,7 @@ target_link_libraries(nmc_server PRIVATE
         websockets
         OpenSSL::SSL
         OpenSSL::Crypto
+        spdlog::spdlog_header_only
         yaml
         # Link against Zstandard via the imported target
         ${ZSTD_LIBRARIES}

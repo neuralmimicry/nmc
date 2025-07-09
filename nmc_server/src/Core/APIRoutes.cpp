@@ -15,7 +15,7 @@ namespace NMC::Server {
         const std::string api_server_url_value = "http://localhost:8080"; // Replace with your actual Kubernetes API server URL
 
         k8sHandlers = std::make_unique<K8sHandlers>(
-                api_server_url_value, // Corrected: Pass api_server_url
+                api_server_url_value,
                 "", // Placeholder for kubeconfig path, can be set later
                 dataMutex,
                 [this](httplib::Response& res, const Models::CloudResponse& apiResponse) {
@@ -112,6 +112,9 @@ namespace NMC::Server {
         });
         svr.Get("/k8s/list-locations", [this](const httplib::Request& req, httplib::Response& res) {
             k8sHandlers->handleListK8sLocations(req, res);
+        });
+        svr.Get("/k8s/healthz", [this](const httplib::Request& req, httplib::Response& res) {
+            k8sHandlers->handleK8sHealthCheck(req, res);
         });
         svr.Post(R"(/k8s/resume/(.*))", [this](const httplib::Request& req, httplib::Response& res) {
             k8sHandlers->handleResumeK8sCluster(req, res);
