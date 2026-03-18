@@ -18,6 +18,8 @@ REPO_DIR="$SCRIPT_DIR"
 INSTALL_DIR="${INSTALL_DIR:-$REPO_DIR}"
 RUN_USER="${NMC_RUN_USER:-nmc}"
 RUN_GROUP="${NMC_RUN_GROUP:-$RUN_USER}"
+BUILD_USER="${NMC_BUILD_USER:-}"
+BUILD_GROUP="${NMC_BUILD_GROUP:-}"
 PORT="${NMC_PORT:-8080}"
 DOCS_ENABLED="${NMC_DOCS_ENABLED:-true}"
 MAX_BODY_BYTES="${NMC_MAX_BODY_BYTES:-1048576}"
@@ -137,6 +139,18 @@ run_as_user() {
   fi
 }
 
+run_as_build_user() {
+  if [[ "$(id -u)" -eq 0 && "$BUILD_USER" != "root" ]]; then
+    if command -v sudo >/dev/null 2>&1; then
+      run sudo -u "$BUILD_USER" -H -- "$@"
+    else
+      run runuser -u "$BUILD_USER" -- "$@"
+    fi
+  else
+    run "$@"
+  fi
+}
+
 retry() {
   local max=5
   local delay=2
@@ -175,6 +189,7 @@ Core options:
   --install-dir PATH              Install/build directory (default: current repo)
   --run-user USER                 Service user (default: nmc)
   --run-group GROUP               Service group (default: nmc)
+  --build-user USER               Build user (default: sudo user or run-user)
   --port PORT                     Server port (default: 8080)
   --auth-mode MODE                token|oidc|off (default: token)
   --auth-token TOKEN              Token for token mode
@@ -224,6 +239,7 @@ while [[ $# -gt 0 ]]; do
     --install-dir) INSTALL_DIR="$2"; shift 2 ;;
     --run-user) RUN_USER="$2"; shift 2 ;;
     --run-group) RUN_GROUP="$2"; shift 2 ;;
+    --build-user) BUILD_USER="$2"; shift 2 ;;
     --port) PORT="$2"; shift 2 ;;
     --auth-mode) AUTH_MODE="$2"; shift 2 ;;
     --auth-token) AUTH_TOKEN="$2"; shift 2 ;;
@@ -283,6 +299,22 @@ if ! command -v systemctl >/dev/null 2>&1; then
   die "systemctl not found. This script expects systemd."
 fi
 
+if [[ -z "$BUILD_USER" ]]; then
+  if [[ -n "${SUDO_USER:-}" && "${SUDO_USER:-}" != "root" ]]; then
+    BUILD_USER="$SUDO_USER"
+  else
+    BUILD_USER="$RUN_USER"
+  fi
+fi
+
+if [[ -z "$BUILD_GROUP" ]]; then
+  if id -u "$BUILD_USER" >/dev/null 2>&1; then
+    BUILD_GROUP="$(id -gn "$BUILD_USER")"
+  else
+    BUILD_GROUP="$RUN_GROUP"
+  fi
+fi
+
 if [[ ! -d "$INSTALL_DIR" ]]; then
   run_root mkdir -p "$INSTALL_DIR"
 fi
@@ -301,6 +333,10 @@ if ! id -u "$RUN_USER" >/dev/null 2>&1; then
   run_root useradd --system --home "$INSTALL_DIR" --shell /usr/sbin/nologin --gid "$RUN_GROUP" "$RUN_USER"
 fi
 
+if ! id -u "$BUILD_USER" >/dev/null 2>&1; then
+  die "Build user '$BUILD_USER' does not exist. Create it or pass --build-user."
+fi
+
 # Validate repo (or clone)
 if [[ -n "$REPO_URL" ]]; then
   if [[ -d "$INSTALL_DIR/.git" ]]; then
@@ -308,8 +344,8 @@ if [[ -n "$REPO_URL" ]]; then
     REPO_DIR="$INSTALL_DIR"
   else
     log_info "Cloning repo into $INSTALL_DIR"
-    run_root chown -R "$RUN_USER:$RUN_GROUP" "$INSTALL_DIR"
-    run_as_user git clone -b "$REPO_BRANCH" "$REPO_URL" "$INSTALL_DIR"
+    run_root chown -R "$BUILD_USER:$BUILD_GROUP" "$INSTALL_DIR"
+    run_as_build_user git clone -b "$REPO_BRANCH" "$REPO_URL" "$INSTALL_DIR"
     REPO_DIR="$INSTALL_DIR"
   fi
 else
@@ -321,6 +357,28 @@ else
 fi
 
 BUILD_DIR="$REPO_DIR/nmc_server/build"
+
+# Ensure build user can read repo; if not, try switching to repo owner.
+if ! run_as_build_user test -r "$REPO_DIR/nmc_server/CMakeLists.txt"; then
+  repo_owner="$(stat -c %U "$REPO_DIR" 2>/dev/null || true)"
+  if [[ -n "$repo_owner" && "$repo_owner" != "$BUILD_USER" ]]; then
+    log_warn "Build user '$BUILD_USER' lacks access to repo; switching to '$repo_owner'"
+    if id -u "$repo_owner" >/dev/null 2>&1; then
+      BUILD_USER="$repo_owner"
+      BUILD_GROUP="$(id -gn "$BUILD_USER")"
+    else
+      die "Repo owner '$repo_owner' is not a valid user"
+    fi
+  else
+    die "Build user '$BUILD_USER' lacks access to repo. Use --build-user."
+  fi
+fi
+
+if ! run_as_user test -x "$REPO_DIR"; then
+  log_warn "Service user '$RUN_USER' cannot access repo path; switching service user to '$BUILD_USER'"
+  RUN_USER="$BUILD_USER"
+  RUN_GROUP="$BUILD_GROUP"
+fi
 
 # ---------------------------
 # Install base dependencies
@@ -548,12 +606,14 @@ fi
 # Build nmc_server
 # ---------------------------
 if [[ "$SKIP_BUILD" == "false" ]]; then
-  log_info "Building nmc_server"
+  log_info "Building nmc_server (build user: $BUILD_USER)"
   run_root mkdir -p "$BUILD_DIR"
-  run_root chown -R "$RUN_USER:$RUN_GROUP" "$BUILD_DIR"
-  run_as_user cmake -S "$REPO_DIR/nmc_server" -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE=Release
-  run_as_user cmake --build "$BUILD_DIR" -- -j"$(nproc)"
-  run_as_user mkdir -p "$BUILD_DIR/logs"
+  run_root chown -R "$BUILD_USER:$BUILD_GROUP" "$BUILD_DIR"
+  run_as_build_user cmake -S "$REPO_DIR/nmc_server" -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE=Release
+  run_as_build_user cmake --build "$BUILD_DIR" -- -j"$(nproc)"
+  run_root chmod -R a+rX "$BUILD_DIR"
+  run_root mkdir -p "$BUILD_DIR/logs"
+  run_root chown -R "$RUN_USER:$RUN_GROUP" "$BUILD_DIR/logs"
 else
   log_info "Skipping build step"
 fi
@@ -617,7 +677,7 @@ if [[ "$ENABLE_AUTO_UPDATE" == "true" ]]; then
   cat <<EOF | run_root tee /etc/nmc/nmc-update.conf >/dev/null
 REPO_DIR=$REPO_DIR
 REPO_BRANCH=$REPO_BRANCH
-RUN_USER=$RUN_USER
+UPDATE_USER=$BUILD_USER
 EOF
 
   cat <<'EOF' | run_root tee /usr/local/bin/nmc-update >/dev/null
@@ -636,14 +696,14 @@ fi
 
 : "${REPO_DIR:?Missing REPO_DIR}"
 : "${REPO_BRANCH:=main}"
-: "${RUN_USER:=nmc}"
+: "${UPDATE_USER:=nmc}"
 
 run_as_user() {
-  if [[ "$(id -u)" -eq 0 && "$RUN_USER" != "root" ]]; then
+  if [[ "$(id -u)" -eq 0 && "$UPDATE_USER" != "root" ]]; then
     if command -v sudo >/dev/null 2>&1; then
-      sudo -u "$RUN_USER" -H -- "$@"
+      sudo -u "$UPDATE_USER" -H -- "$@"
     else
-      runuser -u "$RUN_USER" -- "$@"
+      runuser -u "$UPDATE_USER" -- "$@"
     fi
   else
     "$@"
