@@ -10,17 +10,18 @@ namespace NMC::Models {
     struct Connection {
         std::string name;
         std::string endpoint;
+        std::string token;
         bool isActive;
         // Potentially add more fields like userId, token/key identifier, lastUsed, etc.
         // For simplicity, we'll assume authentication is handled internally by CloudAPIClient
         // using connection name to retrieve relevant secure credentials.
 
         // Default constructor
-        Connection() : name(""), endpoint(""), isActive(false) {}
+        Connection() : name(""), endpoint(""), token(""), isActive(false) {}
 
         // Parameterized constructor
-        Connection(std::string name, std::string endpoint, bool isActive)
-                : name(std::move(name)), endpoint(std::move(endpoint)), isActive(isActive) {}
+        Connection(std::string name, std::string endpoint, bool isActive, std::string token = "")
+                : name(std::move(name)), endpoint(std::move(endpoint)), token(std::move(token)), isActive(isActive) {}
     };
 
 // CloudResponse can also contain a list of connections for 'list' command

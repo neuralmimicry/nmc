@@ -18,6 +18,8 @@ void Flag::setValue(const std::string& val) {
         case FlagType::Int:
             try {
                 intValue = std::stoi(val);
+                // Preserve the original string to keep downstream flag parsing consistent.
+                stringValue = val;
             } catch (const std::exception& e) {
                 std::cerr << "Error: Invalid integer value for flag --" << longName << ": " << val << std::endl;
                 // You might want to throw an exception here or set a default
@@ -137,9 +139,21 @@ bool Command::validateFlags(const std::map<std::string, std::string>& parsedFlag
 }
 
 bool Command::validateArguments(const std::vector<std::string>& parsedArgs) const {
-    if (parsedArgs.size() < arguments.size()) {
+    size_t requiredCount = 0;
+    for (const auto& arg : arguments) {
+        if (arg.isRequired) {
+            ++requiredCount;
+        }
+    }
+
+    if (parsedArgs.size() < requiredCount) {
         std::cerr << "Error: Not enough arguments provided." << std::endl;
-        std::cerr << "Expected " << arguments.size() << ", got " << parsedArgs.size() << std::endl;
+        std::cerr << "Expected at least " << requiredCount << ", got " << parsedArgs.size() << std::endl;
+        return false;
+    }
+    if (parsedArgs.size() > arguments.size()) {
+        std::cerr << "Error: Too many arguments provided." << std::endl;
+        std::cerr << "Expected at most " << arguments.size() << ", got " << parsedArgs.size() << std::endl;
         return false;
     }
     return true;

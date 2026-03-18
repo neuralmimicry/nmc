@@ -4,22 +4,22 @@
 #include "Commands/K8sCommands.h"
 #include "Commands/ModelCommands.h"
 #include "Commands/SSHCommands.h"
+#include "Commands/OpenShiftCommands.h"
 #include "Commands/VMCommands.h"
 #include "Commands/VersionCommand.h"
 #include "Commands/ConnectionCommands.h"
+#include "Commands/RefinerCommands.h"
 #include <memory> // For std::make_shared
 #include "Core/Utils.h"
-
-auto apiClient = std::make_shared<NMC::Core::CloudAPIClient>(
-        "127.0.0.1",
-        8080,
-        NMC::Core::Utils::getConfigPath()
-);
 
 int main(int argc, char* argv[]) {
     NMC::CLI::CLIParser parser;
 
-    auto apiClient = std::make_shared<NMC::Core::CloudAPIClient>("127.0.0.1", 8080, NMC::Core::Utils::getConfigPath());
+    // Single shared API client for all commands in this process.
+    auto apiClient = std::make_shared<NMC::Core::CloudAPIClient>(
+            "127.0.0.1",
+            8080,
+            NMC::Core::Utils::getConfigPath());
 
     // Register Root Command (mainly for help output)
     auto rootCmd = std::make_shared<NMC::Commands::RootCommand>(apiClient);
@@ -56,6 +56,13 @@ int main(int argc, char* argv[]) {
     sshCmd->addSubcommand(std::make_shared<NMC::Commands::SSHListCommand>(apiClient));
     parser.registerCommand(sshCmd);
 
+    auto openShiftCmd = std::make_shared<NMC::Commands::OpenShiftCommand>(apiClient);
+    openShiftCmd->addSubcommand(std::make_shared<NMC::Commands::OpenShiftResourcesCommand>(apiClient));
+    openShiftCmd->addSubcommand(std::make_shared<NMC::Commands::OpenShiftClustersCommand>(apiClient));
+    openShiftCmd->addSubcommand(std::make_shared<NMC::Commands::OpenShiftRequestCommand>(apiClient));
+    openShiftCmd->addSubcommand(std::make_shared<NMC::Commands::OpenShiftStatusCommand>(apiClient));
+    parser.registerCommand(openShiftCmd);
+
     auto vmCmd = std::make_shared<NMC::Commands::VmCommand>(apiClient);
     vmCmd->addSubcommand(std::make_shared<NMC::Commands::VmCreateCommand>(apiClient));
     vmCmd->addSubcommand(std::make_shared<NMC::Commands::VmDeleteCommand>(apiClient));
@@ -75,7 +82,18 @@ int main(int argc, char* argv[]) {
     connectionCmd->addSubcommand(std::make_shared<NMC::Commands::ConnectionDropCommand>(apiClient));
     connectionCmd->addSubcommand(std::make_shared<NMC::Commands::ConnectionListCommand>(apiClient));
     connectionCmd->addSubcommand(std::make_shared<NMC::Commands::ConnectionSelectCommand>(apiClient));
+    connectionCmd->addSubcommand(std::make_shared<NMC::Commands::ConnectionUnsetDefaultCommand>(apiClient));
+    connectionCmd->addSubcommand(std::make_shared<NMC::Commands::ConnectionSetTokenCommand>(apiClient));
+    connectionCmd->addSubcommand(std::make_shared<NMC::Commands::ConnectionClearTokenCommand>(apiClient));
     parser.registerCommand(connectionCmd);
+
+    auto refinerCmd = std::make_shared<NMC::Commands::RefinerCommand>(apiClient);
+    refinerCmd->addSubcommand(std::make_shared<NMC::Commands::RefinerDeployCommand>(apiClient));
+    refinerCmd->addSubcommand(std::make_shared<NMC::Commands::RefinerStatusCommand>(apiClient));
+    refinerCmd->addSubcommand(std::make_shared<NMC::Commands::RefinerScaleCommand>(apiClient));
+    refinerCmd->addSubcommand(std::make_shared<NMC::Commands::RefinerLogsCommand>(apiClient));
+    refinerCmd->addSubcommand(std::make_shared<NMC::Commands::RefinerRemoveCommand>(apiClient));
+    parser.registerCommand(refinerCmd);
 
     // Register standalone commands
     parser.registerCommand(std::make_shared<NMC::Commands::VersionCommand>(apiClient));

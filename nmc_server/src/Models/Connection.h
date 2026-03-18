@@ -24,15 +24,14 @@ namespace NMC {
                         : name(std::move(name)), endpoint(std::move(endpoint)), isActive(isActive),
                           healthStatus(std::move(healthStatus)) {}
 
-                // Helper to convert to a simple JSON string
-                std::string toJsonString() const {
-                    std::string json = "{";
-                    json += "\"name\": \"" + name + "\",";
-                    json += "\"endpoint\": \"" + endpoint + "\",";
-                    json += "\"isActive\": " + std::string(isActive ? "true" : "false") + ",";
-                    json += "\"healthStatus\": \"" + healthStatus + "\"";
-                    json += "}";
-                    return json;
+                // Helper to convert to JSON for API responses
+                nlohmann::json toJsonString() const {
+                    return {
+                            {"name", name},
+                            {"endpoint", endpoint},
+                            {"isActive", isActive},
+                            {"healthStatus", healthStatus}
+                    };
                 }
             };
         }

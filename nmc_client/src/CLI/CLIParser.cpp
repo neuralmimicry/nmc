@@ -83,9 +83,17 @@ int CLIParser::parseAndExecute(int argc, char* argv[]) {
         return 0;
     }
 
-    // Parse flags and arguments for the final command
-    std::map<std::string, std::string> parsedFlags = parseFlags(currentArgs, currentCommand.get());
-    std::vector<std::string> parsedArguments = parseArguments(currentArgs, currentCommand.get());
+    // Parse flags and arguments for the final command.
+    // These helpers mutate currentArgs to leave only unparsed tokens (if any).
+    std::map<std::string, std::string> parsedFlags;
+    if (!parseFlags(currentArgs, currentCommand.get(), parsedFlags)) {
+        return 1;
+    }
+
+    std::vector<std::string> parsedArguments;
+    if (!parseArguments(currentArgs, currentCommand.get(), parsedArguments)) {
+        return 1;
+    }
 
     // Validate if any unparsed arguments remain (which would indicate an error)
     if (!currentArgs.empty()) {
@@ -98,8 +106,9 @@ int CLIParser::parseAndExecute(int argc, char* argv[]) {
     return currentCommand->execute(parsedFlags, parsedArguments, globalFlags);
 }
 
-std::map<std::string, std::string> CLIParser::parseFlags(std::vector<std::string>& args, Command* cmd) {
-    std::map<std::string, std::string> parsedFlags;
+bool CLIParser::parseFlags(std::vector<std::string>& args,
+                           Command* cmd,
+                           std::map<std::string, std::string>& outFlags) {
     std::vector<std::string> remainingArgs;
 
     for (size_t i = 0; i < args.size(); ++i) {
@@ -129,13 +138,22 @@ std::map<std::string, std::string> CLIParser::parseFlags(std::vector<std::string
                         flagValue = args[++i]; // Take next arg as value
                     } else {
                         std::cerr << "Error: Flag --" << flagName << " requires a value." << std::endl;
-                        // Return empty map or indicate error
-                        return {};
+                        return false;
                     }
                 }
                 flagDef->setValue(flagValue);
             }
-            parsedFlags[flagName] = flagDef->stringValue.empty() ? std::to_string(flagDef->boolValue) : flagDef->stringValue; // Store based on the flag's internal parsed value
+            // Canonicalize all flag names to the long form so commands can
+            // consistently look up "location" even if the user passed "-r".
+            const std::string canonical = flagDef->longName.empty() ? flagDef->shortName : flagDef->longName;
+            const std::string normalized = flagDef->stringValue.empty()
+                    ? std::to_string(flagDef->boolValue)
+                    : flagDef->stringValue;
+            if (flagDef->type == FlagType::String && outFlags.count(canonical) && !normalized.empty()) {
+                outFlags[canonical] += "," + normalized;
+            } else {
+                outFlags[canonical] = normalized;
+            }
             foundFlag = true;
         } else if (arg.rfind('-', 0) == 0 && arg.length() > 1 && arg.at(1) != '-') { // Short flag
             std::string flagName = arg.substr(1);
@@ -153,10 +171,18 @@ std::map<std::string, std::string> CLIParser::parseFlags(std::vector<std::string
                     flagDef->setValue(args[++i]);
                 } else {
                     std::cerr << "Error: Flag -" << flagName << " requires a value." << std::endl;
-                    return {};
+                    return false;
                 }
             }
-            parsedFlags[flagName] = flagDef->stringValue.empty() ? std::to_string(flagDef->boolValue) : flagDef->stringValue; // Store based on the flag's internal parsed value
+            const std::string canonical = flagDef->longName.empty() ? flagDef->shortName : flagDef->longName;
+            const std::string normalized = flagDef->stringValue.empty()
+                    ? std::to_string(flagDef->boolValue)
+                    : flagDef->stringValue;
+            if (flagDef->type == FlagType::String && outFlags.count(canonical) && !normalized.empty()) {
+                outFlags[canonical] += "," + normalized;
+            } else {
+                outFlags[canonical] = normalized;
+            }
             foundFlag = true;
         }
 
@@ -165,26 +191,27 @@ std::map<std::string, std::string> CLIParser::parseFlags(std::vector<std::string
         }
     }
     args = remainingArgs; // Update args to only contain unparsed items (positional args)
-    return parsedFlags;
+    return true;
 }
 
 
-std::vector<std::string> CLIParser::parseArguments(std::vector<std::string>& args, Command* cmd) {
-    std::vector<std::string> parsedArgs;
+bool CLIParser::parseArguments(std::vector<std::string>& args,
+                               Command* cmd,
+                               std::vector<std::string>& outArgs) {
     // For simplicity, arguments are just the remaining positional arguments in order
     // A more complex parser would handle fixed positions and variadic arguments
     if (args.size() > cmd->arguments.size()) {
         std::cerr << "Error: Too many arguments provided." << std::endl;
-        return {}; // Indicate error
+        return false;
     }
 
     for (size_t i = 0; i < args.size(); ++i) {
         if (i < cmd->arguments.size()) {
-            parsedArgs.push_back(args[i]);
+            outArgs.push_back(args[i]);
         }
     }
     args.clear(); // All remaining args are considered parsed arguments
-    return parsedArgs;
+    return true;
 }
 
 void CLIParser::printRootHelp() const {

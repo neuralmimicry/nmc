@@ -34,11 +34,12 @@ namespace NMC::Commands {
 
 // --- ConnectionMakeCommand ---
     ConnectionMakeCommand::ConnectionMakeCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client) : BaseCommand("make", "Make a new connection", std::move(client)) {
-        usage = "nmc connection make <name> <endpoint> [--default]";
-        examples = "nmc connection make my-cloud https://api.mycloud.com --default";
+        usage = "nmc connection make <name> <endpoint> [--default] [--token <token>]";
+        examples = "nmc connection make my-cloud https://api.mycloud.com --default --token $TOKEN";
         addArgument(CLI::Argument("name", "Name of the connection", true, 0));
         addArgument(CLI::Argument("endpoint", "Endpoint URL for the connection", true, 1));
         addFlag(CLI::Flag("d", "default", "Set this connection as the default", CLI::FlagType::Bool, false));
+        addFlag(CLI::Flag("t", "token", "Bearer token for this connection", CLI::FlagType::String, false));
     }
 
     int ConnectionMakeCommand::execute(const std::map<std::string, std::string>& parsedFlags, const std::vector<std::string>& parsedArgs, const CLI::GlobalFlags& globalFlags) {
@@ -49,6 +50,11 @@ namespace NMC::Commands {
         std::string name = parsedArgs[0];
         std::string endpoint = parsedArgs[1];
         bool setDefault = parsedFlags.count("default");
+        std::string token = "";
+        auto itToken = parsedFlags.find("token");
+        if (itToken != parsedFlags.end()) {
+            token = itToken->second;
+        }
 
         if (name.empty() || endpoint.empty()) {
             std::cerr << "Error: Connection name and endpoint are required." << std::endl;
@@ -56,7 +62,7 @@ namespace NMC::Commands {
             return 1;
         }
 
-        Models::CloudResponse response = apiClient->makeConnection(name, endpoint, setDefault); // Corrected
+        Models::CloudResponse response = apiClient->makeConnection(name, endpoint, setDefault, token); // Corrected
         printOutput(response, globalFlags);
         return response.success ? 0 : 1;
     }
@@ -137,6 +143,53 @@ namespace NMC::Commands {
         }
 
         Models::CloudResponse response = apiClient->unsetDefaultConnection(); // Corrected
+        printOutput(response, globalFlags);
+        return response.success ? 0 : 1;
+    }
+
+// --- ConnectionSetTokenCommand ---
+    ConnectionSetTokenCommand::ConnectionSetTokenCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client)
+        : BaseCommand("set-token", "Set or update the bearer token for a connection", std::move(client)) {
+        usage = "nmc connection set-token <name> --token <token>";
+        examples = "nmc connection set-token my-cloud --token $TOKEN";
+        addArgument(CLI::Argument("name", "Name of the connection to update", true, 0));
+        addFlag(CLI::Flag("t", "token", "Bearer token for this connection", CLI::FlagType::String, true));
+    }
+
+    int ConnectionSetTokenCommand::execute(const std::map<std::string, std::string>& parsedFlags,
+                                           const std::vector<std::string>& parsedArgs,
+                                           const CLI::GlobalFlags& globalFlags) {
+        if (!validateArguments(parsedArgs) || !validateFlags(parsedFlags)) {
+            return 1;
+        }
+        const std::string& name = parsedArgs[0];
+        auto itToken = parsedFlags.find("token");
+        if (itToken == parsedFlags.end() || itToken->second.empty()) {
+            std::cerr << "Error: --token is required." << std::endl;
+            printHelp();
+            return 1;
+        }
+        Models::CloudResponse response = apiClient->setConnectionToken(name, itToken->second);
+        printOutput(response, globalFlags);
+        return response.success ? 0 : 1;
+    }
+
+// --- ConnectionClearTokenCommand ---
+    ConnectionClearTokenCommand::ConnectionClearTokenCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client)
+        : BaseCommand("clear-token", "Clear the bearer token for a connection", std::move(client)) {
+        usage = "nmc connection clear-token <name>";
+        examples = "nmc connection clear-token my-cloud";
+        addArgument(CLI::Argument("name", "Name of the connection to update", true, 0));
+    }
+
+    int ConnectionClearTokenCommand::execute(const std::map<std::string, std::string>& parsedFlags,
+                                             const std::vector<std::string>& parsedArgs,
+                                             const CLI::GlobalFlags& globalFlags) {
+        if (!validateArguments(parsedArgs) || !validateFlags(parsedFlags)) {
+            return 1;
+        }
+        const std::string& name = parsedArgs[0];
+        Models::CloudResponse response = apiClient->clearConnectionToken(name);
         printOutput(response, globalFlags);
         return response.success ? 0 : 1;
     }

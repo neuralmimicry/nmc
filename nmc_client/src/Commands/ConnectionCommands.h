@@ -60,6 +60,20 @@ namespace NMC::Commands {
         int execute(const std::map<std::string, std::string>& parsedFlags, const std::vector<std::string>& parsedArgs, const CLI::GlobalFlags& globalFlags) override;
     };
 
+// --- ConnectionSetTokenCommand ---
+    class ConnectionSetTokenCommand : public BaseCommand {
+    public:
+        ConnectionSetTokenCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client);
+        int execute(const std::map<std::string, std::string>& parsedFlags, const std::vector<std::string>& parsedArgs, const CLI::GlobalFlags& globalFlags) override;
+    };
+
+// --- ConnectionClearTokenCommand ---
+    class ConnectionClearTokenCommand : public BaseCommand {
+    public:
+        ConnectionClearTokenCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client);
+        int execute(const std::map<std::string, std::string>& parsedFlags, const std::vector<std::string>& parsedArgs, const CLI::GlobalFlags& globalFlags) override;
+    };
+
 } // namespace NMC::Commands
 
 #endif // NMC_CONNECTION_COMMANDS_H

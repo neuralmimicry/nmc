@@ -3,6 +3,9 @@
 #include "K8sHandlers.h"
 #include "ConnectionHandlers.h"
 #include "Utils.h"
+#include <cstdlib>
+#include <cctype>
+#include <sstream>
 #include <iostream>
 #include <algorithm> // For std::remove_if, std::find_if
 #include <set>       // For unique locations/types
@@ -10,7 +13,158 @@
 
 namespace NMC::Server {
 
+    namespace {
+        std::string trim(const std::string& value) {
+            const auto start = value.find_first_not_of(" \t");
+            if (start == std::string::npos) {
+                return "";
+            }
+            const auto end = value.find_last_not_of(" \t");
+            return value.substr(start, end - start + 1);
+        }
+
+        std::string toLower(std::string value) {
+            for (auto& ch : value) {
+                ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+            }
+            return value;
+        }
+
+        std::string normalizeOpenShiftStatus(const std::string& rawStatus) {
+            const std::string status = toLower(rawStatus);
+            if (status == "ready" || status == "running") {
+                return "Ready";
+            }
+            if (status == "failed" || status == "error" || status == "unhealthy") {
+                return "Failed";
+            }
+            if (status == "pending" || status == "accepted" || status == "queued" || status == "requested") {
+                return "Pending";
+            }
+            if (status == "provisioning" || status == "gitops-syncing" || status == "gitops_syncing"
+                || status == "syncing" || status == "installing" || status == "creating") {
+                return "Provisioning";
+            }
+            return "Unknown";
+        }
+
+        void normalizeClusterStatus(nlohmann::json& cluster) {
+            if (cluster.is_object() && cluster.contains("status") && cluster["status"].is_string()) {
+                cluster["status"] = normalizeOpenShiftStatus(cluster["status"].get<std::string>());
+            }
+        }
+    }
+
     APIRoutes::APIRoutes(httplib::Server& svr) {
+        auto envOr = [](const char* primary, const char* fallback) -> const char* {
+            const char* val = std::getenv(primary);
+            if (val && *val) {
+                return val;
+            }
+            val = std::getenv(fallback);
+            if (val && *val) {
+                return val;
+            }
+            return nullptr;
+        };
+
+        const char* authModeEnv = envOr("NMC_AUTH_MODE", "NM_AUTH_MODE");
+        authMode = authModeEnv ? toLower(std::string(authModeEnv)) : "";
+        if (authMode.empty()) {
+            authMode = "token";
+        }
+
+        const char* authTokenEnv = envOr("NMC_AUTH_TOKEN", "NM_AUTH_TOKEN");
+        authToken = authTokenEnv ? authTokenEnv : "";
+
+        if (authMode == "off") {
+            authRequired = false;
+        } else if (authMode == "token") {
+            authRequired = !authToken.empty();
+        } else {
+            authRequired = true;
+        }
+
+        const char* maxBodyEnv = std::getenv("NMC_MAX_BODY_BYTES");
+        maxBodyBytes = 1024 * 1024; // 1 MiB default
+        if (maxBodyEnv) {
+            try {
+                maxBodyBytes = static_cast<size_t>(std::stoul(maxBodyEnv));
+            } catch (const std::exception&) {
+                maxBodyBytes = 1024 * 1024;
+            }
+        }
+
+        const char* maxLogBodyEnv = std::getenv("NMC_LOG_BODY_BYTES");
+        maxLogBodyBytes = 2048;
+        if (maxLogBodyEnv) {
+            try {
+                maxLogBodyBytes = static_cast<size_t>(std::stoul(maxLogBodyEnv));
+            } catch (const std::exception&) {
+                maxLogBodyBytes = 2048;
+            }
+        }
+
+        const char* docsEnv = std::getenv("NMC_DOCS_ENABLED");
+        docsEnabled = true;
+        if (docsEnv) {
+            const std::string val = toLower(std::string(docsEnv));
+            docsEnabled = !(val == "0" || val == "false" || val == "no");
+        }
+
+        if (authMode == "oidc") {
+            OIDCConfig cfg;
+            const char* introspection = envOr("NMC_OIDC_INTROSPECTION_URL", "NM_OIDC_INTROSPECTION_URL");
+            cfg.introspectionUrl = introspection ? introspection : "";
+            const char* issuer = envOr("NMC_OIDC_ISSUER", "NM_OIDC_ISSUER");
+            cfg.issuer = issuer ? issuer : "";
+            const char* clientId = envOr("NMC_OIDC_CLIENT_ID", "NM_OIDC_CLIENT_ID");
+            cfg.clientId = clientId ? clientId : "";
+            const char* clientSecret = envOr("NMC_OIDC_CLIENT_SECRET", "NM_OIDC_CLIENT_SECRET");
+            cfg.clientSecret = clientSecret ? clientSecret : "";
+
+            auto appendCsv = [&cfg](const char* raw, const auto& trimFn) {
+                if (!raw) return;
+                std::stringstream ss(raw);
+                std::string item;
+                while (std::getline(ss, item, ',')) {
+                    const std::string trimmed = trimFn(item);
+                    if (!trimmed.empty()) {
+                        cfg.audiences.push_back(trimmed);
+                    }
+                }
+            };
+
+            appendCsv(envOr("NMC_OIDC_AUDIENCE", "NM_OIDC_AUDIENCE"), trim);
+            appendCsv(envOr("NMC_OIDC_ALLOWED_AUDIENCES", "NM_OIDC_ALLOWED_AUDIENCES"), trim);
+            appendCsv(envOr("NMC_OIDC_AUDIENCES", "NM_OIDC_AUDIENCES"), trim);
+
+            const char* requiredScope = envOr("NMC_OIDC_REQUIRED_SCOPE", "NM_OIDC_REQUIRED_SCOPE");
+            if (requiredScope) {
+                std::stringstream ss(requiredScope);
+                std::string item;
+                while (std::getline(ss, item, ',')) {
+                    const std::string trimmed = trim(item);
+                    if (!trimmed.empty()) {
+                        cfg.requiredScopes.push_back(trimmed);
+                    }
+                }
+            }
+
+            const char* requiredScopesCsv = envOr("NMC_OIDC_REQUIRED_SCOPES", "NM_OIDC_REQUIRED_SCOPES");
+            if (requiredScopesCsv) {
+                std::stringstream ss(requiredScopesCsv);
+                std::string item;
+                while (std::getline(ss, item, ',')) {
+                    const std::string trimmed = trim(item);
+                    if (!trimmed.empty()) {
+                        cfg.requiredScopes.push_back(trimmed);
+                    }
+                }
+            }
+            oidcValidator = std::make_unique<OIDCValidator>(cfg);
+        }
+
         // Initialize K8sHandlers, passing necessary references and callbacks
         const std::string api_server_url_value = "http://localhost:8080"; // Replace with your actual Kubernetes API server URL
 
@@ -26,149 +180,226 @@ namespace NMC::Server {
                 }
         );
 
+        // OpenShift portal API base URL (FastAPI in oshift). Defaults to localhost:8000.
+        const char* osUrlEnv = std::getenv("NMC_OSHIFT_API_URL");
+        std::string osUrl = osUrlEnv ? osUrlEnv : "http://127.0.0.1:8000";
+        openShiftClient = std::make_unique<OpenShiftClient>(osUrl);
+
         // Enable logging of all requests
         svr.set_logger([this](const httplib::Request& req, const httplib::Response& res) {
-            logRequest(req);
+            logRequest(req, res);
         });
 
-        // Set up static file serving for documentation
-        // Assumes a 'docs' directory exists relative to the executable
-        // or where the server is run from.
-        // This is a robust way to serve static content like documentation.
-        // All requests to /docs/* will look for files in the ./docs/ directory.
-        // E.g., /docs/index.html will serve ./docs/index.html
-        // /docs/bucket.html will serve ./docs/bucket.html
-        svr.set_base_dir("./docs"); // Set the base directory for static files
+        if (docsEnabled) {
+            // Set up static file serving for documentation
+            // Assumes a 'docs' directory exists relative to the executable
+            // or where the server is run from.
+            // This is a robust way to serve static content like documentation.
+            // All requests to /docs/* will look for files in the ./docs/ directory.
+            // E.g., /docs/index.html will serve ./docs/index.html
+            // /docs/bucket.html will serve ./docs/bucket.html
+            svr.set_base_dir("./docs"); // Set the base directory for static files
 
-        // --- Documentation Route ---
-        // This route will serve the index.html from the docs directory
-        // when /docs is accessed directly.
-        // Other files like /docs/bucket.html will be served automatically
-        // by set_base_dir.
-        svr.Get("/index.html", [](const httplib::Request& req, httplib::Response& res) {
-            res.set_content(Utils::readFile("./docs/index.html"), "text/html");
-        });
-        svr.Get("/docs", [](const httplib::Request& req, httplib::Response& res) {
-            res.set_content(Utils::readFile("./docs/index.html"), "text/html");
-        });
+            // --- Documentation Route ---
+            // This route will serve the index.html from the docs directory
+            // when /docs is accessed directly.
+            // Other files like /docs/bucket.html will be served automatically
+            // by set_base_dir.
+            svr.Get("/index.html", [](const httplib::Request& req, httplib::Response& res) {
+                res.set_content(Utils::readFile("./docs/index.html"), "text/html");
+            });
+            svr.Get("/docs", [](const httplib::Request& req, httplib::Response& res) {
+                res.set_content(Utils::readFile("./docs/index.html"), "text/html");
+            });
+        }
+
+        auto guard = [this](const httplib::Request& req, httplib::Response& res) -> bool {
+            ensureRequestId(req, res);
+            if (!enforceBodyLimit(req, res)) {
+                return false;
+            }
+            if (!authorizeOrReject(req, res)) {
+                return false;
+            }
+            return true;
+        };
 
         // --- Bucket Routes ---
         svr.Post("/bucket/create", [this](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
             handleCreateBucket(req, res);
         });
         svr.Delete(R"(/bucket/delete/(.*))", [this](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
             handleDeleteBucket(req, res);
         });
         svr.Get(R"(/bucket/get/(.*))", [this](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
             handleGetBucket(req, res);
         });
         svr.Get("/bucket/list", [this](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
             handleListBuckets(req, res);
         });
         svr.Get("/bucket/list-locations", [this](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
             handleListBucketLocations(req, res);
         });
         svr.Get("/bucket/list-types", [this](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
             handleListBucketTypes(req, res);
         });
         svr.Post(R"(/bucket/reset-key/(.*))", [this](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
             handleResetBucketKey(req, res);
         });
 
         // --- Connection Routes ---
         // GET /connections/status
-        svr.Get("/connections/status", ConnectionHandlers::handleGetConnectionStatus);
+        svr.Get("/connections/status", [this](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            ConnectionHandlers::handleGetConnectionStatus(req, res);
+        });
 
         // POST /connections/make
-        svr.Post("/connections/make", ConnectionHandlers::handleMakeConnection);
+        svr.Post("/connections/make", [this](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            ConnectionHandlers::handleMakeConnection(req, res);
+        });
 
         // DELETE /connections/:name
         // svr.Delete(R"(/connections/(?P<name>[^/]+))", ConnectionHandlers::handleDropConnection);
-        svr.Delete(R"(^/connections/([^/]+)$)",  ConnectionHandlers::handleDropConnection);
+        svr.Delete(R"(^/connections/([^/]+)$)",  [this](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            ConnectionHandlers::handleDropConnection(req, res);
+        });
 
         // GET /connections
-        svr.Get("/connections", ConnectionHandlers::handleListConnections);
+        svr.Get("/connections", [this](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            ConnectionHandlers::handleListConnections(req, res);
+        });
 
         // POST /connections/select
-        svr.Post("/connections/select", ConnectionHandlers::handleSelectConnection);
+        svr.Post("/connections/select", [this](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            ConnectionHandlers::handleSelectConnection(req, res);
+        });
 
         std::cout << "Connection API routes registered." << std::endl;
 
         // --- K8s Routes ---
         svr.Post("/k8s/create", [this](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
             k8sHandlers->handleCreateK8sCluster(req, res);
         });
         svr.Delete(R"(/k8s/delete/(.*))", [this](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
             k8sHandlers->handleDeleteK8sCluster(req, res);
         });
         svr.Get(R"(/k8s/get/(.*))", [this](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
             k8sHandlers->handleGetK8sCluster(req, res);
         });
         svr.Get(R"(/k8s/get-config/(.*))", [this](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
             k8sHandlers->handleGetKubeConfig(req, res);
         });
         svr.Get("/k8s/list", [this](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
             k8sHandlers->handleListK8sClusters(req, res);
         });
         svr.Get("/k8s/list-locations", [this](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
             k8sHandlers->handleListK8sLocations(req, res);
         });
         svr.Get("/k8s/healthz", [this](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
             k8sHandlers->handleK8sHealthCheck(req, res);
         });
         svr.Post(R"(/k8s/resume/(.*))", [this](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
             k8sHandlers->handleResumeK8sCluster(req, res);
         });
         svr.Post(R"(/k8s/suspend/(.*))", [this](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
             k8sHandlers->handleSuspendK8sCluster(req, res);
         });
 
         // --- Model Routes ---
         svr.Post("/model/upload", [this](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
             handleUploadModel(req, res);
         });
 
         // --- SSH Routes ---
         svr.Post("/ssh/create", [this](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
             handleCreateSSHKey(req, res);
         });
         svr.Delete(R"(/ssh/delete/(.*))", [this](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
             handleDeleteSSHKey(req, res);
         });
         svr.Get("/ssh/list", [this](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
             handleListSSHKeys(req, res);
         });
 
         // --- VM Routes ---
         svr.Post("/vm/create", [this](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
             handleCreateVM(req, res);
         });
         svr.Delete(R"(/vm/delete/(.*))", [this](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
             handleDeleteVM(req, res);
         });
         svr.Get(R"(/vm/get/(.*))", [this](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
             handleGetVM(req, res);
         });
         svr.Get("/vm/list", [this](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
             handleListVMs(req, res);
         });
         svr.Get("/vm/list-locations", [this](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
             handleListVMLocations(req, res);
         });
         svr.Get("/vm/list-os", [this](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
             handleListVMOSImages(req, res);
         });
         svr.Get("/vm/list-sku", [this](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
             handleListVMSKUs(req, res);
         });
         svr.Post(R"(/vm/restart/(.*))", [this](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
             handleRestartVM(req, res);
         });
         svr.Post(R"(/vm/resume/(.*))", [this](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
             handleResumeVM(req, res);
         });
         svr.Post(R"(/vm/suspend/(.*))", [this](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
             handleSuspendVM(req, res);
+        });
+
+        // --- OpenShift Routes ---
+        svr.Get("/openshift/resources", [this](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            handleOpenShiftResources(req, res);
+        });
+        svr.Get("/openshift/clusters", [this](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            handleOpenShiftClusters(req, res);
+        });
+        svr.Post("/openshift/clusters/request", [this](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            handleOpenShiftRequestCluster(req, res);
         });
     }
 
@@ -188,10 +419,19 @@ namespace NMC::Server {
      *
      * @param req The httplib::Request object representing the incoming request.
      */
-    void APIRoutes::logRequest(const httplib::Request& req) const {
+    void APIRoutes::logRequest(const httplib::Request& req, const httplib::Response& res) const {
+        const std::string requestId = res.get_header_value("X-Request-ID").empty()
+                ? req.get_header_value("X-Request-ID")
+                : res.get_header_value("X-Request-ID");
+
         std::cout << "[" << req.method << "] " << req.path;
-        if (!req.body.empty()) {
-            std::cout << " Body: " << req.body;
+        if (!requestId.empty()) {
+            std::cout << " request_id=" << requestId;
+        }
+        if (!req.body.empty() && shouldLogBody(req.path)) {
+            std::cout << " Body: " << redactBody(req.body);
+        } else if (!req.body.empty()) {
+            std::cout << " Body: [redacted]";
         }
         std::cout << std::endl;
     }
@@ -232,6 +472,104 @@ namespace NMC::Server {
         apiResponse.data = nlohmann::json({});
         sendJsonResponse(res, apiResponse);
         res.status = status; // Set HTTP status code for error
+    }
+
+    void APIRoutes::ensureRequestId(const httplib::Request& req, httplib::Response& res) const {
+        const std::string existing = req.get_header_value("X-Request-ID");
+        if (!existing.empty()) {
+            res.set_header("X-Request-ID", existing);
+            return;
+        }
+        res.set_header("X-Request-ID", Utils::generateUniqueId("req"));
+    }
+
+    bool APIRoutes::enforceBodyLimit(const httplib::Request& req, httplib::Response& res) const {
+        if (req.body.size() > maxBodyBytes) {
+            sendErrorResponse(res, 413, "Request body exceeds maximum allowed size.");
+            return false;
+        }
+        return true;
+    }
+
+    bool APIRoutes::authorizeOrReject(const httplib::Request& req, httplib::Response& res) const {
+        if (!authRequired) {
+            return true;
+        }
+        if (authMode == "token") {
+            const std::string bearer = req.get_header_value("Authorization");
+            if (!bearer.empty()) {
+                const std::string prefix = "Bearer ";
+                if (bearer.rfind(prefix, 0) == 0) {
+                    const std::string token = bearer.substr(prefix.size());
+                    if (!authToken.empty() && token == authToken) {
+                        return true;
+                    }
+                }
+            }
+            const std::string tokenHeader = req.get_header_value("X-NMC-Token");
+            if (!tokenHeader.empty() && !authToken.empty() && tokenHeader == authToken) {
+                return true;
+            }
+            res.set_header("WWW-Authenticate", "Bearer");
+            sendErrorResponse(res, 401, "Unauthorized.");
+            return false;
+        }
+
+        if (authMode == "oidc") {
+            if (!oidcValidator || !oidcValidator->isConfigured()) {
+                sendErrorResponse(res, 500, "OIDC authentication is misconfigured.");
+                return false;
+            }
+            const std::string bearer = req.get_header_value("Authorization");
+            std::string token;
+            if (!bearer.empty()) {
+                const std::string prefix = "Bearer ";
+                if (bearer.rfind(prefix, 0) == 0) {
+                    token = bearer.substr(prefix.size());
+                }
+            }
+            if (token.empty()) {
+                res.set_header("WWW-Authenticate", "Bearer");
+                sendErrorResponse(res, 401, "Unauthorized.");
+                return false;
+            }
+
+            std::string errorMessage;
+            nlohmann::json claims;
+            if (!oidcValidator->validateToken(token, errorMessage, &claims)) {
+                res.set_header("WWW-Authenticate", "Bearer");
+                sendErrorResponse(res, 401, "Unauthorized.");
+                return false;
+            }
+            return true;
+        }
+
+        sendErrorResponse(res, 500, "Unsupported authentication mode.");
+        return false;
+    }
+
+    bool APIRoutes::shouldLogBody(const std::string& path) const {
+        // Redact known sensitive endpoints (keys, scripts, credentials, provisioning).
+        const std::vector<std::string> redactedPrefixes = {
+                "/ssh/create",
+                "/vm/create",
+                "/model/upload",
+                "/connections/make",
+                "/openshift/clusters/request"
+        };
+        for (const auto& prefix : redactedPrefixes) {
+            if (path.rfind(prefix, 0) == 0) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    std::string APIRoutes::redactBody(const std::string& body) const {
+        if (body.size() <= maxLogBodyBytes) {
+            return body;
+        }
+        return body.substr(0, maxLogBodyBytes) + "...(truncated)";
     }
 
 // --- Bucket Handlers ---
@@ -900,5 +1238,69 @@ namespace NMC::Server {
         }
     }
 
-} // namespace NMC::Server
+// --- OpenShift Handlers ---
+    void APIRoutes::handleOpenShiftResources(const httplib::Request& req, httplib::Response& res) {
+        Models::CloudResponse apiResponse = openShiftClient->getResources();
+        sendJsonResponse(res, apiResponse);
+        res.status = apiResponse.statusCode;
+    }
 
+    void APIRoutes::handleOpenShiftClusters(const httplib::Request& req, httplib::Response& res) {
+        Models::CloudResponse apiResponse = openShiftClient->listClusters();
+        if (apiResponse.success) {
+            if (apiResponse.data.is_array()) {
+                for (auto& cluster : apiResponse.data) {
+                    normalizeClusterStatus(cluster);
+                }
+            } else if (apiResponse.data.is_object()) {
+                if (apiResponse.data.contains("data") && apiResponse.data["data"].is_array()) {
+                    for (auto& cluster : apiResponse.data["data"]) {
+                        normalizeClusterStatus(cluster);
+                    }
+                }
+                if (apiResponse.data.contains("clusters") && apiResponse.data["clusters"].is_array()) {
+                    for (auto& cluster : apiResponse.data["clusters"]) {
+                        normalizeClusterStatus(cluster);
+                    }
+                }
+            }
+        }
+        sendJsonResponse(res, apiResponse);
+        res.status = apiResponse.statusCode;
+    }
+
+    void APIRoutes::handleOpenShiftRequestCluster(const httplib::Request& req, httplib::Response& res) {
+        try {
+            auto json_body = nlohmann::json::parse(req.body);
+
+            // Validate minimum required fields before forwarding to oshift.
+            const std::string name = json_body.value("name", "");
+            const std::string organization = json_body.value("organization", "");
+            const int gpuCount = json_body.value("gpu_count", 0);
+            const std::string architecture = json_body.value("architecture", "");
+            const std::string region = json_body.value("region", "");
+            const std::string provider = json_body.value("provider", "on-prem");
+
+            if (name.empty() || organization.empty() || architecture.empty() || region.empty() || gpuCount <= 0) {
+                return sendErrorResponse(res, 400, "Missing required parameters: name, organization, gpu_count, architecture, or region.");
+            }
+            if (provider == "hybrid-burst" && (!json_body.contains("burst_targets") || json_body["burst_targets"].empty())) {
+                return sendErrorResponse(res, 400, "burst_targets is required when provider is hybrid-burst.");
+            }
+
+            Models::CloudResponse apiResponse = openShiftClient->requestCluster(json_body);
+            if (apiResponse.success && apiResponse.data.is_object()) {
+                if (apiResponse.data.contains("cluster")) {
+                    normalizeClusterStatus(apiResponse.data["cluster"]);
+                }
+            }
+            sendJsonResponse(res, apiResponse);
+            res.status = apiResponse.statusCode;
+        } catch (const nlohmann::json::parse_error& e) {
+            sendErrorResponse(res, 400, "Invalid JSON body: " + std::string(e.what()));
+        } catch (const std::exception& e) {
+            sendErrorResponse(res, 500, "Server error: " + std::string(e.what()));
+        }
+    }
+
+} // namespace NMC::Server

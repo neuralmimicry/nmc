@@ -131,6 +131,21 @@ int main(int argc, char* argv[]) {
     std::set_terminate(myTerminate);
 
     try {
+        const char* authModeEnv = std::getenv("NMC_AUTH_MODE");
+        const std::string authMode = authModeEnv ? std::string(authModeEnv) : "token";
+        if (authMode == "off") {
+            spdlog::warn("NMC_AUTH_MODE=off. API authentication is disabled.");
+        } else if (authMode == "token") {
+            const char* authTokenEnv = std::getenv("NMC_AUTH_TOKEN");
+            if (!authTokenEnv || std::string(authTokenEnv).empty()) {
+                spdlog::warn("NMC_AUTH_TOKEN is not set. API authentication is disabled.");
+            }
+        } else if (authMode == "oidc") {
+            const char* introspection = std::getenv("NMC_OIDC_INTROSPECTION_URL");
+            if (!introspection || std::string(introspection).empty()) {
+                spdlog::warn("NMC_OIDC_INTROSPECTION_URL is not set. OIDC authentication will fail closed.");
+            }
+        }
         //
         // 1) Handle '-k' or '-c' overrides, or fall back to env/default config.json
         //

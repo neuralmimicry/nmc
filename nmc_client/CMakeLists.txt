@@ -39,6 +39,8 @@ set(NMC_CLIENT_SOURCES
         src/Commands/ConnectionCommands.cpp
         src/Commands/K8sCommands.cpp
         src/Commands/ModelCommands.cpp
+        src/Commands/OpenShiftCommands.cpp
+        src/Commands/RefinerCommands.cpp
         src/Commands/RootCommand.cpp
         src/Commands/SSHCommands.cpp
         src/Commands/VersionCommand.cpp

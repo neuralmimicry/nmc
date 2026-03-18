@@ -1,6 +1,6 @@
-# NMC CLI Application
+# NMC CLI Application (NeuralMimicry Continuum)
 
-This is a C++ CLI application named `nmc`. 
+This is a C++ CLI application named `nmc` (NeuralMimicry Continuum).
 It provides a modular and extensible framework for building command-line interfaces, with a focus on best practices for structure, security (conceptual), robustness, resilience, and ease of adding/amending/removing commands.
 
 **Current Features:**
@@ -12,6 +12,8 @@ It provides a modular and extensible framework for building command-line interfa
 * Generated help messages for root, top-level, and subcommands.
 * Placeholder for interaction with a cloud API (`CloudAPIClient`).
 * implementations for cloud operations (Bucket, K8s, Model, SSH, VM).
+* Refiner lifecycle control commands for Kubernetes (`refiner deploy/status/scale/logs/remove`).
+* Optional bearer token authentication for the Continuum control plane.
 
 **Project Structure:**
 
@@ -19,6 +21,7 @@ The project is organized into logical directories:
 
 * `src/CLI/`: Core CLI parsing logic, including `Command` definitions and the `CLIParser`.
 * `src/Commands/`: Contains all the specific `nmc` commands. Each top-level command (e.g., `bucket`, `k8s`) has its own header and source file, and its subcommands are nested within.
+  OpenShift integration commands live in `OpenShiftCommands.*` and proxy to the NeuralMimicry OpenShift portal API.
 * `src/Core/`: Core functionalities like `CloudAPIClient` (mocked cloud interaction) and `Utils` (utility functions).
 * `src/Models/`: Data structures representing cloud resources (e.g., `Bucket`, `K8sCluster`).
 
@@ -69,6 +72,15 @@ nmc connection list (alias ls): Lists all configured connections, indicating whe
 
 nmc connection select <NAME>: Sets an existing connection as the default active connection.
 
+nmc connection unset-default: Unsets the current default connection and reverts to the built-in host/port.
+
+* **Set a bearer token for a connection:**
+    ```bash
+    ./nmc connection make prod --endpoint https://continuum.example --token "$OIDC_ACCESS_TOKEN" --default
+    ./nmc connection set-token prod --token "$OIDC_ACCESS_TOKEN"
+    ./nmc connection clear-token prod
+    ```
+
 * **Bucket command help:**
     ```bash
     ./nmc bucket --help
@@ -94,6 +106,40 @@ nmc connection select <NAME>: Sets an existing connection as the default active 
     ./nmc vm create dev-vm --sku nmx-h100-80 --region us-east --os-image ubuntu-22.04 --public-key-id sshkey-123 --init-script "#!/bin/bash echo Hello"
     ```
 
+* **OpenShift (Continuum) resources:**
+    ```bash
+    ./nmc openshift resources
+    ```
+
+* **List OpenShift clusters:**
+    ```bash
+    ./nmc openshift clusters
+    ```
+
+* **Request an OpenShift cluster (ROSA example):**
+    ```bash
+    ./nmc openshift request hpc-example --org neuralmimicry --gpu-count 8 --arch amd64 --region us-east-1 --provider rosa
+    ```
+
+* **Request with burst targets (repeatable flag):**
+    ```bash
+    ./nmc openshift request hpc-burst --org neuralmimicry --gpu-count 16 --arch amd64 --region us-east-1 --provider hybrid-burst --burst-target aro --burst-target gcp
+    ```
+
+* **Poll OpenShift cluster status until Ready:**
+    ```bash
+    ./nmc openshift status hpc-example --watch --until Ready --interval 10 --timeout 900
+    ```
+
+* **Deploy and monitor Refiner workload:**
+    ```bash
+    ./nmc refiner deploy --manifest /path/to/refiner-k8s.yaml --namespace refiner --timeout 300
+    ./nmc refiner status --namespace refiner
+    ./nmc refiner scale --namespace refiner --replicas 3
+    ./nmc refiner logs --namespace refiner --tail 300
+    ./nmc refiner remove --namespace refiner --delete-storage
+    ```
+
 * **Display version:**
     ```bash
     ./nmc version
@@ -117,6 +163,33 @@ To add a new top-level command (e.g., `database`):
 6.  If the new command interacts with a new type of cloud resource, you might need to add a new model in `src/Models/` and extend `CloudAPIClient` with corresponding API calls.
 
 This structure provides a solid foundation for a comprehensive and maintainable C++ CLI application.
+
+**Workflows and Behavior Notes:**
+
+Detailed end-to-end workflows, including CLI parsing, connection management, and server request lifecycles, are documented in:
+
+- `docs/WORKFLOWS.md`
+- `docs/SECURITY.md` (ISO 27001 / SOC 2 readiness and operational controls)
+
+**OpenShift Integration Notes:**
+
+The server proxies OpenShift provisioning and visibility requests to the NeuralMimicry OpenShift portal API (oshift).
+Set the OpenShift portal base URL with the `NMC_OSHIFT_API_URL` environment variable when starting `nmc_server`.
+The default is `http://127.0.0.1:8000`.
+
+**Refiner Command Notes:**
+
+The `refiner` command group executes `kubectl` locally from the `nmc` client process to manage the Refiner deployment lifecycle.
+Ensure:
+- `kubectl` is installed on the host running `nmc`.
+- the current kubeconfig/context has permissions for `deployments`, `services`, `pods`, and optional `persistentvolumeclaims`.
+
+**Authentication notes:**
+- The server supports `NMC_AUTH_MODE=token` (shared secret) and `NMC_AUTH_MODE=oidc` (bearer token introspection).
+- The CLI sends bearer tokens when provided. It checks `NMC_OIDC_ACCESS_TOKEN`, `NMC_BEARER_TOKEN`, the active connection token, then `NMC_AUTH_TOKEN`.
+- Connection tokens are stored in `~/.nmc/config.json` with hardened permissions.
+- For OIDC audiences, use `NMC_OIDC_AUDIENCE` (single or comma-separated) or `NMC_OIDC_ALLOWED_AUDIENCES` to allow multiple client IDs (e.g., SPA + server).
+- Compatibility aliases: `NM_AUTH_MODE`, `NM_AUTH_TOKEN`, and `NM_OIDC_*` are also accepted for shared SSO configuration across NeuralMimicry services.
 Explanation of Components:
 
 CMakeLists.txt: Build configuration for CMake.
@@ -161,6 +234,3 @@ Clear class hierarchies and interfaces.
 Meaningful variable and function names.
 Extensive comments for clarity.
 Use of std::shared_ptr for managing command lifetimes if complex ownership is needed, though simple new/delete or unique pointers suffice for this example.
-
-
-

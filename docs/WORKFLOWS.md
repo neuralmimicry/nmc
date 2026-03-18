@@ -1,0 +1,67 @@
+# NMC Workflows
+
+This document describes the end-to-end workflows that the CLI and server follow, plus where resilience and best-practice behaviors are enforced.
+
+**Top-Level Architecture**
+- The `nmc_client` binary parses CLI input, validates required flags and arguments, and delegates to a shared `CloudAPIClient` instance.
+- The `nmc_server` binary serves HTTP routes with in-memory models plus a Kubernetes-backed K8s integration.
+- Client and server exchange JSON responses with a consistent `CloudResponse` envelope (`success`, `message`, `data`).
+
+**CLI Parsing Workflow**
+1. The CLI parser normalizes global flags like `--output` before command routing.
+2. The parser resolves the first token to a registered root command or alias.
+3. The parser walks subcommands until no further subcommand matches.
+4. Flags are parsed and canonicalized to long names so `-r` and `--region` map to the same key.
+5. Positional arguments are parsed in order and validated against required counts.
+6. If validation passes, the command executes with parsed flags, arguments, and global flags.
+
+**Command Execution Workflow**
+1. Each command declares arguments, flags, and usage examples in its constructor.
+2. `execute` validates required args and flags, then constructs the API request.
+3. The command invokes `CloudAPIClient`, receives a `CloudResponse`, and prints output using the selected format.
+
+**Connection Management Workflow**
+1. The client loads `~/.nmc/config.json` at startup and keeps an in-memory list of connections.
+2. `connection make` writes a new connection to disk and optionally sets it as default.
+3. `connection select` marks one connection as active and updates the default in the config file.
+4. The API client rebuilds its internal HTTP client when a default connection is set or changed.
+5. `connection status` performs a lightweight health check on the active endpoint.
+6. Connection-level bearer tokens are persisted in `~/.nmc/config.json` and can be updated with `connection set-token` or removed with `connection clear-token`.
+7. The API client resolves the active token in this order: `NMC_OIDC_ACCESS_TOKEN`, `NMC_BEARER_TOKEN`, the active connection token, then `NMC_AUTH_TOKEN`.
+8. When a token is present, the client sends `Authorization: Bearer <token>` on all requests.
+
+**Server Request Workflow**
+1. HTTP routes are registered in `APIRoutes` and dispatch to handler functions.
+2. Each handler validates request body or path parameters and returns a JSON envelope.
+3. Shared in-memory resources are guarded by a mutex for thread safety.
+4. Errors return structured responses with appropriate HTTP status codes.
+5. Optional auth, request IDs, and payload limits are enforced before handlers run.
+6. When `NMC_AUTH_MODE=oidc`, bearer tokens are validated via the configured introspection endpoint.
+
+**OpenShift Portal Workflow**
+1. The NMC server uses `NMC_OSHIFT_API_URL` (default `http://127.0.0.1:8000`) to connect to the oshift portal API.
+2. `/openshift/resources` and `/openshift/clusters` proxy read-only queries to the portal.
+3. `/openshift/clusters/request` validates required fields and forwards provisioning requests.
+4. The portal API orchestrates provider-specific flows (ROSA, ARO, GCP, on-prem, hybrid-burst).
+5. The CLI `openshift status` command can poll cluster status by repeatedly calling the proxy until the `--until` target or timeout.
+6. OpenShift cluster statuses are normalized to common NMC states: `Pending`, `Provisioning`, `Ready`, `Failed`, `Unknown`.
+
+**Kubernetes Integration Workflow**
+1. Server startup loads K8s configuration from `--kubeconfig`, `--config`, environment, or `~/.nmc/config.json`.
+2. A background thread periodically checks K8s health and logs changes.
+3. K8s handlers use the C client to list nodes and custom resources.
+4. K8s API responses are normalized into `K8sCluster` models before returning to clients.
+
+**Refiner Lifecycle Workflow (Continuum CLI)**
+1. `nmc refiner deploy` validates namespace/context/manifest inputs and creates the target namespace if needed.
+2. The command applies the Kubernetes manifest with `kubectl apply -f` and waits for deployment rollout completion.
+3. `nmc refiner status` fetches deployment/service/pod state and normalizes replica health (`desired`, `ready`, `available`, `unavailable`).
+4. `nmc refiner scale` updates deployment replicas and waits for rollout convergence.
+5. `nmc refiner logs` provides operational observability from `deployment/refiner`.
+6. `nmc refiner remove` deletes deployment resources, optionally including persistent storage PVC cleanup.
+
+**Resilience Practices Implemented**
+- 2xx responses are treated as successful; non-2xx responses flow through the error path.
+- Connection state is persisted to disk after any mutation to avoid drift.
+- Response parsing falls back to raw body data when JSON parsing fails.
+- Default behaviors are explicit when configuration files are missing.

@@ -70,15 +70,29 @@ namespace NMC::Core {
         Models::CloudResponse resumeVM(const std::string& id);
         Models::CloudResponse suspendVM(const std::string& id);
 
+        // OpenShift / Continuum Operations (via NeuralMimicry OpenShift portal API)
+        Models::CloudResponse listOpenShiftResources();
+        Models::CloudResponse listOpenShiftClusters();
+        Models::CloudResponse requestOpenShiftCluster(const std::string& name,
+                                                      const std::string& organization,
+                                                      int gpuCount,
+                                                      const std::string& architecture,
+                                                      const std::string& region,
+                                                      const std::string& provider,
+                                                      const std::vector<std::string>& burstTargets);
+
         // Connection Management
         Models::CloudResponse getConnectionStatus();
         Models::CloudResponse makeConnection(const std::string& name, const std::string& endpoint, bool setDefault);
+        Models::CloudResponse makeConnection(const std::string& name, const std::string& endpoint, bool setDefault, const std::string& token);
         Models::CloudResponse dropConnection(const std::string& name);
         Models::CloudResponse listConnections();
         Models::CloudResponse selectConnection(const std::string& name);
         Models::CloudResponse unsetDefaultConnection(); // Added new method to unset default
         bool hasDefaultConnection() const; // Added new method to check if default connection exists
         std::optional<Models::Connection> getDefaultConnection() const; // Added to get default connection
+        Models::CloudResponse setConnectionToken(const std::string& name, const std::string& token);
+        Models::CloudResponse clearConnectionToken(const std::string& name);
 
     private:
         std::unique_ptr<httplib::Client> cli; // HTTP client instance
@@ -94,6 +108,9 @@ namespace NMC::Core {
         // Persistence methods
         void loadConnections(bool showMessage);
         void saveConnections(bool showMessage);
+        std::string resolveAuthToken() const;
+        void applyAuthHeaders();
+        void applyAuthHeaders(httplib::Client& client, const std::string& token) const;
 
         // holds the parsed JSON of all saved connections
         nlohmann::json connectionsConfig;

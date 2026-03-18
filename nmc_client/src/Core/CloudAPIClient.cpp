@@ -6,14 +6,22 @@
 #include <algorithm> // For std::find_if, std::remove_if
 #include <fstream>   // For file operations (std::ifstream, std::ofstream)
 #include <filesystem> // For creating directories (C++17)
+#include <cstdlib>
 
+namespace {
+    std::string getenvOrEmpty(const char* key) {
+        const char* value = std::getenv(key);
+        return value ? std::string(value) : std::string();
+    }
+}
 
 namespace NMC::Core {
 
     //------------------------------------------------------------------------------
 // Helper: parse "http://host:port/..." into host+port and rebuild cli
-    static void initCliFromUrl(std::unique_ptr<httplib::Client>& cli,
+    static bool initCliFromUrl(std::unique_ptr<httplib::Client>& cli,
                                const std::string& url,
+                               const std::string& fallbackHost,
                                int fallbackPort)
     {
         // strip scheme
@@ -28,14 +36,23 @@ namespace NMC::Core {
         // split host:port
         auto colon = s.find(':');
         std::string host = s.substr(0, colon);
-        int port = (colon==std::string::npos)
-                   ? fallbackPort
-                   : std::stoi(s.substr(colon+1));
+        int port = fallbackPort;
+        if (colon != std::string::npos) {
+            try {
+                port = std::stoi(s.substr(colon + 1));
+            } catch (const std::exception&) {
+                port = fallbackPort;
+            }
+        }
+        if (host.empty()) {
+            host = fallbackHost;
+        }
 
         cli = std::make_unique<httplib::Client>(host, port);
         cli->set_connection_timeout(5);
         cli->set_read_timeout(180);
         cli->set_write_timeout(180);
+        return true;
     }
 
     // Constructor: Initializes the httplib client with the server's host and port.
@@ -43,13 +60,17 @@ namespace NMC::Core {
             : host(host), port(port), configFilePath(filePath) { // Initialize configFilePath
         loadConnections(false); // Load connections on construction
         cli = std::make_unique<httplib::Client>(host, port);
+        cli->set_connection_timeout(5);
+        cli->set_read_timeout(180);
+        cli->set_write_timeout(180);
         for (const auto& conn : connectionsConfig["connections"]) {
             if (conn["name"] == currentConnectionName) {
                 // Assuming endpoint is a full URL like "http://192.168.1.72:8080"
-                initCliFromUrl(cli, conn["endpoint"].get<std::string>(), port);
+                initCliFromUrl(cli, conn["endpoint"].get<std::string>(), host, port);
                 break;
             }
         }
+        applyAuthHeaders();
     }
 
 // Destructor: Cleans up the httplib client.
@@ -63,7 +84,7 @@ namespace NMC::Core {
     Models::CloudResponse CloudAPIClient::processHttpResponse(httplib::Result& res, const std::string& successMessage) const {
         Models::CloudResponse apiResponse;
         if (res) {
-            apiResponse.success = res->status == 200; // HTTP 200 OK means success
+            apiResponse.success = (res->status >= 200 && res->status < 300); // Any 2xx is success
             apiResponse.message = successMessage; // Default success message
 
             if (res->body.empty()) {
@@ -106,7 +127,7 @@ namespace NMC::Core {
         apiResponse.data = dataPayload;
         // If the original 'res' was not successful, propagate that status if applicable,
         // but for locally generated data, 'success' typically comes from the logic, not HTTP status.
-        if (res && res->status != 200) {
+        if (res && (res->status < 200 || res->status >= 300)) {
             apiResponse.success = false;
             apiResponse.message = "Operation completed with warnings: " + successMessage + " (HTTP Status: " + std::to_string(res->status) + ")";
             if (res->body.empty()) {
@@ -232,6 +253,10 @@ namespace NMC::Core {
             apiResp.data = std::move(clusters);
             return apiResp;
         }
+        // Failure: still return a consistent array payload for callers.
+        apiResp.data = std::move(clusters);
+        return apiResp;
+    }
 
     Models::CloudResponse CloudAPIClient::listK8sLocations(const std::string& filterSku) {
         // The server-side listK8sLocations does not use filterSku, but keeping it for now
@@ -372,10 +397,45 @@ namespace NMC::Core {
         return processHttpResponse(res, "VM '" + id + "' suspended successfully.");
     }
 
+// --- OpenShift / Continuum Operations ---
+    Models::CloudResponse CloudAPIClient::listOpenShiftResources() {
+        auto res = cli->Get("/openshift/resources");
+        return processHttpResponse(res, "OpenShift resources retrieved.");
+    }
+
+    Models::CloudResponse CloudAPIClient::listOpenShiftClusters() {
+        auto res = cli->Get("/openshift/clusters");
+        return processHttpResponse(res, "OpenShift clusters listed.");
+    }
+
+    Models::CloudResponse CloudAPIClient::requestOpenShiftCluster(const std::string& name,
+                                                                  const std::string& organization,
+                                                                  int gpuCount,
+                                                                  const std::string& architecture,
+                                                                  const std::string& region,
+                                                                  const std::string& provider,
+                                                                  const std::vector<std::string>& burstTargets) {
+        nlohmann::json request_body;
+        request_body["name"] = name;
+        request_body["organization"] = organization;
+        request_body["gpu_count"] = gpuCount;
+        request_body["architecture"] = architecture;
+        request_body["region"] = region;
+        request_body["provider"] = provider;
+        if (!burstTargets.empty()) {
+            request_body["burst_targets"] = burstTargets;
+        }
+
+        auto res = cli->Post("/openshift/clusters/request", request_body.dump(), "application/json");
+        return processHttpResponse(res, "OpenShift cluster request submitted.");
+    }
+
 // --- Connection Management ---
     Models::CloudResponse CloudAPIClient::getConnectionStatus() {
         if (currentConnectionName.empty()) {
-            return {false, "No default connection set. Please use 'nmc connection make --default' or 'nmc connection select' to set one.", nlohmann::json::parse("{\"isActive\": false, \"status\": \"unset\"}")};
+            return {false,
+                    "No default connection set. Please use 'nmc connection make --default' or 'nmc connection select' to set one.",
+                    nlohmann::json{{"isActive", false}, {"status", "unset"}}};
         }
 
         auto it = std::find_if(connections.begin(), connections.end(),
@@ -385,7 +445,9 @@ namespace NMC::Core {
             // This indicates an inconsistency where currentConnectionName is set but the connection itself is not in the list.
             currentConnectionName = ""; // Clear inconsistent state
             saveConnections(true); // Save to reflect the cleared state
-            return {false, "Current connection details not found, though a name was set. This indicates an inconsistency. Resetting default. Please select a connection.", nlohmann::json::parse("{\"isActive\": false, \"status\": \"inconsistent\"}")};
+            return {false,
+                    "Current connection details not found, though a name was set. This indicates an inconsistency. Resetting default. Please select a connection.",
+                    nlohmann::json{{"isActive", false}, {"status", "inconsistent"}}};
         }
 
         // Now, attempt to ping the endpoint to check health
@@ -395,6 +457,7 @@ namespace NMC::Core {
         temp_cli.set_connection_timeout(5);
         temp_cli.set_read_timeout(10);
         temp_cli.set_write_timeout(10);
+        applyAuthHeaders(temp_cli, resolveAuthToken());
 
         httplib::Result res = temp_cli.Get("/health"); // Assuming a /health endpoint for basic check
 
@@ -402,16 +465,30 @@ namespace NMC::Core {
         if (res && res->status == 200) {
             response.success = true;
             response.message = "Current connection: " + it->name + " (" + it->endpoint + ") is active and healthy.";
-            response.data = nlohmann::json::parse("{\"name\": \"" + it->name + "\", \"endpoint\": \"" + it->endpoint + "\", \"isActive\": " + (it->isActive ? "true" : "false") + ", \"status\": \"healthy\"}");
+            response.data = nlohmann::json{
+                    {"name", it->name},
+                    {"endpoint", it->endpoint},
+                    {"isActive", it->isActive},
+                    {"status", "healthy"}
+            };
         } else {
             response.success = false;
             response.message = "Connection to " + it->name + " (" + it->endpoint + ") failed or is unhealthy. Error: " + (res ? std::to_string(res->status) : httplib::to_string(res.error()));
-            response.data = nlohmann::json::parse("{\"name\": \"" + it->name + "\", \"endpoint\": \"" + it->endpoint + "\", \"isActive\": " + (it->isActive ? "true" : "false") + ", \"status\": \"unhealthy\"}");
+            response.data = nlohmann::json{
+                    {"name", it->name},
+                    {"endpoint", it->endpoint},
+                    {"isActive", it->isActive},
+                    {"status", "unhealthy"}
+            };
         }
         return response;
     }
 
     Models::CloudResponse CloudAPIClient::makeConnection(const std::string& name, const std::string& endpoint, bool setDefault) {
+        return makeConnection(name, endpoint, setDefault, "");
+    }
+
+    Models::CloudResponse CloudAPIClient::makeConnection(const std::string& name, const std::string& endpoint, bool setDefault, const std::string& token) {
         auto it = std::find_if(connections.begin(), connections.end(),
                                [&name](const Models::Connection& conn) { return conn.name == name; });
 
@@ -419,7 +496,7 @@ namespace NMC::Core {
             return {false, "Connection with name '" + name + "' already exists. Use 'drop' first or choose a different name.", nlohmann::json()};
         }
 
-        connections.emplace_back(name, endpoint, setDefault); // New connection
+        connections.emplace_back(name, endpoint, setDefault, token); // New connection
         if (setDefault) {
             // Deactivate old default connection and set new one
             for (auto& conn : connections) {
@@ -431,8 +508,11 @@ namespace NMC::Core {
         }
         saveConnections(true); // Save changes after making a connection
         auto& newConn = connections.back();
-        initCliFromUrl(cli, newConn.endpoint, port);
-        return {true, "Connection '" + name + "' created" + (setDefault ? " and set as default." : "."), nlohmann::json::parse("{\"name\": \"" + name + "\", \"endpoint\": \"" + endpoint + "\", \"default_set\": " + (setDefault ? "true" : "false") + "}")};
+        initCliFromUrl(cli, newConn.endpoint, host, port);
+        applyAuthHeaders();
+        return {true,
+                "Connection '" + name + "' created" + (setDefault ? " and set as default." : "."),
+                nlohmann::json{{"name", name}, {"endpoint", endpoint}, {"default_set", setDefault}}};
     }
 
     Models::CloudResponse CloudAPIClient::dropConnection(const std::string& name) {
@@ -445,10 +525,14 @@ namespace NMC::Core {
             if (currentConnectionName == name) {
                 currentConnectionName = ""; // Dropped the current active connection
                 saveConnections(true); // Save to reflect the cleared state
-                return {true, "Connection '" + name + "' dropped. No default connection now.", nlohmann::json::parse("{\"dropped_name\": \"" + name + "\", \"default_unset\": true}")};
+                return {true,
+                        "Connection '" + name + "' dropped. No default connection now.",
+                        nlohmann::json{{"dropped_name", name}, {"default_unset", true}}};
             }
             saveConnections(true); // Save changes after dropping a connection
-            return {true, "Connection '" + name + "' dropped.", nlohmann::json::parse("{\"dropped_name\": \"" + name + "\", \"default_unset\": false}")};
+            return {true,
+                    "Connection '" + name + "' dropped.",
+                    nlohmann::json{{"dropped_name", name}, {"default_unset", false}}};
         }
         return {false, "Connection with name '" + name + "' not found.", nlohmann::json()};
     }
@@ -489,8 +573,12 @@ namespace NMC::Core {
         it->isActive = true;
         currentConnectionName = name;
         saveConnections(true); // Save changes after selecting a connection
+        initCliFromUrl(cli, it->endpoint, host, port);
+        applyAuthHeaders();
 
-        return {true, "Connection '" + name + "' selected as default.", nlohmann::json::parse("{\"selected_name\": \"" + name + "\", \"endpoint\": \"" + it->endpoint + "\"}")};
+        return {true,
+                "Connection '" + name + "' selected as default.",
+                nlohmann::json{{"selected_name", name}, {"endpoint", it->endpoint}}};
     }
 
     Models::CloudResponse CloudAPIClient::unsetDefaultConnection() {
@@ -512,7 +600,38 @@ namespace NMC::Core {
         cli->set_connection_timeout(5);
         cli->set_read_timeout(180);
         cli->set_write_timeout(180);
-        return {true, "Default connection '" + unset_name + "' unset successfully.", nlohmann::json::parse("{\"unset_name\": \"" + unset_name + "\"}")};
+        applyAuthHeaders();
+        return {true,
+                "Default connection '" + unset_name + "' unset successfully.",
+                nlohmann::json{{"unset_name", unset_name}}};
+    }
+
+    Models::CloudResponse CloudAPIClient::setConnectionToken(const std::string& name, const std::string& token) {
+        auto it = std::find_if(connections.begin(), connections.end(),
+                               [&name](const Models::Connection& conn) { return conn.name == name; });
+        if (it == connections.end()) {
+            return {false, "Connection with name '" + name + "' not found.", nlohmann::json()};
+        }
+        it->token = token;
+        saveConnections(true);
+        if (currentConnectionName == name) {
+            applyAuthHeaders();
+        }
+        return {true, "Token updated for connection '" + name + "'.", nlohmann::json{{"name", name}}};
+    }
+
+    Models::CloudResponse CloudAPIClient::clearConnectionToken(const std::string& name) {
+        auto it = std::find_if(connections.begin(), connections.end(),
+                               [&name](const Models::Connection& conn) { return conn.name == name; });
+        if (it == connections.end()) {
+            return {false, "Connection with name '" + name + "' not found.", nlohmann::json()};
+        }
+        it->token.clear();
+        saveConnections(true);
+        if (currentConnectionName == name) {
+            applyAuthHeaders();
+        }
+        return {true, "Token cleared for connection '" + name + "'.", nlohmann::json{{"name", name}}};
     }
 
     // Method to check if a default connection is set
@@ -557,6 +676,8 @@ namespace NMC::Core {
             // Create a default, empty configuration structure
             connectionsConfig["connections"] = nlohmann::json::array();
             connectionsConfig["default_connection"] = "";
+            connections.clear();
+            currentConnectionName.clear();
 
             // Save the new empty config file, but don't show a "saved" message
             saveConnections(false);
@@ -573,6 +694,16 @@ namespace NMC::Core {
             connectionsConfig["connections"] = nlohmann::json::array();
             connectionsConfig["default_connection"] = "";
         }
+        try {
+            auto perms = std::filesystem::status(configFilePath).permissions();
+            if ((perms & std::filesystem::perms::group_read) != std::filesystem::perms::none
+                || (perms & std::filesystem::perms::others_read) != std::filesystem::perms::none) {
+                std::cerr << "Warning: Config file permissions are too open. Recommended: owner read/write only."
+                          << std::endl;
+            }
+        } catch (const std::exception&) {
+            // Non-fatal: permission checks are best-effort.
+        }
         // --- SYNC JSON → VECTOR + DEFAULT NAME ---
         connections.clear();
         for (auto &j: connectionsConfig["connections"]) {
@@ -580,6 +711,7 @@ namespace NMC::Core {
             c.name = j["name"].get<std::string>();
             c.endpoint = j["endpoint"].get<std::string>();
             c.isActive = j.value("isActive", false);
+            c.token = j.value("token", "");
             connections.push_back(std::move(c));
         }
         currentConnectionName = connectionsConfig.value("default_connection", "");
@@ -592,7 +724,8 @@ namespace NMC::Core {
                 arr.push_back({
                     {"name",     conn.name},
                     {"endpoint", conn.endpoint},
-                    {"isActive", conn.isActive}
+                    {"isActive", conn.isActive},
+                    {"token", conn.token}
                  });
             }
         connectionsConfig["connections"]           = std::move(arr);
@@ -607,6 +740,57 @@ namespace NMC::Core {
         if (showMessage) {
             std::cout << "Info: Connections saved to " << configFilePath << std::endl;
         }
+        configFile.close();
+        try {
+            std::filesystem::permissions(
+                    configFilePath,
+                    std::filesystem::perms::owner_read | std::filesystem::perms::owner_write,
+                    std::filesystem::perm_options::replace);
+        } catch (const std::exception&) {
+            // Non-fatal: continue if filesystem permissions cannot be set.
+        }
+    }
+
+    std::string CloudAPIClient::resolveAuthToken() const {
+        std::string token = getenvOrEmpty("NMC_OIDC_ACCESS_TOKEN");
+        if (!token.empty()) return token;
+        token = getenvOrEmpty("NM_OIDC_ACCESS_TOKEN");
+        if (!token.empty()) return token;
+        token = getenvOrEmpty("NMC_BEARER_TOKEN");
+        if (!token.empty()) return token;
+        token = getenvOrEmpty("NM_BEARER_TOKEN");
+        if (!token.empty()) return token;
+
+        if (!currentConnectionName.empty()) {
+            auto it = std::find_if(connections.begin(), connections.end(),
+                                   [this](const Models::Connection& conn) { return conn.name == currentConnectionName; });
+            if (it != connections.end() && !it->token.empty()) {
+                return it->token;
+            }
+        }
+        for (const auto& conn : connections) {
+            if (conn.isActive && !conn.token.empty()) {
+                return conn.token;
+            }
+        }
+        token = getenvOrEmpty("NMC_AUTH_TOKEN");
+        if (!token.empty()) return token;
+        token = getenvOrEmpty("NM_AUTH_TOKEN");
+        return token;
+    }
+
+    void CloudAPIClient::applyAuthHeaders() {
+        if (!cli) return;
+        const std::string token = resolveAuthToken();
+        applyAuthHeaders(*cli, token);
+    }
+
+    void CloudAPIClient::applyAuthHeaders(httplib::Client& client, const std::string& token) const {
+        httplib::Headers headers;
+        if (!token.empty()) {
+            headers.emplace("Authorization", "Bearer " + token);
+        }
+        client.set_default_headers(headers);
     }
 
 

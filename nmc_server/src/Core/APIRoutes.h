@@ -14,6 +14,8 @@
 #include "../Models/VM.h"
 #include "../Models/Connection.h"
 #include "../Models/CloudResponse.h"
+#include "OpenShiftClient.h"
+#include "OIDCValidator.h"
 
 // Forward declaration for K8sHandlers to avoid circular includes
 
@@ -59,8 +61,17 @@ namespace NMC::Server {
 
         std::mutex dataMutex; // Mutex to protect access to data in a multi-threaded environment
 
+        // Compliance-related settings
+        std::string authToken;
+        bool authRequired;
+        size_t maxBodyBytes;
+        size_t maxLogBodyBytes;
+        bool docsEnabled;
+        std::string authMode;
+        std::unique_ptr<OIDCValidator> oidcValidator;
+
         // Utility methods for common server operations
-        void logRequest(const httplib::Request& req) const;
+        void logRequest(const httplib::Request& req, const httplib::Response& res) const;
 
         /**
          * @brief Sends a JSON response to the client.
@@ -76,6 +87,13 @@ namespace NMC::Server {
          * @param message The error message.
          */
         void sendErrorResponse(httplib::Response& res, int status, const std::string& message) const;
+
+        // Security helpers (optional auth, request ID, and payload limits)
+        void ensureRequestId(const httplib::Request& req, httplib::Response& res) const;
+        bool enforceBodyLimit(const httplib::Request& req, httplib::Response& res) const;
+        bool authorizeOrReject(const httplib::Request& req, httplib::Response& res) const;
+        bool shouldLogBody(const std::string& path) const;
+        std::string redactBody(const std::string& body) const;
 
         // --- Bucket Handlers ---
         void handleCreateBucket(const httplib::Request& req, httplib::Response& res);
@@ -106,9 +124,14 @@ namespace NMC::Server {
         void handleResumeVM(const httplib::Request& req, httplib::Response& res);
         void handleSuspendVM(const httplib::Request& req, httplib::Response& res);
 
+        // --- OpenShift Handlers ---
+        void handleOpenShiftResources(const httplib::Request& req, httplib::Response& res);
+        void handleOpenShiftClusters(const httplib::Request& req, httplib::Response& res);
+        void handleOpenShiftRequestCluster(const httplib::Request& req, httplib::Response& res);
+
         // Declare an instance of K8sHandlers
         std::unique_ptr<K8sHandlers> k8sHandlers;
+        std::unique_ptr<OpenShiftClient> openShiftClient;
     };
 
 } // namespace NMC::Server
-

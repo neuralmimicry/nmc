@@ -23,9 +23,13 @@ private:
     GlobalFlags globalFlags;
 
     // Helper to parse flags for a given command
-    static std::map<std::string, std::string> parseFlags(std::vector<std::string>& args, Command* cmd);
+    static bool parseFlags(std::vector<std::string>& args,
+                           Command* cmd,
+                           std::map<std::string, std::string>& outFlags);
     // Helper to parse arguments
-    static std::vector<std::string> parseArguments(std::vector<std::string>& args, Command* cmd);
+    static bool parseArguments(std::vector<std::string>& args,
+                               Command* cmd,
+                               std::vector<std::string>& outArgs);
 
     void printRootHelp() const;
 };
