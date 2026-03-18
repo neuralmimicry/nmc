@@ -43,9 +43,12 @@ K8S_SERVICE_CIDR="${K8S_SERVICE_CIDR:-10.96.0.0/12}"
 K8S_KUBECONFIG_SRC="${K8S_KUBECONFIG_SRC:-}"
 FLANNEL_MANIFEST_URL="${FLANNEL_MANIFEST_URL:-https://raw.githubusercontent.com/flannel-io/flannel/master/Documentation/kube-flannel.yml}"
 NVIDIA_DEVICE_PLUGIN_URL="${NVIDIA_DEVICE_PLUGIN_URL:-https://raw.githubusercontent.com/NVIDIA/k8s-device-plugin/master/deployments/static/nvidia-device-plugin.yml}"
+K8S_API_WAIT_SECONDS="${K8S_API_WAIT_SECONDS:-180}"
+K8S_RESTART_ON_FAILURE="${K8S_RESTART_ON_FAILURE:-true}"
 
 GPU_AUTO="${GPU_AUTO:-true}"
 ENABLE_NVIDIA_DEVICE_PLUGIN="${ENABLE_NVIDIA_DEVICE_PLUGIN:-true}"
+NVIDIA_PRESERVE_DRIVER_IF_PRESENT="${NVIDIA_PRESERVE_DRIVER_IF_PRESENT:-true}"
 
 ENABLE_AUTO_UPDATE="${ENABLE_AUTO_UPDATE:-true}"
 REPO_URL="${REPO_URL:-}"
@@ -55,6 +58,7 @@ DRY_RUN="false"
 
 APT_UPDATED="false"
 GPU_VENDOR="none"
+NVIDIA_SMI_HEALTHY="false"
 
 # ---------------------------
 # Logging (inspired by swarmhpc/scripts/common.sh)
@@ -209,10 +213,13 @@ Kubernetes:
   --k8s-pod-cidr CIDR             Pod CIDR (default: 10.244.0.0/16)
   --k8s-service-cidr CIDR         Service CIDR (default: 10.96.0.0/12)
   --kubeconfig PATH               Use existing kubeconfig (copied to /etc/nmc/kubeconfig)
+  --k8s-api-wait SECONDS          Wait time for API readiness (default: 180)
+  --no-k8s-restart                Do not restart kubelet/containerd on API failure
 
 GPU / OpenCL / CUDA:
   --gpu-auto                      Detect and install GPU stack (default)
   --no-gpu                        Skip GPU/OpenCL/CUDA setup
+  --allow-nvidia-driver-overwrite Allow script to reinstall NVIDIA drivers
   --enable-nvidia-device-plugin   Apply NVIDIA device plugin (default: on when GPU detected)
   --disable-nvidia-device-plugin  Skip device plugin
 
@@ -258,9 +265,12 @@ while [[ $# -gt 0 ]]; do
     --k8s-pod-cidr) K8S_POD_CIDR="$2"; shift 2 ;;
     --k8s-service-cidr) K8S_SERVICE_CIDR="$2"; shift 2 ;;
     --kubeconfig) K8S_KUBECONFIG_SRC="$2"; shift 2 ;;
+    --k8s-api-wait) K8S_API_WAIT_SECONDS="$2"; shift 2 ;;
+    --no-k8s-restart) K8S_RESTART_ON_FAILURE="false"; shift ;;
 
     --gpu-auto) GPU_AUTO="true"; shift ;;
     --no-gpu) GPU_AUTO="false"; shift ;;
+    --allow-nvidia-driver-overwrite) NVIDIA_PRESERVE_DRIVER_IF_PRESENT="false"; shift ;;
     --enable-nvidia-device-plugin) ENABLE_NVIDIA_DEVICE_PLUGIN="true"; shift ;;
     --disable-nvidia-device-plugin) ENABLE_NVIDIA_DEVICE_PLUGIN="false"; shift ;;
 
@@ -394,7 +404,15 @@ apt_install \
 # ---------------------------
 
 detect_gpu() {
-  if command -v nvidia-smi >/dev/null 2>&1 || [[ -d /proc/driver/nvidia/gpus ]]; then
+  if command -v nvidia-smi >/dev/null 2>&1; then
+    if nvidia-smi >/dev/null 2>&1; then
+      NVIDIA_SMI_HEALTHY="true"
+      GPU_VENDOR="nvidia"
+      return
+    fi
+  fi
+
+  if [[ -d /proc/driver/nvidia/gpus ]]; then
     GPU_VENDOR="nvidia"
     return
   fi
@@ -422,18 +440,32 @@ detect_gpu() {
   fi
 }
 
+nvidia_driver_healthy() {
+  if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi >/dev/null 2>&1; then
+    return 0
+  fi
+  return 1
+}
+
 install_opencl_cuda() {
   local vendor="$1"
   log_info "GPU detected: $vendor"
 
   case "$vendor" in
     nvidia)
-      log_info "Installing NVIDIA drivers and CUDA toolkit"
-      apt_install ubuntu-drivers-common || true
-      run_root ubuntu-drivers autoinstall || log_warn "ubuntu-drivers autoinstall failed"
-      apt_install nvidia-cuda-toolkit || log_warn "nvidia-cuda-toolkit install failed"
+      if [[ "$NVIDIA_PRESERVE_DRIVER_IF_PRESENT" == "true" ]] && nvidia_driver_healthy; then
+        NVIDIA_SMI_HEALTHY="true"
+        log_info "Functional NVIDIA driver detected (nvidia-smi OK); skipping NVIDIA driver and CUDA toolkit installation."
+      else
+        log_info "Installing NVIDIA drivers and CUDA toolkit"
+        apt_install ubuntu-drivers-common || true
+        run_root ubuntu-drivers autoinstall || log_warn "ubuntu-drivers autoinstall failed"
+        apt_install nvidia-cuda-toolkit || log_warn "nvidia-cuda-toolkit install failed"
+      fi
       apt_install ocl-icd-opencl-dev clinfo || log_warn "OpenCL tools install failed"
-      log_warn "A reboot may be required for NVIDIA drivers to load."
+      if [[ "$NVIDIA_SMI_HEALTHY" != "true" ]]; then
+        log_warn "A reboot may be required for NVIDIA drivers to load."
+      fi
       ;;
     amd)
       log_info "Installing OpenCL tooling for AMD"
@@ -477,6 +509,31 @@ k8s_available() {
     return $?
   fi
   kubectl get nodes >/dev/null 2>&1
+}
+
+wait_for_k8s_api() {
+  local kubeconfig="$1"
+  local deadline=$((SECONDS + K8S_API_WAIT_SECONDS))
+  while [[ $SECONDS -lt $deadline ]]; do
+    if kubectl --kubeconfig="$kubeconfig" get --raw='/healthz' >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 2
+  done
+
+  if [[ "$K8S_RESTART_ON_FAILURE" == "true" ]]; then
+    log_warn "Kubernetes API not responding; restarting kubelet/containerd"
+    run_root systemctl restart containerd || true
+    run_root systemctl restart kubelet || true
+    deadline=$((SECONDS + K8S_API_WAIT_SECONDS))
+    while [[ $SECONDS -lt $deadline ]]; do
+      if kubectl --kubeconfig="$kubeconfig" get --raw='/healthz' >/dev/null 2>&1; then
+        return 0
+      fi
+      sleep 2
+    done
+  fi
+  return 1
 }
 
 detect_k8s_series() {
@@ -526,11 +583,11 @@ EOF
   series="$(detect_k8s_series)"
   log_info "Using Kubernetes repo series: $series"
 
-  if retry run_root bash -c "curl -fsSL https://pkgs.k8s.io/core:/stable:/$series/deb/Release.key | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg"; then
+  if retry run_root bash -c "curl -fsSL https://pkgs.k8s.io/core:/stable:/$series/deb/Release.key | gpg --dearmor --batch --yes -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg"; then
     run_root bash -c "echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/$series/deb/ /' > /etc/apt/sources.list.d/kubernetes.list"
   else
     log_warn "Failed to configure pkgs.k8s.io repo; falling back to apt.kubernetes.io"
-    retry run_root bash -c "curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | gpg --dearmor -o /etc/apt/keyrings/kubernetes-archive-keyring.gpg"
+    retry run_root bash -c "curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | gpg --dearmor --batch --yes -o /etc/apt/keyrings/kubernetes-archive-keyring.gpg"
     run_root bash -c "echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-archive-keyring.gpg] https://apt.kubernetes.io/ kubernetes-xenial main' > /etc/apt/sources.list.d/kubernetes.list"
   fi
 
@@ -554,14 +611,18 @@ EOF
     log_info "Kubernetes already initialized"
   fi
 
-  log_info "Applying Flannel CNI"
-  retry run_root kubectl --kubeconfig=/etc/kubernetes/admin.conf apply -f "$FLANNEL_MANIFEST_URL"
+  if wait_for_k8s_api /etc/kubernetes/admin.conf; then
+    log_info "Applying Flannel CNI"
+    retry run_root kubectl --kubeconfig=/etc/kubernetes/admin.conf apply -f "$FLANNEL_MANIFEST_URL"
 
-  run_root kubectl --kubeconfig=/etc/kubernetes/admin.conf taint nodes --all node-role.kubernetes.io/control-plane- >/dev/null 2>&1 || true
-  run_root kubectl --kubeconfig=/etc/kubernetes/admin.conf taint nodes --all node-role.kubernetes.io/master- >/dev/null 2>&1 || true
+    run_root kubectl --kubeconfig=/etc/kubernetes/admin.conf taint nodes --all node-role.kubernetes.io/control-plane- >/dev/null 2>&1 || true
+    run_root kubectl --kubeconfig=/etc/kubernetes/admin.conf taint nodes --all node-role.kubernetes.io/master- >/dev/null 2>&1 || true
 
-  log_info "Waiting for node readiness"
-  run_root kubectl --kubeconfig=/etc/kubernetes/admin.conf wait --for=condition=Ready node --all --timeout=120s || true
+    log_info "Waiting for node readiness"
+    run_root kubectl --kubeconfig=/etc/kubernetes/admin.conf wait --for=condition=Ready node --all --timeout=120s || true
+  else
+    log_warn "Kubernetes API not reachable; skipping CNI apply. Run after API is healthy."
+  fi
 }
 
 configure_kubeconfig_for_nmc() {
@@ -574,6 +635,16 @@ configure_kubeconfig_for_nmc() {
 
 if k8s_available; then
   log_info "Kubernetes detected and available"
+elif [[ -n "$K8S_KUBECONFIG_SRC" && -f "$K8S_KUBECONFIG_SRC" ]]; then
+  log_warn "Kubeconfig provided but API is not reachable; waiting for recovery"
+  if ! wait_for_k8s_api "$K8S_KUBECONFIG_SRC"; then
+    die "Kubernetes API unreachable using provided kubeconfig"
+  fi
+elif [[ -f /etc/kubernetes/admin.conf ]]; then
+  log_warn "Kubernetes appears installed but API is not reachable; attempting recovery"
+  if ! wait_for_k8s_api /etc/kubernetes/admin.conf; then
+    die "Kubernetes API still unreachable after recovery attempts"
+  fi
 else
   if [[ "$K8S_AUTO_INSTALL" == "true" ]]; then
     install_kubernetes
