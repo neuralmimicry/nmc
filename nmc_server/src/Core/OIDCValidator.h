@@ -51,7 +51,10 @@ namespace NMC::Server {
 
         OIDCConfig cfg;
         ParsedUrl endpoint;
-        std::unique_ptr<httplib::Client> client;
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+        std::unique_ptr<httplib::SSLClient> httpsClient;
+#endif
+        std::unique_ptr<httplib::Client> httpClient;
         mutable std::mutex clientMutex;
     };
 

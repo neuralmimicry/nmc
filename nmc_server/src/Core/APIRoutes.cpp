@@ -225,63 +225,63 @@ namespace NMC::Server {
         };
 
         // --- Bucket Routes ---
-        svr.Post("/bucket/create", [this](const httplib::Request& req, httplib::Response& res) {
+        svr.Post("/bucket/create", [this, guard](const httplib::Request& req, httplib::Response& res) {
             if (!guard(req, res)) return;
             handleCreateBucket(req, res);
         });
-        svr.Delete(R"(/bucket/delete/(.*))", [this](const httplib::Request& req, httplib::Response& res) {
+        svr.Delete(R"(/bucket/delete/(.*))", [this, guard](const httplib::Request& req, httplib::Response& res) {
             if (!guard(req, res)) return;
             handleDeleteBucket(req, res);
         });
-        svr.Get(R"(/bucket/get/(.*))", [this](const httplib::Request& req, httplib::Response& res) {
+        svr.Get(R"(/bucket/get/(.*))", [this, guard](const httplib::Request& req, httplib::Response& res) {
             if (!guard(req, res)) return;
             handleGetBucket(req, res);
         });
-        svr.Get("/bucket/list", [this](const httplib::Request& req, httplib::Response& res) {
+        svr.Get("/bucket/list", [this, guard](const httplib::Request& req, httplib::Response& res) {
             if (!guard(req, res)) return;
             handleListBuckets(req, res);
         });
-        svr.Get("/bucket/list-locations", [this](const httplib::Request& req, httplib::Response& res) {
+        svr.Get("/bucket/list-locations", [this, guard](const httplib::Request& req, httplib::Response& res) {
             if (!guard(req, res)) return;
             handleListBucketLocations(req, res);
         });
-        svr.Get("/bucket/list-types", [this](const httplib::Request& req, httplib::Response& res) {
+        svr.Get("/bucket/list-types", [this, guard](const httplib::Request& req, httplib::Response& res) {
             if (!guard(req, res)) return;
             handleListBucketTypes(req, res);
         });
-        svr.Post(R"(/bucket/reset-key/(.*))", [this](const httplib::Request& req, httplib::Response& res) {
+        svr.Post(R"(/bucket/reset-key/(.*))", [this, guard](const httplib::Request& req, httplib::Response& res) {
             if (!guard(req, res)) return;
             handleResetBucketKey(req, res);
         });
 
         // --- Connection Routes ---
         // GET /connections/status
-        svr.Get("/connections/status", [this](const httplib::Request& req, httplib::Response& res) {
+        svr.Get("/connections/status", [this, guard](const httplib::Request& req, httplib::Response& res) {
             if (!guard(req, res)) return;
             ConnectionHandlers::handleGetConnectionStatus(req, res);
         });
 
         // POST /connections/make
-        svr.Post("/connections/make", [this](const httplib::Request& req, httplib::Response& res) {
+        svr.Post("/connections/make", [this, guard](const httplib::Request& req, httplib::Response& res) {
             if (!guard(req, res)) return;
             ConnectionHandlers::handleMakeConnection(req, res);
         });
 
         // DELETE /connections/:name
         // svr.Delete(R"(/connections/(?P<name>[^/]+))", ConnectionHandlers::handleDropConnection);
-        svr.Delete(R"(^/connections/([^/]+)$)",  [this](const httplib::Request& req, httplib::Response& res) {
+        svr.Delete(R"(^/connections/([^/]+)$)",  [this, guard](const httplib::Request& req, httplib::Response& res) {
             if (!guard(req, res)) return;
             ConnectionHandlers::handleDropConnection(req, res);
         });
 
         // GET /connections
-        svr.Get("/connections", [this](const httplib::Request& req, httplib::Response& res) {
+        svr.Get("/connections", [this, guard](const httplib::Request& req, httplib::Response& res) {
             if (!guard(req, res)) return;
             ConnectionHandlers::handleListConnections(req, res);
         });
 
         // POST /connections/select
-        svr.Post("/connections/select", [this](const httplib::Request& req, httplib::Response& res) {
+        svr.Post("/connections/select", [this, guard](const httplib::Request& req, httplib::Response& res) {
             if (!guard(req, res)) return;
             ConnectionHandlers::handleSelectConnection(req, res);
         });
@@ -289,115 +289,115 @@ namespace NMC::Server {
         std::cout << "Connection API routes registered." << std::endl;
 
         // --- K8s Routes ---
-        svr.Post("/k8s/create", [this](const httplib::Request& req, httplib::Response& res) {
+        svr.Post("/k8s/create", [this, guard](const httplib::Request& req, httplib::Response& res) {
             if (!guard(req, res)) return;
             k8sHandlers->handleCreateK8sCluster(req, res);
         });
-        svr.Delete(R"(/k8s/delete/(.*))", [this](const httplib::Request& req, httplib::Response& res) {
+        svr.Delete(R"(/k8s/delete/(.*))", [this, guard](const httplib::Request& req, httplib::Response& res) {
             if (!guard(req, res)) return;
             k8sHandlers->handleDeleteK8sCluster(req, res);
         });
-        svr.Get(R"(/k8s/get/(.*))", [this](const httplib::Request& req, httplib::Response& res) {
+        svr.Get(R"(/k8s/get/(.*))", [this, guard](const httplib::Request& req, httplib::Response& res) {
             if (!guard(req, res)) return;
             k8sHandlers->handleGetK8sCluster(req, res);
         });
-        svr.Get(R"(/k8s/get-config/(.*))", [this](const httplib::Request& req, httplib::Response& res) {
+        svr.Get(R"(/k8s/get-config/(.*))", [this, guard](const httplib::Request& req, httplib::Response& res) {
             if (!guard(req, res)) return;
             k8sHandlers->handleGetKubeConfig(req, res);
         });
-        svr.Get("/k8s/list", [this](const httplib::Request& req, httplib::Response& res) {
+        svr.Get("/k8s/list", [this, guard](const httplib::Request& req, httplib::Response& res) {
             if (!guard(req, res)) return;
             k8sHandlers->handleListK8sClusters(req, res);
         });
-        svr.Get("/k8s/list-locations", [this](const httplib::Request& req, httplib::Response& res) {
+        svr.Get("/k8s/list-locations", [this, guard](const httplib::Request& req, httplib::Response& res) {
             if (!guard(req, res)) return;
             k8sHandlers->handleListK8sLocations(req, res);
         });
-        svr.Get("/k8s/healthz", [this](const httplib::Request& req, httplib::Response& res) {
+        svr.Get("/k8s/healthz", [this, guard](const httplib::Request& req, httplib::Response& res) {
             if (!guard(req, res)) return;
             k8sHandlers->handleK8sHealthCheck(req, res);
         });
-        svr.Post(R"(/k8s/resume/(.*))", [this](const httplib::Request& req, httplib::Response& res) {
+        svr.Post(R"(/k8s/resume/(.*))", [this, guard](const httplib::Request& req, httplib::Response& res) {
             if (!guard(req, res)) return;
             k8sHandlers->handleResumeK8sCluster(req, res);
         });
-        svr.Post(R"(/k8s/suspend/(.*))", [this](const httplib::Request& req, httplib::Response& res) {
+        svr.Post(R"(/k8s/suspend/(.*))", [this, guard](const httplib::Request& req, httplib::Response& res) {
             if (!guard(req, res)) return;
             k8sHandlers->handleSuspendK8sCluster(req, res);
         });
 
         // --- Model Routes ---
-        svr.Post("/model/upload", [this](const httplib::Request& req, httplib::Response& res) {
+        svr.Post("/model/upload", [this, guard](const httplib::Request& req, httplib::Response& res) {
             if (!guard(req, res)) return;
             handleUploadModel(req, res);
         });
 
         // --- SSH Routes ---
-        svr.Post("/ssh/create", [this](const httplib::Request& req, httplib::Response& res) {
+        svr.Post("/ssh/create", [this, guard](const httplib::Request& req, httplib::Response& res) {
             if (!guard(req, res)) return;
             handleCreateSSHKey(req, res);
         });
-        svr.Delete(R"(/ssh/delete/(.*))", [this](const httplib::Request& req, httplib::Response& res) {
+        svr.Delete(R"(/ssh/delete/(.*))", [this, guard](const httplib::Request& req, httplib::Response& res) {
             if (!guard(req, res)) return;
             handleDeleteSSHKey(req, res);
         });
-        svr.Get("/ssh/list", [this](const httplib::Request& req, httplib::Response& res) {
+        svr.Get("/ssh/list", [this, guard](const httplib::Request& req, httplib::Response& res) {
             if (!guard(req, res)) return;
             handleListSSHKeys(req, res);
         });
 
         // --- VM Routes ---
-        svr.Post("/vm/create", [this](const httplib::Request& req, httplib::Response& res) {
+        svr.Post("/vm/create", [this, guard](const httplib::Request& req, httplib::Response& res) {
             if (!guard(req, res)) return;
             handleCreateVM(req, res);
         });
-        svr.Delete(R"(/vm/delete/(.*))", [this](const httplib::Request& req, httplib::Response& res) {
+        svr.Delete(R"(/vm/delete/(.*))", [this, guard](const httplib::Request& req, httplib::Response& res) {
             if (!guard(req, res)) return;
             handleDeleteVM(req, res);
         });
-        svr.Get(R"(/vm/get/(.*))", [this](const httplib::Request& req, httplib::Response& res) {
+        svr.Get(R"(/vm/get/(.*))", [this, guard](const httplib::Request& req, httplib::Response& res) {
             if (!guard(req, res)) return;
             handleGetVM(req, res);
         });
-        svr.Get("/vm/list", [this](const httplib::Request& req, httplib::Response& res) {
+        svr.Get("/vm/list", [this, guard](const httplib::Request& req, httplib::Response& res) {
             if (!guard(req, res)) return;
             handleListVMs(req, res);
         });
-        svr.Get("/vm/list-locations", [this](const httplib::Request& req, httplib::Response& res) {
+        svr.Get("/vm/list-locations", [this, guard](const httplib::Request& req, httplib::Response& res) {
             if (!guard(req, res)) return;
             handleListVMLocations(req, res);
         });
-        svr.Get("/vm/list-os", [this](const httplib::Request& req, httplib::Response& res) {
+        svr.Get("/vm/list-os", [this, guard](const httplib::Request& req, httplib::Response& res) {
             if (!guard(req, res)) return;
             handleListVMOSImages(req, res);
         });
-        svr.Get("/vm/list-sku", [this](const httplib::Request& req, httplib::Response& res) {
+        svr.Get("/vm/list-sku", [this, guard](const httplib::Request& req, httplib::Response& res) {
             if (!guard(req, res)) return;
             handleListVMSKUs(req, res);
         });
-        svr.Post(R"(/vm/restart/(.*))", [this](const httplib::Request& req, httplib::Response& res) {
+        svr.Post(R"(/vm/restart/(.*))", [this, guard](const httplib::Request& req, httplib::Response& res) {
             if (!guard(req, res)) return;
             handleRestartVM(req, res);
         });
-        svr.Post(R"(/vm/resume/(.*))", [this](const httplib::Request& req, httplib::Response& res) {
+        svr.Post(R"(/vm/resume/(.*))", [this, guard](const httplib::Request& req, httplib::Response& res) {
             if (!guard(req, res)) return;
             handleResumeVM(req, res);
         });
-        svr.Post(R"(/vm/suspend/(.*))", [this](const httplib::Request& req, httplib::Response& res) {
+        svr.Post(R"(/vm/suspend/(.*))", [this, guard](const httplib::Request& req, httplib::Response& res) {
             if (!guard(req, res)) return;
             handleSuspendVM(req, res);
         });
 
         // --- OpenShift Routes ---
-        svr.Get("/openshift/resources", [this](const httplib::Request& req, httplib::Response& res) {
+        svr.Get("/openshift/resources", [this, guard](const httplib::Request& req, httplib::Response& res) {
             if (!guard(req, res)) return;
             handleOpenShiftResources(req, res);
         });
-        svr.Get("/openshift/clusters", [this](const httplib::Request& req, httplib::Response& res) {
+        svr.Get("/openshift/clusters", [this, guard](const httplib::Request& req, httplib::Response& res) {
             if (!guard(req, res)) return;
             handleOpenShiftClusters(req, res);
         });
-        svr.Post("/openshift/clusters/request", [this](const httplib::Request& req, httplib::Response& res) {
+        svr.Post("/openshift/clusters/request", [this, guard](const httplib::Request& req, httplib::Response& res) {
             if (!guard(req, res)) return;
             handleOpenShiftRequestCluster(req, res);
         });

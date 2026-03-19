@@ -12,26 +12,43 @@ namespace NMC::Server {
             : cfg(config), endpoint(parseUrl(config.introspectionUrl)) {
 #ifdef CPPHTTPLIB_OPENSSL_SUPPORT
         if (endpoint.https) {
-            client = std::make_unique<httplib::SSLClient>(endpoint.host, endpoint.port);
+            httpsClient = std::make_unique<httplib::SSLClient>(endpoint.host, endpoint.port);
         } else {
-            client = std::make_unique<httplib::Client>(endpoint.host, endpoint.port);
+            httpClient = std::make_unique<httplib::Client>(endpoint.host, endpoint.port);
         }
 #else
         if (endpoint.https) {
-            client.reset();
+            httpClient.reset();
         } else {
-            client = std::make_unique<httplib::Client>(endpoint.host, endpoint.port);
+            httpClient = std::make_unique<httplib::Client>(endpoint.host, endpoint.port);
         }
 #endif
-        if (client) {
-            client->set_connection_timeout(5);
-            client->set_read_timeout(10);
-            client->set_write_timeout(10);
+        if (httpClient) {
+            httpClient->set_connection_timeout(5);
+            httpClient->set_read_timeout(10);
+            httpClient->set_write_timeout(10);
         }
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+        if (httpsClient) {
+            httpsClient->set_connection_timeout(5);
+            httpsClient->set_read_timeout(10);
+            httpsClient->set_write_timeout(10);
+        }
+#endif
     }
 
     bool OIDCValidator::isConfigured() const {
-        return !cfg.introspectionUrl.empty() && client != nullptr;
+        if (cfg.introspectionUrl.empty()) {
+            return false;
+        }
+        if (endpoint.https) {
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+            return httpsClient != nullptr;
+#else
+            return false;
+#endif
+        }
+        return httpClient != nullptr;
     }
 
     OIDCValidator::ParsedUrl OIDCValidator::parseUrl(const std::string& url) const {
@@ -177,7 +194,24 @@ namespace NMC::Server {
         httplib::Result res;
         {
             std::lock_guard<std::mutex> lock(clientMutex);
-            res = client->Post(endpoint.path.c_str(), headers, body, "application/x-www-form-urlencoded");
+            if (endpoint.https) {
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+                if (!httpsClient) {
+                    errorMessage = "HTTPS introspection requires OpenSSL-enabled httplib.";
+                    return false;
+                }
+                res = httpsClient->Post(endpoint.path.c_str(), headers, body, "application/x-www-form-urlencoded");
+#else
+                errorMessage = "HTTPS introspection requires OpenSSL-enabled httplib.";
+                return false;
+#endif
+            } else {
+                if (!httpClient) {
+                    errorMessage = "HTTP introspection client is not initialized.";
+                    return false;
+                }
+                res = httpClient->Post(endpoint.path.c_str(), headers, body, "application/x-www-form-urlencoded");
+            }
         }
 
         if (!res) {

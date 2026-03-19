@@ -9,23 +9,30 @@ namespace NMC::Server {
         // httplib supports SSL clients when OpenSSL is available.
 #ifdef CPPHTTPLIB_OPENSSL_SUPPORT
         if (url.https) {
-            client = std::make_unique<httplib::SSLClient>(url.host, url.port);
+            httpsClient = std::make_unique<httplib::SSLClient>(url.host, url.port);
         } else {
-            client = std::make_unique<httplib::Client>(url.host, url.port);
+            httpClient = std::make_unique<httplib::Client>(url.host, url.port);
         }
 #else
         if (url.https) {
             // If SSL isn't compiled in, keep client null and surface an error at call time.
-            client.reset();
+            httpClient.reset();
         } else {
-            client = std::make_unique<httplib::Client>(url.host, url.port);
+            httpClient = std::make_unique<httplib::Client>(url.host, url.port);
         }
 #endif
-        if (client) {
-            client->set_connection_timeout(5);
-            client->set_read_timeout(30);
-            client->set_write_timeout(30);
+        if (httpClient) {
+            httpClient->set_connection_timeout(5);
+            httpClient->set_read_timeout(30);
+            httpClient->set_write_timeout(30);
         }
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+        if (httpsClient) {
+            httpsClient->set_connection_timeout(5);
+            httpsClient->set_read_timeout(30);
+            httpsClient->set_write_timeout(30);
+        }
+#endif
     }
 
     OpenShiftClient::ParsedUrl OpenShiftClient::parseBaseUrl(const std::string& baseUrl) const {
@@ -105,7 +112,13 @@ namespace NMC::Server {
     }
 
     Models::CloudResponse OpenShiftClient::getResources() {
-        if (!client) {
+        const bool hasClient =
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+                (url.https && httpsClient != nullptr) || (!url.https && httpClient != nullptr);
+#else
+                (!url.https && httpClient != nullptr);
+#endif
+        if (!hasClient) {
             Models::CloudResponse apiResponse;
             apiResponse.success = false;
             apiResponse.message = "OpenShift API client is not configured for HTTPS support.";
@@ -114,12 +127,25 @@ namespace NMC::Server {
             return apiResponse;
         }
         std::lock_guard<std::mutex> lock(clientMutex);
-        auto res = client->Get(buildPath("/resources"));
+        httplib::Result res;
+        if (url.https) {
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+            res = httpsClient->Get(buildPath("/resources"));
+#endif
+        } else {
+            res = httpClient->Get(buildPath("/resources"));
+        }
         return processHttpResponse(res, "OpenShift resources retrieved.");
     }
 
     Models::CloudResponse OpenShiftClient::listClusters() {
-        if (!client) {
+        const bool hasClient =
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+                (url.https && httpsClient != nullptr) || (!url.https && httpClient != nullptr);
+#else
+                (!url.https && httpClient != nullptr);
+#endif
+        if (!hasClient) {
             Models::CloudResponse apiResponse;
             apiResponse.success = false;
             apiResponse.message = "OpenShift API client is not configured for HTTPS support.";
@@ -128,12 +154,25 @@ namespace NMC::Server {
             return apiResponse;
         }
         std::lock_guard<std::mutex> lock(clientMutex);
-        auto res = client->Get(buildPath("/clusters"));
+        httplib::Result res;
+        if (url.https) {
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+            res = httpsClient->Get(buildPath("/clusters"));
+#endif
+        } else {
+            res = httpClient->Get(buildPath("/clusters"));
+        }
         return processHttpResponse(res, "OpenShift clusters listed.");
     }
 
     Models::CloudResponse OpenShiftClient::requestCluster(const nlohmann::json& requestBody) {
-        if (!client) {
+        const bool hasClient =
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+                (url.https && httpsClient != nullptr) || (!url.https && httpClient != nullptr);
+#else
+                (!url.https && httpClient != nullptr);
+#endif
+        if (!hasClient) {
             Models::CloudResponse apiResponse;
             apiResponse.success = false;
             apiResponse.message = "OpenShift API client is not configured for HTTPS support.";
@@ -142,7 +181,14 @@ namespace NMC::Server {
             return apiResponse;
         }
         std::lock_guard<std::mutex> lock(clientMutex);
-        auto res = client->Post(buildPath("/clusters/request"), requestBody.dump(), "application/json");
+        httplib::Result res;
+        if (url.https) {
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+            res = httpsClient->Post(buildPath("/clusters/request"), requestBody.dump(), "application/json");
+#endif
+        } else {
+            res = httpClient->Post(buildPath("/clusters/request"), requestBody.dump(), "application/json");
+        }
         return processHttpResponse(res, "OpenShift cluster request submitted.");
     }
 
