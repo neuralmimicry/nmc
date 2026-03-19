@@ -166,11 +166,26 @@ namespace NMC::Server {
         }
 
         // Initialize K8sHandlers, passing necessary references and callbacks
-        const std::string api_server_url_value = "http://localhost:8080"; // Replace with your actual Kubernetes API server URL
+        const char* kubeconfigEnv = envOr("KUBECONFIG", "NMC_KUBECONFIG");
+        const std::string kubeconfigPath = kubeconfigEnv ? kubeconfigEnv : "";
+
+        std::string api_server_url_value;
+        const char* explicitApiUrl = envOr("NMC_K8S_API_URL", "NM_K8S_API_URL");
+        if (explicitApiUrl && *explicitApiUrl) {
+            api_server_url_value = explicitApiUrl;
+        } else {
+            const char* k8sHost = std::getenv("KUBERNETES_SERVICE_HOST");
+            const char* k8sPort = std::getenv("KUBERNETES_SERVICE_PORT");
+            if (k8sHost && *k8sHost) {
+                api_server_url_value = "https://" + std::string(k8sHost) + ":" + (k8sPort && *k8sPort ? std::string(k8sPort) : "443");
+            } else {
+                api_server_url_value = "https://127.0.0.1:6443";
+            }
+        }
 
         k8sHandlers = std::make_unique<K8sHandlers>(
                 api_server_url_value,
-                "", // Placeholder for kubeconfig path, can be set later
+                kubeconfigPath,
                 dataMutex,
                 [this](httplib::Response& res, const Models::CloudResponse& apiResponse) {
                     sendJsonResponse(res, apiResponse);

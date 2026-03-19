@@ -17,8 +17,39 @@
 #include <nlohmann/json.hpp>
 #include <kubernetes/include/apiClient.h>      // for apiClient_t, apiClient_create_with_base_path()
 #include <kubernetes/api/CoreV1API.h>          // for CoreV1API_listNode, v1_node_list_free()
+#include <kubernetes/config/kube_config.h>
 
 static std::atomic<bool> k8sHealthy{false};
+
+struct K8sClientConfig {
+    char* basePath = nullptr;
+    sslConfig_t* sslConfig = nullptr;
+    list_t* apiKeys = nullptr;
+};
+
+static void freeK8sClientConfig(K8sClientConfig& cfg) {
+    if (cfg.basePath || cfg.sslConfig || cfg.apiKeys) {
+        free_client_config(cfg.basePath, cfg.sslConfig, cfg.apiKeys);
+        cfg.basePath = nullptr;
+        cfg.sslConfig = nullptr;
+        cfg.apiKeys = nullptr;
+    }
+}
+
+static apiClient_t* createK8sClientFromKubeconfig(K8sClientConfig& cfg) {
+    const int rc = load_kube_config(&cfg.basePath, &cfg.sslConfig, &cfg.apiKeys, nullptr);
+    if (rc != 0) {
+        spdlog::warn("Unable to load Kubernetes kubeconfig (rc={}); disabling health monitor", rc);
+        return nullptr;
+    }
+
+    apiClient_t* client = apiClient_create_with_base_path(cfg.basePath, cfg.sslConfig, cfg.apiKeys);
+    if (!client) {
+        spdlog::warn("Unable to create Kubernetes client from kubeconfig; disabling health monitor");
+        freeK8sClientConfig(cfg);
+    }
+    return client;
+}
 
 void monitorK8sHealth(apiClient_t* client) {
     bool last = true;
@@ -156,12 +187,12 @@ int main(int argc, char* argv[]) {
 
         // scan for -k and -c before we parse --port below
         for (int i = 1; i < argc; ++i) {
-            std::string a = argv[i];
-            if (a == "-k" && i+1 < argc) {
+            const std::string a = argv[i];
+            if ((a == "-k" || a == "--kubeconfig") && i + 1 < argc) {
                 kubeconfigPath = argv[++i];
                 useKubeConfig = true;
             }
-            else if (a == "-c" && i+1 < argc) {
+            else if ((a == "-c" || a == "--config") && i + 1 < argc) {
                 cfgPath = argv[++i];
                 useConfigFile = true;
             }
@@ -192,17 +223,19 @@ int main(int argc, char* argv[]) {
         }
         spdlog::info("Starting NMC server initialization");
         // 1. Kubernetes C Client Global Environment Setup
+        K8sClientConfig k8sConfig{};
         apiClient_setupGlobalEnv();
-        apiClient_t* k8s = apiClient_create();
-        if (!k8s) {
-            spdlog::critical("Failed to create Kubernetes client");
-            return 1;
-        }
+        apiClient_t* k8s = createK8sClientFromKubeconfig(k8sConfig);
         spdlog::info("Kubernetes C client global environment set up");
 
         // start health-monitor thread
-        std::thread monitorThread(monitorK8sHealth, k8s);
-        monitorThread.detach();
+        if (k8s) {
+            std::thread monitorThread(monitorK8sHealth, k8s);
+            monitorThread.detach();
+        } else {
+            k8sHealthy.store(false);
+            spdlog::warn("K8s health monitor is disabled due to Kubernetes client initialization failure");
+        }
 
         httplib::Server svr; // Create an HTTP server instance
 
@@ -249,11 +282,20 @@ int main(int argc, char* argv[]) {
         // Start the server (blocking call)
         if (!svr.listen(host, port)) {
             spdlog::critical("Could not start server on {}:{}", host, port);
+            if (k8s) {
+                apiClient_free(k8s);
+            }
+            freeK8sClientConfig(k8sConfig);
+            apiClient_unsetupGlobalEnv();
             return EXIT_FAILURE;
         }
 
         // 2. Kubernetes C Client Global Environment Teardown
         // Must be called ONCE after all worker threads (including HTTP server threads) have finished.
+        if (k8s) {
+            apiClient_free(k8s);
+        }
+        freeK8sClientConfig(k8sConfig);
         apiClient_unsetupGlobalEnv();
         spdlog::info("Kubernetes C client global environment torn down");
 
