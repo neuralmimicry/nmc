@@ -1,0 +1,796 @@
+---
+- name: Deploy NMC server
+  hosts: all
+  become: true
+  gather_facts: true
+
+  vars:
+    # Core
+    nmc_install_dir: "{{ playbook_dir | dirname }}"
+    nmc_repo_url: ""
+    nmc_repo_branch: "main"
+    nmc_skip_build: false
+
+    nmc_run_user: "nmc"
+    nmc_run_group: "{{ nmc_run_user }}"
+    nmc_build_user: ""
+    nmc_build_group: ""
+
+    nmc_port: 8080
+    nmc_docs_enabled: true
+    nmc_max_body_bytes: 1048576
+    nmc_log_body_bytes: 2048
+    nmc_oshift_api_url: "http://127.0.0.1:8000"
+
+    # Auth
+    nmc_auth_mode: "token"
+    nmc_auth_token: ""
+    nmc_oidc_introspection_url: ""
+    nmc_oidc_client_id: ""
+    nmc_oidc_client_secret: ""
+    nmc_oidc_issuer: ""
+    nmc_oidc_audience: ""
+    nmc_oidc_allowed_audiences: ""
+    nmc_oidc_required_scope: ""
+
+    # Kubernetes
+    nmc_k8s_auto_install: true
+    nmc_k8s_version_series: ""
+    nmc_k8s_pod_cidr: "10.244.0.0/16"
+    nmc_k8s_service_cidr: "10.96.0.0/12"
+    nmc_kubeconfig_src: ""
+    nmc_flannel_manifest_url: "https://raw.githubusercontent.com/flannel-io/flannel/master/Documentation/kube-flannel.yml"
+    nmc_nvidia_device_plugin_url: "https://raw.githubusercontent.com/NVIDIA/k8s-device-plugin/master/deployments/static/nvidia-device-plugin.yml"
+    nmc_k8s_api_wait_seconds: 180
+    nmc_k8s_restart_on_failure: true
+
+    # GPU
+    nmc_gpu_auto: true
+    nmc_enable_nvidia_device_plugin: true
+    nmc_nvidia_preserve_driver_if_present: true
+
+    # Updates
+    nmc_enable_auto_update: true
+
+    nmc_base_packages:
+      - build-essential
+      - cmake
+      - git
+      - pkg-config
+      - libssl-dev
+      - libspdlog-dev
+      - libwebsockets-dev
+      - autoconf
+      - automake
+      - libtool
+      - ca-certificates
+      - curl
+      - gpg
+      - lsb-release
+      - pciutils
+
+  pre_tasks:
+    - name: Validate auth mode
+      ansible.builtin.assert:
+        that:
+          - nmc_auth_mode in ["token", "oidc", "off"]
+        fail_msg: "nmc_auth_mode must be one of: token, oidc, off"
+
+    - name: Warn when token mode has no token
+      ansible.builtin.debug:
+        msg: "NMC auth mode is token, but nmc_auth_token is empty. Token auth will be effectively disabled."
+      when:
+        - nmc_auth_mode == "token"
+        - nmc_auth_token | length == 0
+
+    - name: Warn when OIDC mode has no introspection URL
+      ansible.builtin.debug:
+        msg: "NMC auth mode is oidc, but nmc_oidc_introspection_url is empty. OIDC auth will fail closed."
+      when:
+        - nmc_auth_mode == "oidc"
+        - nmc_oidc_introspection_url | length == 0
+
+    - name: Ensure systemd is available
+      ansible.builtin.assert:
+        that:
+          - ansible_service_mgr == "systemd"
+        fail_msg: "This playbook requires systemd."
+
+    - name: Ensure install directory exists
+      ansible.builtin.file:
+        path: "{{ nmc_install_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Select effective build user from explicit value
+      ansible.builtin.set_fact:
+        nmc_effective_build_user: "{{ nmc_build_user }}"
+
+    - name: Default build user to run user when unspecified
+      ansible.builtin.set_fact:
+        nmc_effective_build_user: "{{ nmc_run_user }}"
+      when: nmc_effective_build_user | length == 0
+
+    - name: Ensure run group exists
+      ansible.builtin.group:
+        name: "{{ nmc_run_group }}"
+        system: true
+        state: present
+
+    - name: Ensure run user exists
+      ansible.builtin.user:
+        name: "{{ nmc_run_user }}"
+        group: "{{ nmc_run_group }}"
+        home: "{{ nmc_install_dir }}"
+        shell: /usr/sbin/nologin
+        system: true
+        create_home: false
+        state: present
+
+    - name: Ensure build user exists
+      ansible.builtin.command: id -u "{{ nmc_effective_build_user }}"
+      changed_when: false
+
+    - name: Resolve effective build group from explicit value
+      ansible.builtin.set_fact:
+        nmc_effective_build_group: "{{ nmc_build_group }}"
+
+    - name: Resolve effective build group from build user when unspecified
+      ansible.builtin.command: id -gn "{{ nmc_effective_build_user }}"
+      register: nmc_build_group_cmd
+      changed_when: false
+      when: nmc_effective_build_group | length == 0
+
+    - name: Set effective build group from command result
+      ansible.builtin.set_fact:
+        nmc_effective_build_group: "{{ nmc_build_group_cmd.stdout | trim }}"
+      when: nmc_effective_build_group | length == 0
+
+    - name: Set repository dir fact
+      ansible.builtin.set_fact:
+        nmc_repo_dir: "{{ nmc_install_dir }}"
+
+    - name: Clone/update repository when repo URL is provided
+      when: nmc_repo_url | length > 0
+      block:
+        - name: Ensure install directory ownership for build user
+          ansible.builtin.file:
+            path: "{{ nmc_install_dir }}"
+            owner: "{{ nmc_effective_build_user }}"
+            group: "{{ nmc_effective_build_group }}"
+            recurse: true
+
+        - name: Clone/update NMC repository
+          ansible.builtin.git:
+            repo: "{{ nmc_repo_url }}"
+            dest: "{{ nmc_install_dir }}"
+            version: "{{ nmc_repo_branch }}"
+            update: true
+            force: false
+          become_user: "{{ nmc_effective_build_user }}"
+
+    - name: Verify repository layout exists
+      ansible.builtin.stat:
+        path: "{{ nmc_repo_dir }}/nmc_server/CMakeLists.txt"
+      register: nmc_repo_layout
+
+    - name: Fail when repository layout is missing
+      ansible.builtin.fail:
+        msg: >-
+          Could not find {{ nmc_repo_dir }}/nmc_server/CMakeLists.txt.
+          Set nmc_install_dir to an existing checkout or set nmc_repo_url.
+      when: not nmc_repo_layout.stat.exists
+
+    - name: Validate build user can read repository
+      ansible.builtin.command: test -r "{{ nmc_repo_dir }}/nmc_server/CMakeLists.txt"
+      become_user: "{{ nmc_effective_build_user }}"
+      changed_when: false
+
+    - name: Set build directory fact
+      ansible.builtin.set_fact:
+        nmc_build_dir: "{{ nmc_repo_dir }}/nmc_server/build"
+
+  tasks:
+    - name: Install base dependencies
+      ansible.builtin.apt:
+        name: "{{ nmc_base_packages }}"
+        state: present
+        update_cache: true
+
+    - name: Detect GPU vendor and NVIDIA driver health
+      ansible.builtin.shell: |
+        set -o pipefail
+        if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi >/dev/null 2>&1; then
+          echo nvidia_healthy
+          exit 0
+        fi
+
+        if [[ -d /proc/driver/nvidia/gpus ]]; then
+          echo nvidia
+          exit 0
+        fi
+
+        if command -v lspci >/dev/null 2>&1; then
+          pci="$(lspci -nn | tr 'A-Z' 'a-z')"
+          if echo "$pci" | grep -q "nvidia"; then
+            echo nvidia
+            exit 0
+          fi
+          if echo "$pci" | grep -q "amd\|advanced micro devices\|ati"; then
+            echo amd
+            exit 0
+          fi
+          if echo "$pci" | grep -q "intel"; then
+            echo intel
+            exit 0
+          fi
+        fi
+
+        if [[ -d /dev/dri ]]; then
+          echo intel
+          exit 0
+        fi
+
+        echo none
+      args:
+        executable: /bin/bash
+      register: nmc_gpu_detect
+      changed_when: false
+      when: nmc_gpu_auto
+
+    - name: Normalize GPU facts
+      ansible.builtin.set_fact:
+        nmc_gpu_vendor: "{{ 'nvidia' if nmc_gpu_detect.stdout | trim == 'nvidia_healthy' else (nmc_gpu_detect.stdout | trim) }}"
+        nmc_nvidia_smi_healthy: "{{ (nmc_gpu_detect.stdout | trim) == 'nvidia_healthy' }}"
+      when: nmc_gpu_auto
+
+    - name: Set default GPU facts when auto-detect is disabled
+      ansible.builtin.set_fact:
+        nmc_gpu_vendor: "none"
+        nmc_nvidia_smi_healthy: false
+      when: not nmc_gpu_auto
+
+    - name: Install NVIDIA driver/tooling when needed
+      when:
+        - nmc_gpu_auto
+        - nmc_gpu_vendor == "nvidia"
+        - not (nmc_nvidia_preserve_driver_if_present and nmc_nvidia_smi_healthy)
+      block:
+        - name: Install ubuntu-drivers-common
+          ansible.builtin.apt:
+            name: ubuntu-drivers-common
+            state: present
+
+        - name: Run ubuntu-drivers autoinstall
+          ansible.builtin.command: ubuntu-drivers autoinstall
+          register: nmc_ubuntu_drivers
+          failed_when: false
+          changed_when: nmc_ubuntu_drivers.rc == 0
+
+        - name: Install CUDA toolkit
+          ansible.builtin.apt:
+            name: nvidia-cuda-toolkit
+            state: present
+          register: nmc_cuda_install
+          failed_when: false
+
+    - name: Install NVIDIA OpenCL tooling
+      ansible.builtin.apt:
+        name:
+          - ocl-icd-opencl-dev
+          - clinfo
+        state: present
+      when:
+        - nmc_gpu_auto
+        - nmc_gpu_vendor == "nvidia"
+
+    - name: Install AMD OpenCL tooling
+      ansible.builtin.apt:
+        name:
+          - ocl-icd-opencl-dev
+          - clinfo
+          - mesa-opencl-icd
+        state: present
+      when:
+        - nmc_gpu_auto
+        - nmc_gpu_vendor == "amd"
+
+    - name: Install Intel OpenCL tooling
+      ansible.builtin.apt:
+        name:
+          - ocl-icd-opencl-dev
+          - clinfo
+          - intel-opencl-icd
+        state: present
+      when:
+        - nmc_gpu_auto
+        - nmc_gpu_vendor == "intel"
+
+    - name: Check for kubectl binary
+      ansible.builtin.command: bash -lc "command -v kubectl"
+      register: nmc_kubectl_cmd
+      failed_when: false
+      changed_when: false
+
+    - name: Check for /etc/kubernetes/admin.conf
+      ansible.builtin.stat:
+        path: /etc/kubernetes/admin.conf
+      register: nmc_admin_kubeconfig
+
+    - name: Check provided kubeconfig path
+      ansible.builtin.stat:
+        path: "{{ nmc_kubeconfig_src }}"
+      register: nmc_provided_kubeconfig
+      when: nmc_kubeconfig_src | length > 0
+
+    - name: Set probe kubeconfig path
+      ansible.builtin.set_fact:
+        nmc_probe_kubeconfig: >-
+          {{
+            nmc_kubeconfig_src
+            if (nmc_kubeconfig_src | length > 0)
+            else (
+              '/etc/kubernetes/admin.conf'
+              if nmc_admin_kubeconfig.stat.exists
+              else ''
+            )
+          }}
+
+    - name: Probe Kubernetes with explicit kubeconfig
+      ansible.builtin.command: kubectl --kubeconfig={{ nmc_probe_kubeconfig }} get nodes
+      register: nmc_k8s_probe_explicit
+      failed_when: false
+      changed_when: false
+      when:
+        - nmc_kubectl_cmd.rc == 0
+        - nmc_probe_kubeconfig | length > 0
+
+    - name: Probe Kubernetes via default kubectl context
+      ansible.builtin.command: kubectl get nodes
+      register: nmc_k8s_probe_default
+      failed_when: false
+      changed_when: false
+      when:
+        - nmc_kubectl_cmd.rc == 0
+        - nmc_probe_kubeconfig | length == 0
+
+    - name: Set Kubernetes availability fact
+      ansible.builtin.set_fact:
+        nmc_k8s_available: >-
+          {{
+            (nmc_k8s_probe_explicit is defined and nmc_k8s_probe_explicit.rc == 0)
+            or
+            (nmc_k8s_probe_default is defined and nmc_k8s_probe_default.rc == 0)
+          }}
+
+    - name: Install Kubernetes when unavailable
+      when:
+        - not nmc_k8s_available
+        - nmc_k8s_auto_install
+      block:
+        - name: Install containerd
+          ansible.builtin.apt:
+            name: containerd
+            state: present
+            update_cache: true
+
+        - name: Configure required kernel modules for Kubernetes
+          ansible.builtin.copy:
+            dest: /etc/modules-load.d/k8s.conf
+            content: |
+              overlay
+              br_netfilter
+            mode: "0644"
+
+        - name: Load overlay kernel module
+          ansible.builtin.command: modprobe overlay
+          failed_when: false
+          changed_when: false
+
+        - name: Load br_netfilter kernel module
+          ansible.builtin.command: modprobe br_netfilter
+          failed_when: false
+          changed_when: false
+
+        - name: Configure required sysctls for Kubernetes networking
+          ansible.builtin.copy:
+            dest: /etc/sysctl.d/k8s.conf
+            content: |
+              net.bridge.bridge-nf-call-iptables = 1
+              net.bridge.bridge-nf-call-ip6tables = 1
+              net.ipv4.ip_forward = 1
+            mode: "0644"
+
+        - name: Apply sysctl settings
+          ansible.builtin.command: sysctl --system
+          changed_when: false
+
+        - name: Disable swap immediately
+          ansible.builtin.command: swapoff -a
+          failed_when: false
+          changed_when: false
+
+        - name: Comment swap entries in /etc/fstab
+          ansible.builtin.replace:
+            path: /etc/fstab
+            regexp: '^(?!#)(.*\sswap\s.*)$'
+            replace: '# \1'
+            backup: true
+
+        - name: Ensure APT keyring directory exists
+          ansible.builtin.file:
+            path: /etc/apt/keyrings
+            state: directory
+            mode: "0755"
+
+        - name: Fetch current Kubernetes stable release
+          ansible.builtin.command: curl -fsSL https://dl.k8s.io/release/stable.txt
+          register: nmc_k8s_stable
+          changed_when: false
+          failed_when: false
+          when: nmc_k8s_version_series | length == 0
+
+        - name: Determine Kubernetes repo series
+          ansible.builtin.set_fact:
+            nmc_effective_k8s_series: >-
+              {{
+                nmc_k8s_version_series
+                if (nmc_k8s_version_series | length) > 0
+                else (
+                  ('v' ~ ((nmc_k8s_stable.stdout | trim | regex_replace('^v', '')) | regex_replace('\\.[0-9]+$', '')))
+                  if (nmc_k8s_stable is defined and nmc_k8s_stable.rc == 0 and (nmc_k8s_stable.stdout | trim | length) > 0)
+                  else 'v1.30'
+                )
+              }}
+
+        - name: Configure Kubernetes package repository (pkgs.k8s.io with fallback)
+          block:
+            - name: Install pkgs.k8s.io signing key
+              ansible.builtin.shell: |
+                set -euo pipefail
+                curl -fsSL "https://pkgs.k8s.io/core:/stable:/{{ nmc_effective_k8s_series }}/deb/Release.key" | gpg --dearmor --batch --yes -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+              args:
+                executable: /bin/bash
+
+            - name: Configure pkgs.k8s.io apt source
+              ansible.builtin.copy:
+                dest: /etc/apt/sources.list.d/kubernetes.list
+                content: "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/{{ nmc_effective_k8s_series }}/deb/ /\n"
+                mode: "0644"
+          rescue:
+            - name: Install apt.kubernetes.io signing key
+              ansible.builtin.shell: |
+                set -euo pipefail
+                curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | gpg --dearmor --batch --yes -o /etc/apt/keyrings/kubernetes-archive-keyring.gpg
+              args:
+                executable: /bin/bash
+
+            - name: Configure apt.kubernetes.io source
+              ansible.builtin.copy:
+                dest: /etc/apt/sources.list.d/kubernetes.list
+                content: "deb [signed-by=/etc/apt/keyrings/kubernetes-archive-keyring.gpg] https://apt.kubernetes.io/ kubernetes-xenial main\n"
+                mode: "0644"
+
+        - name: Install Kubernetes components
+          ansible.builtin.apt:
+            name:
+              - kubelet
+              - kubeadm
+              - kubectl
+            state: present
+            update_cache: true
+
+        - name: Hold Kubernetes components
+          ansible.builtin.command: apt-mark hold kubelet kubeadm kubectl
+          register: nmc_k8s_hold
+          changed_when: "'set on hold' in nmc_k8s_hold.stdout"
+
+        - name: Ensure /etc/containerd exists
+          ansible.builtin.file:
+            path: /etc/containerd
+            state: directory
+            mode: "0755"
+
+        - name: Check containerd config
+          ansible.builtin.stat:
+            path: /etc/containerd/config.toml
+          register: nmc_containerd_config
+
+        - name: Generate default containerd config
+          ansible.builtin.command: containerd config default
+          register: nmc_containerd_default
+          changed_when: false
+          when: not nmc_containerd_config.stat.exists
+
+        - name: Write containerd config
+          ansible.builtin.copy:
+            dest: /etc/containerd/config.toml
+            content: "{{ nmc_containerd_default.stdout }}"
+            mode: "0644"
+          when: not nmc_containerd_config.stat.exists
+
+        - name: Enable systemd cgroup driver for containerd
+          ansible.builtin.replace:
+            path: /etc/containerd/config.toml
+            regexp: 'SystemdCgroup = false'
+            replace: 'SystemdCgroup = true'
+
+        - name: Enable and start containerd
+          ansible.builtin.systemd:
+            name: containerd
+            enabled: true
+            state: started
+
+        - name: Enable and start kubelet
+          ansible.builtin.systemd:
+            name: kubelet
+            enabled: true
+            state: started
+
+        - name: Check if Kubernetes is already initialized
+          ansible.builtin.stat:
+            path: /etc/kubernetes/admin.conf
+          register: nmc_admin_conf_after_install
+
+        - name: Initialize single-node control plane
+          ansible.builtin.command: >-
+            kubeadm init
+            --pod-network-cidr={{ nmc_k8s_pod_cidr }}
+            --service-cidr={{ nmc_k8s_service_cidr }}
+          when: not nmc_admin_conf_after_install.stat.exists
+
+        - name: Wait for Kubernetes API healthz
+          ansible.builtin.command: kubectl --kubeconfig=/etc/kubernetes/admin.conf get --raw=/healthz
+          register: nmc_k8s_healthz
+          changed_when: false
+          failed_when: false
+          retries: "{{ [1, (nmc_k8s_api_wait_seconds | int // 2)] | max }}"
+          delay: 2
+          until: nmc_k8s_healthz.rc == 0
+
+        - name: Restart containerd and kubelet when API healthz is down
+          when:
+            - nmc_k8s_healthz.rc != 0
+            - nmc_k8s_restart_on_failure
+          block:
+            - name: Restart containerd
+              ansible.builtin.systemd:
+                name: containerd
+                state: restarted
+              failed_when: false
+
+            - name: Restart kubelet
+              ansible.builtin.systemd:
+                name: kubelet
+                state: restarted
+              failed_when: false
+
+            - name: Wait for Kubernetes API healthz after restart
+              ansible.builtin.command: kubectl --kubeconfig=/etc/kubernetes/admin.conf get --raw=/healthz
+              register: nmc_k8s_healthz_retry
+              changed_when: false
+              failed_when: false
+              retries: "{{ [1, (nmc_k8s_api_wait_seconds | int // 2)] | max }}"
+              delay: 2
+              until: nmc_k8s_healthz_retry.rc == 0
+
+        - name: Derive final Kubernetes health status
+          ansible.builtin.set_fact:
+            nmc_k8s_api_ready: >-
+              {{
+                (nmc_k8s_healthz.rc == 0)
+                or
+                (nmc_k8s_healthz_retry is defined and nmc_k8s_healthz_retry.rc == 0)
+              }}
+
+        - name: Fail when Kubernetes API is unreachable
+          ansible.builtin.fail:
+            msg: "Kubernetes API is still unreachable after install/recovery attempts."
+          when: not nmc_k8s_api_ready
+
+        - name: Apply Flannel CNI
+          ansible.builtin.command: kubectl --kubeconfig=/etc/kubernetes/admin.conf apply -f {{ nmc_flannel_manifest_url }}
+          register: nmc_flannel_apply
+          retries: 5
+          delay: 2
+          until: nmc_flannel_apply.rc == 0
+          changed_when: >-
+            'configured' in nmc_flannel_apply.stdout
+            or 'created' in nmc_flannel_apply.stdout
+
+        - name: Remove control-plane taint (node-role.kubernetes.io/control-plane)
+          ansible.builtin.command: kubectl --kubeconfig=/etc/kubernetes/admin.conf taint nodes --all node-role.kubernetes.io/control-plane-
+          failed_when: false
+          changed_when: false
+
+        - name: Remove control-plane taint (node-role.kubernetes.io/master)
+          ansible.builtin.command: kubectl --kubeconfig=/etc/kubernetes/admin.conf taint nodes --all node-role.kubernetes.io/master-
+          failed_when: false
+          changed_when: false
+
+        - name: Wait for node readiness
+          ansible.builtin.command: kubectl --kubeconfig=/etc/kubernetes/admin.conf wait --for=condition=Ready node --all --timeout=120s
+          failed_when: false
+          changed_when: false
+
+    - name: Fail when Kubernetes is unavailable and auto-install is disabled
+      ansible.builtin.fail:
+        msg: "Kubernetes is not available and nmc_k8s_auto_install is false."
+      when:
+        - not nmc_k8s_available
+        - not nmc_k8s_auto_install
+
+    - name: Resolve kubeconfig source for nmc_server
+      ansible.builtin.set_fact:
+        nmc_final_kubeconfig_src: >-
+          {{ nmc_kubeconfig_src if (nmc_kubeconfig_src | length > 0) else '/etc/kubernetes/admin.conf' }}
+
+    - name: Validate kubeconfig source exists
+      ansible.builtin.stat:
+        path: "{{ nmc_final_kubeconfig_src }}"
+      register: nmc_final_kubeconfig_stat
+
+    - name: Fail when kubeconfig source does not exist
+      ansible.builtin.fail:
+        msg: "Kubeconfig source not found: {{ nmc_final_kubeconfig_src }}"
+      when: not nmc_final_kubeconfig_stat.stat.exists
+
+    - name: Ensure /etc/nmc exists
+      ansible.builtin.file:
+        path: /etc/nmc
+        state: directory
+        mode: "0755"
+
+    - name: Install kubeconfig for nmc_server
+      ansible.builtin.copy:
+        src: "{{ nmc_final_kubeconfig_src }}"
+        dest: /etc/nmc/kubeconfig
+        owner: "{{ nmc_run_user }}"
+        group: "{{ nmc_run_group }}"
+        mode: "0600"
+        remote_src: true
+
+    - name: Refresh /etc/kubernetes/admin.conf state
+      ansible.builtin.stat:
+        path: /etc/kubernetes/admin.conf
+      register: nmc_admin_conf_for_plugin
+
+    - name: Apply NVIDIA device plugin
+      ansible.builtin.command: kubectl --kubeconfig=/etc/kubernetes/admin.conf apply -f {{ nmc_nvidia_device_plugin_url }}
+      register: nmc_nvidia_plugin_apply
+      failed_when: false
+      changed_when: >-
+        'configured' in nmc_nvidia_plugin_apply.stdout
+        or 'created' in nmc_nvidia_plugin_apply.stdout
+      when:
+        - nmc_gpu_auto
+        - nmc_gpu_vendor == "nvidia"
+        - nmc_enable_nvidia_device_plugin
+        - nmc_admin_conf_for_plugin.stat.exists
+
+    - name: Build nmc_server
+      when: not nmc_skip_build
+      block:
+        - name: Ensure build directory exists and is writable by build user
+          ansible.builtin.file:
+            path: "{{ nmc_build_dir }}"
+            state: directory
+            owner: "{{ nmc_effective_build_user }}"
+            group: "{{ nmc_effective_build_group }}"
+            mode: "0755"
+            recurse: true
+
+        - name: Configure nmc_server with CMake
+          ansible.builtin.command: >-
+            cmake -S {{ nmc_repo_dir }}/nmc_server -B {{ nmc_build_dir }} -DCMAKE_BUILD_TYPE=Release
+          become_user: "{{ nmc_effective_build_user }}"
+
+        - name: Build nmc_server target
+          ansible.builtin.command: >-
+            cmake --build {{ nmc_build_dir }} -- -j{{ ansible_facts.processor_vcpus | default(2) }}
+          become_user: "{{ nmc_effective_build_user }}"
+
+        - name: Ensure world-readable build artifacts
+          ansible.builtin.command: chmod -R a+rX {{ nmc_build_dir }}
+          changed_when: false
+
+        - name: Ensure log directory exists and is owned by service user
+          ansible.builtin.file:
+            path: "{{ nmc_build_dir }}/logs"
+            state: directory
+            owner: "{{ nmc_run_user }}"
+            group: "{{ nmc_run_group }}"
+            mode: "0755"
+
+    - name: Install runtime environment file
+      ansible.builtin.template:
+        src: templates/nmc.env.j2
+        dest: /etc/nmc/nmc.env
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Install nmc-server systemd unit
+      ansible.builtin.template:
+        src: templates/nmc-server.service.j2
+        dest: /etc/systemd/system/nmc-server.service
+        owner: root
+        group: root
+        mode: "0644"
+      notify:
+        - Reload systemd
+        - Restart nmc-server
+
+    - name: Ensure nmc-server service is enabled and started
+      ansible.builtin.systemd:
+        name: nmc-server.service
+        enabled: true
+        state: started
+
+    - name: Check if repo is a git checkout
+      ansible.builtin.stat:
+        path: "{{ nmc_repo_dir }}/.git"
+      register: nmc_repo_git
+
+    - name: Configure auto-update timer
+      when:
+        - nmc_enable_auto_update
+        - nmc_repo_git.stat.exists
+      block:
+        - name: Install update config
+          ansible.builtin.template:
+            src: templates/nmc-update.conf.j2
+            dest: /etc/nmc/nmc-update.conf
+            owner: root
+            group: root
+            mode: "0644"
+
+        - name: Install update script
+          ansible.builtin.template:
+            src: templates/nmc-update.sh.j2
+            dest: /usr/local/bin/nmc-update
+            owner: root
+            group: root
+            mode: "0755"
+
+        - name: Install nmc-update service unit
+          ansible.builtin.template:
+            src: templates/nmc-update.service.j2
+            dest: /etc/systemd/system/nmc-update.service
+            owner: root
+            group: root
+            mode: "0644"
+
+        - name: Install nmc-update timer unit
+          ansible.builtin.template:
+            src: templates/nmc-update.timer.j2
+            dest: /etc/systemd/system/nmc-update.timer
+            owner: root
+            group: root
+            mode: "0644"
+          notify:
+            - Reload systemd
+
+        - name: Enable and start nmc-update timer
+          ansible.builtin.systemd:
+            name: nmc-update.timer
+            enabled: true
+            state: started
+
+    - name: Disable nmc-update timer when auto-update is off
+      ansible.builtin.systemd:
+        name: nmc-update.timer
+        enabled: false
+        state: stopped
+      failed_when: false
+      when: not nmc_enable_auto_update
+
+  handlers:
+    - name: Reload systemd
+      ansible.builtin.systemd:
+        daemon_reload: true
+
+    - name: Restart nmc-server
+      ansible.builtin.systemd:
+        name: nmc-server.service
+        state: restarted

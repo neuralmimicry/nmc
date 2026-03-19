@@ -1,0 +1,18 @@
+[Unit]
+Description=NMC Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User={{ nmc_run_user }}
+Group={{ nmc_run_group }}
+WorkingDirectory={{ nmc_build_dir }}
+EnvironmentFile=-/etc/nmc/nmc.env
+ExecStart={{ nmc_build_dir }}/nmc_server --port {{ nmc_port }} --kubeconfig /etc/nmc/kubeconfig
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

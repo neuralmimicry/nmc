@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+set -euo pipefail
+IFS=$'\n\t'
+
+CONFIG=/etc/nmc/nmc-update.conf
+if [[ -f "$CONFIG" ]]; then
+  # shellcheck disable=SC1090
+  source "$CONFIG"
+else
+  echo "Update config not found: $CONFIG" >&2
+  exit 1
+fi
+
+: "${REPO_DIR:?Missing REPO_DIR}"
+: "${REPO_BRANCH:=main}"
+: "${UPDATE_USER:=nmc}"
+
+run_as_user() {
+  if [[ "$(id -u)" -eq 0 && "$UPDATE_USER" != "root" ]]; then
+    if command -v sudo >/dev/null 2>&1; then
+      sudo -u "$UPDATE_USER" -H -- "$@"
+    else
+      runuser -u "$UPDATE_USER" -- "$@"
+    fi
+  else
+    "$@"
+  fi
+}
+
+cd "$REPO_DIR"
+
+if [[ -n "$(git status --porcelain)" ]]; then
+  echo "Working tree dirty; skipping update" >&2
+  exit 0
+fi
+
+git fetch origin "$REPO_BRANCH"
+LOCAL="$(git rev-parse HEAD)"
+REMOTE="$(git rev-parse "origin/$REPO_BRANCH")"
+
+if [[ "$LOCAL" == "$REMOTE" ]]; then
+  exit 0
+fi
+
+git checkout "$REPO_BRANCH"
+git pull --ff-only origin "$REPO_BRANCH"
+
+run_as_user cmake -S "$REPO_DIR/nmc_server" -B "$REPO_DIR/nmc_server/build" -DCMAKE_BUILD_TYPE=Release
+run_as_user cmake --build "$REPO_DIR/nmc_server/build" -- -j"$(nproc)"
+
+systemctl restart nmc-server.service
