@@ -3,70 +3,182 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>NMC Server API Documentation</title>
-    <link rel="stylesheet" href="style.css">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
+    <title>Continuum Control Center</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;700&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="dashboard.css">
 </head>
 <body>
-<div class="container">
-    <header>
-        <h1>NMC Server API Documentation</h1>
-        <p class="tagline">Comprehensive guide to available API endpoints</p>
+<div class="background-glow"></div>
+<main class="layout">
+    <header class="hero">
+        <div>
+            <p class="eyebrow">Neural Mimicry Continuum</p>
+            <h1>Control Center</h1>
+            <p class="subtitle">Unified status and health monitoring for Kubernetes, OpenShift, VM workloads, and detected Tracey agents.</p>
+        </div>
+        <div class="auth-panel">
+            <label for="tokenInput">API Token</label>
+            <div class="token-row">
+                <input id="tokenInput" type="password" placeholder="Bearer or X-NMC-Token value">
+                <button id="saveTokenBtn" type="button">Apply</button>
+            </div>
+            <p class="hint">If authentication is enabled, provide your token once and the dashboard will include it automatically.</p>
+        </div>
     </header>
 
-    <nav class="api-navigation">
-        <h2>API Categories</h2>
-        <ul>
-            <li><a href="bucket.html">Bucket API</a> - Manage cloud storage buckets.</li>
-            <li><a href="k8s.html">Kubernetes (K8s) API</a> - Control Kubernetes clusters.</li>
-            <li><a href="openshift.html">OpenShift API</a> - Interface with NeuralMimicry OpenShift portal.</li>
-            <li><a href="model.html">Model API</a> - Upload and manage machine learning models.</li>
-            <li><a href="ssh.html">SSH Key API</a> - Manage SSH public keys.</li>
-            <li><a href="vm.html">Virtual Machine (VM) API</a> - Provision and manage virtual machines.</li>
-        </ul>
-    </nav>
-
-    <section class="introduction">
-        <h2>Introduction</h2>
-        <p>Welcome to the NMC Server API Documentation. This server provides a simulated environment for various cloud resource management operations, including storage buckets, Kubernetes clusters, machine learning models, SSH keys, and virtual machines.</p>
-        <p>This documentation details each available API endpoint, including the HTTP method, request parameters, example request bodies, and expected successful and error responses. Use these examples to understand how to interact with the server.</p>
-        <h3>Base URL</h3>
-        <p>All API calls should be made relative to the server's base URL, which is typically <code>http://localhost:8080</code> (or the host and port your server is running on).</p>
+    <section class="status-strip">
+        <div class="status-pill" id="k8sApiPill">K8s API: <span>Checking</span></div>
+        <div class="status-pill" id="authPill">Auth: <span>Unknown</span></div>
+        <div class="status-pill" id="refreshPill">Refresh: <span>Initializing</span></div>
     </section>
 
-    <section class="general-response">
-        <h2>General Response Structure</h2>
-        <p>All successful API responses from this server will follow a consistent JSON structure:</p>
-        <pre><code class="language-json">
-{
-    "success": true,
-    "message": "A descriptive message about the operation.",
-    "data": {
-        // Relevant data for the specific operation (can be an object or array)
-    }
-}
-            </code></pre>
-        <p>Error responses will also follow a similar structure, but with <code>"success": false</code> and an appropriate HTTP status code:</p>
-        <pre><code class="language-json">
-{
-    "success": false,
-    "message": "A descriptive error message.",
-    "data": {} // Typically an empty object for errors
-}
-            </code></pre>
-        <p>HTTP Status Codes will indicate the general outcome of the request:</p>
-        <ul>
-            <li><code>200 OK</code>: The request was successful.</li>
-            <li><code>400 Bad Request</code>: The request was malformed or missing required parameters.</li>
-            <li><code>404 Not Found</code>: The requested resource could not be found.</li>
-            <li><code>409 Conflict</code>: The request could not be completed due to a conflict (e.g., resource already exists).</li>
-            <li><code>500 Internal Server Error</code>: An unexpected error occurred on the server side.</li>
-        </ul>
+    <section class="cards" id="summaryCards">
+        <article class="card">
+            <h2>Kubernetes Clusters</h2>
+            <p class="metric" id="k8sMetric">-- / --</p>
+            <p class="label">Running / Total</p>
+        </article>
+        <article class="card">
+            <h2>OpenShift Clusters</h2>
+            <p class="metric" id="openshiftMetric">-- / --</p>
+            <p class="label">Ready / Total</p>
+        </article>
+        <article class="card">
+            <h2>VM Fleet</h2>
+            <p class="metric" id="vmMetric">-- / --</p>
+            <p class="label">Running / Total</p>
+        </article>
+        <article class="card">
+            <h2>Tracey Agents</h2>
+            <p class="metric" id="traceyMetric">-- / --</p>
+            <p class="label">Healthy / Total</p>
+        </article>
     </section>
 
-    <footer>
-        <p>&copy; 2025 NMC Server. All rights reserved.</p>
-    </footer>
-</div>
+    <section class="grid">
+        <article class="panel">
+            <div class="panel-title-row">
+                <h3>Kubernetes Cluster Status</h3>
+                <span class="panel-tag">/k8s/list</span>
+            </div>
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>Region</th>
+                        <th>Status</th>
+                    </tr>
+                    </thead>
+                    <tbody id="k8sRows">
+                    <tr><td colspan="3" class="empty">Loading cluster status…</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </article>
+
+        <article class="panel">
+            <div class="panel-title-row">
+                <h3>OpenShift Cluster Status</h3>
+                <span class="panel-tag">/openshift/clusters</span>
+            </div>
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>Endpoint</th>
+                        <th>Status</th>
+                    </tr>
+                    </thead>
+                    <tbody id="openshiftRows">
+                    <tr><td colspan="3" class="empty">Loading OpenShift status…</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </article>
+
+        <article class="panel panel-wide">
+            <div class="panel-title-row">
+                <h3>Tracey Agent Monitoring</h3>
+                <span class="panel-tag">/tracey/agents</span>
+            </div>
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                    <tr>
+                        <th>Agent ID</th>
+                        <th>Cluster</th>
+                        <th>Status</th>
+                        <th>Last Seen</th>
+                        <th>Version</th>
+                    </tr>
+                    </thead>
+                    <tbody id="traceyRows">
+                    <tr><td colspan="5" class="empty">Waiting for Tracey agents…</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </article>
+
+        <article class="panel panel-wide" id="tracey-network">
+            <div class="panel-title-row">
+                <h3>Tracey Discovery Network Overview</h3>
+                <span class="panel-tag">Auto-discovery links</span>
+            </div>
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                    <tr>
+                        <th>Node</th>
+                        <th>Source</th>
+                        <th>Announce Addr</th>
+                        <th>Status Endpoint</th>
+                        <th>Link</th>
+                        <th>Security</th>
+                        <th>Failures</th>
+                    </tr>
+                    </thead>
+                    <tbody id="traceyNetworkRows">
+                    <tr><td colspan="7" class="empty">Waiting for discovery announcements…</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </article>
+
+        <article class="panel panel-wide">
+            <div class="panel-title-row">
+                <h3>Resource and Connectivity Snapshot</h3>
+                <span class="panel-tag">Multi-source</span>
+            </div>
+            <div class="checks" id="checksList">
+                <div class="check-item"><span>Connection API</span><strong id="connStatus">Checking</strong></div>
+                <div class="check-item"><span>OpenShift Resources</span><strong id="resourceStatus">Checking</strong></div>
+                <div class="check-item"><span>VM Inventory</span><strong id="vmInventoryStatus">Checking</strong></div>
+                <div class="check-item"><span>Tracey Reporting</span><strong id="traceyStatus">Checking</strong></div>
+            </div>
+        </article>
+    </section>
+
+    <section class="panel docs-panel">
+        <div class="panel-title-row">
+            <h3>Continuum API Reference</h3>
+            <span class="panel-tag">Documentation</span>
+        </div>
+        <div class="doc-links">
+            <a href="bucket.html">Bucket API</a>
+            <a href="k8s.html">Kubernetes API</a>
+            <a href="openshift.html">OpenShift API</a>
+            <a href="model.html">Model API</a>
+            <a href="ssh.html">SSH API</a>
+            <a href="tracey.html">Tracey Agent API</a>
+            <a href="vm.html">VM API</a>
+        </div>
+    </section>
+</main>
+
+<script src="dashboard.js"></script>
 </body>
 </html>

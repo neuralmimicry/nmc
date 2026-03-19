@@ -1,0 +1,18 @@
+[Unit]
+Description=Tracey Sidecar for Continuum
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User={{ nmc_run_user }}
+Group={{ nmc_run_group }}
+WorkingDirectory={{ nmc_tracey_state_dir }}
+Environment=TRACEY_CONFIG={{ nmc_tracey_config_path }}
+ExecStart={{ nmc_tracey_effective_bin }} --supervisor
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

@@ -5,10 +5,20 @@
 #include "Utils.h"
 #include <cstdlib>
 #include <cctype>
+#include <cerrno>
+#include <cstring>
 #include <sstream>
 #include <iostream>
 #include <algorithm> // For std::remove_if, std::find_if
 #include <set>       // For unique locations/types
+#include <chrono>
+#include <thread>
+#include <vector>
+#include <poll.h>
+#include <netdb.h>
+#include <sys/socket.h>
+#include <arpa/inet.h>
+#include <unistd.h>
 
 
 namespace NMC::Server {
@@ -48,10 +58,339 @@ namespace NMC::Server {
             return "Unknown";
         }
 
+        std::string normalizeTraceyStatus(const std::string& rawStatus) {
+            const std::string status = toLower(rawStatus);
+            if (status == "ok" || status == "ready" || status == "running" || status == "healthy") {
+                return "healthy";
+            }
+            if (status == "degraded" || status == "warning" || status == "warn") {
+                return "degraded";
+            }
+            if (status == "offline" || status == "down" || status == "failed" || status == "error") {
+                return "offline";
+            }
+            if (status.empty()) {
+                return "unknown";
+            }
+            return status;
+        }
+
+        int64_t nowEpochMs() {
+            return std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::system_clock::now().time_since_epoch()
+            ).count();
+        }
+
         void normalizeClusterStatus(nlohmann::json& cluster) {
             if (cluster.is_object() && cluster.contains("status") && cluster["status"].is_string()) {
                 cluster["status"] = normalizeOpenShiftStatus(cluster["status"].get<std::string>());
             }
+        }
+
+        bool parseBoolValue(const char* raw, bool fallback) {
+            if (!raw || !*raw) {
+                return fallback;
+            }
+            const std::string value = toLower(trim(raw));
+            if (value == "1" || value == "true" || value == "yes" || value == "on") {
+                return true;
+            }
+            if (value == "0" || value == "false" || value == "no" || value == "off") {
+                return false;
+            }
+            return fallback;
+        }
+
+        int64_t parseInt64Value(const char* raw, int64_t fallback, int64_t minValue, int64_t maxValue) {
+            if (!raw || !*raw) {
+                return fallback;
+            }
+            try {
+                int64_t parsed = std::stoll(raw);
+                if (parsed < minValue) {
+                    parsed = minValue;
+                } else if (parsed > maxValue) {
+                    parsed = maxValue;
+                }
+                return parsed;
+            } catch (const std::exception&) {
+                return fallback;
+            }
+        }
+
+        struct TraceyEndpoint {
+            std::string host;
+            int port{80};
+            bool https{false};
+            std::string basePath;
+            std::string normalized;
+        };
+
+        bool isPrivateIpv4(const in_addr& addr) {
+            const uint32_t ip = ntohl(addr.s_addr);
+            if ((ip & 0xFF000000U) == 0x0A000000U) { // 10.0.0.0/8
+                return true;
+            }
+            if ((ip & 0xFFF00000U) == 0xAC100000U) { // 172.16.0.0/12
+                return true;
+            }
+            if ((ip & 0xFFFF0000U) == 0xC0A80000U) { // 192.168.0.0/16
+                return true;
+            }
+            if ((ip & 0xFF000000U) == 0x7F000000U) { // 127.0.0.0/8
+                return true;
+            }
+            if ((ip & 0xFFFF0000U) == 0xA9FE0000U) { // 169.254.0.0/16
+                return true;
+            }
+            if ((ip & 0xFFC00000U) == 0x64400000U) { // 100.64.0.0/10
+                return true;
+            }
+            return false;
+        }
+
+        bool isPrivateIpv6(const in6_addr& addr) {
+            static const in6_addr loopback = IN6ADDR_LOOPBACK_INIT;
+            if (std::memcmp(&addr, &loopback, sizeof(in6_addr)) == 0) {
+                return true;
+            }
+            if ((addr.s6_addr[0] & 0xFEU) == 0xFCU) { // fc00::/7
+                return true;
+            }
+            if (addr.s6_addr[0] == 0xFEU && (addr.s6_addr[1] & 0xC0U) == 0x80U) { // fe80::/10
+                return true;
+            }
+            return false;
+        }
+
+        bool hostResolvesToLocal(const std::string& host) {
+            addrinfo hints{};
+            hints.ai_family = AF_UNSPEC;
+            hints.ai_socktype = SOCK_STREAM;
+            hints.ai_flags = AI_ADDRCONFIG;
+            addrinfo* result = nullptr;
+            const int rc = ::getaddrinfo(host.c_str(), nullptr, &hints, &result);
+            if (rc != 0 || result == nullptr) {
+                return false;
+            }
+
+            bool foundPrivate = false;
+            for (addrinfo* cursor = result; cursor != nullptr; cursor = cursor->ai_next) {
+                if (cursor->ai_family == AF_INET) {
+                    const auto* in = reinterpret_cast<sockaddr_in*>(cursor->ai_addr);
+                    if (!isPrivateIpv4(in->sin_addr)) {
+                        ::freeaddrinfo(result);
+                        return false;
+                    }
+                    foundPrivate = true;
+                } else if (cursor->ai_family == AF_INET6) {
+                    const auto* in6 = reinterpret_cast<sockaddr_in6*>(cursor->ai_addr);
+                    if (!isPrivateIpv6(in6->sin6_addr)) {
+                        ::freeaddrinfo(result);
+                        return false;
+                    }
+                    foundPrivate = true;
+                }
+            }
+
+            ::freeaddrinfo(result);
+            return foundPrivate;
+        }
+
+        bool isLocalOrPrivateHost(const std::string& host, bool allowPublicAddr) {
+            if (allowPublicAddr) {
+                return true;
+            }
+            const std::string lowered = toLower(host);
+            if (lowered == "localhost") {
+                return true;
+            }
+
+            in_addr in4{};
+            if (::inet_pton(AF_INET, host.c_str(), &in4) == 1) {
+                return isPrivateIpv4(in4);
+            }
+
+            in6_addr in6{};
+            if (::inet_pton(AF_INET6, host.c_str(), &in6) == 1) {
+                return isPrivateIpv6(in6);
+            }
+
+            return hostResolvesToLocal(host);
+        }
+
+        bool parseTraceyEndpoint(const std::string& rawValue, TraceyEndpoint& endpoint) {
+            std::string value = trim(rawValue);
+            if (value.empty()) {
+                return false;
+            }
+
+            if (value.rfind("http://", 0) != 0 && value.rfind("https://", 0) != 0) {
+                value = "http://" + value;
+            }
+
+            std::string rest;
+            if (value.rfind("https://", 0) == 0) {
+                endpoint.https = true;
+                endpoint.port = 443;
+                rest = value.substr(8);
+            } else if (value.rfind("http://", 0) == 0) {
+                endpoint.https = false;
+                endpoint.port = 80;
+                rest = value.substr(7);
+            } else {
+                return false;
+            }
+
+            const auto slashPos = rest.find('/');
+            std::string hostPort = slashPos == std::string::npos ? rest : rest.substr(0, slashPos);
+            endpoint.basePath = slashPos == std::string::npos ? "" : rest.substr(slashPos);
+            if (hostPort.empty()) {
+                return false;
+            }
+            while (!endpoint.basePath.empty() && endpoint.basePath.back() == '/') {
+                endpoint.basePath.pop_back();
+            }
+            if (endpoint.basePath == "/") {
+                endpoint.basePath.clear();
+            }
+
+            std::string host;
+            std::string portPart;
+            if (!hostPort.empty() && hostPort.front() == '[') {
+                const auto close = hostPort.find(']');
+                if (close == std::string::npos) {
+                    return false;
+                }
+                host = hostPort.substr(1, close - 1);
+                if (close + 1 < hostPort.size()) {
+                    if (hostPort[close + 1] != ':') {
+                        return false;
+                    }
+                    portPart = hostPort.substr(close + 2);
+                }
+            } else {
+                const auto colonPos = hostPort.rfind(':');
+                if (colonPos != std::string::npos && hostPort.find(':') == colonPos) {
+                    host = hostPort.substr(0, colonPos);
+                    portPart = hostPort.substr(colonPos + 1);
+                } else {
+                    host = hostPort;
+                }
+            }
+
+            if (host.empty()) {
+                return false;
+            }
+
+            if (!portPart.empty()) {
+                try {
+                    endpoint.port = std::stoi(portPart);
+                } catch (const std::exception&) {
+                    return false;
+                }
+            }
+
+            if (endpoint.port <= 0 || endpoint.port > 65535) {
+                return false;
+            }
+
+            endpoint.host = host;
+            const bool hostIsIpv6 = host.find(':') != std::string::npos;
+            endpoint.normalized = endpoint.https ? "https://" : "http://";
+            endpoint.normalized += hostIsIpv6 ? "[" + host + "]" : host;
+            endpoint.normalized += ":" + std::to_string(endpoint.port);
+            endpoint.normalized += endpoint.basePath;
+            return true;
+        }
+
+        std::string buildTraceyStatusPath(const TraceyEndpoint& endpoint) {
+            if (endpoint.basePath.empty()) {
+                return "/status";
+            }
+            return endpoint.basePath + "/status";
+        }
+
+        std::string deriveLinkSecurity(bool signaturePresent, const TraceyEndpoint* endpoint, bool tlsVerify) {
+            std::string linkSecurity;
+            if (endpoint == nullptr) {
+                linkSecurity = "announcement-only";
+            } else if (endpoint->https) {
+                linkSecurity = tlsVerify ? "tls-verified" : "tls-unverified";
+            } else {
+                linkSecurity = "plaintext";
+            }
+            if (signaturePresent) {
+                linkSecurity += "+signed-announcement";
+            } else {
+                linkSecurity += "+unsigned-announcement";
+            }
+            return linkSecurity;
+        }
+
+        std::string mergeTraceySource(const std::string& current, const std::string& incoming) {
+            std::set<std::string> tokens;
+            auto collect = [&tokens](const std::string& value) {
+                if (value.empty()) {
+                    return;
+                }
+                std::stringstream ss(value);
+                std::string token;
+                while (std::getline(ss, token, '+')) {
+                    const std::string normalized = trim(token);
+                    if (!normalized.empty()) {
+                        tokens.insert(normalized);
+                    }
+                }
+            };
+
+            collect(current);
+            collect(incoming);
+            if (tokens.empty()) {
+                return "";
+            }
+
+            const std::vector<std::string> orderedKnown = {
+                    "heartbeat",
+                    "discovery",
+                    "continuum-provisioning"
+            };
+
+            std::vector<std::string> ordered;
+            for (const auto& known : orderedKnown) {
+                auto it = tokens.find(known);
+                if (it != tokens.end()) {
+                    ordered.push_back(*it);
+                    tokens.erase(it);
+                }
+            }
+            for (const auto& extra : tokens) {
+                ordered.push_back(extra);
+            }
+
+            std::ostringstream out;
+            for (size_t i = 0; i < ordered.size(); ++i) {
+                if (i > 0) {
+                    out << "+";
+                }
+                out << ordered[i];
+            }
+            return out.str();
+        }
+
+        int64_t computeBackoffMs(int failures, int64_t baseMs, int64_t maxMs) {
+            int64_t value = std::max<int64_t>(baseMs, 1000);
+            for (int i = 1; i < failures; ++i) {
+                if (value >= maxMs) {
+                    break;
+                }
+                if (value > maxMs / 2) {
+                    value = maxMs;
+                    break;
+                }
+                value *= 2;
+            }
+            return std::clamp(value, std::max<int64_t>(baseMs, 1000), std::max<int64_t>(maxMs, baseMs));
         }
     }
 
@@ -110,6 +449,103 @@ namespace NMC::Server {
         if (docsEnv) {
             const std::string val = toLower(std::string(docsEnv));
             docsEnabled = !(val == "0" || val == "false" || val == "no");
+        }
+
+        stopTraceyDiscovery.store(false);
+        traceyStaleAfterSeconds = parseInt64Value(std::getenv("NMC_TRACEY_STALE_SECONDS"), 90, 5, 86400);
+        traceyEnforceManagedResources = parseBoolValue(
+                envOr("NMC_TRACEY_ENFORCE_MANAGED_RESOURCES", "NM_TRACEY_ENFORCE_MANAGED_RESOURCES"),
+                true
+        );
+        traceyDiscoveryEnabled = parseBoolValue(envOr("NMC_TRACEY_DISCOVERY_ENABLED", "NM_TRACEY_DISCOVERY_ENABLED"), true);
+        traceyAllowPublicAddr = parseBoolValue(envOr("NMC_TRACEY_ALLOW_PUBLIC_ADDR", "NM_TRACEY_ALLOW_PUBLIC_ADDR"), false);
+        traceyTlsVerify = parseBoolValue(envOr("NMC_TRACEY_TLS_VERIFY", "NM_TRACEY_TLS_VERIFY"), true);
+        traceyRequireSignature = parseBoolValue(envOr("NMC_TRACEY_REQUIRE_SIGNATURE", "NM_TRACEY_REQUIRE_SIGNATURE"), false);
+        traceyRequirementGraceSeconds = parseInt64Value(
+                envOr("NMC_TRACEY_REQUIREMENT_GRACE_SECONDS", "NM_TRACEY_REQUIREMENT_GRACE_SECONDS"),
+                300,
+                5,
+                86400
+        );
+        const char* traceyBindAddrEnv = envOr("NMC_TRACEY_DISCOVERY_BIND_ADDR", "NM_TRACEY_DISCOVERY_BIND_ADDR");
+        traceyDiscoveryBindAddr = traceyBindAddrEnv ? trim(traceyBindAddrEnv) : "0.0.0.0";
+        if (traceyDiscoveryBindAddr.empty()) {
+            traceyDiscoveryBindAddr = "0.0.0.0";
+        }
+        traceyDiscoveryPort = static_cast<int>(
+                parseInt64Value(envOr("NMC_TRACEY_DISCOVERY_PORT", "NM_TRACEY_DISCOVERY_PORT"), 47990, 1, 65535)
+        );
+        traceyDiscoveryMaxAgeMs = parseInt64Value(
+                envOr("NMC_TRACEY_DISCOVERY_MAX_AGE_MS", "NM_TRACEY_DISCOVERY_MAX_AGE_MS"),
+                15000,
+                1000,
+                3600000
+        );
+        traceyStatusPollMs = parseInt64Value(
+                envOr("NMC_TRACEY_STATUS_POLL_MS", "NM_TRACEY_STATUS_POLL_MS"),
+                10000,
+                1000,
+                600000
+        );
+        traceyStatusTimeoutMs = parseInt64Value(
+                envOr("NMC_TRACEY_STATUS_TIMEOUT_MS", "NM_TRACEY_STATUS_TIMEOUT_MS"),
+                2500,
+                500,
+                120000
+        );
+        traceyStatusMaxBackoffMs = parseInt64Value(
+                envOr("NMC_TRACEY_STATUS_MAX_BACKOFF_MS", "NM_TRACEY_STATUS_MAX_BACKOFF_MS"),
+                120000,
+                traceyStatusPollMs,
+                3600000
+        );
+        const char* traceyStatusTokenEnv = envOr("NMC_TRACEY_STATUS_BEARER_TOKEN", "NM_TRACEY_STATUS_BEARER_TOKEN");
+        traceyStatusBearerToken = traceyStatusTokenEnv ? trim(traceyStatusTokenEnv) : "";
+
+        const bool traceyBootstrapLocalAgent = parseBoolValue(
+                envOr("NMC_TRACEY_BOOTSTRAP_LOCAL_AGENT", "NM_TRACEY_BOOTSTRAP_LOCAL_AGENT"),
+                true
+        );
+        const char* localAgentIdEnv = envOr("NMC_TRACEY_LOCAL_AGENT_ID", "NM_TRACEY_LOCAL_AGENT_ID");
+        const std::string localTraceyAgentId = localAgentIdEnv ? trim(localAgentIdEnv) : "tracey-continuum-local";
+        const char* localStatusAddrEnv = envOr("NMC_TRACEY_LOCAL_STATUS_ADDR", "NM_TRACEY_LOCAL_STATUS_ADDR");
+        std::string localTraceyStatusAddr = localStatusAddrEnv ? trim(localStatusAddrEnv) : "http://127.0.0.1:48000";
+        if (!localTraceyStatusAddr.empty()) {
+            TraceyEndpoint endpoint;
+            if (!parseTraceyEndpoint(localTraceyStatusAddr, endpoint) ||
+                !isLocalOrPrivateHost(endpoint.host, traceyAllowPublicAddr)) {
+                std::cerr << "[WARN] Ignoring invalid local Tracey status address '" << localTraceyStatusAddr
+                          << "' for bootstrap sidecar requirement." << std::endl;
+                localTraceyStatusAddr.clear();
+            } else {
+                localTraceyStatusAddr = endpoint.normalized;
+            }
+        }
+        if (traceyBootstrapLocalAgent && !localTraceyAgentId.empty()) {
+            std::lock_guard<std::mutex> lock(dataMutex);
+            const int64_t nowMs = nowEpochMs();
+            upsertTraceyRequirementLocked(
+                    "continuum_server",
+                    "nmc_server",
+                    "local",
+                    localTraceyAgentId,
+                    localTraceyStatusAddr,
+                    nowMs
+            );
+            auto& localAgent = traceyAgents[localTraceyAgentId];
+            localAgent.cluster = "continuum-local";
+            localAgent.host = "localhost";
+            localAgent.status = localAgent.status.empty() ? "unknown" : localAgent.status;
+            localAgent.linkState = "required";
+            if (localAgent.metrics.is_null() || !localAgent.metrics.is_object()) {
+                localAgent.metrics = nlohmann::json::object();
+            }
+            localAgent.metrics["bootstrap_managed"] = true;
+            localAgent.metrics["monitors"] = {"nmc_server"};
+            localAgent.metrics["bootstrap_epoch_ms"] = nowMs;
+            if (localTraceyStatusAddr.empty()) {
+                localAgent.lastError = "Bootstrap Tracey sidecar is required but no local status_addr is configured.";
+            }
         }
 
         if (authMode == "oidc") {
@@ -220,6 +656,9 @@ namespace NMC::Server {
             // when /docs is accessed directly.
             // Other files like /docs/bucket.html will be served automatically
             // by set_base_dir.
+            svr.Get("/", [](const httplib::Request& req, httplib::Response& res) {
+                res.set_content(Utils::readFile("./docs/index.html"), "text/html");
+            });
             svr.Get("/index.html", [](const httplib::Request& req, httplib::Response& res) {
                 res.set_content(Utils::readFile("./docs/index.html"), "text/html");
             });
@@ -306,11 +745,35 @@ namespace NMC::Server {
         // --- K8s Routes ---
         svr.Post("/k8s/create", [this, guard](const httplib::Request& req, httplib::Response& res) {
             if (!guard(req, res)) return;
+            std::string clusterName = "unknown";
+            std::string region;
+            std::string traceyAgentId;
+            std::string traceyStatusAddr;
+            try {
+                auto jsonBody = nlohmann::json::parse(req.body);
+                clusterName = jsonBody.value("name", clusterName);
+                region = jsonBody.value("region", "");
+                std::string reason;
+                if (!extractTraceyProvisioningRequest(jsonBody, traceyAgentId, traceyStatusAddr, reason)) {
+                    return sendErrorResponse(res, 400, reason);
+                }
+            } catch (const nlohmann::json::parse_error& e) {
+                return sendErrorResponse(res, 400, "Invalid JSON body: " + std::string(e.what()));
+            }
             k8sHandlers->handleCreateK8sCluster(req, res);
+            if (res.status >= 200 && res.status < 300 && !traceyAgentId.empty()) {
+                std::lock_guard<std::mutex> lock(dataMutex);
+                upsertTraceyRequirementLocked("k8s_cluster", clusterName, region, traceyAgentId, traceyStatusAddr, nowEpochMs());
+            }
         });
         svr.Delete(R"(/k8s/delete/(.*))", [this, guard](const httplib::Request& req, httplib::Response& res) {
             if (!guard(req, res)) return;
+            const std::string clusterId = req.matches.size() > 1 ? req.matches[1].str() : "";
             k8sHandlers->handleDeleteK8sCluster(req, res);
+            if (res.status >= 200 && res.status < 300 && !clusterId.empty()) {
+                std::lock_guard<std::mutex> lock(dataMutex);
+                removeTraceyRequirementLocked("k8s_cluster", clusterId);
+            }
         });
         svr.Get(R"(/k8s/get/(.*))", [this, guard](const httplib::Request& req, httplib::Response& res) {
             if (!guard(req, res)) return;
@@ -416,6 +879,25 @@ namespace NMC::Server {
             if (!guard(req, res)) return;
             handleOpenShiftRequestCluster(req, res);
         });
+
+        // --- Tracey Agent Routes ---
+        svr.Post("/tracey/agents/heartbeat", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            handleTraceyHeartbeat(req, res);
+        });
+        svr.Get("/tracey/agents", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            handleListTraceyAgents(req, res);
+        });
+
+        if (traceyDiscoveryEnabled) {
+            try {
+                traceyDiscoveryThread = std::thread(&APIRoutes::runTraceyDiscoveryLoop, this);
+            } catch (const std::exception& e) {
+                traceyDiscoveryEnabled = false;
+                std::cerr << "[WARN] Failed to start Tracey discovery thread: " << e.what() << std::endl;
+            }
+        }
     }
 
     // Explicit definition of the destructor for APIRoutes
@@ -424,7 +906,12 @@ namespace NMC::Server {
     // The default destructor for unique_ptr needs the full definition of the type
     // it manages when it's instantiated, which happens when the APIRoutes destructor
     // is defined.
-    APIRoutes::~APIRoutes() = default;
+    APIRoutes::~APIRoutes() {
+        stopTraceyDiscovery.store(true);
+        if (traceyDiscoveryThread.joinable()) {
+            traceyDiscoveryThread.join();
+        }
+    }
 
     /**
      * @brief Logs incoming HTTP requests to standard output.
@@ -947,6 +1434,138 @@ namespace NMC::Server {
         sendJsonResponse(res, apiResponse);
     }
 
+    bool APIRoutes::extractTraceyProvisioningRequest(const nlohmann::json& payload,
+                                                     std::string& agentIdOut,
+                                                     std::string& statusAddrOut,
+                                                     std::string& reasonOut) const {
+        agentIdOut.clear();
+        statusAddrOut.clear();
+        reasonOut.clear();
+
+        if (!payload.is_object()) {
+            reasonOut = "Invalid provisioning payload.";
+            return false;
+        }
+
+        if (!payload.contains("tracey")) {
+            if (traceyEnforceManagedResources) {
+                reasonOut = "Tracey configuration is required. Provide tracey.agent_id and optional tracey.status_addr.";
+                return false;
+            }
+            return true;
+        }
+
+        const auto& tracey = payload["tracey"];
+        if (!tracey.is_object()) {
+            reasonOut = "Invalid tracey configuration. Expected object.";
+            return false;
+        }
+
+        agentIdOut = trim(tracey.value("agent_id", tracey.value("agentId", "")));
+        statusAddrOut = trim(tracey.value("status_addr", tracey.value("statusAddr", "")));
+        const bool autoDiscovery = tracey.value("auto_discovery", true);
+
+        if (agentIdOut.empty()) {
+            reasonOut = "Missing required tracey.agent_id for managed resource provisioning.";
+            return false;
+        }
+        if (statusAddrOut.empty() && !autoDiscovery) {
+            reasonOut = "tracey.status_addr is required when tracey.auto_discovery is false.";
+            return false;
+        }
+
+        if (!statusAddrOut.empty()) {
+            TraceyEndpoint endpoint;
+            if (!parseTraceyEndpoint(statusAddrOut, endpoint)) {
+                reasonOut = "tracey.status_addr is not a valid HTTP(S) endpoint.";
+                return false;
+            }
+            if (!isLocalOrPrivateHost(endpoint.host, traceyAllowPublicAddr)) {
+                reasonOut = "tracey.status_addr is outside allowed network ranges.";
+                return false;
+            }
+            statusAddrOut = endpoint.normalized;
+        }
+
+        return true;
+    }
+
+    void APIRoutes::upsertTraceyRequirementLocked(const std::string& resourceType,
+                                                  const std::string& resourceName,
+                                                  const std::string& region,
+                                                  const std::string& agentId,
+                                                  const std::string& statusAddr,
+                                                  int64_t nowMs) {
+        if (agentId.empty()) {
+            return;
+        }
+
+        const std::string key = resourceType + ":" + toLower(trim(resourceName));
+        TraceyRequirement requirement;
+        requirement.key = key;
+        requirement.resourceType = resourceType;
+        requirement.resourceName = resourceName;
+        requirement.region = region;
+        requirement.expectedAgentId = agentId;
+        requirement.expectedStatusAddr = statusAddr;
+        requirement.createdEpochMs = nowMs;
+        if (!key.empty() && key.back() != ':') {
+            traceyRequirements[key] = requirement;
+        }
+
+        auto& agent = traceyAgents[agentId];
+        agent.agentId = agentId;
+        agent.source = mergeTraceySource(agent.source, "continuum-provisioning");
+        if (agent.cluster.empty()) {
+            agent.cluster = resourceName;
+        }
+        if (agent.status.empty()) {
+            agent.status = "unknown";
+        }
+        if (agent.metrics.is_null() || !agent.metrics.is_object()) {
+            agent.metrics = nlohmann::json::object();
+        }
+        agent.metrics["managed_by_continuum"] = true;
+        agent.metrics["managed_resource_type"] = resourceType;
+        agent.metrics["managed_resource_name"] = resourceName;
+        agent.metrics["managed_resource_region"] = region;
+        agent.metrics["managed_since_epoch_ms"] = nowMs;
+        if (!statusAddr.empty()) {
+            agent.statusAddr = statusAddr;
+            agent.nextQueryEpochMs = nowMs;
+            TraceyEndpoint endpoint;
+            if (parseTraceyEndpoint(statusAddr, endpoint)) {
+                agent.linkSecurity = deriveLinkSecurity(agent.signaturePresent, &endpoint, traceyTlsVerify);
+            }
+        }
+        if (agent.linkState.empty()) {
+            agent.linkState = "required";
+        }
+    }
+
+    void APIRoutes::removeTraceyRequirementLocked(const std::string& resourceType, const std::string& resourceName) {
+        const std::string normalized = toLower(trim(resourceName));
+        if (normalized.empty()) {
+            return;
+        }
+
+        const std::string directKey = resourceType + ":" + normalized;
+        auto direct = traceyRequirements.find(directKey);
+        if (direct != traceyRequirements.end()) {
+            traceyRequirements.erase(direct);
+            return;
+        }
+
+        for (auto it = traceyRequirements.begin(); it != traceyRequirements.end();) {
+            if (it->second.resourceType == resourceType &&
+                toLower(trim(it->second.resourceName)) == normalized) {
+                it = traceyRequirements.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+
 // --- VM Handlers ---
     /**
      * @brief Handles the creation of a new Virtual Machine.
@@ -969,9 +1588,15 @@ namespace NMC::Server {
             std::string osImage = json_body.value("osImage", "");
             std::string publicKeyId = json_body.value("publicKeyId", "");
             std::string initScript = json_body.value("initScript", "");
+            std::string traceyAgentId;
+            std::string traceyStatusAddr;
+            std::string traceyReason;
 
             if (name.empty() || sku.empty() || region.empty() || osImage.empty() || publicKeyId.empty()) {
                 return sendErrorResponse(res, 400, "Missing required parameters: name, sku, region, osImage, or publicKeyId.");
+            }
+            if (!extractTraceyProvisioningRequest(json_body, traceyAgentId, traceyStatusAddr, traceyReason)) {
+                return sendErrorResponse(res, 400, traceyReason);
             }
 
             std::lock_guard<std::mutex> lock(dataMutex);
@@ -999,11 +1624,25 @@ namespace NMC::Server {
             newVM.initScript = initScript;
             newVM.status = "Creating";
             vms.push_back(newVM);
+            upsertTraceyRequirementLocked("vm", name, region, traceyAgentId, traceyStatusAddr, nowEpochMs());
 
             Models::CloudResponse apiResponse;
             apiResponse.success = true;
             apiResponse.message = "VM '" + name + "' created successfully.";
             apiResponse.data = newVM.toJsonString();
+            if (!traceyAgentId.empty()) {
+                apiResponse.data["tracey"] = {
+                        {"required", true},
+                        {"agent_id", traceyAgentId},
+                        {"status_addr", traceyStatusAddr},
+                        {"compliance_state", "pending"},
+                        {"reason", "Waiting for Tracey agent heartbeat/discovery after provisioning."}
+                };
+            } else {
+                apiResponse.data["tracey"] = {
+                        {"required", traceyEnforceManagedResources}
+                };
+            }
             sendJsonResponse(res, apiResponse);
 
         } catch (const nlohmann::json::parse_error& e) {
@@ -1028,11 +1667,19 @@ namespace NMC::Server {
 
         std::lock_guard<std::mutex> lock(dataMutex);
         auto initial_size = vms.size();
+        std::string removedVmName;
         vms.erase(std::remove_if(vms.begin(), vms.end(),
-                                     [&](const Models::VM& vm) { return vm.id == id; }),
+                                     [&](const Models::VM& vm) {
+                                         if (vm.id == id) {
+                                             removedVmName = vm.name;
+                                             return true;
+                                         }
+                                         return false;
+                                     }),
                       vms.end());
 
         if (vms.size() < initial_size) {
+            removeTraceyRequirementLocked("vm", removedVmName);
             Models::CloudResponse apiResponse;
             apiResponse.success = true;
             apiResponse.message = "VM '" + id + "' deleted successfully.";
@@ -1060,10 +1707,56 @@ namespace NMC::Server {
                                [&](const Models::VM& vm) { return vm.id == id; });
 
         if (it != vms.end()) {
+            nlohmann::json vmData = it->toJsonString();
+            const std::string reqKey = "vm:" + toLower(trim(it->name));
+            auto reqIt = traceyRequirements.find(reqKey);
+            if (reqIt != traceyRequirements.end()) {
+                const auto& requirement = reqIt->second;
+                auto agentIt = traceyAgents.find(requirement.expectedAgentId);
+                const int64_t nowMs = nowEpochMs();
+                const int64_t ageMs = (requirement.createdEpochMs > 0 && nowMs > requirement.createdEpochMs)
+                                      ? (nowMs - requirement.createdEpochMs)
+                                      : 0;
+                const bool withinGrace = ageMs <= (traceyRequirementGraceSeconds * 1000);
+                std::string complianceState = "pending";
+                std::string reason = "Waiting for Tracey agent heartbeat/discovery.";
+                if (agentIt != traceyAgents.end()) {
+                    const auto& agent = agentIt->second;
+                    const int64_t lastSignalMs = std::max(agent.lastSeenEpochMs, agent.lastAnnouncementEpochMs);
+                    const bool stale = (lastSignalMs <= 0) ||
+                                       (nowMs > lastSignalMs && (nowMs - lastSignalMs) > (traceyStaleAfterSeconds * 1000));
+                    const bool reporting = agent.statusReachable ||
+                                           agent.source.find("heartbeat") != std::string::npos ||
+                                           agent.source.find("discovery") != std::string::npos;
+                    if (!stale && reporting) {
+                        complianceState = "compliant";
+                        reason = "Tracey agent is actively reporting.";
+                    } else if (!withinGrace) {
+                        complianceState = "noncompliant";
+                        reason = "Tracey agent is stale or not reporting after grace period.";
+                    }
+                } else if (!withinGrace) {
+                    complianceState = "noncompliant";
+                    reason = "Required Tracey agent not discovered after grace period.";
+                }
+                vmData["tracey"] = {
+                        {"required", true},
+                        {"agent_id", requirement.expectedAgentId},
+                        {"status_addr", requirement.expectedStatusAddr},
+                        {"compliance_state", complianceState},
+                        {"reason", reason}
+                };
+            } else {
+                vmData["tracey"] = {
+                        {"required", traceyEnforceManagedResources},
+                        {"compliance_state", "untracked"}
+                };
+            }
+
             Models::CloudResponse apiResponse;
             apiResponse.success = true;
             apiResponse.message = "VM details retrieved.";
-            apiResponse.data = it->toJsonString();
+            apiResponse.data = vmData;
             sendJsonResponse(res, apiResponse);
         } else {
             sendErrorResponse(res, 404, "VM '" + id + "' not found.");
@@ -1081,12 +1774,52 @@ namespace NMC::Server {
      */
     void APIRoutes::handleListVMs(const httplib::Request& req, httplib::Response& res) {
         std::string filterName = req.get_param_value("filter-name");
+        const int64_t nowMs = nowEpochMs();
 
         std::lock_guard<std::mutex> lock(dataMutex);
         nlohmann::json vmList = nlohmann::json::array();
         for (const auto& vm : vms) {
             if (filterName.empty() || vm.name.find(filterName) != std::string::npos) {
-                vmList.push_back(vm.toJsonString());
+                nlohmann::json vmJson = vm.toJsonString();
+                const std::string reqKey = "vm:" + toLower(trim(vm.name));
+                auto reqIt = traceyRequirements.find(reqKey);
+                if (reqIt != traceyRequirements.end()) {
+                    const auto& requirement = reqIt->second;
+                    auto agentIt = traceyAgents.find(requirement.expectedAgentId);
+                    const int64_t ageMs = (requirement.createdEpochMs > 0 && nowMs > requirement.createdEpochMs)
+                                          ? (nowMs - requirement.createdEpochMs)
+                                          : 0;
+                    const bool withinGrace = ageMs <= (traceyRequirementGraceSeconds * 1000);
+                    std::string complianceState = "pending";
+                    if (agentIt != traceyAgents.end()) {
+                        const auto& agent = agentIt->second;
+                        const int64_t lastSignalMs = std::max(agent.lastSeenEpochMs, agent.lastAnnouncementEpochMs);
+                        const bool stale = (lastSignalMs <= 0) ||
+                                           (nowMs > lastSignalMs && (nowMs - lastSignalMs) > (traceyStaleAfterSeconds * 1000));
+                        const bool reporting = agent.statusReachable ||
+                                               agent.source.find("heartbeat") != std::string::npos ||
+                                               agent.source.find("discovery") != std::string::npos;
+                        if (!stale && reporting) {
+                            complianceState = "compliant";
+                        } else if (!withinGrace) {
+                            complianceState = "noncompliant";
+                        }
+                    } else if (!withinGrace) {
+                        complianceState = "noncompliant";
+                    }
+                    vmJson["tracey"] = {
+                            {"required", true},
+                            {"agent_id", requirement.expectedAgentId},
+                            {"status_addr", requirement.expectedStatusAddr},
+                            {"compliance_state", complianceState}
+                    };
+                } else {
+                    vmJson["tracey"] = {
+                            {"required", traceyEnforceManagedResources},
+                            {"compliance_state", "untracked"}
+                    };
+                }
+                vmList.push_back(vmJson);
             }
         }
 
@@ -1287,6 +2020,9 @@ namespace NMC::Server {
     void APIRoutes::handleOpenShiftRequestCluster(const httplib::Request& req, httplib::Response& res) {
         try {
             auto json_body = nlohmann::json::parse(req.body);
+            std::string traceyAgentId;
+            std::string traceyStatusAddr;
+            std::string traceyReason;
 
             // Validate minimum required fields before forwarding to oshift.
             const std::string name = json_body.value("name", "");
@@ -1302,12 +2038,29 @@ namespace NMC::Server {
             if (provider == "hybrid-burst" && (!json_body.contains("burst_targets") || json_body["burst_targets"].empty())) {
                 return sendErrorResponse(res, 400, "burst_targets is required when provider is hybrid-burst.");
             }
+            if (!extractTraceyProvisioningRequest(json_body, traceyAgentId, traceyStatusAddr, traceyReason)) {
+                return sendErrorResponse(res, 400, traceyReason);
+            }
 
             Models::CloudResponse apiResponse = openShiftClient->requestCluster(json_body);
             if (apiResponse.success && apiResponse.data.is_object()) {
                 if (apiResponse.data.contains("cluster")) {
                     normalizeClusterStatus(apiResponse.data["cluster"]);
                 }
+            }
+            if (apiResponse.success && !traceyAgentId.empty()) {
+                std::lock_guard<std::mutex> lock(dataMutex);
+                upsertTraceyRequirementLocked("openshift_cluster", name, region, traceyAgentId, traceyStatusAddr, nowEpochMs());
+                if (!apiResponse.data.is_object()) {
+                    apiResponse.data = nlohmann::json::object();
+                }
+                apiResponse.data["tracey"] = {
+                        {"required", true},
+                        {"agent_id", traceyAgentId},
+                        {"status_addr", traceyStatusAddr},
+                        {"compliance_state", "pending"},
+                        {"reason", "Waiting for Tracey agent heartbeat/discovery after provisioning."}
+                };
             }
             sendJsonResponse(res, apiResponse);
             res.status = apiResponse.statusCode;
@@ -1316,6 +2069,694 @@ namespace NMC::Server {
         } catch (const std::exception& e) {
             sendErrorResponse(res, 500, "Server error: " + std::string(e.what()));
         }
+    }
+
+// --- Tracey Agent Handlers ---
+    void APIRoutes::runTraceyDiscoveryLoop() {
+        constexpr size_t maxDatagramBytes = 8192;
+        std::vector<char> buffer(maxDatagramBytes);
+        int sockFd = -1;
+        int64_t nextBindAttemptMs = 0;
+        int64_t lastMaintenanceMs = 0;
+
+        while (!stopTraceyDiscovery.load()) {
+            const int64_t nowMs = nowEpochMs();
+
+            if (sockFd < 0 && nowMs >= nextBindAttemptMs) {
+                sockFd = ::socket(AF_INET, SOCK_DGRAM, 0);
+                if (sockFd < 0) {
+                    nextBindAttemptMs = nowMs + 3000;
+                    std::cerr << "[WARN] Tracey discovery socket() failed: " << std::strerror(errno) << std::endl;
+                } else {
+                    int enable = 1;
+                    (void)::setsockopt(sockFd, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(enable));
+#ifdef SO_REUSEPORT
+                    (void)::setsockopt(sockFd, SOL_SOCKET, SO_REUSEPORT, &enable, sizeof(enable));
+#endif
+                    sockaddr_in bindAddr{};
+                    bindAddr.sin_family = AF_INET;
+                    bindAddr.sin_port = htons(static_cast<uint16_t>(traceyDiscoveryPort));
+                    if (traceyDiscoveryBindAddr == "*" || traceyDiscoveryBindAddr.empty() || traceyDiscoveryBindAddr == "0.0.0.0") {
+                        bindAddr.sin_addr.s_addr = htonl(INADDR_ANY);
+                    } else if (::inet_pton(AF_INET, traceyDiscoveryBindAddr.c_str(), &bindAddr.sin_addr) != 1) {
+                        std::cerr << "[WARN] Invalid NMC_TRACEY_DISCOVERY_BIND_ADDR '" << traceyDiscoveryBindAddr
+                                  << "': expected IPv4 address" << std::endl;
+                        ::close(sockFd);
+                        sockFd = -1;
+                        nextBindAttemptMs = nowMs + 10000;
+                    }
+
+                    if (sockFd >= 0 && ::bind(sockFd, reinterpret_cast<sockaddr*>(&bindAddr), sizeof(bindAddr)) != 0) {
+                        std::cerr << "[WARN] Tracey discovery bind(" << traceyDiscoveryBindAddr << ":" << traceyDiscoveryPort
+                                  << ") failed: " << std::strerror(errno) << std::endl;
+                        ::close(sockFd);
+                        sockFd = -1;
+                        nextBindAttemptMs = nowMs + 5000;
+                    }
+                }
+            }
+
+            if (sockFd >= 0) {
+                pollfd pfd{};
+                pfd.fd = sockFd;
+                pfd.events = POLLIN;
+                const int pollRc = ::poll(&pfd, 1, 200);
+                if (pollRc > 0 && (pfd.revents & POLLIN)) {
+                    sockaddr_storage sender{};
+                    socklen_t senderLen = sizeof(sender);
+                    const ssize_t bytes = ::recvfrom(sockFd, buffer.data(), buffer.size(), 0,
+                                                     reinterpret_cast<sockaddr*>(&sender), &senderLen);
+                    if (bytes > 0) {
+                        std::string senderAddress = "unknown";
+                        char addrBuf[INET6_ADDRSTRLEN] = {0};
+                        if (sender.ss_family == AF_INET) {
+                            const auto* sin = reinterpret_cast<sockaddr_in*>(&sender);
+                            if (::inet_ntop(AF_INET, &sin->sin_addr, addrBuf, sizeof(addrBuf)) != nullptr) {
+                                senderAddress = addrBuf;
+                            }
+                        } else if (sender.ss_family == AF_INET6) {
+                            const auto* sin6 = reinterpret_cast<sockaddr_in6*>(&sender);
+                            if (::inet_ntop(AF_INET6, &sin6->sin6_addr, addrBuf, sizeof(addrBuf)) != nullptr) {
+                                senderAddress = addrBuf;
+                            }
+                        }
+
+                        auto payload = nlohmann::json::parse(buffer.data(), buffer.data() + bytes, nullptr, false);
+                        if (payload.is_object()) {
+                            ingestTraceyDiscoveryAnnouncement(payload, senderAddress, nowEpochMs());
+                        }
+                    } else if (bytes < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
+                        std::cerr << "[WARN] Tracey discovery recvfrom() failed: " << std::strerror(errno) << std::endl;
+                        ::close(sockFd);
+                        sockFd = -1;
+                        nextBindAttemptMs = nowEpochMs() + 3000;
+                    }
+                } else if (pollRc < 0 && errno != EINTR) {
+                    std::cerr << "[WARN] Tracey discovery poll() failed: " << std::strerror(errno) << std::endl;
+                    ::close(sockFd);
+                    sockFd = -1;
+                    nextBindAttemptMs = nowEpochMs() + 3000;
+                }
+            } else {
+                std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            }
+
+            const int64_t maintenanceNowMs = nowEpochMs();
+            if (maintenanceNowMs - lastMaintenanceMs >= 1000) {
+                markTraceyStaleAgents(maintenanceNowMs);
+
+                std::vector<std::pair<std::string, std::string>> dueStatusPolls;
+                {
+                    std::lock_guard<std::mutex> lock(dataMutex);
+                    dueStatusPolls.reserve(traceyAgents.size());
+                    for (auto& [id, agent] : traceyAgents) {
+                        if (agent.statusAddr.empty()) {
+                            continue;
+                        }
+                        if (agent.nextQueryEpochMs <= 0 || maintenanceNowMs >= agent.nextQueryEpochMs) {
+                            dueStatusPolls.emplace_back(id, agent.statusAddr);
+                            agent.nextQueryEpochMs = maintenanceNowMs + traceyStatusPollMs;
+                        }
+                    }
+                }
+
+                for (const auto& pendingPoll : dueStatusPolls) {
+                    pollTraceyStatus(pendingPoll.first, pendingPoll.second, maintenanceNowMs);
+                }
+
+                lastMaintenanceMs = maintenanceNowMs;
+            }
+        }
+
+        if (sockFd >= 0) {
+            ::close(sockFd);
+        }
+    }
+
+    void APIRoutes::ingestTraceyDiscoveryAnnouncement(const nlohmann::json& payload,
+                                                      const std::string& senderAddress,
+                                                      int64_t receivedAtMs) {
+        if (!payload.is_object()) {
+            return;
+        }
+
+        const std::string agentId = payload.value("agent_id", "");
+        if (agentId.empty()) {
+            return;
+        }
+
+        const int64_t announcedTsMs = payload.value("ts_ms", receivedAtMs);
+        if (announcedTsMs > 0 && receivedAtMs >= announcedTsMs && (receivedAtMs - announcedTsMs) > traceyDiscoveryMaxAgeMs) {
+            return;
+        }
+
+        const bool signaturePresent =
+                payload.contains("signature") && payload["signature"].is_string() && !trim(payload["signature"].get<std::string>()).empty();
+        if (traceyRequireSignature && !signaturePresent) {
+            return;
+        }
+
+        const std::string announceAddr = payload.value("addr", "");
+        const std::string rawStatusAddr = payload.value("status_addr", "");
+        TraceyEndpoint endpoint;
+        const bool hasEndpoint = !rawStatusAddr.empty() && parseTraceyEndpoint(rawStatusAddr, endpoint);
+        const bool endpointAllowed = hasEndpoint && isLocalOrPrivateHost(endpoint.host, traceyAllowPublicAddr);
+
+        std::lock_guard<std::mutex> lock(dataMutex);
+        auto& agent = traceyAgents[agentId];
+        agent.agentId = agentId;
+        agent.source = mergeTraceySource(agent.source, "discovery");
+        agent.signaturePresent = signaturePresent;
+        agent.lastAnnouncementEpochMs = receivedAtMs;
+        agent.lastSeenEpochMs = std::max(agent.lastSeenEpochMs, receivedAtMs);
+        agent.stale = false;
+        if (agent.status.empty()) {
+            agent.status = "unknown";
+        }
+
+        if (!announceAddr.empty()) {
+            agent.announceAddr = announceAddr;
+        } else if (agent.announceAddr.empty()) {
+            agent.announceAddr = senderAddress;
+        }
+
+        if (payload.contains("capabilities")) {
+            agent.capabilities = payload["capabilities"];
+        } else if (agent.capabilities.is_null()) {
+            agent.capabilities = nlohmann::json::object();
+        }
+
+        if (payload.contains("is_coordinator") && payload["is_coordinator"].is_boolean()) {
+            agent.coordinator = payload["is_coordinator"].get<bool>();
+        }
+        if (payload.contains("coordinator_epoch") && payload["coordinator_epoch"].is_number_integer()) {
+            agent.coordinatorEpoch = payload["coordinator_epoch"].get<int64_t>();
+        }
+        if (payload.contains("score") && payload["score"].is_number_integer()) {
+            agent.score = payload["score"].get<int64_t>();
+        }
+
+        if (hasEndpoint && endpointAllowed) {
+            agent.statusAddr = endpoint.normalized;
+            agent.nextQueryEpochMs = receivedAtMs;
+            if (agent.linkState.empty() || agent.linkState == "offline") {
+                agent.linkState = "discovered";
+            }
+            agent.linkSecurity = deriveLinkSecurity(signaturePresent, &endpoint, traceyTlsVerify);
+            if (agent.lastError == "Status endpoint is invalid or disallowed by policy.") {
+                agent.lastError.clear();
+            }
+        } else if (!rawStatusAddr.empty()) {
+            agent.lastError = "Status endpoint is invalid or disallowed by policy.";
+            agent.linkState = "discovered";
+            agent.linkSecurity = deriveLinkSecurity(signaturePresent, nullptr, traceyTlsVerify);
+            if (agent.statusAddr.empty()) {
+                agent.statusAddr = rawStatusAddr;
+            }
+        } else {
+            agent.linkState = "announcement-only";
+            agent.linkSecurity = deriveLinkSecurity(signaturePresent, nullptr, traceyTlsVerify);
+        }
+    }
+
+    void APIRoutes::pollTraceyStatus(const std::string& agentId, const std::string& statusAddr, int64_t nowMs) {
+        auto markFailure = [&](const std::string& message, const TraceyEndpoint* endpoint = nullptr) {
+            std::lock_guard<std::mutex> lock(dataMutex);
+            auto& agent = traceyAgents[agentId];
+            if (agent.agentId.empty()) {
+                agent.agentId = agentId;
+            }
+            if (!statusAddr.empty()) {
+                agent.statusAddr = statusAddr;
+            }
+            agent.statusReachable = false;
+            agent.queryFailures += 1;
+            agent.lastQueryEpochMs = nowMs;
+            agent.nextQueryEpochMs = nowMs + computeBackoffMs(agent.queryFailures, traceyStatusPollMs, traceyStatusMaxBackoffMs);
+            agent.linkState = agent.queryFailures >= 3 ? "offline" : "degraded";
+            agent.status = agent.queryFailures >= 3 ? "offline" : "degraded";
+            agent.lastError = message;
+            agent.linkSecurity = deriveLinkSecurity(agent.signaturePresent, endpoint, traceyTlsVerify);
+        };
+
+        TraceyEndpoint endpoint;
+        if (!parseTraceyEndpoint(statusAddr, endpoint)) {
+            markFailure("Invalid status endpoint.");
+            return;
+        }
+        if (!isLocalOrPrivateHost(endpoint.host, traceyAllowPublicAddr)) {
+            markFailure("Status endpoint is outside allowed network ranges.", &endpoint);
+            return;
+        }
+
+        const std::string statusPath = buildTraceyStatusPath(endpoint);
+        const int timeoutSec = static_cast<int>(std::max<int64_t>(1, (traceyStatusTimeoutMs + 999) / 1000));
+        httplib::Headers headers{{"Accept", "application/json"}};
+        if (!traceyStatusBearerToken.empty()) {
+            headers.emplace("Authorization", "Bearer " + traceyStatusBearerToken);
+        }
+
+        httplib::Result result;
+        if (endpoint.https) {
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+            httplib::SSLClient client(endpoint.host, endpoint.port);
+            client.enable_server_certificate_verification(traceyTlsVerify);
+            client.set_connection_timeout(timeoutSec);
+            client.set_read_timeout(timeoutSec);
+            client.set_write_timeout(timeoutSec);
+            result = client.Get(statusPath.c_str(), headers);
+#else
+            markFailure("HTTPS status polling is unavailable: httplib lacks OpenSSL support.", &endpoint);
+            return;
+#endif
+        } else {
+            httplib::Client client(endpoint.host, endpoint.port);
+            client.set_connection_timeout(timeoutSec);
+            client.set_read_timeout(timeoutSec);
+            client.set_write_timeout(timeoutSec);
+            result = client.Get(statusPath.c_str(), headers);
+        }
+
+        if (!result) {
+            markFailure("Status poll failed: " + httplib::to_string(result.error()), &endpoint);
+            return;
+        }
+        if (result->status < 200 || result->status >= 300) {
+            markFailure("Status endpoint returned HTTP " + std::to_string(result->status) + ".", &endpoint);
+            return;
+        }
+
+        auto statusPayload = nlohmann::json::parse(result->body, nullptr, false);
+        if (statusPayload.is_discarded()) {
+            markFailure("Status endpoint returned non-JSON payload.", &endpoint);
+            return;
+        }
+
+        std::string resolvedStatus = "healthy";
+        if (statusPayload.is_object()) {
+            if (statusPayload.contains("status") && statusPayload["status"].is_string()) {
+                resolvedStatus = normalizeTraceyStatus(statusPayload["status"].get<std::string>());
+            } else if (statusPayload.contains("posture") && statusPayload["posture"].is_string()) {
+                const std::string posture = toLower(statusPayload["posture"].get<std::string>());
+                if (posture.find("incident") != std::string::npos || posture.find("critical") != std::string::npos) {
+                    resolvedStatus = "offline";
+                } else if (posture.find("elevated") != std::string::npos || posture.find("warning") != std::string::npos) {
+                    resolvedStatus = "degraded";
+                } else {
+                    resolvedStatus = "healthy";
+                }
+            }
+        }
+
+        std::lock_guard<std::mutex> lock(dataMutex);
+        auto& agent = traceyAgents[agentId];
+        agent.agentId = agentId;
+        agent.status = normalizeTraceyStatus(resolvedStatus);
+        agent.statusReachable = true;
+        agent.queryFailures = 0;
+        agent.lastQueryEpochMs = nowMs;
+        agent.nextQueryEpochMs = nowMs + traceyStatusPollMs;
+        agent.lastSeenEpochMs = std::max(agent.lastSeenEpochMs, nowMs);
+        agent.stale = false;
+        agent.linkState = agent.status == "healthy" ? "healthy" : "degraded";
+        agent.statusAddr = endpoint.normalized;
+        agent.linkSecurity = deriveLinkSecurity(agent.signaturePresent, &endpoint, traceyTlsVerify);
+        agent.lastError.clear();
+
+        if (agent.metrics.is_null() || !agent.metrics.is_object()) {
+            agent.metrics = nlohmann::json::object();
+        }
+        agent.metrics["status_snapshot"] = statusPayload;
+
+        if (statusPayload.is_object()) {
+            if (statusPayload.contains("is_coordinator") && statusPayload["is_coordinator"].is_boolean()) {
+                agent.coordinator = statusPayload["is_coordinator"].get<bool>();
+            }
+        }
+    }
+
+    void APIRoutes::markTraceyStaleAgents(int64_t nowMs) {
+        std::lock_guard<std::mutex> lock(dataMutex);
+        const int64_t staleAfterMs = std::max<int64_t>(5, traceyStaleAfterSeconds) * 1000;
+        for (auto& [id, agent] : traceyAgents) {
+            (void)id;
+            const int64_t lastSignalMs = std::max(agent.lastSeenEpochMs, agent.lastAnnouncementEpochMs);
+            if (lastSignalMs <= 0) {
+                continue;
+            }
+            const bool staleNow = nowMs > lastSignalMs && (nowMs - lastSignalMs) > staleAfterMs;
+            agent.stale = staleNow;
+            if (staleNow) {
+                agent.status = "offline";
+                agent.linkState = "offline";
+                if (agent.lastError.empty()) {
+                    agent.lastError = "Agent is stale (missed heartbeat/discovery window).";
+                }
+            }
+        }
+    }
+
+    void APIRoutes::handleTraceyHeartbeat(const httplib::Request& req, httplib::Response& res) {
+        try {
+            const auto body = nlohmann::json::parse(req.body);
+            std::string agentId = body.value("agent_id", "");
+            if (agentId.empty()) {
+                agentId = body.value("id", "");
+            }
+            if (agentId.empty()) {
+                return sendErrorResponse(res, 400, "Missing required parameter: agent_id.");
+            }
+
+            const int64_t nowMs = nowEpochMs();
+            const std::string rawStatusAddr = body.value("status_addr", "");
+            TraceyEndpoint endpoint;
+            const bool hasEndpoint = !rawStatusAddr.empty() && parseTraceyEndpoint(rawStatusAddr, endpoint);
+            const bool endpointAllowed = hasEndpoint && isLocalOrPrivateHost(endpoint.host, traceyAllowPublicAddr);
+
+            std::lock_guard<std::mutex> lock(dataMutex);
+            auto& agent = traceyAgents[agentId];
+            agent.agentId = agentId;
+            agent.source = mergeTraceySource(agent.source, "heartbeat");
+            const std::string cluster = body.value("cluster", body.value("cluster_id", ""));
+            if (!cluster.empty()) {
+                agent.cluster = cluster;
+            }
+            agent.status = normalizeTraceyStatus(body.value("status", agent.status.empty() ? "healthy" : agent.status));
+            agent.version = body.value("version", agent.version);
+            agent.host = body.value("host", body.value("hostname", agent.host));
+            if (body.contains("metrics")) {
+                agent.metrics = body["metrics"];
+            } else if (agent.metrics.is_null()) {
+                agent.metrics = nlohmann::json::object();
+            }
+            if (body.contains("capabilities")) {
+                agent.capabilities = body["capabilities"];
+            } else if (agent.capabilities.is_null()) {
+                agent.capabilities = nlohmann::json::object();
+            }
+            if (body.contains("is_coordinator") && body["is_coordinator"].is_boolean()) {
+                agent.coordinator = body["is_coordinator"].get<bool>();
+            }
+            if (body.contains("coordinator_epoch") && body["coordinator_epoch"].is_number_integer()) {
+                agent.coordinatorEpoch = body["coordinator_epoch"].get<int64_t>();
+            }
+            if (body.contains("score") && body["score"].is_number_integer()) {
+                agent.score = body["score"].get<int64_t>();
+            }
+
+            agent.lastSeenEpochMs = nowMs;
+            agent.stale = false;
+            agent.statusReachable = true;
+            agent.lastError.clear();
+
+            if (hasEndpoint && endpointAllowed) {
+                agent.statusAddr = endpoint.normalized;
+                agent.nextQueryEpochMs = nowMs;
+                agent.linkState = "healthy";
+                agent.linkSecurity = deriveLinkSecurity(agent.signaturePresent, &endpoint, traceyTlsVerify);
+            } else if (!rawStatusAddr.empty()) {
+                agent.lastError = "Heartbeat provided invalid or disallowed status_addr.";
+                agent.linkState = "degraded";
+                agent.linkSecurity = deriveLinkSecurity(agent.signaturePresent, nullptr, traceyTlsVerify);
+            } else if (agent.linkState.empty()) {
+                agent.linkState = "heartbeat-only";
+                agent.linkSecurity = deriveLinkSecurity(agent.signaturePresent, nullptr, traceyTlsVerify);
+            }
+
+            nlohmann::json payload = {
+                    {"agent_id", agent.agentId},
+                    {"cluster", agent.cluster},
+                    {"status", agent.status},
+                    {"version", agent.version},
+                    {"host", agent.host},
+                    {"source", agent.source},
+                    {"status_addr", agent.statusAddr},
+                    {"link_state", agent.linkState},
+                    {"link_security", agent.linkSecurity},
+                    {"query_failures", agent.queryFailures},
+                    {"metrics", agent.metrics.is_null() ? nlohmann::json::object() : agent.metrics},
+                    {"last_seen_epoch_ms", agent.lastSeenEpochMs},
+                    {"last_seen_seconds_ago", 0},
+                    {"stale", false}
+            };
+
+            Models::CloudResponse apiResponse;
+            apiResponse.success = true;
+            apiResponse.message = "Tracey heartbeat accepted.";
+            apiResponse.data = payload;
+            sendJsonResponse(res, apiResponse);
+        } catch (const nlohmann::json::parse_error& e) {
+            sendErrorResponse(res, 400, "Invalid JSON body: " + std::string(e.what()));
+        } catch (const std::exception& e) {
+            sendErrorResponse(res, 500, "Server error: " + std::string(e.what()));
+        }
+    }
+
+    void APIRoutes::handleListTraceyAgents(const httplib::Request& req, httplib::Response& res) {
+        (void)req;
+        const int64_t nowMs = nowEpochMs();
+        markTraceyStaleAgents(nowMs);
+
+        std::vector<TraceyAgent> snapshot;
+        std::vector<TraceyRequirement> requirementSnapshot;
+        {
+            std::lock_guard<std::mutex> lock(dataMutex);
+            snapshot.reserve(traceyAgents.size());
+            for (const auto& pair : traceyAgents) {
+                snapshot.push_back(pair.second);
+            }
+            requirementSnapshot.reserve(traceyRequirements.size());
+            for (const auto& pair : traceyRequirements) {
+                requirementSnapshot.push_back(pair.second);
+            }
+        }
+
+        std::sort(snapshot.begin(), snapshot.end(), [](const TraceyAgent& a, const TraceyAgent& b) {
+            return a.agentId < b.agentId;
+        });
+        std::sort(requirementSnapshot.begin(), requirementSnapshot.end(), [](const TraceyRequirement& a, const TraceyRequirement& b) {
+            if (a.resourceType == b.resourceType) {
+                return a.resourceName < b.resourceName;
+            }
+            return a.resourceType < b.resourceType;
+        });
+
+        int healthy = 0;
+        int degraded = 0;
+        int offline = 0;
+        int stale = 0;
+        int unknown = 0;
+        int discovered = 0;
+        int heartbeatOnly = 0;
+        int reachable = 0;
+        int secureLinks = 0;
+        int signedAnnouncements = 0;
+        nlohmann::json agents = nlohmann::json::array();
+
+        for (const auto& agent : snapshot) {
+            const int64_t lastSignalMs = std::max(agent.lastSeenEpochMs, agent.lastAnnouncementEpochMs);
+            int64_t ageSeconds = 0;
+            if (lastSignalMs > 0 && nowMs > lastSignalMs) {
+                ageSeconds = (nowMs - lastSignalMs) / 1000;
+            }
+            int64_t lastAnnouncementSecondsAgo = 0;
+            if (agent.lastAnnouncementEpochMs > 0 && nowMs > agent.lastAnnouncementEpochMs) {
+                lastAnnouncementSecondsAgo = (nowMs - agent.lastAnnouncementEpochMs) / 1000;
+            }
+            int64_t lastQuerySecondsAgo = 0;
+            if (agent.lastQueryEpochMs > 0 && nowMs > agent.lastQueryEpochMs) {
+                lastQuerySecondsAgo = (nowMs - agent.lastQueryEpochMs) / 1000;
+            }
+
+            const bool isStale = agent.stale || ageSeconds > traceyStaleAfterSeconds;
+            const std::string status = isStale ? "offline" : normalizeTraceyStatus(agent.status);
+
+            if (isStale) {
+                stale++;
+            }
+            if (status == "healthy") {
+                healthy++;
+            } else if (status == "degraded") {
+                degraded++;
+            } else if (status == "offline") {
+                offline++;
+            } else {
+                unknown++;
+            }
+
+            const bool hasDiscoverySource = agent.source.find("discovery") != std::string::npos;
+            const bool hasHeartbeatSource = agent.source.find("heartbeat") != std::string::npos;
+            if (hasDiscoverySource) {
+                discovered++;
+            }
+            if (hasHeartbeatSource && !hasDiscoverySource) {
+                heartbeatOnly++;
+            }
+            if (agent.statusReachable) {
+                reachable++;
+            }
+            if (agent.linkSecurity.find("tls-verified") != std::string::npos) {
+                secureLinks++;
+            }
+            if (agent.signaturePresent) {
+                signedAnnouncements++;
+            }
+
+            agents.push_back({
+                    {"agent_id", agent.agentId},
+                    {"cluster", agent.cluster},
+                    {"status", status},
+                    {"version", agent.version},
+                    {"host", agent.host},
+                    {"source", agent.source},
+                    {"announce_addr", agent.announceAddr},
+                    {"status_addr", agent.statusAddr},
+                    {"link_state", agent.linkState},
+                    {"link_security", agent.linkSecurity},
+                    {"last_error", agent.lastError},
+                    {"metrics", agent.metrics.is_null() ? nlohmann::json::object() : agent.metrics},
+                    {"capabilities", agent.capabilities.is_null() ? nlohmann::json::object() : agent.capabilities},
+                    {"last_seen_epoch_ms", agent.lastSeenEpochMs},
+                    {"last_seen_seconds_ago", ageSeconds},
+                    {"last_announcement_epoch_ms", agent.lastAnnouncementEpochMs},
+                    {"last_announcement_seconds_ago", lastAnnouncementSecondsAgo},
+                    {"last_query_epoch_ms", agent.lastQueryEpochMs},
+                    {"last_query_seconds_ago", lastQuerySecondsAgo},
+                    {"next_query_epoch_ms", agent.nextQueryEpochMs},
+                    {"query_failures", agent.queryFailures},
+                    {"status_reachable", agent.statusReachable},
+                    {"signature_present", agent.signaturePresent},
+                    {"is_coordinator", agent.coordinator},
+                    {"coordinator_epoch", agent.coordinatorEpoch},
+                    {"score", agent.score},
+                    {"stale", isStale}
+            });
+        }
+
+        int managedCompliant = 0;
+        int managedPending = 0;
+        int managedNonCompliant = 0;
+        nlohmann::json requirements = nlohmann::json::array();
+        const int64_t graceMs = std::max<int64_t>(5, traceyRequirementGraceSeconds) * 1000;
+
+        for (const auto& requirement : requirementSnapshot) {
+            const TraceyAgent* matchedAgent = nullptr;
+            if (!requirement.expectedAgentId.empty()) {
+                auto agentIt = std::find_if(snapshot.begin(), snapshot.end(), [&](const TraceyAgent& agent) {
+                    return agent.agentId == requirement.expectedAgentId;
+                });
+                if (agentIt != snapshot.end()) {
+                    matchedAgent = &(*agentIt);
+                }
+            }
+
+            const int64_t resourceAgeMs = (requirement.createdEpochMs > 0 && nowMs > requirement.createdEpochMs)
+                                          ? (nowMs - requirement.createdEpochMs)
+                                          : 0;
+            const bool withinGrace = resourceAgeMs <= graceMs;
+            std::string complianceState = "pending";
+            std::string reason = "Waiting for required Tracey agent signal.";
+            int64_t agentLastSeenSecondsAgo = -1;
+            std::string agentStatus = "missing";
+
+            if (matchedAgent != nullptr) {
+                const int64_t lastSignalMs = std::max(matchedAgent->lastSeenEpochMs, matchedAgent->lastAnnouncementEpochMs);
+                const bool stale = (lastSignalMs <= 0) ||
+                                   (nowMs > lastSignalMs && (nowMs - lastSignalMs) > (traceyStaleAfterSeconds * 1000));
+                if (lastSignalMs > 0 && nowMs >= lastSignalMs) {
+                    agentLastSeenSecondsAgo = (nowMs - lastSignalMs) / 1000;
+                }
+                agentStatus = matchedAgent->status.empty() ? "unknown" : matchedAgent->status;
+                const bool hasSignal = matchedAgent->statusReachable ||
+                                       matchedAgent->source.find("heartbeat") != std::string::npos ||
+                                       matchedAgent->source.find("discovery") != std::string::npos;
+                if (!stale && hasSignal) {
+                    complianceState = "compliant";
+                    reason = "Tracey agent is reporting for this managed resource.";
+                } else if (withinGrace) {
+                    complianceState = "pending";
+                    reason = stale
+                             ? "Tracey agent discovered but currently stale; grace window still active."
+                             : "Tracey agent registered but has not reported yet; grace window still active.";
+                } else {
+                    complianceState = "noncompliant";
+                    reason = stale
+                             ? "Tracey agent is stale or offline after grace window."
+                             : "Tracey agent is not reporting after grace window.";
+                }
+            } else if (!withinGrace) {
+                complianceState = "noncompliant";
+                reason = "Required Tracey agent has not been discovered after grace window.";
+            }
+
+            if (complianceState == "compliant") {
+                managedCompliant++;
+            } else if (complianceState == "noncompliant") {
+                managedNonCompliant++;
+            } else {
+                managedPending++;
+            }
+
+            requirements.push_back({
+                    {"key", requirement.key},
+                    {"resource_type", requirement.resourceType},
+                    {"resource_name", requirement.resourceName},
+                    {"region", requirement.region},
+                    {"created_epoch_ms", requirement.createdEpochMs},
+                    {"resource_age_seconds", resourceAgeMs / 1000},
+                    {"expected_agent_id", requirement.expectedAgentId},
+                    {"expected_status_addr", requirement.expectedStatusAddr},
+                    {"agent_status", agentStatus},
+                    {"agent_last_seen_seconds_ago", agentLastSeenSecondsAgo},
+                    {"compliance_state", complianceState},
+                    {"reason", reason}
+            });
+        }
+
+        Models::CloudResponse apiResponse;
+        apiResponse.success = true;
+        apiResponse.message = "Tracey agents listed successfully.";
+        apiResponse.data = {
+                {"summary", {
+                        {"total", static_cast<int>(snapshot.size())},
+                        {"healthy", healthy},
+                        {"degraded", degraded},
+                        {"offline", offline},
+                        {"stale", stale},
+                        {"unknown", unknown},
+                        {"discovered", discovered},
+                        {"heartbeat_only", heartbeatOnly},
+                        {"reachable", reachable},
+                        {"secure_links", secureLinks},
+                        {"signed_announcements", signedAnnouncements}
+                }},
+                {"tracey_policy", {
+                        {"enforce_managed_resources", traceyEnforceManagedResources},
+                        {"requirement_grace_seconds", traceyRequirementGraceSeconds}
+                }},
+                {"requirement_summary", {
+                        {"total", static_cast<int>(requirementSnapshot.size())},
+                        {"compliant", managedCompliant},
+                        {"pending", managedPending},
+                        {"noncompliant", managedNonCompliant}
+                }},
+                {"requirements", requirements},
+                {"discovery", {
+                        {"enabled", traceyDiscoveryEnabled},
+                        {"bind_addr", traceyDiscoveryBindAddr},
+                        {"port", traceyDiscoveryPort},
+                        {"max_age_ms", traceyDiscoveryMaxAgeMs},
+                        {"status_poll_ms", traceyStatusPollMs},
+                        {"status_timeout_ms", traceyStatusTimeoutMs},
+                        {"status_max_backoff_ms", traceyStatusMaxBackoffMs},
+                        {"allow_public_addr", traceyAllowPublicAddr},
+                        {"tls_verify", traceyTlsVerify},
+                        {"require_signature", traceyRequireSignature}
+                }},
+                {"stale_after_seconds", traceyStaleAfterSeconds},
+                {"agents", agents}
+        };
+        sendJsonResponse(res, apiResponse);
     }
 
 } // namespace NMC::Server

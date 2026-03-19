@@ -57,6 +57,7 @@
         <h2>Request OpenShift Cluster</h2>
         <p><strong>Endpoint:</strong> <code>POST /openshift/clusters/request</code></p>
         <p>Submits a provisioning request to the OpenShift portal API.</p>
+        <p><strong>Tracey policy:</strong> requests must include a <code>tracey</code> block so the cluster is tracked against its required Tracey agent.</p>
         <h3>Request Body:</h3>
         <pre><code class="language-json">
 {
@@ -66,7 +67,11 @@
     "architecture": "amd64",
     "region": "us-east-1",
     "provider": "rosa",
-    "burst_targets": ["aro", "gcp"]
+    "burst_targets": ["aro", "gcp"],
+    "tracey": {
+        "agent_id": "tracey-hpc-example",
+        "status_addr": "https://10.20.0.17:48000"
+    }
 }
             </code></pre>
         <h3>Successful Response (HTTP 200 OK):</h3>
@@ -81,6 +86,12 @@
             "status": "Provisioning",
             "endpoint": null,
             "provider": "rosa"
+        },
+        "tracey": {
+            "required": true,
+            "agent_id": "tracey-hpc-example",
+            "status_addr": "https://10.20.0.17:48000",
+            "compliance_state": "pending"
         }
     }
 }

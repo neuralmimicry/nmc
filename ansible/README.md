@@ -39,3 +39,4 @@ The playbook includes variables equivalent to deploy script flags/environment va
 - Kubernetes: `nmc_k8s_auto_install`, `nmc_k8s_version_series`, `nmc_k8s_pod_cidr`, `nmc_k8s_service_cidr`, `nmc_kubeconfig_src`, `nmc_k8s_api_wait_seconds`, `nmc_k8s_restart_on_failure`
 - GPU: `nmc_gpu_auto`, `nmc_enable_nvidia_device_plugin`, `nmc_nvidia_preserve_driver_if_present`
 - Auto-update: `nmc_enable_auto_update`, `nmc_repo_url`, `nmc_repo_branch`
+- Tracey sidecar: `nmc_tracey_sidecar_enabled`, `nmc_tracey_bin`, `nmc_tracey_repo_dir`, `nmc_tracey_build_if_missing`, `nmc_tracey_agent_id`, `nmc_tracey_local_status_addr`, `nmc_tracey_status_listen_addr`, `nmc_tracey_status_public_addr`, `nmc_tracey_discovery_bind_addr`, `nmc_tracey_discovery_broadcast_addr`, `nmc_tracey_discovery_shared_key`

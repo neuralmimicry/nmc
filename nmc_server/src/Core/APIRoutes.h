@@ -6,6 +6,10 @@
 #include <mutex>
 #include <nlohmann/json.hpp>
 #include <memory> // Required for std::unique_ptr
+#include <unordered_map>
+#include <cstdint>
+#include <thread>
+#include <atomic>
 
 // Include data models
 #include "../Models/Bucket.h"
@@ -58,6 +62,59 @@ namespace NMC::Server {
         std::vector<Models::SSHKey> sshKeys;
         std::vector<Models::VM> vms;
         std::vector<Models::Connection> connections;
+        struct TraceyAgent {
+            std::string agentId;
+            std::string cluster;
+            std::string status;
+            std::string version;
+            std::string host;
+            std::string source;
+            std::string announceAddr;
+            std::string statusAddr;
+            std::string linkState;
+            std::string linkSecurity;
+            std::string lastError;
+            nlohmann::json metrics;
+            nlohmann::json capabilities;
+            int64_t lastSeenEpochMs{0};
+            int64_t lastAnnouncementEpochMs{0};
+            int64_t lastQueryEpochMs{0};
+            int64_t nextQueryEpochMs{0};
+            int queryFailures{0};
+            bool stale{false};
+            bool statusReachable{false};
+            bool signaturePresent{false};
+            bool coordinator{false};
+            int64_t coordinatorEpoch{0};
+            int64_t score{0};
+        };
+        struct TraceyRequirement {
+            std::string key;
+            std::string resourceType;
+            std::string resourceName;
+            std::string region;
+            std::string expectedAgentId;
+            std::string expectedStatusAddr;
+            int64_t createdEpochMs{0};
+        };
+        std::unordered_map<std::string, TraceyAgent> traceyAgents;
+        std::unordered_map<std::string, TraceyRequirement> traceyRequirements;
+        int64_t traceyStaleAfterSeconds;
+        bool traceyEnforceManagedResources;
+        bool traceyDiscoveryEnabled;
+        bool traceyAllowPublicAddr;
+        bool traceyTlsVerify;
+        bool traceyRequireSignature;
+        int64_t traceyRequirementGraceSeconds;
+        std::string traceyDiscoveryBindAddr;
+        int traceyDiscoveryPort;
+        int64_t traceyDiscoveryMaxAgeMs;
+        int64_t traceyStatusPollMs;
+        int64_t traceyStatusTimeoutMs;
+        int64_t traceyStatusMaxBackoffMs;
+        std::string traceyStatusBearerToken;
+        std::thread traceyDiscoveryThread;
+        std::atomic<bool> stopTraceyDiscovery;
 
         std::mutex dataMutex; // Mutex to protect access to data in a multi-threaded environment
 
@@ -128,6 +185,23 @@ namespace NMC::Server {
         void handleOpenShiftResources(const httplib::Request& req, httplib::Response& res);
         void handleOpenShiftClusters(const httplib::Request& req, httplib::Response& res);
         void handleOpenShiftRequestCluster(const httplib::Request& req, httplib::Response& res);
+        void handleTraceyHeartbeat(const httplib::Request& req, httplib::Response& res);
+        void handleListTraceyAgents(const httplib::Request& req, httplib::Response& res);
+        void runTraceyDiscoveryLoop();
+        void ingestTraceyDiscoveryAnnouncement(const nlohmann::json& payload, const std::string& senderAddress, int64_t receivedAtMs);
+        void pollTraceyStatus(const std::string& agentId, const std::string& statusAddr, int64_t nowMs);
+        void markTraceyStaleAgents(int64_t nowMs);
+        bool extractTraceyProvisioningRequest(const nlohmann::json& payload,
+                                             std::string& agentIdOut,
+                                             std::string& statusAddrOut,
+                                             std::string& reasonOut) const;
+        void upsertTraceyRequirementLocked(const std::string& resourceType,
+                                           const std::string& resourceName,
+                                           const std::string& region,
+                                           const std::string& agentId,
+                                           const std::string& statusAddr,
+                                           int64_t nowMs);
+        void removeTraceyRequirementLocked(const std::string& resourceType, const std::string& resourceName);
 
         // Declare an instance of K8sHandlers
         std::unique_ptr<K8sHandlers> k8sHandlers;

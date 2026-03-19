@@ -53,6 +53,18 @@ NVIDIA_PRESERVE_DRIVER_IF_PRESENT="${NVIDIA_PRESERVE_DRIVER_IF_PRESENT:-true}"
 ENABLE_AUTO_UPDATE="${ENABLE_AUTO_UPDATE:-true}"
 REPO_URL="${REPO_URL:-}"
 REPO_BRANCH="${REPO_BRANCH:-main}"
+
+ENABLE_TRACEY_SIDECAR="${ENABLE_TRACEY_SIDECAR:-true}"
+TRACEY_BIN="${TRACEY_BIN:-}"
+TRACEY_REPO_DIR="${TRACEY_REPO_DIR:-}"
+TRACEY_AGENT_ID="${TRACEY_AGENT_ID:-tracey-continuum-local}"
+TRACEY_LOCAL_STATUS_ADDR="${TRACEY_LOCAL_STATUS_ADDR:-http://127.0.0.1:48000}"
+TRACEY_STATUS_LISTEN_ADDR="${TRACEY_STATUS_LISTEN_ADDR:-127.0.0.1:48000}"
+TRACEY_STATUS_PUBLIC_ADDR="${TRACEY_STATUS_PUBLIC_ADDR:-127.0.0.1:48000}"
+TRACEY_DISCOVERY_BIND_ADDR="${TRACEY_DISCOVERY_BIND_ADDR:-0.0.0.0:47990}"
+TRACEY_DISCOVERY_BROADCAST_ADDR="${TRACEY_DISCOVERY_BROADCAST_ADDR:-255.255.255.255:47990}"
+TRACEY_DISCOVERY_SHARED_KEY="${TRACEY_DISCOVERY_SHARED_KEY:-$AUTH_TOKEN}"
+
 SKIP_BUILD="false"
 DRY_RUN="false"
 
@@ -227,6 +239,19 @@ Updates:
   --enable-auto-update            Install systemd timer (default)
   --disable-auto-update           Skip update timer
 
+Tracey sidecar:
+  --enable-tracey-sidecar         Run local Tracey sidecar with nmc_server (default)
+  --disable-tracey-sidecar        Disable local Tracey sidecar
+  --tracey-bin PATH               Use existing Tracey binary
+  --tracey-repo PATH              Path to Tracey source repo (used when building)
+  --tracey-agent-id ID            Local Tracey agent ID (default: tracey-continuum-local)
+  --tracey-local-status-addr URL  Local status URL for nmc bootstrap requirement
+  --tracey-status-listen ADDR     Tracey status listen address (default: 127.0.0.1:48000)
+  --tracey-status-public ADDR     Tracey status public/advertise address
+  --tracey-discovery-bind ADDR    Tracey discovery bind address (default: 0.0.0.0:47990)
+  --tracey-discovery-broadcast ADDR Tracey discovery broadcast address (default: 255.255.255.255:47990)
+  --tracey-discovery-key KEY      Tracey discovery shared key (defaults to NMC auth token if set)
+
 Repo:
   --repo-url URL                  Clone repo to --install-dir if missing
   --branch BRANCH                 Git branch for updates (default: main)
@@ -277,6 +302,18 @@ while [[ $# -gt 0 ]]; do
     --enable-auto-update) ENABLE_AUTO_UPDATE="true"; shift ;;
     --disable-auto-update) ENABLE_AUTO_UPDATE="false"; shift ;;
 
+    --enable-tracey-sidecar) ENABLE_TRACEY_SIDECAR="true"; shift ;;
+    --disable-tracey-sidecar) ENABLE_TRACEY_SIDECAR="false"; shift ;;
+    --tracey-bin) TRACEY_BIN="$2"; shift 2 ;;
+    --tracey-repo) TRACEY_REPO_DIR="$2"; shift 2 ;;
+    --tracey-agent-id) TRACEY_AGENT_ID="$2"; shift 2 ;;
+    --tracey-local-status-addr) TRACEY_LOCAL_STATUS_ADDR="$2"; shift 2 ;;
+    --tracey-status-listen) TRACEY_STATUS_LISTEN_ADDR="$2"; shift 2 ;;
+    --tracey-status-public) TRACEY_STATUS_PUBLIC_ADDR="$2"; shift 2 ;;
+    --tracey-discovery-bind) TRACEY_DISCOVERY_BIND_ADDR="$2"; shift 2 ;;
+    --tracey-discovery-broadcast) TRACEY_DISCOVERY_BROADCAST_ADDR="$2"; shift 2 ;;
+    --tracey-discovery-key) TRACEY_DISCOVERY_SHARED_KEY="$2"; shift 2 ;;
+
     --repo-url) REPO_URL="$2"; shift 2 ;;
     --branch) REPO_BRANCH="$2"; shift 2 ;;
     --skip-build) SKIP_BUILD="true"; shift ;;
@@ -296,6 +333,11 @@ require_root
 case "$AUTH_MODE" in
   token|oidc|off) ;;
   *) die "Invalid --auth-mode: $AUTH_MODE (expected token|oidc|off)" ;;
+esac
+
+case "$ENABLE_TRACEY_SIDECAR" in
+  true|false) ;;
+  *) die "Invalid Tracey sidecar toggle: $ENABLE_TRACEY_SIDECAR (expected true|false)" ;;
 esac
 
 if [[ "$AUTH_MODE" == "token" && -z "$AUTH_TOKEN" ]]; then
@@ -331,6 +373,10 @@ fi
 
 # Normalize INSTALL_DIR for consistent systemd paths
 INSTALL_DIR="$(cd "$INSTALL_DIR" && pwd)"
+
+if [[ -z "$TRACEY_REPO_DIR" ]]; then
+  TRACEY_REPO_DIR="$(dirname "$INSTALL_DIR")/tracey"
+fi
 
 # Ensure run user/group exist
 if ! getent group "$RUN_GROUP" >/dev/null 2>&1; then
@@ -674,6 +720,103 @@ if [[ "$GPU_AUTO" == "true" && "$GPU_VENDOR" == "nvidia" && "$ENABLE_NVIDIA_DEVI
   fi
 fi
 
+resolve_tracey_binary() {
+  if [[ -n "$TRACEY_BIN" ]]; then
+    [[ -x "$TRACEY_BIN" ]] || die "Configured Tracey binary is not executable: $TRACEY_BIN"
+    return 0
+  fi
+
+  if command -v tracey >/dev/null 2>&1; then
+    TRACEY_BIN="$(command -v tracey)"
+    return 0
+  fi
+
+  if [[ ! -f "$TRACEY_REPO_DIR/Cargo.toml" ]]; then
+    die "Tracey sidecar enabled but no Tracey binary found and no repo at $TRACEY_REPO_DIR. Set TRACEY_BIN or TRACEY_REPO_DIR."
+  fi
+
+  log_info "Building Tracey from source at $TRACEY_REPO_DIR"
+  apt_install cargo
+  run_as_build_user cargo build --manifest-path "$TRACEY_REPO_DIR/Cargo.toml" --release
+
+  local built_bin="$TRACEY_REPO_DIR/target/release/tracey"
+  [[ -x "$built_bin" ]] || die "Tracey build completed but binary not found: $built_bin"
+
+  TRACEY_BIN="/usr/local/bin/tracey"
+  run_root install -m 755 -o root -g root "$built_bin" "$TRACEY_BIN"
+}
+
+configure_tracey_sidecar() {
+  if [[ "$ENABLE_TRACEY_SIDECAR" != "true" ]]; then
+    log_info "Tracey sidecar disabled"
+    run_root systemctl disable --now tracey-sidecar.service >/dev/null 2>&1 || true
+    return 0
+  fi
+
+  resolve_tracey_binary
+
+  if [[ -z "$TRACEY_DISCOVERY_SHARED_KEY" ]]; then
+    TRACEY_DISCOVERY_SHARED_KEY="tracey-dev-key-change-me"
+    log_warn "Tracey discovery shared key not provided; using default development key. Set TRACEY_DISCOVERY_SHARED_KEY for production."
+  fi
+
+  run_root mkdir -p /etc/tracey /var/lib/tracey
+  run_root chown -R "$RUN_USER:$RUN_GROUP" /var/lib/tracey
+
+  cat <<EOF | run_root tee /etc/tracey/tracey-continuum-local.json >/dev/null
+{
+  "agent_id": "$TRACEY_AGENT_ID",
+  "discovery": {
+    "enabled": true,
+    "bind_addr": "$TRACEY_DISCOVERY_BIND_ADDR",
+    "broadcast_addr": "$TRACEY_DISCOVERY_BROADCAST_ADDR",
+    "shared_key": "$TRACEY_DISCOVERY_SHARED_KEY"
+  },
+  "status": {
+    "enabled": true,
+    "listen_addr": "$TRACEY_STATUS_LISTEN_ADDR",
+    "public_addr": "$TRACEY_STATUS_PUBLIC_ADDR"
+  },
+  "auth": {
+    "mode": "off",
+    "protect_status": false,
+    "protect_otlp_http": false,
+    "protect_otlp_grpc": false
+  },
+  "storage": {
+    "log_path": "/var/lib/tracey/tracey.log.jsonl"
+  }
+}
+EOF
+  run_root chown root:"$RUN_GROUP" /etc/tracey/tracey-continuum-local.json
+  run_root chmod 640 /etc/tracey/tracey-continuum-local.json
+
+  cat <<EOF | run_root tee /etc/systemd/system/tracey-sidecar.service >/dev/null
+[Unit]
+Description=Tracey Sidecar for Continuum
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=$RUN_USER
+Group=$RUN_GROUP
+WorkingDirectory=/var/lib/tracey
+Environment=TRACEY_CONFIG=/etc/tracey/tracey-continuum-local.json
+ExecStart=$TRACEY_BIN --supervisor
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  run_root systemctl daemon-reload
+  run_root systemctl enable --now tracey-sidecar.service
+  run_root systemctl restart tracey-sidecar.service
+}
+
 # ---------------------------
 # Build nmc_server
 # ---------------------------
@@ -696,6 +839,7 @@ fi
 log_info "Configuring systemd service"
 
 run_root mkdir -p /etc/nmc
+configure_tracey_sidecar
 
 cat <<EOF | run_root tee /etc/nmc/nmc.env >/dev/null
 NMC_AUTH_MODE=$AUTH_MODE
@@ -711,8 +855,34 @@ NMC_OIDC_ISSUER=$OIDC_ISSUER
 NMC_OIDC_AUDIENCE=$OIDC_AUDIENCE
 NMC_OIDC_ALLOWED_AUDIENCES=$OIDC_ALLOWED_AUDIENCES
 NMC_OIDC_REQUIRED_SCOPE=$OIDC_REQUIRED_SCOPE
+NMC_TRACEY_BOOTSTRAP_LOCAL_AGENT=$ENABLE_TRACEY_SIDECAR
+NMC_TRACEY_LOCAL_AGENT_ID=$TRACEY_AGENT_ID
+NMC_TRACEY_LOCAL_STATUS_ADDR=$TRACEY_LOCAL_STATUS_ADDR
 EOF
 
+if [[ "$ENABLE_TRACEY_SIDECAR" == "true" ]]; then
+cat <<EOF | run_root tee /etc/systemd/system/nmc-server.service >/dev/null
+[Unit]
+Description=NMC Server
+After=network-online.target tracey-sidecar.service
+Wants=network-online.target tracey-sidecar.service
+Requires=tracey-sidecar.service
+
+[Service]
+User=$RUN_USER
+Group=$RUN_GROUP
+WorkingDirectory=$BUILD_DIR
+EnvironmentFile=-/etc/nmc/nmc.env
+ExecStart=$BUILD_DIR/nmc_server --port $PORT --kubeconfig /etc/nmc/kubeconfig
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+EOF
+else
 cat <<EOF | run_root tee /etc/systemd/system/nmc-server.service >/dev/null
 [Unit]
 Description=NMC Server
@@ -733,9 +903,11 @@ PrivateTmp=true
 [Install]
 WantedBy=multi-user.target
 EOF
+fi
 
 run_root systemctl daemon-reload
 run_root systemctl enable --now nmc-server.service
+run_root systemctl restart nmc-server.service
 
 # ---------------------------
 # Auto-update timer
@@ -841,6 +1013,10 @@ fi
 # ---------------------------
 log_info "Deployment complete"
 log_info "NMC server: systemctl status nmc-server"
+if [[ "$ENABLE_TRACEY_SIDECAR" == "true" ]]; then
+  log_info "Tracey sidecar: systemctl status tracey-sidecar"
+  log_info "Tracey local status: $TRACEY_LOCAL_STATUS_ADDR/status"
+fi
 log_info "Docs: http://<host>:$PORT/docs (if enabled)"
 log_info "Config: /etc/nmc/nmc.env"
 log_info "Kubeconfig: /etc/nmc/kubeconfig"

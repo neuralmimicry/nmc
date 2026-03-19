@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tracey Agent API Documentation</title>
+    <link rel="stylesheet" href="style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+<div class="container">
+    <header>
+        <h1>Tracey Agent API Documentation</h1>
+        <p class="tagline">Heartbeat ingestion and agent status reporting for Continuum monitoring.</p>
+        <a href="index.html" class="back-link">&larr; Back to Continuum Dashboard</a>
+    </header>
+
+    <section class="endpoint-section">
+        <h2>POST /tracey/agents/heartbeat</h2>
+        <p>Registers or updates a Tracey agent heartbeat so the Continuum dashboard can track live health.</p>
+
+        <h3>Example Request</h3>
+        <pre><code class="language-bash">curl -X POST http://localhost:8080/tracey/agents/heartbeat \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -d '{
+    "agent_id": "tracey-edge-01",
+    "cluster": "k8s-prod-eu",
+    "status": "healthy",
+    "version": "1.5.2",
+    "host": "node-17",
+    "metrics": {
+      "cpu_pct": 18.3,
+      "mem_pct": 54.9,
+      "queue_depth": 2
+    }
+  }'</code></pre>
+
+        <h3>Success Response</h3>
+        <pre><code class="language-json">{
+  "success": true,
+  "message": "Tracey heartbeat accepted.",
+  "data": {
+    "agent_id": "tracey-edge-01",
+    "cluster": "k8s-prod-eu",
+    "status": "healthy",
+    "version": "1.5.2",
+    "host": "node-17",
+    "metrics": {
+      "cpu_pct": 18.3,
+      "mem_pct": 54.9,
+      "queue_depth": 2
+    },
+    "last_seen_epoch_ms": 1742389200000,
+    "last_seen_seconds_ago": 0,
+    "stale": false
+  }
+}</code></pre>
+    </section>
+
+    <section class="endpoint-section">
+        <h2>GET /tracey/agents</h2>
+        <p>Returns all detected Tracey agents plus summary rollups used by the dashboard, including managed-resource compliance for Continuum-initiated workloads.</p>
+
+        <h3>Success Response</h3>
+        <pre><code class="language-json">{
+  "success": true,
+  "message": "Tracey agents listed successfully.",
+  "data": {
+    "summary": {
+      "total": 3,
+      "healthy": 2,
+      "degraded": 1,
+      "offline": 0,
+      "stale": 0,
+      "unknown": 0
+    },
+    "stale_after_seconds": 90,
+    "agents": [
+      {
+        "agent_id": "tracey-edge-01",
+        "cluster": "k8s-prod-eu",
+        "status": "healthy",
+        "version": "1.5.2",
+        "host": "node-17",
+        "metrics": {},
+        "last_seen_epoch_ms": 1742389200000,
+        "last_seen_seconds_ago": 3,
+        "stale": false
+      }
+    ]
+    }
+}</code></pre>
+
+        <h3>Managed Resource Compliance</h3>
+        <p>The response also includes:</p>
+        <ul>
+            <li><code>tracey_policy</code> - enforcement and grace settings.</li>
+            <li><code>requirement_summary</code> - totals for <code>compliant</code>, <code>pending</code>, and <code>noncompliant</code> managed resources.</li>
+            <li><code>requirements</code> - per-resource Tracey requirement state keyed by resource type/name.</li>
+        </ul>
+        <p>Continuum bootstraps a default local requirement for its own server process (resource type <code>continuum_server</code>) so the first Tracey sidecar is expected to run alongside <code>nmc_server</code>.</p>
+        <p>Bootstrap controls: <code>NMC_TRACEY_BOOTSTRAP_LOCAL_AGENT</code>, <code>NMC_TRACEY_LOCAL_AGENT_ID</code>, <code>NMC_TRACEY_LOCAL_STATUS_ADDR</code>.</p>
+    </section>
+
+    <footer>
+        <p>&copy; 2026 Continuum Control Center</p>
+    </footer>
+</div>
+</body>
+</html>

@@ -19,6 +19,7 @@
         <h2>Create VM</h2>
         <p><strong>Endpoint:</strong> <code>POST /vm/create</code></p>
         <p>Provisions a new virtual machine instance.</p>
+        <p><strong>Tracey policy:</strong> Continuum-managed VMs must include a <code>tracey</code> block so the VM is tracked against a required Tracey agent.</p>
         <h3>Request Body:</h3>
         <pre><code class="language-json">
 {
@@ -27,7 +28,11 @@
     "region": "gb-mids",
     "osImage": "ubuntu-22.04",
     "publicKeyId": "sshkey-abc123def456",
-    "initScript": "#!/bin/bash\nsudo apt update && sudo apt install -y nginx"
+    "initScript": "#!/bin/bash\nsudo apt update && sudo apt install -y nginx",
+    "tracey": {
+        "agent_id": "tracey-my-web-server-01",
+        "status_addr": "http://10.0.12.44:48000"
+    }
 }
             </code></pre>
         <h3>Successful Response (HTTP 200 OK):</h3>
@@ -43,7 +48,13 @@
         "osImage": "ubuntu-22.04",
         "publicKeyId": "sshkey-abc123def456",
         "initScript": "#!/bin/bash\nsudo apt update && sudo apt install -y nginx",
-        "status": "Creating"
+        "status": "Creating",
+        "tracey": {
+            "required": true,
+            "agent_id": "tracey-my-web-server-01",
+            "status_addr": "http://10.0.12.44:48000",
+            "compliance_state": "pending"
+        }
     }
 }
             </code></pre>

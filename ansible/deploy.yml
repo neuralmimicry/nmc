@@ -52,6 +52,21 @@
     # Updates
     nmc_enable_auto_update: true
 
+    # Tracey sidecar
+    nmc_tracey_sidecar_enabled: true
+    nmc_tracey_bin: ""
+    nmc_tracey_repo_dir: "{{ (nmc_install_dir | dirname) ~ '/tracey' }}"
+    nmc_tracey_build_if_missing: true
+    nmc_tracey_agent_id: "tracey-continuum-local"
+    nmc_tracey_local_status_addr: "http://127.0.0.1:48000"
+    nmc_tracey_status_listen_addr: "127.0.0.1:48000"
+    nmc_tracey_status_public_addr: "127.0.0.1:48000"
+    nmc_tracey_discovery_bind_addr: "0.0.0.0:47990"
+    nmc_tracey_discovery_broadcast_addr: "255.255.255.255:47990"
+    nmc_tracey_discovery_shared_key: "{{ nmc_auth_token if (nmc_auth_token | length > 0) else 'tracey-dev-key-change-me' }}"
+    nmc_tracey_config_path: "/etc/tracey/tracey-continuum-local.json"
+    nmc_tracey_state_dir: "/var/lib/tracey"
+
     nmc_base_packages:
       - build-essential
       - cmake
@@ -89,6 +104,13 @@
       when:
         - nmc_auth_mode == "oidc"
         - nmc_oidc_introspection_url | length == 0
+
+    - name: Warn when Tracey sidecar discovery key uses development default
+      ansible.builtin.debug:
+        msg: "Tracey sidecar is using the development discovery key. Set nmc_tracey_discovery_shared_key for production."
+      when:
+        - nmc_tracey_sidecar_enabled
+        - nmc_tracey_discovery_shared_key == "tracey-dev-key-change-me"
 
     - name: Ensure systemd is available
       ansible.builtin.assert:
@@ -702,6 +724,141 @@
             group: "{{ nmc_run_group }}"
             mode: "0755"
 
+    - name: Configure Tracey sidecar for local Continuum monitoring
+      when: nmc_tracey_sidecar_enabled
+      block:
+        - name: Initialize effective Tracey binary from explicit value
+          ansible.builtin.set_fact:
+            nmc_tracey_effective_bin: "{{ nmc_tracey_bin | trim }}"
+
+        - name: Discover Tracey binary from PATH when unspecified
+          ansible.builtin.command: bash -lc "command -v tracey"
+          register: nmc_tracey_path_cmd
+          changed_when: false
+          failed_when: false
+          when: nmc_tracey_effective_bin | length == 0
+
+        - name: Set effective Tracey binary from PATH
+          ansible.builtin.set_fact:
+            nmc_tracey_effective_bin: "{{ nmc_tracey_path_cmd.stdout | trim }}"
+          when:
+            - nmc_tracey_effective_bin | length == 0
+            - nmc_tracey_path_cmd is defined
+            - nmc_tracey_path_cmd.rc == 0
+            - nmc_tracey_path_cmd.stdout | trim | length > 0
+
+        - name: Check Tracey source repository
+          ansible.builtin.stat:
+            path: "{{ nmc_tracey_repo_dir }}/Cargo.toml"
+          register: nmc_tracey_repo_stat
+          when:
+            - nmc_tracey_effective_bin | length == 0
+            - nmc_tracey_build_if_missing
+
+        - name: Fail when Tracey sidecar cannot be resolved
+          ansible.builtin.fail:
+            msg: >-
+              Tracey sidecar is enabled, but no Tracey binary was found and
+              {{ nmc_tracey_repo_dir }}/Cargo.toml is missing. Set nmc_tracey_bin
+              or nmc_tracey_repo_dir.
+          when:
+            - nmc_tracey_effective_bin | length == 0
+            - not nmc_tracey_build_if_missing or (nmc_tracey_repo_stat is not defined or not nmc_tracey_repo_stat.stat.exists)
+
+        - name: Install Cargo for Tracey build
+          ansible.builtin.apt:
+            name: cargo
+            state: present
+          when:
+            - nmc_tracey_effective_bin | length == 0
+            - nmc_tracey_build_if_missing
+
+        - name: Build Tracey binary from source
+          ansible.builtin.command: cargo build --manifest-path {{ nmc_tracey_repo_dir }}/Cargo.toml --release
+          become_user: "{{ nmc_effective_build_user }}"
+          when:
+            - nmc_tracey_effective_bin | length == 0
+            - nmc_tracey_build_if_missing
+
+        - name: Install Tracey binary to /usr/local/bin
+          ansible.builtin.copy:
+            src: "{{ nmc_tracey_repo_dir }}/target/release/tracey"
+            dest: /usr/local/bin/tracey
+            owner: root
+            group: root
+            mode: "0755"
+            remote_src: true
+          when:
+            - nmc_tracey_effective_bin | length == 0
+            - nmc_tracey_build_if_missing
+
+        - name: Set effective Tracey binary to installed path
+          ansible.builtin.set_fact:
+            nmc_tracey_effective_bin: "/usr/local/bin/tracey"
+          when:
+            - nmc_tracey_effective_bin | length == 0
+            - nmc_tracey_build_if_missing
+
+        - name: Verify Tracey binary exists and is executable
+          ansible.builtin.stat:
+            path: "{{ nmc_tracey_effective_bin }}"
+          register: nmc_tracey_bin_stat
+
+        - name: Fail when effective Tracey binary is invalid
+          ansible.builtin.fail:
+            msg: "Tracey binary is not executable: {{ nmc_tracey_effective_bin }}"
+          when:
+            - not nmc_tracey_bin_stat.stat.exists or not nmc_tracey_bin_stat.stat.executable
+
+        - name: Ensure Tracey config directory exists
+          ansible.builtin.file:
+            path: "/etc/tracey"
+            state: directory
+            mode: "0755"
+
+        - name: Ensure Tracey state directory exists
+          ansible.builtin.file:
+            path: "{{ nmc_tracey_state_dir }}"
+            state: directory
+            owner: "{{ nmc_run_user }}"
+            group: "{{ nmc_run_group }}"
+            mode: "0755"
+
+        - name: Install local Tracey sidecar config
+          ansible.builtin.template:
+            src: templates/tracey-continuum-local.json.j2
+            dest: "{{ nmc_tracey_config_path }}"
+            owner: root
+            group: "{{ nmc_run_group }}"
+            mode: "0640"
+          notify:
+            - Restart tracey-sidecar
+
+        - name: Install tracey-sidecar systemd unit
+          ansible.builtin.template:
+            src: templates/tracey-sidecar.service.j2
+            dest: /etc/systemd/system/tracey-sidecar.service
+            owner: root
+            group: root
+            mode: "0644"
+          notify:
+            - Reload systemd
+            - Restart tracey-sidecar
+
+        - name: Ensure tracey-sidecar service is enabled and started
+          ansible.builtin.systemd:
+            name: tracey-sidecar.service
+            enabled: true
+            state: started
+
+    - name: Disable Tracey sidecar when requested
+      ansible.builtin.systemd:
+        name: tracey-sidecar.service
+        enabled: false
+        state: stopped
+      failed_when: false
+      when: not nmc_tracey_sidecar_enabled
+
     - name: Install runtime environment file
       ansible.builtin.template:
         src: templates/nmc.env.j2
@@ -709,6 +866,8 @@
         owner: root
         group: root
         mode: "0644"
+      notify:
+        - Restart nmc-server
 
     - name: Install nmc-server systemd unit
       ansible.builtin.template:
@@ -789,6 +948,12 @@
     - name: Reload systemd
       ansible.builtin.systemd:
         daemon_reload: true
+
+    - name: Restart tracey-sidecar
+      ansible.builtin.systemd:
+        name: tracey-sidecar.service
+        state: restarted
+      when: nmc_tracey_sidecar_enabled
 
     - name: Restart nmc-server
       ansible.builtin.systemd:

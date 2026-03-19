@@ -19,11 +19,16 @@
         <h2>Create K8s Cluster</h2>
         <p><strong>Endpoint:</strong> <code>POST /k8s/create</code></p>
         <p>Provisions a new Kubernetes cluster.</p>
+        <p><strong>Tracey policy:</strong> Continuum-managed clusters must include a <code>tracey</code> block identifying the required Tracey agent.</p>
         <h3>Request Body:</h3>
         <pre><code class="language-json">
 {
     "name": "my-prod-cluster",
-    "region": "rugby-1"
+    "region": "rugby-1",
+    "tracey": {
+        "agent_id": "tracey-my-prod-cluster",
+        "status_addr": "http://10.42.0.55:48000"
+    }
 }
             </code></pre>
         <h3>Successful Response (HTTP 200 OK):</h3>

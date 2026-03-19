@@ -1,0 +1,23 @@
+{
+  "agent_id": {{ nmc_tracey_agent_id | to_json }},
+  "discovery": {
+    "enabled": true,
+    "bind_addr": {{ nmc_tracey_discovery_bind_addr | to_json }},
+    "broadcast_addr": {{ nmc_tracey_discovery_broadcast_addr | to_json }},
+    "shared_key": {{ nmc_tracey_discovery_shared_key | to_json }}
+  },
+  "status": {
+    "enabled": true,
+    "listen_addr": {{ nmc_tracey_status_listen_addr | to_json }},
+    "public_addr": {{ nmc_tracey_status_public_addr | to_json }}
+  },
+  "auth": {
+    "mode": "off",
+    "protect_status": false,
+    "protect_otlp_http": false,
+    "protect_otlp_grpc": false
+  },
+  "storage": {
+    "log_path": {{ (nmc_tracey_state_dir ~ '/tracey.log.jsonl') | to_json }}
+  }
+}
