@@ -33,8 +33,8 @@ ExternalProject_Add(
         PREFIX         "${CMAKE_BINARY_DIR}/_deps/zstd"
         # Zstd has its own Makefile; no configure step needed
         CONFIGURE_COMMAND ""
-        BUILD_COMMAND    make -C "<SOURCE_DIR>"
-        INSTALL_COMMAND  make -C "<SOURCE_DIR>" PREFIX="${ZSTD_INSTALL_DIR}" install
+        BUILD_COMMAND    "${CMAKE_MAKE_PROGRAM}" -C "<SOURCE_DIR>"
+        INSTALL_COMMAND  "${CMAKE_MAKE_PROGRAM}" -C "<SOURCE_DIR>" PREFIX="${ZSTD_INSTALL_DIR}" install
         STEP_TARGETS     build install
 )
 
@@ -91,8 +91,8 @@ ExternalProject_Add(
         CONFIGURE_COMMAND
         "${CMAKE_COMMAND}" -E chdir "<SOURCE_DIR>" ./bootstrap
         COMMAND "${CMAKE_COMMAND}" -E chdir "<BINARY_DIR>" "<SOURCE_DIR>/configure" --prefix=<INSTALL_DIR> --enable-shared --disable-static
-        BUILD_COMMAND     "${CMAKE_COMMAND}" -E chdir "<BINARY_DIR>" make
-        INSTALL_COMMAND   "${CMAKE_COMMAND}" -E chdir "<BINARY_DIR>" make install
+        BUILD_COMMAND     "${CMAKE_COMMAND}" -E chdir "<BINARY_DIR>" "${CMAKE_MAKE_PROGRAM}"
+        INSTALL_COMMAND   "${CMAKE_COMMAND}" -E chdir "<BINARY_DIR>" "${CMAKE_MAKE_PROGRAM}" install
         STEP_TARGETS configure build install
 )
 file(MAKE_DIRECTORY "${LIBYAML_INSTALL_DIR}/lib/cmake/yaml")
