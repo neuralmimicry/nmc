@@ -396,6 +396,7 @@ fi
 log_info "Installing base dependencies"
 apt_install \
   build-essential cmake git pkg-config libssl-dev libspdlog-dev \
+  libwebsockets-dev \
   autoconf automake libtool ca-certificates curl gpg lsb-release \
   pciutils
 

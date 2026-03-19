@@ -113,32 +113,19 @@ set_target_properties(yaml PROPERTIES
 add_dependencies(yaml libyaml_project)
 list(APPEND CMAKE_PREFIX_PATH "${LIBYAML_INSTALL_DIR}")
 
-# --- Fetch libwebsockets ---
-# This is a client-side websocket library, also a dependency of the Kubernetes C client.
-# Ensure it is built with OpenSSL support.
-FetchContent_Declare(
-        libwebsockets_ext
-        GIT_REPOSITORY https://github.com/warmcat/libwebsockets.git
-        GIT_TAG        v4.3.5
-        SOURCE_SUBDIR  cmake
-        CMAKE_ARGS
-        -DLWS_WITH_SSL=ON
-        -DLWS_WITH_EXTERNAL_POLL=ON
-        -DLWS_MAX_SMP=1
-        -DLWS_WITH_HTTP_PROXY=OFF
-        -DLWS_WITH_SHARED=ON
-        -DLWS_WITHOUT_TESTAPPS=ON
-        -DLWS_WITHOUT_TEST_SERVER=ON
-        -DLWS_WITHOUT_TEST_APPS=ON
-        -DLWS_WITH_LWSAC=OFF
-        -DLWS_OPENSSL_INCLUDE_DIRS=${OpenSSL_INCLUDE_DIR}
-        -DLWS_OPENSSL_LIBRARIES=${OpenSSL_LIBRARIES}
-        -DCMAKE_POLICY_VERSION_MINIMUM=3.14
-        -DCMAKE_FIND_PACKAGE_NO_SYSTEM_PATHS=TRUE
-        -DCMAKE_FIND_PACKAGE_PREFER_CONFIG=TRUE
+# --- Find libwebsockets ---
+# Kubernetes client-c expects a config package named Libwebsockets.
+# deploy.sh installs libwebsockets-dev to provide this config.
+set(LIBWEBSOCKETS_HINTS)
+if (CMAKE_LIBRARY_ARCHITECTURE)
+    list(APPEND LIBWEBSOCKETS_HINTS "/usr/lib/${CMAKE_LIBRARY_ARCHITECTURE}/cmake/libwebsockets")
+endif()
+list(APPEND LIBWEBSOCKETS_HINTS
+        "/usr/lib/cmake/libwebsockets"
+        "/usr/local/lib/cmake/libwebsockets"
 )
-FetchContent_MakeAvailable(libwebsockets_ext)
-find_package(libwebsockets CONFIG REQUIRED)
+find_package(Libwebsockets CONFIG REQUIRED PATHS ${LIBWEBSOCKETS_HINTS})
+set(LIBWEBSOCKETS_CONFIG_DIR "${Libwebsockets_DIR}")
 
 # --- Fetch Kubernetes C Client Library ---
 # This is the main client library. It depends on libyaml, libwebsockets, and OpenSSL.
@@ -154,14 +141,15 @@ FetchContent_Declare(
         -DCMAKE_BUILD_TYPE=Release
         -DCMAKE_POLICY_VERSION_MINIMUM=3.14
         -DCMAKE_FIND_PACKAGE_NO_SYSTEM_PATHS=TRUE
-        -DCMAKE_PREFIX_PATH=${LIBYAML_INSTALL_DIR};${CMAKE_BINARY_DIR}/_deps/libwebsockets_ext-build/install
+        -DCMAKE_PREFIX_PATH=${LIBYAML_INSTALL_DIR};${LIBWEBSOCKETS_CONFIG_DIR}
         -Dyaml_DIR=${LIBYAML_INSTALL_DIR}/lib/cmake/yaml
-        -Dlibwebsockets_DIR=${CMAKE_BINARY_DIR}/_deps/libwebsockets_ext-build/install/lib/cmake/libwebsockets
+        -DLibwebsockets_DIR=${LIBWEBSOCKETS_CONFIG_DIR}
+        -Dlibwebsockets_DIR=${LIBWEBSOCKETS_CONFIG_DIR}
         -DYAML_FOUND=TRUE
         -DYAML_LIBRARIES=${LIBYAML_INSTALL_DIR}/lib/libyaml.so
         -DYAML_INCLUDE_DIRS=${LIBYAML_INSTALL_DIR}/include
         -DCMAKE_FIND_PACKAGE_PREFER_CONFIG=TRUE
-        -Dlibwebsockets_ROOT=${CMAKE_BINARY_DIR}/_deps/libwebsockets_ext-build/install
+        -Dlibwebsockets_ROOT=${LIBWEBSOCKETS_CONFIG_DIR}
 )
 FetchContent_MakeAvailable(kubernetes_client_c_ext)
 message(STATUS "kubernetes_client_c_ext_SOURCE_DIR: ${kubernetes_client_c_ext_SOURCE_DIR}")
