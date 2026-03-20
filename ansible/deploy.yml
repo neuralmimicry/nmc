@@ -56,6 +56,8 @@
     nmc_tracey_sidecar_enabled: true
     nmc_tracey_bin: ""
     nmc_tracey_repo_dir: "{{ (nmc_install_dir | dirname) ~ '/tracey' }}"
+    nmc_tracey_repo_url: "https://github.com/neuralmimicry/tracey.git"
+    nmc_tracey_repo_branch: "main"
     nmc_tracey_build_if_missing: true
     nmc_tracey_agent_id: "tracey-continuum-local"
     nmc_tracey_local_status_addr: "http://127.0.0.1:48000"
@@ -748,6 +750,65 @@
             - nmc_tracey_path_cmd.stdout | trim | length > 0
 
         - name: Check Tracey source repository
+          ansible.builtin.stat:
+            path: "{{ nmc_tracey_repo_dir }}/Cargo.toml"
+          register: nmc_tracey_repo_stat
+          when:
+            - nmc_tracey_effective_bin | length == 0
+            - nmc_tracey_build_if_missing
+
+        - name: Resolve Tracey repository URL for auto-clone
+          ansible.builtin.set_fact:
+            nmc_tracey_repo_url_effective: >-
+              {{
+                (
+                  nmc_tracey_repo_url
+                  if (nmc_tracey_repo_url | trim | length > 0)
+                  else (
+                    (
+                      nmc_repo_url | default('', true) | trim | length > 0
+                    )
+                    | ternary(
+                        (
+                          nmc_repo_url
+                          | trim
+                          | regex_replace('/nmc\\.git$', '/tracey.git')
+                          | regex_replace('/nmc$', '/tracey')
+                        ),
+                        'https://github.com/neuralmimicry/tracey.git'
+                      )
+                  )
+                ) | trim
+              }}
+          when:
+            - nmc_tracey_effective_bin | length == 0
+            - nmc_tracey_build_if_missing
+            - nmc_tracey_repo_stat is not defined or not nmc_tracey_repo_stat.stat.exists
+
+        - name: Ensure parent directory for Tracey source repository exists
+          ansible.builtin.file:
+            path: "{{ nmc_tracey_repo_dir | dirname }}"
+            state: directory
+            mode: "0755"
+          when:
+            - nmc_tracey_effective_bin | length == 0
+            - nmc_tracey_build_if_missing
+            - nmc_tracey_repo_stat is not defined or not nmc_tracey_repo_stat.stat.exists
+
+        - name: Clone Tracey source repository when missing
+          ansible.builtin.git:
+            repo: "{{ nmc_tracey_repo_url_effective }}"
+            dest: "{{ nmc_tracey_repo_dir }}"
+            version: "{{ nmc_tracey_repo_branch }}"
+            update: true
+            force: false
+            accept_hostkey: true
+          when:
+            - nmc_tracey_effective_bin | length == 0
+            - nmc_tracey_build_if_missing
+            - nmc_tracey_repo_stat is not defined or not nmc_tracey_repo_stat.stat.exists
+
+        - name: Refresh Tracey source repository state
           ansible.builtin.stat:
             path: "{{ nmc_tracey_repo_dir }}/Cargo.toml"
           register: nmc_tracey_repo_stat
