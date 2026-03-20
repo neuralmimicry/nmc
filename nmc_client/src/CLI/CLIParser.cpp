@@ -1,5 +1,6 @@
 #include "CLIParser.h"
 #include "Utils.h"
+#include "Core/VersionCheck.h"
 #include <iostream>
 #include <algorithm> // For std::remove
 
@@ -19,6 +20,7 @@ void CLIParser::registerCommand(const std::shared_ptr<Command>& command) {
 
 int CLIParser::parseAndExecute(int argc, char* argv[]) {
     std::vector<std::string> args(argv + 1, argv + argc); // Skip executable name
+    bool versionRequested = false;
 
     if (args.empty()) {
         printRootHelp();
@@ -35,9 +37,22 @@ int CLIParser::parseAndExecute(int argc, char* argv[]) {
                 std::cerr << "Error: --output flag requires a value." << std::endl;
                 return 1;
             }
+        } else if (*it == "-V" || *it == "--version") {
+            versionRequested = true;
+            it = args.erase(it); // Erase global version flag
         } else {
             ++it;
         }
+    }
+
+    if (versionRequested) {
+        std::cout << "nmc version " << NMC::Core::VersionCheck::currentVersion() << std::endl;
+        return 0;
+    }
+
+    if (args.empty()) {
+        printRootHelp();
+        return 0;
     }
 
     std::string commandName = args[0];
@@ -239,6 +254,7 @@ void CLIParser::printRootHelp() const {
     }
     std::cout << "Flags:" << std::endl;
     std::cout << "  -h, --help            help for nmc" << std::endl;
+    std::cout << "  -V, --version         show nmc version" << std::endl;
     std::cout << "  -x, --output string   Output format. Empty for human-readable, 'json', 'json-line' or 'yaml'" << std::endl;
     std::cout << "Use \"nmc [command] --help\" for more information about a command." << std::endl;
 }

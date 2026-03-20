@@ -8,6 +8,7 @@ set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 set(NMC_CLIENT_VERSION "0.0.1" CACHE STRING "NMC client semantic version")
 # Include FetchContent module for automatic dependency downloading
 include(FetchContent)
+include(GNUInstallDirs)
 
 # --- Fetch nlohmann/json ---
 FetchContent_Declare(
@@ -70,6 +71,10 @@ target_link_libraries(nmc PRIVATE nlohmann_json::nlohmann_json httplib)
 # This ensures that the #ifdef CPPHTTPLIB_OPENSSL_SUPPORT block in httplib.h is skipped.
 target_compile_definitions(nmc PRIVATE CPPHTTPLIB_NO_SSL_SUPPORT)
 target_compile_definitions(nmc PRIVATE NMC_CLIENT_VERSION="${NMC_CLIENT_VERSION}")
+
+install(TARGETS nmc
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+)
 
 
 # Optional: Add compiler warnings for best practices

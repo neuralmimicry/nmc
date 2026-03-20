@@ -107,6 +107,7 @@ void Command::printHelp() const {
 void Command::printGlobalFlagsHelp() const {
     std::cout << "Global Flags:" << std::endl;
     std::cout << "  -h, --help            help for " << name << std::endl;
+    std::cout << "  -V, --version         show nmc version" << std::endl;
     std::cout << "  -x, --output string   Output format. Empty for human-readable, 'json', 'json-line' or 'yaml'" << std::endl;
 }
 

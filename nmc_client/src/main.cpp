@@ -10,10 +10,21 @@
 #include "Commands/ConnectionCommands.h"
 #include "Commands/RefinerCommands.h"
 #include "Commands/NodeCommands.h"
+#include "Core/VersionCheck.h"
+#include <iostream>
 #include <memory> // For std::make_shared
+#include <string>
 #include "Core/Utils.h"
 
 int main(int argc, char* argv[]) {
+    for (int i = 1; i < argc; ++i) {
+        const std::string arg = argv[i];
+        if (arg == "--version" || arg == "-V") {
+            std::cout << "nmc version " << NMC::Core::VersionCheck::currentVersion() << std::endl;
+            return 0;
+        }
+    }
+
     NMC::CLI::CLIParser parser;
 
     // Single shared API client for all commands in this process.
