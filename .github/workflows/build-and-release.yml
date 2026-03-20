@@ -1,5 +1,8 @@
 name: Build and Release
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 on:
   pull_request:
     branches:
@@ -121,7 +124,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake git pkg-config libssl-dev libspdlog-dev \
-            libwebsockets-dev autoconf automake libtool ca-certificates curl gawk
+            libwebsockets-dev libcurl4-openssl-dev autoconf automake libtool \
+            ca-certificates curl gawk
 
       - name: Configure
         run: cmake -S nmc_server -B nmc_server/build -DCMAKE_BUILD_TYPE=Release -DNMC_SERVER_VERSION=${{ steps.version.outputs.value }}
