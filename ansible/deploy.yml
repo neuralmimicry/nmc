@@ -56,7 +56,7 @@
     nmc_tracey_sidecar_enabled: true
     nmc_tracey_bin: ""
     nmc_tracey_repo_dir: "{{ (nmc_install_dir | dirname) ~ '/tracey' }}"
-    nmc_tracey_repo_url: "https://github.com/neuralmimicry/tracey.git"
+    nmc_tracey_repo_url: "git@github.com:neuralmimicry/tracey.git"
     nmc_tracey_repo_branch: "main"
     nmc_tracey_build_if_missing: true
     nmc_tracey_agent_id: "tracey-continuum-local"
@@ -775,7 +775,7 @@
                           | regex_replace('/nmc\\.git$', '/tracey.git')
                           | regex_replace('/nmc$', '/tracey')
                         ),
-                        'https://github.com/neuralmimicry/tracey.git'
+                        'git@github.com:neuralmimicry/tracey.git'
                       )
                   )
                 ) | trim
