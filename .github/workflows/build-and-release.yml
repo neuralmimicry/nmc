@@ -1,7 +1,7 @@
 name: Build and Release
 
 env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 on:
   pull_request:
@@ -23,7 +23,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Compute build version
         id: version
@@ -55,7 +55,7 @@ jobs:
           tar -C dist -czf nmc-client-linux-x64.tar.gz nmc-client-linux-x64
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: nmc-client-linux-x64
           path: nmc-client-linux-x64.tar.gz
@@ -66,7 +66,7 @@ jobs:
     runs-on: windows-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Compute build version
         id: version
@@ -97,7 +97,7 @@ jobs:
           Compress-Archive -Path .\dist\nmc-client-windows-x64.exe -DestinationPath .\nmc-client-windows-x64.zip -Force
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: nmc-client-windows-x64
           path: nmc-client-windows-x64.zip
@@ -108,7 +108,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Compute build version
         id: version
@@ -140,7 +140,7 @@ jobs:
           tar -C dist -czf nmc-server-linux-x64.tar.gz nmc-server-linux-x64
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: nmc-server-linux-x64
           path: nmc-server-linux-x64.tar.gz
@@ -156,25 +156,59 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: release-assets
           merge-multiple: true
 
       - name: Publish snapshot
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: snapshot-main
-          target_commitish: ${{ github.sha }}
-          name: Snapshot build (main)
-          prerelease: true
-          make_latest: false
-          generate_release_notes: true
-          overwrite_files: true
-          files: |
-            release-assets/nmc-client-linux-x64.tar.gz
-            release-assets/nmc-client-windows-x64.zip
-            release-assets/nmc-server-linux-x64.tar.gz
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ASSET_CLIENT_LINUX="release-assets/nmc-client-linux-x64.tar.gz"
+          ASSET_CLIENT_WINDOWS="release-assets/nmc-client-windows-x64.zip"
+          ASSET_SERVER_LINUX="release-assets/nmc-server-linux-x64.tar.gz"
+          TAG="snapshot-main"
+          TITLE="Snapshot build (main)"
+
+          for asset in "$ASSET_CLIENT_LINUX" "$ASSET_CLIENT_WINDOWS" "$ASSET_SERVER_LINUX"; do
+            if [[ ! -f "$asset" ]]; then
+              echo "Missing release asset: $asset" >&2
+              exit 1
+            fi
+          done
+
+          NOTES_FILE="$(mktemp)"
+          {
+            echo "Automated snapshot release from main."
+            echo
+            echo "Commit: ${GITHUB_SHA}"
+            echo "Run: https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          } > "$NOTES_FILE"
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" \
+              --title "$TITLE" \
+              --target "${GITHUB_SHA}" \
+              --prerelease \
+              --notes-file "$NOTES_FILE"
+            gh release upload "$TAG" \
+              "$ASSET_CLIENT_LINUX" \
+              "$ASSET_CLIENT_WINDOWS" \
+              "$ASSET_SERVER_LINUX" \
+              --clobber
+          else
+            gh release create "$TAG" \
+              "$ASSET_CLIENT_LINUX" \
+              "$ASSET_CLIENT_WINDOWS" \
+              "$ASSET_SERVER_LINUX" \
+              --title "$TITLE" \
+              --target "${GITHUB_SHA}" \
+              --prerelease \
+              --latest=false \
+              --notes-file "$NOTES_FILE"
+          fi
 
   release-tag:
     name: Publish Tagged Release
@@ -186,21 +220,45 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: release-assets
           merge-multiple: true
 
       - name: Publish tagged release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.ref_name }}
-          name: NMC ${{ github.ref_name }}
-          prerelease: false
-          make_latest: true
-          generate_release_notes: true
-          overwrite_files: true
-          files: |
-            release-assets/nmc-client-linux-x64.tar.gz
-            release-assets/nmc-client-windows-x64.zip
-            release-assets/nmc-server-linux-x64.tar.gz
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ASSET_CLIENT_LINUX="release-assets/nmc-client-linux-x64.tar.gz"
+          ASSET_CLIENT_WINDOWS="release-assets/nmc-client-windows-x64.zip"
+          ASSET_SERVER_LINUX="release-assets/nmc-server-linux-x64.tar.gz"
+          TAG="${GITHUB_REF_NAME}"
+          TITLE="NMC ${GITHUB_REF_NAME}"
+
+          for asset in "$ASSET_CLIENT_LINUX" "$ASSET_CLIENT_WINDOWS" "$ASSET_SERVER_LINUX"; do
+            if [[ ! -f "$asset" ]]; then
+              echo "Missing release asset: $asset" >&2
+              exit 1
+            fi
+          done
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" \
+              --title "$TITLE" \
+              --latest
+            gh release upload "$TAG" \
+              "$ASSET_CLIENT_LINUX" \
+              "$ASSET_CLIENT_WINDOWS" \
+              "$ASSET_SERVER_LINUX" \
+              --clobber
+          else
+            gh release create "$TAG" \
+              "$ASSET_CLIENT_LINUX" \
+              "$ASSET_CLIENT_WINDOWS" \
+              "$ASSET_SERVER_LINUX" \
+              --title "$TITLE" \
+              --latest \
+              --generate-notes \
+              --verify-tag
+          fi
