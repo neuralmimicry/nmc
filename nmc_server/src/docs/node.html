@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Node Recruitment API Documentation</title>
+    <link rel="stylesheet" href="style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+<div class="container">
+    <header>
+        <h1>Node Recruitment API Endpoint</h1>
+        <p class="tagline">Recruit remote Ubuntu hosts into Continuum using script/binary transfer with optional tenant auto-configuration</p>
+        <a href="index.html" class="back-link">&larr; Back to API Home</a>
+    </header>
+
+    <section>
+        <h2>Recruit Node</h2>
+        <p><strong>Endpoint:</strong> <code>POST /node/recruit</code></p>
+        <p><strong>Auth:</strong> Requires the same Continuum API authentication as other protected endpoints (<code>Bearer</code> token or OIDC).</p>
+        <p>Transfers a script/binary over SSH (<code>scp</code>) and executes it on the remote host (<code>ssh</code>), then can run an Ansible playbook for tenant-specific host preparation.</p>
+
+        <h3>Request Body:</h3>
+        <pre><code class="language-json">{
+  "host": "192.168.1.60",
+  "user": "ubuntu",
+  "port": 22,
+  "node_type": "kubernetes",
+  "auto_configure": true,
+  "tenant_id": "acme",
+  "tenant_name": "Acme Manufacturing",
+  "tenant_environment": "prod",
+  "capabilities": ["apps", "podman", "kubernetes"],
+  "ansible_playbook": "/opt/nmc/ansible/recruited-node.yml",
+  "ansible_extra_vars": {
+    "nmc_ops_contact": "ops@acme.example",
+    "nmc_backup_window": "02:00-03:00"
+  },
+  "script": "#!/usr/bin/env bash\nset -euo pipefail\necho recruited",
+  "ssh_key_path": "/home/continuum/.ssh/id_ed25519",
+  "remote_path": "/tmp/nmc-recruit.sh",
+  "region": "home-lab",
+  "dry_run": false,
+  "sudo": true,
+  "sudo_password": "example-password",
+  "ansible_become": true,
+  "tracey": {
+    "agent_id": "tracey-192-168-1-60",
+    "status_addr": "http://192.168.1.60:48000"
+  }
+}</code></pre>
+
+        <h3>Request Fields:</h3>
+        <ul>
+            <li><code>host</code> (required): target hostname or IPv4 address.</li>
+            <li><code>user</code> (optional): SSH username, default <code>ubuntu</code>.</li>
+            <li><code>port</code> (optional): SSH port, default <code>22</code>.</li>
+            <li><code>node_type</code> (optional): <code>bare-metal</code>, <code>app-install</code>, <code>vm</code>, <code>podman</code>, <code>kubernetes</code>.</li>
+            <li><code>script</code> or <code>script_path</code> (optional): recruitment script content/path on server.</li>
+            <li><code>binary_path</code> (optional): binary path on server (mutually exclusive with script input).</li>
+            <li><code>binary_args</code> (optional): string or string array of binary arguments.</li>
+            <li><code>ssh_key_path</code> (optional): private key path on server.</li>
+            <li><code>remote_path</code> (optional): destination path on remote node.</li>
+            <li><code>dry_run</code> (optional): when true, returns planned commands without executing SSH/SCP.</li>
+            <li><code>sudo</code> (optional): when true, executes artifact with <code>sudo</code> (uses <code>sudo -S</code> when password is supplied).</li>
+            <li><code>sudo_password</code> / <code>become_password</code> (optional): password used for remote sudo and Ansible become.</li>
+            <li><code>auto_configure</code> (optional): run post-recruitment Ansible configuration.</li>
+            <li><code>ansible_become</code> / <code>become</code> (optional): enable/disable Ansible privilege escalation (default: <code>true</code>).</li>
+            <li><code>tenant_id</code>, <code>tenant_name</code>, <code>tenant_environment</code> (optional): tenant metadata passed to Ansible.</li>
+            <li><code>capabilities</code> / <code>workloads</code> (optional): requested host capabilities: <code>apps</code>, <code>vm</code>, <code>podman</code>, <code>kubernetes</code>.</li>
+            <li><code>ansible_playbook</code> (optional): playbook path override. Falls back to <code>NMC_RECRUIT_ANSIBLE_PLAYBOOK</code> or <code>ansible/recruited-node.yml</code>.</li>
+            <li><code>ansible_extra_vars</code> (optional): JSON object merged into Ansible <code>-e</code> vars.</li>
+            <li><code>recruit_token</code> (optional): required if server sets <code>NMC_RECRUIT_TOKEN</code>.</li>
+            <li><code>tracey</code> (optional/required by policy): Tracey managed-node requirement block.</li>
+        </ul>
+
+        <h3>Successful Response (HTTP 200 OK):</h3>
+        <pre><code class="language-json">{
+  "success": true,
+  "message": "Node recruitment and auto-configuration completed successfully.",
+  "data": {
+    "target": {
+      "host": "192.168.1.60",
+      "port": 22,
+      "user": "ubuntu"
+    },
+    "node": {
+      "name": "192.168.1.60",
+      "type": "kubernetes",
+      "region": "home-lab"
+    },
+    "mode": "script",
+    "auto_configure": {
+      "enabled": true,
+      "become": true,
+      "tenant": {
+        "id": "acme",
+        "name": "Acme Manufacturing",
+        "environment": "prod"
+      },
+      "capabilities": ["apps", "podman", "kubernetes"],
+      "playbook": "/opt/nmc/ansible/recruited-node.yml"
+    },
+    "artifact": {
+      "local_path": "&lt;generated-script&gt;",
+      "remote_path": "/tmp/nmc-recruit.sh"
+    },
+    "prepare_exit_code": 0,
+    "transfer_exit_code": 0,
+    "execute_exit_code": 0,
+    "configure_exit_code": 0,
+    "tracey": {
+      "required": true,
+      "agent_id": "tracey-192-168-1-60",
+      "status_addr": "http://192.168.1.60:48000",
+      "compliance_state": "pending"
+    }
+  }
+}</code></pre>
+
+        <h3>Error Responses:</h3>
+        <ul>
+            <li><strong>HTTP 400:</strong> invalid input (host/user/path/type/JSON fields).</li>
+            <li><strong>HTTP 401:</strong> unauthorized request.</li>
+            <li><strong>HTTP 403:</strong> invalid or missing <code>recruit_token</code> when required.</li>
+            <li><strong>HTTP 500:</strong> required dependencies missing on recruiter host (for example <code>ansible-playbook</code> when <code>auto_configure=true</code>).</li>
+            <li><strong>HTTP 502:</strong> SSH/SCP prepare/transfer/execute step failed.</li>
+        </ul>
+        <p><strong>Security note:</strong> Sensitive values such as <code>continuum_auth_token</code> and <code>sudo_password</code> are redacted from diagnostics and command output fields.</p>
+    </section>
+</div>
+</body>
+</html>

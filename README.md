@@ -13,6 +13,7 @@ It provides a modular and extensible framework for building command-line interfa
 * Placeholder for interaction with a cloud API (`CloudAPIClient`).
 * implementations for cloud operations (Bucket, K8s, Model, SSH, VM).
 * Refiner lifecycle control commands for Kubernetes (`refiner deploy/status/scale/logs/remove`).
+* Continuum node recruitment flow (`node recruit`) with script/binary transfer to remote Ubuntu hosts.
 * Optional bearer token authentication for the Continuum control plane.
 
 **Project Structure:**
@@ -140,6 +141,64 @@ nmc connection unset-default: Unsets the current default connection and reverts 
     ./nmc refiner remove --namespace refiner --delete-storage
     ```
 
+* **Recruit a remote Ubuntu node through Continuum server (sample host `192.168.1.60`):**
+    ```bash
+    ./nmc node recruit --host 192.168.1.60 --user ubuntu --script /home/me/recruit-node.sh --ssh-key /home/me/.ssh/id_ed25519
+    ```
+
+* **Recruit directly from the CLI host (no server-side SSH execution):**
+    ```bash
+    ./nmc node recruit --host 192.168.1.60 --user ubuntu --binary /home/me/bin/continuum-agent --binary-arg --join --binary-arg token-123 --direct
+    ```
+
+* **Recruit and auto-configure for tenant workloads (API mode):**
+    ```bash
+    ./nmc node recruit \
+      --host 192.168.1.60 \
+      --user ubuntu \
+      --ssh-key /home/me/.ssh/id_ed25519 \
+      --node-type kubernetes \
+      --auto-configure \
+      --tenant-id acme \
+      --tenant-name "Acme Manufacturing" \
+      --tenant-environment prod \
+      --capability apps \
+      --capability podman \
+      --capability kubernetes
+    ```
+
+* **Recruit and auto-configure directly from CLI host with custom playbook vars:**
+    ```bash
+    ./nmc node recruit \
+      --host 192.168.1.60 \
+      --user ubuntu \
+      --direct \
+      --auto-configure \
+      --ansible-playbook /home/me/nmc/ansible/recruited-node.yml \
+      --ansible-extra-var nmc_ops_contact=ops@acme.example \
+      --ansible-extra-var nmc_backup_window=02:00-03:00
+    ```
+
+* **Use non-interactive sudo/become password with file input:**
+    ```bash
+    ./nmc node recruit \
+      --host 192.168.1.60 \
+      --user pbisaacs \
+      --ssh-key /home/me/.ssh/id_ed25519 \
+      --sudo-password-file /home/me/.nmc/sudo.pass \
+      --auto-configure
+    ```
+
+* **Disable Ansible privilege escalation for auto-configure when not required:**
+    ```bash
+    ./nmc node recruit --host 192.168.1.60 --auto-configure --no-become
+    ```
+
+* **Dry-run the generated commands before execution:**
+    ```bash
+    ./nmc node recruit --host 192.168.1.60 --node-type kubernetes --dry-run --direct
+    ```
+
 * **Display version:**
     ```bash
     ./nmc version
@@ -190,6 +249,9 @@ Ensure:
 - Connection tokens are stored in `~/.nmc/config.json` with hardened permissions.
 - For OIDC audiences, use `NMC_OIDC_AUDIENCE` (single or comma-separated) or `NMC_OIDC_ALLOWED_AUDIENCES` to allow multiple client IDs (e.g., SPA + server).
 - Compatibility aliases: `NM_AUTH_MODE`, `NM_AUTH_TOKEN`, and `NM_OIDC_*` are also accepted for shared SSO configuration across NeuralMimicry services.
+- Optional hardening for node onboarding: set `NMC_RECRUIT_TOKEN` on the server, then supply `--recruit-token` (or `recruit_token`) when calling `node recruit`.
+- Optional playbook override for post-recruit configuration: set `NMC_RECRUIT_ANSIBLE_PLAYBOOK` on recruiter hosts to define the default auto-configure playbook.
+- Optional non-interactive privilege escalation for recruitment: set `NMC_SUDO_PASSWORD` (or alias `NMC_BECOME_PASSWORD`) on the CLI host when using `node recruit`.
 Explanation of Components:
 
 CMakeLists.txt: Build configuration for CMake.

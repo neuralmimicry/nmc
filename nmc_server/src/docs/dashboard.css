@@ -332,6 +332,10 @@ h1 {
     grid-column: span 2;
 }
 
+#tracey-network {
+    scroll-margin-top: 110px;
+}
+
 .panel-title-row {
     display: flex;
     align-items: center;

@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Continuum Sign In</title>
+    <link rel="stylesheet" href="/dashboard.css">
+</head>
+<body>
+<div class="bg">
+    <span class="orb orb-1"></span>
+    <span class="orb orb-2"></span>
+</div>
+
+<header class="site-nav">
+    <div class="site-nav-inner">
+        <a class="site-nav-brand" href="https://neuralmimicry.ai/" aria-label="Neuralmimicry main site">
+            <img class="site-nav-logo" src="/public/nmcontinuum.png" alt="Continuum logo">
+            <span>Continuum</span>
+        </a>
+        <div class="site-nav-links">
+            <a href="https://neuralmimicry.ai/">Home</a>
+            <a href="https://neuralmimicry.ai/about">About</a>
+            <a href="https://neuralmimicry.ai/solutions">Solutions</a>
+            <a href="https://neuralmimicry.ai/news">News</a>
+            <a href="https://neuralmimicry.ai/github">GitHub</a>
+            <a href="https://neuralmimicry.ai/team">Team</a>
+            <a href="https://neuralmimicry.ai/careers">Careers</a>
+        </div>
+        <div class="site-nav-actions">
+            <a class="site-nav-link" href="https://neuralmimicry.ai/control-panel">Control Panel</a>
+            <a class="site-nav-link site-nav-cta" href="/">Open Dashboard</a>
+        </div>
+    </div>
+</header>
+
+<main class="auth">
+    <section class="card auth-card">
+        <div class="auth-split">
+            <div class="auth-hero">
+                <img class="auth-logo" src="/public/nmcontinuum.png" alt="Continuum logo">
+                <p class="auth-kicker">Continuum Control Center</p>
+            </div>
+            <div class="auth-panel">
+                <h1>Sign in</h1>
+                <p class="subtitle">Use your Continuum API token to access protected endpoints and dashboards.</p>
+                <p id="authError" class="auth-error" hidden></p>
+                <form id="authForm" class="auth-form">
+                    <div class="field">
+                        <label for="token">API Token</label>
+                        <input id="token" name="token" type="password" autocomplete="off" placeholder="Bearer or X-NMC-Token value">
+                    </div>
+                    <button type="submit" class="primary">Continue</button>
+                </form>
+                <button type="button" id="continueWithoutToken" class="ghost auth-oidc">Continue without token</button>
+            </div>
+        </div>
+    </section>
+</main>
+
+<script src="/auth.js"></script>
+</body>
+</html>

@@ -1,0 +1,46 @@
+{
+	"sources" : 
+	[
+		{
+			"file" : "/home/pbisaacs/Developer/neuralmimicry/nmc/nmc_server/build_fresh/_deps/kubernetes_client_c_ext-subbuild/CMakeFiles/kubernetes_client_c_ext-populate"
+		},
+		{
+			"file" : "/home/pbisaacs/Developer/neuralmimicry/nmc/nmc_server/build_fresh/_deps/kubernetes_client_c_ext-subbuild/CMakeFiles/kubernetes_client_c_ext-populate.rule"
+		},
+		{
+			"file" : "/home/pbisaacs/Developer/neuralmimicry/nmc/nmc_server/build_fresh/_deps/kubernetes_client_c_ext-subbuild/CMakeFiles/kubernetes_client_c_ext-populate-complete.rule"
+		},
+		{
+			"file" : "/home/pbisaacs/Developer/neuralmimicry/nmc/nmc_server/build_fresh/_deps/kubernetes_client_c_ext-subbuild/kubernetes_client_c_ext-populate-prefix/src/kubernetes_client_c_ext-populate-stamp/kubernetes_client_c_ext-populate-build.rule"
+		},
+		{
+			"file" : "/home/pbisaacs/Developer/neuralmimicry/nmc/nmc_server/build_fresh/_deps/kubernetes_client_c_ext-subbuild/kubernetes_client_c_ext-populate-prefix/src/kubernetes_client_c_ext-populate-stamp/kubernetes_client_c_ext-populate-configure.rule"
+		},
+		{
+			"file" : "/home/pbisaacs/Developer/neuralmimicry/nmc/nmc_server/build_fresh/_deps/kubernetes_client_c_ext-subbuild/kubernetes_client_c_ext-populate-prefix/src/kubernetes_client_c_ext-populate-stamp/kubernetes_client_c_ext-populate-download.rule"
+		},
+		{
+			"file" : "/home/pbisaacs/Developer/neuralmimicry/nmc/nmc_server/build_fresh/_deps/kubernetes_client_c_ext-subbuild/kubernetes_client_c_ext-populate-prefix/src/kubernetes_client_c_ext-populate-stamp/kubernetes_client_c_ext-populate-install.rule"
+		},
+		{
+			"file" : "/home/pbisaacs/Developer/neuralmimicry/nmc/nmc_server/build_fresh/_deps/kubernetes_client_c_ext-subbuild/kubernetes_client_c_ext-populate-prefix/src/kubernetes_client_c_ext-populate-stamp/kubernetes_client_c_ext-populate-mkdir.rule"
+		},
+		{
+			"file" : "/home/pbisaacs/Developer/neuralmimicry/nmc/nmc_server/build_fresh/_deps/kubernetes_client_c_ext-subbuild/kubernetes_client_c_ext-populate-prefix/src/kubernetes_client_c_ext-populate-stamp/kubernetes_client_c_ext-populate-patch.rule"
+		},
+		{
+			"file" : "/home/pbisaacs/Developer/neuralmimicry/nmc/nmc_server/build_fresh/_deps/kubernetes_client_c_ext-subbuild/kubernetes_client_c_ext-populate-prefix/src/kubernetes_client_c_ext-populate-stamp/kubernetes_client_c_ext-populate-test.rule"
+		},
+		{
+			"file" : "/home/pbisaacs/Developer/neuralmimicry/nmc/nmc_server/build_fresh/_deps/kubernetes_client_c_ext-subbuild/kubernetes_client_c_ext-populate-prefix/src/kubernetes_client_c_ext-populate-stamp/kubernetes_client_c_ext-populate-update.rule"
+		}
+	],
+	"target" : 
+	{
+		"labels" : 
+		[
+			"kubernetes_client_c_ext-populate"
+		],
+		"name" : "kubernetes_client_c_ext-populate"
+	}
+}

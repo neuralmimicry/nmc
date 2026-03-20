@@ -1,0 +1,3 @@
+/home/pbisaacs/Developer/neuralmimicry/nmc/nmc_server/build_fresh/_deps/kubernetes_client_c_ext-subbuild/CMakeFiles/kubernetes_client_c_ext-populate.dir
+/home/pbisaacs/Developer/neuralmimicry/nmc/nmc_server/build_fresh/_deps/kubernetes_client_c_ext-subbuild/CMakeFiles/edit_cache.dir
+/home/pbisaacs/Developer/neuralmimicry/nmc/nmc_server/build_fresh/_deps/kubernetes_client_c_ext-subbuild/CMakeFiles/rebuild_cache.dir

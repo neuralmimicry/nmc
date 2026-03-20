@@ -81,6 +81,9 @@ namespace NMC::Core {
                                                       const std::string& provider,
                                                       const std::vector<std::string>& burstTargets);
 
+        // Node Recruitment
+        Models::CloudResponse recruitNode(const nlohmann::json& requestPayload);
+
         // Connection Management
         Models::CloudResponse getConnectionStatus();
         Models::CloudResponse makeConnection(const std::string& name, const std::string& endpoint, bool setDefault);

@@ -40,3 +40,22 @@ The playbook includes variables equivalent to deploy script flags/environment va
 - GPU: `nmc_gpu_auto`, `nmc_enable_nvidia_device_plugin`, `nmc_nvidia_preserve_driver_if_present`
 - Auto-update: `nmc_enable_auto_update`, `nmc_repo_url`, `nmc_repo_branch`
 - Tracey sidecar: `nmc_tracey_sidecar_enabled`, `nmc_tracey_bin`, `nmc_tracey_repo_dir`, `nmc_tracey_build_if_missing`, `nmc_tracey_agent_id`, `nmc_tracey_local_status_addr`, `nmc_tracey_status_listen_addr`, `nmc_tracey_status_public_addr`, `nmc_tracey_discovery_bind_addr`, `nmc_tracey_discovery_broadcast_addr`, `nmc_tracey_discovery_shared_key`
+
+## Recruited node auto-configuration
+
+`ansible/recruited-node.yml` is used by `nmc node recruit --auto-configure` (or `POST /node/recruit` with `auto_configure=true`) to prepare a newly recruited host for tenant workloads.
+By default, auto-configure runs with Ansible become enabled; disable with `--no-become` (CLI) or `ansible_become=false` (API).
+If `sudo_password`/`become_password` is supplied, the recruiter maps it to `ansible_become_password` for non-interactive privilege escalation.
+
+Example:
+
+```bash
+ansible-playbook -i "192.168.1.60," ansible/recruited-node.yml -u ubuntu \
+  -e '{"nmc_enable_apps":true,"nmc_enable_podman":true,"nmc_tenant_id":"acme","nmc_tenant_environment":"prod"}'
+```
+
+Key vars:
+- Capability toggles: `nmc_enable_apps`, `nmc_enable_vm`, `nmc_enable_podman`, `nmc_enable_kubernetes`
+- Tenant metadata: `nmc_tenant_id`, `nmc_tenant_name`, `nmc_tenant_environment`
+- Node metadata: `nmc_node_host`, `nmc_node_name`, `nmc_node_region`, `nmc_node_type`
+- Optional Tracey hints: `nmc_tracey_agent_id`, `nmc_tracey_status_addr`

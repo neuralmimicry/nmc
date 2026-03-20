@@ -1,0 +1,12 @@
+# Target labels
+ zstd_project
+# Source files and their labels
+/home/pbisaacs/Developer/neuralmimicry/nmc/nmc_server/build_fresh/CMakeFiles/zstd_project-install
+/home/pbisaacs/Developer/neuralmimicry/nmc/nmc_server/build_fresh/CMakeFiles/zstd_project-install.rule
+/home/pbisaacs/Developer/neuralmimicry/nmc/nmc_server/build_fresh/_deps/zstd/src/zstd_project-stamp/zstd_project-install.rule
+/home/pbisaacs/Developer/neuralmimicry/nmc/nmc_server/build_fresh/_deps/zstd/src/zstd_project-stamp/zstd_project-build.rule
+/home/pbisaacs/Developer/neuralmimicry/nmc/nmc_server/build_fresh/_deps/zstd/src/zstd_project-stamp/zstd_project-configure.rule
+/home/pbisaacs/Developer/neuralmimicry/nmc/nmc_server/build_fresh/_deps/zstd/src/zstd_project-stamp/zstd_project-patch.rule
+/home/pbisaacs/Developer/neuralmimicry/nmc/nmc_server/build_fresh/_deps/zstd/src/zstd_project-stamp/zstd_project-update.rule
+/home/pbisaacs/Developer/neuralmimicry/nmc/nmc_server/build_fresh/_deps/zstd/src/zstd_project-stamp/zstd_project-download.rule
+/home/pbisaacs/Developer/neuralmimicry/nmc/nmc_server/build_fresh/_deps/zstd/src/zstd_project-stamp/zstd_project-mkdir.rule

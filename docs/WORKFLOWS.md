@@ -60,6 +60,18 @@ This document describes the end-to-end workflows that the CLI and server follow,
 5. `nmc refiner logs` provides operational observability from `deployment/refiner`.
 6. `nmc refiner remove` deletes deployment resources, optionally including persistent storage PVC cleanup.
 
+**Node Recruitment Workflow**
+1. `nmc node recruit` validates host/user/path inputs and builds a recruitment payload.
+2. In API mode, the CLI sends `POST /node/recruit` to `nmc_server`; script content is uploaded and binary/script paths are interpreted on the server host.
+3. In direct mode (`--direct`), the CLI executes `ssh/scp` locally to transfer and run the script/binary on the target.
+4. The recruiter host prepares the remote path, transfers the artifact, then executes with environment variables for node type, region, tenant metadata, optional Continuum token propagation, and optional Tracey metadata.
+   - If `sudo_password` (or `--sudo-password`/`--sudo-password-file`) is supplied, execution uses non-interactive `sudo -S -p ''`; otherwise it uses `sudo -E` or no sudo depending on configuration.
+5. If `--auto-configure`/`auto_configure=true` is enabled, recruiter hosts run `ansible-playbook` after execution:
+   - Playbook path resolution order: explicit request path, `NMC_RECRUIT_ANSIBLE_PLAYBOOK`, then `ansible/recruited-node.yml`.
+   - Capability flags (`apps`, `vm`, `podman`, `kubernetes`) are merged into Ansible vars (`nmc_enable_*`) with tenant/node context.
+   - Ansible privilege escalation defaults to enabled (`ansible_become=true` / `--no-become` to disable), and when a sudo/become password is supplied it is mapped into `ansible_become_password`.
+6. When `tracey.agent_id` is supplied, the server records a managed node requirement and marks compliance as pending until Tracey reporting is observed.
+
 **Resilience Practices Implemented**
 - 2xx responses are treated as successful; non-2xx responses flow through the error path.
 - Connection state is persisted to disk after any mutation to avoid drift.

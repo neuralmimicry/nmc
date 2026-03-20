@@ -1,0 +1,37 @@
+{
+	"sources" : 
+	[
+		{
+			"file" : "/home/pbisaacs/Developer/neuralmimicry/nmc/nmc_server/build_fresh/CMakeFiles/libyaml_project-build"
+		},
+		{
+			"file" : "/home/pbisaacs/Developer/neuralmimicry/nmc/nmc_server/build_fresh/CMakeFiles/libyaml_project-build.rule"
+		},
+		{
+			"file" : "/home/pbisaacs/Developer/neuralmimicry/nmc/nmc_server/build_fresh/libyaml_project-prefix/src/libyaml_project-stamp/libyaml_project-build.rule"
+		},
+		{
+			"file" : "/home/pbisaacs/Developer/neuralmimicry/nmc/nmc_server/build_fresh/libyaml_project-prefix/src/libyaml_project-stamp/libyaml_project-configure.rule"
+		},
+		{
+			"file" : "/home/pbisaacs/Developer/neuralmimicry/nmc/nmc_server/build_fresh/libyaml_project-prefix/src/libyaml_project-stamp/libyaml_project-patch.rule"
+		},
+		{
+			"file" : "/home/pbisaacs/Developer/neuralmimicry/nmc/nmc_server/build_fresh/libyaml_project-prefix/src/libyaml_project-stamp/libyaml_project-update.rule"
+		},
+		{
+			"file" : "/home/pbisaacs/Developer/neuralmimicry/nmc/nmc_server/build_fresh/libyaml_project-prefix/src/libyaml_project-stamp/libyaml_project-download.rule"
+		},
+		{
+			"file" : "/home/pbisaacs/Developer/neuralmimicry/nmc/nmc_server/build_fresh/libyaml_project-prefix/src/libyaml_project-stamp/libyaml_project-mkdir.rule"
+		}
+	],
+	"target" : 
+	{
+		"labels" : 
+		[
+			"libyaml_project"
+		],
+		"name" : "libyaml_project-build"
+	}
+}

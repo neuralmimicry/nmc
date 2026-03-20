@@ -1,0 +1,3 @@
+#define HAVE_STRNDUP
+/* #undef HAVE_SECURE_GETENV */
+#define HAVE_GETENV

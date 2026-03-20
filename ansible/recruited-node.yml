@@ -1,0 +1,300 @@
+---
+- name: Configure recruited Continuum node for tenant workloads
+  hosts: all
+  become: true
+  gather_facts: true
+
+  vars:
+    nmc_enable_apps: false
+    nmc_enable_vm: false
+    nmc_enable_podman: false
+    nmc_enable_kubernetes: false
+    nmc_tenant_id: ""
+    nmc_tenant_name: ""
+    nmc_tenant_environment: ""
+    nmc_requested_capabilities: []
+    nmc_node_host: ""
+    nmc_node_name: ""
+    nmc_node_region: ""
+    nmc_node_type: ""
+    nmc_continuum_url: ""
+    nmc_tracey_agent_id: ""
+    nmc_tracey_status_addr: ""
+    nmc_metadata_dir: "/etc/continuum"
+    nmc_state_dir: "/opt/continuum/node"
+    nmc_app_base_dir: "/srv/continuum/apps"
+    nmc_podman_base_dir: "/srv/continuum/podman"
+    nmc_vm_base_dir: "/var/lib/continuum/vm"
+    nmc_k8s_base_dir: "/srv/continuum/kubernetes"
+    nmc_k8s_channel: "v1.30"
+
+  pre_tasks:
+    - name: Normalize requested capabilities
+      ansible.builtin.set_fact:
+        nmc_requested_capabilities: >-
+          {{
+            (
+              nmc_requested_capabilities
+              if (nmc_requested_capabilities is iterable and nmc_requested_capabilities is not string)
+              else []
+            )
+            | map('string')
+            | map('lower')
+            | list
+          }}
+
+    - name: Resolve effective capability toggles
+      ansible.builtin.set_fact:
+        nmc_enable_apps: "{{ (nmc_enable_apps | bool) or ('apps' in nmc_requested_capabilities) }}"
+        nmc_enable_vm: "{{ (nmc_enable_vm | bool) or ('vm' in nmc_requested_capabilities) }}"
+        nmc_enable_podman: "{{ (nmc_enable_podman | bool) or ('podman' in nmc_requested_capabilities) }}"
+        nmc_enable_kubernetes: "{{ (nmc_enable_kubernetes | bool) or ('kubernetes' in nmc_requested_capabilities) }}"
+
+    - name: Refresh apt package cache
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 3600
+
+  tasks:
+    - name: Install baseline management packages
+      ansible.builtin.apt:
+        name:
+          - ca-certificates
+          - curl
+          - jq
+          - gnupg
+          - lsb-release
+          - software-properties-common
+          - python3
+          - python3-apt
+        state: present
+
+    - name: Ensure Continuum state directories exist
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0755"
+      loop:
+        - "{{ nmc_metadata_dir }}"
+        - "{{ nmc_state_dir }}"
+        - "{{ nmc_app_base_dir }}"
+        - "{{ nmc_podman_base_dir }}"
+        - "{{ nmc_vm_base_dir }}"
+        - "{{ nmc_k8s_base_dir }}"
+
+    - name: Build recruitment metadata payload
+      ansible.builtin.set_fact:
+        nmc_recruitment_metadata:
+          recruited_at_utc: "{{ ansible_date_time.iso8601 }}"
+          tenant:
+            id: "{{ nmc_tenant_id }}"
+            name: "{{ nmc_tenant_name }}"
+            environment: "{{ nmc_tenant_environment }}"
+          node:
+            host: "{{ nmc_node_host }}"
+            name: "{{ nmc_node_name }}"
+            region: "{{ nmc_node_region }}"
+            type: "{{ nmc_node_type }}"
+          continuum:
+            url: "{{ nmc_continuum_url }}"
+          capabilities:
+            requested: "{{ nmc_requested_capabilities }}"
+            enabled:
+              apps: "{{ nmc_enable_apps | bool }}"
+              vm: "{{ nmc_enable_vm | bool }}"
+              podman: "{{ nmc_enable_podman | bool }}"
+              kubernetes: "{{ nmc_enable_kubernetes | bool }}"
+          tracey:
+            agent_id: "{{ nmc_tracey_agent_id }}"
+            status_addr: "{{ nmc_tracey_status_addr }}"
+
+    - name: Persist recruitment metadata
+      ansible.builtin.copy:
+        dest: "{{ nmc_metadata_dir }}/recruited-node.json"
+        content: "{{ nmc_recruitment_metadata | to_nice_json }}"
+        owner: root
+        group: root
+        mode: "0640"
+
+    - name: Persist tenant environment metadata
+      ansible.builtin.copy:
+        dest: "{{ nmc_state_dir }}/tenant.env"
+        owner: root
+        group: root
+        mode: "0640"
+        content: |
+          NMC_TENANT_ID={{ nmc_tenant_id }}
+          NMC_TENANT_NAME={{ nmc_tenant_name }}
+          NMC_TENANT_ENVIRONMENT={{ nmc_tenant_environment }}
+          NMC_NODE_HOST={{ nmc_node_host }}
+          NMC_NODE_NAME={{ nmc_node_name }}
+          NMC_NODE_REGION={{ nmc_node_region }}
+          NMC_NODE_TYPE={{ nmc_node_type }}
+          NMC_CONTINUUM_URL={{ nmc_continuum_url }}
+          NMC_ENABLE_APPS={{ '1' if nmc_enable_apps else '0' }}
+          NMC_ENABLE_VM={{ '1' if nmc_enable_vm else '0' }}
+          NMC_ENABLE_PODMAN={{ '1' if nmc_enable_podman else '0' }}
+          NMC_ENABLE_KUBERNETES={{ '1' if nmc_enable_kubernetes else '0' }}
+          TRACEY_AGENT_ID={{ nmc_tracey_agent_id }}
+          TRACEY_STATUS_ADDR={{ nmc_tracey_status_addr }}
+
+    - name: Install app hosting packages
+      ansible.builtin.apt:
+        name:
+          - nginx
+          - python3-venv
+          - rsync
+        state: present
+      when: nmc_enable_apps
+
+    - name: Ensure nginx is enabled for app hosting
+      ansible.builtin.systemd:
+        name: nginx
+        enabled: true
+        state: started
+      when: nmc_enable_apps
+
+    - name: Install VM hosting packages
+      ansible.builtin.apt:
+        name:
+          - qemu-kvm
+          - libvirt-daemon-system
+          - libvirt-clients
+          - virtinst
+          - bridge-utils
+          - qemu-utils
+        state: present
+      when: nmc_enable_vm
+
+    - name: Ensure libvirt daemon is running
+      ansible.builtin.systemd:
+        name: libvirtd
+        enabled: true
+        state: started
+      when: nmc_enable_vm
+
+    - name: Warn if CPU virtualization flags are absent
+      ansible.builtin.shell: "grep -E '(vmx|svm)' /proc/cpuinfo >/dev/null"
+      register: nmc_vm_virtualization_check
+      changed_when: false
+      failed_when: false
+      when: nmc_enable_vm
+
+    - name: Emit virtualization warning
+      ansible.builtin.debug:
+        msg: "VM capability requested, but VMX/SVM flags were not detected. Nested virtualization may be unavailable."
+      when:
+        - nmc_enable_vm
+        - nmc_vm_virtualization_check.rc != 0
+
+    - name: Install Podman hosting packages
+      ansible.builtin.apt:
+        name:
+          - podman
+          - buildah
+          - skopeo
+          - containernetworking-plugins
+        state: present
+      when: nmc_enable_podman
+
+    - name: Ensure podman socket is enabled
+      ansible.builtin.systemd:
+        name: podman.socket
+        enabled: true
+        state: started
+      failed_when: false
+      when: nmc_enable_podman
+
+    - name: Install Kubernetes prerequisites
+      ansible.builtin.apt:
+        name:
+          - apt-transport-https
+          - containerd
+        state: present
+      when: nmc_enable_kubernetes
+
+    - name: Ensure Kubernetes APT keyring directory exists
+      ansible.builtin.file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: "0755"
+      when: nmc_enable_kubernetes
+
+    - name: Download Kubernetes repository key
+      ansible.builtin.get_url:
+        url: "https://pkgs.k8s.io/core:/stable:/{{ nmc_k8s_channel }}/deb/Release.key"
+        dest: /tmp/nmc-kubernetes-apt-key.asc
+        mode: "0644"
+      when: nmc_enable_kubernetes
+
+    - name: Install Kubernetes repository keyring
+      ansible.builtin.command:
+        cmd: "gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg /tmp/nmc-kubernetes-apt-key.asc"
+        creates: /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+      when: nmc_enable_kubernetes
+
+    - name: Configure Kubernetes apt repository
+      ansible.builtin.apt_repository:
+        repo: "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/{{ nmc_k8s_channel }}/deb/ /"
+        filename: kubernetes
+        state: present
+      when: nmc_enable_kubernetes
+
+    - name: Install Kubernetes node packages
+      ansible.builtin.apt:
+        name:
+          - kubelet
+          - kubeadm
+          - kubectl
+        state: present
+        update_cache: true
+      when: nmc_enable_kubernetes
+
+    - name: Hold Kubernetes package versions
+      ansible.builtin.command: "apt-mark hold kubelet kubeadm kubectl"
+      changed_when: false
+      failed_when: false
+      when: nmc_enable_kubernetes
+
+    - name: Ensure containerd and kubelet are enabled
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+        enabled: true
+        state: started
+      failed_when: false
+      loop:
+        - containerd
+        - kubelet
+      when: nmc_enable_kubernetes
+
+    - name: Configure kernel modules for Kubernetes networking
+      ansible.builtin.copy:
+        dest: /etc/modules-load.d/continuum-k8s.conf
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          overlay
+          br_netfilter
+      when: nmc_enable_kubernetes
+
+    - name: Load required kernel modules
+      ansible.builtin.command: "modprobe {{ item }}"
+      changed_when: false
+      failed_when: false
+      loop:
+        - overlay
+        - br_netfilter
+      when: nmc_enable_kubernetes
+
+    - name: Configure kernel sysctls for Kubernetes networking
+      ansible.builtin.sysctl:
+        name: "{{ item.name }}"
+        value: "{{ item.value }}"
+        state: present
+        reload: true
+      loop:
+        - { name: "net.bridge.bridge-nf-call-iptables", value: "1" }
+        - { name: "net.bridge.bridge-nf-call-ip6tables", value: "1" }
+        - { name: "net.ipv4.ip_forward", value: "1" }
+      when: nmc_enable_kubernetes

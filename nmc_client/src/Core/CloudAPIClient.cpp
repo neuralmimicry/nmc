@@ -240,21 +240,18 @@ namespace NMC::Core {
                 && apiResp.data["data"]["clusters"].is_array()) {
                     clusters = apiResp.data["data"]["clusters"];
                 }
-            } else {
-                // even on failure we might still have data.data.clusters
-                if (apiResp.data.contains("data")
-                    && apiResp.data["data"].contains("clusters")
-                    && apiResp.data["data"]["clusters"].is_array()) {
-                        clusters = apiResp.data["data"]["clusters"];
-                    }
+        } else {
+            // even on failure we might still have data.data.clusters
+            if (apiResp.data.contains("data")
+                && apiResp.data["data"].contains("clusters")
+                && apiResp.data["data"]["clusters"].is_array()) {
+                    clusters = apiResp.data["data"]["clusters"];
             }
-
-            // 3) overwrite .data so everyone downstream just sees an array
-            apiResp.data = std::move(clusters);
-            return apiResp;
         }
-        // Failure: still return a consistent array payload for callers.
+
+        // 3) overwrite .data so everyone downstream just sees an array
         apiResp.data = std::move(clusters);
+        // Failure: still return a consistent array payload for callers.
         return apiResp;
     }
 
@@ -428,6 +425,11 @@ namespace NMC::Core {
 
         auto res = cli->Post("/openshift/clusters/request", request_body.dump(), "application/json");
         return processHttpResponse(res, "OpenShift cluster request submitted.");
+    }
+
+    Models::CloudResponse CloudAPIClient::recruitNode(const nlohmann::json& requestPayload) {
+        auto res = cli->Post("/node/recruit", requestPayload.dump(), "application/json");
+        return processHttpResponse(res, "Node recruitment request submitted.");
     }
 
 // --- Connection Management ---

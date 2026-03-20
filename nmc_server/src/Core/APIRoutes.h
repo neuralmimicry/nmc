@@ -187,6 +187,7 @@ namespace NMC::Server {
         void handleOpenShiftRequestCluster(const httplib::Request& req, httplib::Response& res);
         void handleTraceyHeartbeat(const httplib::Request& req, httplib::Response& res);
         void handleListTraceyAgents(const httplib::Request& req, httplib::Response& res);
+        void handleRecruitNode(const httplib::Request& req, httplib::Response& res);
         void runTraceyDiscoveryLoop();
         void ingestTraceyDiscoveryAnnouncement(const nlohmann::json& payload, const std::string& senderAddress, int64_t receivedAtMs);
         void pollTraceyStatus(const std::string& agentId, const std::string& statusAddr, int64_t nowMs);

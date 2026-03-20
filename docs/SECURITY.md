@@ -21,6 +21,7 @@ This document describes security controls implemented in the NMC client/server c
 ### Input Limits & Error Handling (ISO 27001 A.8, SOC 2 CC7)
 - **Payload size limit** enforced by `NMC_MAX_BODY_BYTES` (default 1 MiB).
 - Consistent JSON error responses and status codes for all handlers.
+- `/node/recruit` validates SSH targets, paths, capability values, tenant metadata, and `ansible_extra_vars` keys to reduce command injection and malformed automation payloads.
 
 ### Log Hygiene (ISO 27001 A.8, SOC 2 CC7)
 - Request bodies are **redacted** for sensitive endpoints:
@@ -29,7 +30,9 @@ This document describes security controls implemented in the NMC client/server c
   - `/model/upload`
   - `/connections/make`
   - `/openshift/clusters/request`
+  - `/node/recruit`
 - Body logging is **truncated** to `NMC_LOG_BODY_BYTES` (default 2048).
+- `/node/recruit` command diagnostics redact sensitive runtime values (for example `continuum_auth_token` and `sudo_password`) before returning logs/output.
 
 ### Secrets Handling (ISO 27001 A.8, SOC 2 CC6)
 - Client connection config file permissions are hardened to `0600` on save.
@@ -95,12 +98,16 @@ These items must be enforced outside code to meet ISO 27001 and SOC 2 expectatio
 - `NMC_OIDC_AUDIENCE`: Expected `aud` claim (single or comma-separated list).
 - `NMC_OIDC_ALLOWED_AUDIENCES`: Comma-separated list of acceptable audiences (optional).
 - `NMC_OIDC_REQUIRED_SCOPE`: Comma-separated scopes that must be present (optional).
+- `NMC_RECRUIT_TOKEN`: Optional secondary secret required by `/node/recruit` for node onboarding authorization.
+- `NMC_RECRUIT_ANSIBLE_PLAYBOOK`: Optional default Ansible playbook path used when `/node/recruit` is called with `auto_configure=true` and no explicit `ansible_playbook`.
 - Compatibility aliases: `NM_AUTH_MODE`, `NM_AUTH_TOKEN`, and `NM_OIDC_*` are also honored for cross-project SSO setups.
 
 ### Environment Variables (Client)
 - `NMC_OIDC_ACCESS_TOKEN`: Preferred bearer token for OIDC-protected endpoints.
 - `NMC_BEARER_TOKEN`: Alternate bearer token variable (fallback).
 - `NMC_AUTH_TOKEN`: Legacy bearer token variable (last-resort fallback).
+- `NMC_SUDO_PASSWORD`: Optional password used by `node recruit` for remote `sudo -S` and Ansible become.
+- `NMC_BECOME_PASSWORD`: Alias for `NMC_SUDO_PASSWORD`.
 
 ### Files
 - Client connection config: `~/.nmc/config.json` (permissions hardened to `0600`).

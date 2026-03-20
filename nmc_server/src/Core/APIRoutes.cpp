@@ -7,6 +7,10 @@
 #include <cctype>
 #include <cerrno>
 #include <cstring>
+#include <array>
+#include <cstdio>
+#include <fstream>
+#include <filesystem>
 #include <sstream>
 #include <iostream>
 #include <algorithm> // For std::remove_if, std::find_if
@@ -17,6 +21,7 @@
 #include <poll.h>
 #include <netdb.h>
 #include <sys/socket.h>
+#include <sys/wait.h>
 #include <arpa/inet.h>
 #include <unistd.h>
 
@@ -31,6 +36,13 @@ namespace NMC::Server {
             }
             const auto end = value.find_last_not_of(" \t");
             return value.substr(start, end - start + 1);
+        }
+
+        std::string trimLineEnd(std::string value) {
+            while (!value.empty() && (value.back() == '\n' || value.back() == '\r')) {
+                value.pop_back();
+            }
+            return value;
         }
 
         std::string toLower(std::string value) {
@@ -391,6 +403,466 @@ namespace NMC::Server {
                 value *= 2;
             }
             return std::clamp(value, std::max<int64_t>(baseMs, 1000), std::max<int64_t>(maxMs, baseMs));
+        }
+
+        struct ExecResult {
+            int exitCode{1};
+            std::string output;
+        };
+
+        std::string shellQuote(const std::string& value) {
+            std::string quoted = "'";
+            for (const char ch : value) {
+                if (ch == '\'') {
+                    quoted += "'\\''";
+                } else {
+                    quoted.push_back(ch);
+                }
+            }
+            quoted.push_back('\'');
+            return quoted;
+        }
+
+        std::string commandToShellString(const std::vector<std::string>& args) {
+            std::ostringstream command;
+            bool first = true;
+            for (const auto& arg : args) {
+                if (!first) {
+                    command << ' ';
+                }
+                command << shellQuote(arg);
+                first = false;
+            }
+            return command.str();
+        }
+
+        ExecResult runShellCommand(const std::vector<std::string>& args, size_t outputLimitBytes = 262144) {
+            ExecResult result;
+            if (args.empty()) {
+                result.output = "No command specified.";
+                return result;
+            }
+
+            std::string command = commandToShellString(args) + " 2>&1";
+            FILE* pipe = ::popen(command.c_str(), "r");
+            if (!pipe) {
+                result.output = "Unable to execute command.";
+                return result;
+            }
+
+            std::array<char, 4096> buffer{};
+            bool outputTruncated = false;
+            while (fgets(buffer.data(), static_cast<int>(buffer.size()), pipe) != nullptr) {
+                if (result.output.size() < outputLimitBytes) {
+                    const size_t remaining = outputLimitBytes - result.output.size();
+                    const std::string chunk(buffer.data());
+                    result.output.append(chunk, 0, std::min(chunk.size(), remaining));
+                    if (chunk.size() > remaining) {
+                        outputTruncated = true;
+                    }
+                }
+            }
+
+            const int status = ::pclose(pipe);
+            if (status != -1 && WIFEXITED(status)) {
+                result.exitCode = WEXITSTATUS(status);
+            }
+
+            if (outputTruncated) {
+                result.output += "\n...(output truncated)\n";
+            }
+            return result;
+        }
+
+        bool hasControlChars(const std::string& value) {
+            return std::any_of(value.begin(), value.end(), [](const unsigned char ch) {
+                return std::iscntrl(ch) != 0;
+            });
+        }
+
+        bool isSafeHost(const std::string& host) {
+            if (host.empty() || host.size() > 253 || host.front() == '-' || host.back() == '-') {
+                return false;
+            }
+            return std::all_of(host.begin(), host.end(), [](const unsigned char ch) {
+                return std::isalnum(ch) != 0 || ch == '.' || ch == '-';
+            });
+        }
+
+        bool isSafeUser(const std::string& user) {
+            if (user.empty() || user.size() > 64) {
+                return false;
+            }
+            const unsigned char first = static_cast<unsigned char>(user.front());
+            if (std::isalpha(first) == 0 && first != '_') {
+                return false;
+            }
+            return std::all_of(user.begin() + 1, user.end(), [](const unsigned char ch) {
+                return std::isalnum(ch) != 0 || ch == '_' || ch == '-' || ch == '.';
+            });
+        }
+
+        bool isSafeLocalPath(const std::string& path) {
+            if (path.empty() || path.size() > 4096 || hasControlChars(path)) {
+                return false;
+            }
+            return path.front() == '/';
+        }
+
+        bool isSafeRemotePath(const std::string& path) {
+            if (path.empty() || path.size() > 4096 || hasControlChars(path) || path.front() != '/') {
+                return false;
+            }
+            return std::all_of(path.begin(), path.end(), [](const unsigned char ch) {
+                return std::isalnum(ch) != 0 || ch == '/' || ch == '-' || ch == '_' || ch == '.';
+            });
+        }
+
+        bool isKnownNodeType(const std::string& nodeType) {
+            static const std::set<std::string> allowedTypes = {
+                    "bare-metal",
+                    "app-install",
+                    "vm",
+                    "virtual-machine",
+                    "podman",
+                    "kubernetes"
+            };
+            return allowedTypes.find(nodeType) != allowedTypes.end();
+        }
+
+        std::string normalizeNodeType(const std::string& rawNodeType) {
+            std::string nodeType = toLower(trim(rawNodeType));
+            if (nodeType.empty()) {
+                nodeType = "bare-metal";
+            }
+            if (nodeType == "virtual-machine") {
+                nodeType = "vm";
+            }
+            return nodeType;
+        }
+
+        bool readTextFile(const std::string& path, size_t maxBytes, std::string& contentOut, std::string& errorOut) {
+            contentOut.clear();
+            errorOut.clear();
+
+            try {
+                const std::filesystem::path fsPath(path);
+                if (!std::filesystem::exists(fsPath) || !std::filesystem::is_regular_file(fsPath)) {
+                    errorOut = "File does not exist: " + path;
+                    return false;
+                }
+                const uintmax_t size = std::filesystem::file_size(fsPath);
+                if (size > maxBytes) {
+                    errorOut = "File exceeds size limit (" + std::to_string(maxBytes) + " bytes): " + path;
+                    return false;
+                }
+            } catch (const std::exception& e) {
+                errorOut = "Unable to inspect file '" + path + "': " + std::string(e.what());
+                return false;
+            }
+
+            std::ifstream input(path, std::ios::binary);
+            if (!input.is_open()) {
+                errorOut = "Unable to open file: " + path;
+                return false;
+            }
+
+            std::ostringstream oss;
+            oss << input.rdbuf();
+            contentOut = oss.str();
+            return true;
+        }
+
+        bool writeTempFile(const std::string& content, std::string& pathOut, std::string& errorOut) {
+            pathOut.clear();
+            errorOut.clear();
+
+            char tmpName[] = "/tmp/nmc-recruit-XXXXXX";
+            const int fd = ::mkstemp(tmpName);
+            if (fd < 0) {
+                errorOut = "Failed to create temporary file.";
+                return false;
+            }
+            ::close(fd);
+
+            try {
+                std::ofstream output(tmpName, std::ios::binary | std::ios::trunc);
+                if (!output.is_open()) {
+                    errorOut = "Failed to open temporary file for writing.";
+                    ::unlink(tmpName);
+                    return false;
+                }
+                output << content;
+                output.close();
+                std::filesystem::permissions(
+                        tmpName,
+                        std::filesystem::perms::owner_read |
+                        std::filesystem::perms::owner_write |
+                        std::filesystem::perms::owner_exec,
+                        std::filesystem::perm_options::replace
+                );
+                pathOut = tmpName;
+                return true;
+            } catch (const std::exception& e) {
+                errorOut = "Failed to write temporary file: " + std::string(e.what());
+                ::unlink(tmpName);
+                return false;
+            }
+        }
+
+        std::string buildDefaultRecruitScript() {
+            return R"(#!/usr/bin/env bash
+set -euo pipefail
+
+export DEBIAN_FRONTEND=noninteractive
+if command -v apt-get >/dev/null 2>&1; then
+  apt-get update -y
+  apt-get install -y curl ca-certificates jq
+fi
+
+mkdir -p /opt/continuum/node
+cat >/opt/continuum/node/recruitment.env <<EOF
+NMC_NODE_TYPE=${NMC_NODE_TYPE:-bare-metal}
+NMC_NODE_REGION=${NMC_NODE_REGION:-}
+NMC_NODE_NAME=${NMC_NODE_NAME:-}
+NMC_CONTINUUM_URL=${NMC_CONTINUUM_URL:-}
+NMC_CONTINUUM_AUTH_TOKEN=${NMC_CONTINUUM_AUTH_TOKEN:-}
+TRACEY_AGENT_ID=${TRACEY_AGENT_ID:-}
+TRACEY_STATUS_ADDR=${TRACEY_STATUS_ADDR:-}
+RECRUITED_AT_UTC=$(date -u +%FT%TZ)
+EOF
+
+case "${NMC_NODE_TYPE:-bare-metal}" in
+  podman)
+    if command -v apt-get >/dev/null 2>&1; then
+      apt-get install -y podman
+    fi
+    ;;
+  kubernetes)
+    if command -v apt-get >/dev/null 2>&1; then
+      apt-get install -y apt-transport-https containerd
+    fi
+    ;;
+  vm|app-install|bare-metal)
+    true
+    ;;
+esac
+
+echo "ready" >/opt/continuum/node/state
+echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_NODE_TYPE:-bare-metal})."
+)";
+        }
+
+        int parsePortOrDefault(const nlohmann::json& payload, int fallback) {
+            if (!payload.contains("port")) {
+                return fallback;
+            }
+            try {
+                if (payload["port"].is_number_integer()) {
+                    return payload["port"].get<int>();
+                }
+                if (payload["port"].is_string()) {
+                    return std::stoi(payload["port"].get<std::string>());
+                }
+            } catch (const std::exception&) {
+                return -1;
+            }
+            return -1;
+        }
+
+        std::vector<std::string> parseBinaryArgs(const nlohmann::json& payload, std::string& errorOut) {
+            std::vector<std::string> args;
+            errorOut.clear();
+
+            if (payload.contains("binary_args")) {
+                const auto& value = payload["binary_args"];
+                if (value.is_array()) {
+                    for (const auto& item : value) {
+                        if (!item.is_string()) {
+                            errorOut = "binary_args entries must be strings.";
+                            return {};
+                        }
+                        args.push_back(item.get<std::string>());
+                    }
+                } else if (value.is_string()) {
+                    args.push_back(value.get<std::string>());
+                } else {
+                    errorOut = "binary_args must be a string or array of strings.";
+                    return {};
+                }
+            }
+
+            if (payload.contains("binary_arg")) {
+                if (!payload["binary_arg"].is_string()) {
+                    errorOut = "binary_arg must be a string.";
+                    return {};
+                }
+                args.push_back(payload["binary_arg"].get<std::string>());
+            }
+            return args;
+        }
+
+        std::string normalizeCapability(std::string capability) {
+            capability = toLower(trim(capability));
+            if (capability == "app" || capability == "app-install") {
+                return "apps";
+            }
+            if (capability == "k8s") {
+                return "kubernetes";
+            }
+            if (capability == "virtual-machine") {
+                return "vm";
+            }
+            return capability;
+        }
+
+        bool isKnownCapability(const std::string& capability) {
+            static const std::set<std::string> allowed = {
+                    "apps",
+                    "vm",
+                    "podman",
+                    "kubernetes"
+            };
+            return allowed.find(capability) != allowed.end();
+        }
+
+        void appendUnique(std::vector<std::string>& values, const std::string& value) {
+            if (value.empty()) {
+                return;
+            }
+            if (std::find(values.begin(), values.end(), value) == values.end()) {
+                values.push_back(value);
+            }
+        }
+
+        bool parseCapabilitiesField(const nlohmann::json& payload,
+                                    const std::string& fieldName,
+                                    std::vector<std::string>& capabilities,
+                                    std::string& errorOut) {
+            if (!payload.contains(fieldName)) {
+                return true;
+            }
+            const auto& value = payload[fieldName];
+            if (value.is_string()) {
+                std::stringstream ss(value.get<std::string>());
+                std::string token;
+                while (std::getline(ss, token, ',')) {
+                    const std::string normalized = normalizeCapability(token);
+                    if (normalized.empty()) {
+                        continue;
+                    }
+                    if (!isKnownCapability(normalized)) {
+                        errorOut = "Unsupported capability '" + token + "'.";
+                        return false;
+                    }
+                    appendUnique(capabilities, normalized);
+                }
+                return true;
+            }
+            if (value.is_array()) {
+                for (const auto& item : value) {
+                    if (!item.is_string()) {
+                        errorOut = fieldName + " entries must be strings.";
+                        return false;
+                    }
+                    const std::string normalized = normalizeCapability(item.get<std::string>());
+                    if (normalized.empty()) {
+                        continue;
+                    }
+                    if (!isKnownCapability(normalized)) {
+                        errorOut = "Unsupported capability '" + item.get<std::string>() + "'.";
+                        return false;
+                    }
+                    appendUnique(capabilities, normalized);
+                }
+                return true;
+            }
+            errorOut = fieldName + " must be a string or array of strings.";
+            return false;
+        }
+
+        std::vector<std::string> defaultCapabilitiesForNodeType(const std::string& nodeType) {
+            if (nodeType == "kubernetes") {
+                return {"kubernetes"};
+            }
+            if (nodeType == "podman") {
+                return {"podman"};
+            }
+            if (nodeType == "vm") {
+                return {"vm"};
+            }
+            if (nodeType == "app-install") {
+                return {"apps"};
+            }
+            return {};
+        }
+
+        bool isSafeTenantId(const std::string& tenantId) {
+            if (tenantId.empty()) {
+                return true;
+            }
+            if (tenantId.size() > 128) {
+                return false;
+            }
+            return std::all_of(tenantId.begin(), tenantId.end(), [](const unsigned char ch) {
+                return std::isalnum(ch) != 0 || ch == '_' || ch == '-' || ch == '.';
+            });
+        }
+
+        bool isSafeAnsibleVarKey(const std::string& key) {
+            if (key.empty() || key.size() > 128) {
+                return false;
+            }
+            const unsigned char first = static_cast<unsigned char>(key.front());
+            if (std::isalpha(first) == 0 && first != '_') {
+                return false;
+            }
+            return std::all_of(key.begin() + 1, key.end(), [](const unsigned char ch) {
+                return std::isalnum(ch) != 0 || ch == '_';
+            });
+        }
+
+        std::string resolveRecruitPlaybookPath(const std::string& requestedPath) {
+            std::vector<std::filesystem::path> candidates;
+            if (!requestedPath.empty()) {
+                candidates.emplace_back(requestedPath);
+            } else {
+                const char* fromEnv = std::getenv("NMC_RECRUIT_ANSIBLE_PLAYBOOK");
+                if (fromEnv && *fromEnv) {
+                    candidates.emplace_back(std::string(fromEnv));
+                }
+            }
+
+            if (candidates.empty()) {
+                try {
+                    std::filesystem::path cursor = std::filesystem::current_path();
+                    for (int depth = 0; depth < 7; ++depth) {
+                        candidates.push_back(cursor / "ansible" / "recruited-node.yml");
+                        if (!cursor.has_parent_path()) {
+                            break;
+                        }
+                        cursor = cursor.parent_path();
+                    }
+                } catch (const std::exception&) {
+                    return "";
+                }
+            }
+
+            for (const auto& candidate : candidates) {
+                try {
+                    std::filesystem::path absolute = candidate;
+                    if (absolute.is_relative()) {
+                        absolute = std::filesystem::current_path() / absolute;
+                    }
+                    absolute = std::filesystem::weakly_canonical(absolute);
+                    if (std::filesystem::exists(absolute) && std::filesystem::is_regular_file(absolute)) {
+                        return absolute.string();
+                    }
+                } catch (const std::exception&) {
+                    continue;
+                }
+            }
+            return "";
         }
     }
 
@@ -906,6 +1378,12 @@ namespace NMC::Server {
             handleListTraceyAgents(req, res);
         });
 
+        // --- Node Recruitment Routes ---
+        svr.Post("/node/recruit", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            handleRecruitNode(req, res);
+        });
+
         if (traceyDiscoveryEnabled) {
             try {
                 traceyDiscoveryThread = std::thread(&APIRoutes::runTraceyDiscoveryLoop, this);
@@ -1073,7 +1551,8 @@ namespace NMC::Server {
                 "/vm/create",
                 "/model/upload",
                 "/connections/make",
-                "/openshift/clusters/request"
+                "/openshift/clusters/request",
+                "/node/recruit"
         };
         for (const auto& prefix : redactedPrefixes) {
             if (path.rfind(prefix, 0) == 0) {
@@ -2773,6 +3252,537 @@ namespace NMC::Server {
                 {"agents", agents}
         };
         sendJsonResponse(res, apiResponse);
+    }
+
+    void APIRoutes::handleRecruitNode(const httplib::Request& req, httplib::Response& res) {
+        (void)req;
+        try {
+            const auto payload = nlohmann::json::parse(req.body);
+            if (!payload.is_object()) {
+                return sendErrorResponse(res, 400, "Invalid JSON body. Expected an object.");
+            }
+
+            const std::string host = trim(payload.value("host", ""));
+            const std::string user = trim(payload.value("user", "ubuntu"));
+            const int port = parsePortOrDefault(payload, 22);
+            const bool dryRun = payload.value("dry_run", payload.value("dryRun", false));
+            const bool useSudo = payload.value("sudo", true);
+            const std::string nodeType = normalizeNodeType(payload.value("node_type", payload.value("nodeType", "bare-metal")));
+            const std::string nodeName = trim(payload.value("name", host));
+            const std::string region = trim(payload.value("region", ""));
+            const std::string sshKeyPath = trim(payload.value("ssh_key_path", payload.value("sshKeyPath", "")));
+            const std::string scriptPath = trim(payload.value("script_path", payload.value("scriptPath", "")));
+            const std::string binaryPath = trim(payload.value("binary_path", payload.value("binaryPath", "")));
+            std::string scriptContent = payload.value("script", "");
+            const std::string rawRemotePath = trim(payload.value("remote_path", payload.value("remotePath", "")));
+            const std::string continuumUrl = trim(payload.value("continuum_url", payload.value("continuumUrl", "")));
+            std::string continuumAuthToken = trim(payload.value(
+                    "continuum_auth_token",
+                    payload.value("continuumAuthToken", "")
+            ));
+            const bool propagateServerAuthToken = payload.value(
+                    "propagate_server_auth_token",
+                    payload.value("propagateServerAuthToken", true)
+            );
+            const std::string recruitToken = trim(payload.value("recruit_token", payload.value("recruitToken", "")));
+            const bool autoConfigure = payload.value("auto_configure", payload.value("autoConfigure", false));
+            const std::string sudoPassword = trimLineEnd(trim(payload.value(
+                    "sudo_password",
+                    payload.value(
+                            "sudoPassword",
+                            payload.value("become_password", payload.value("becomePassword", ""))
+                    )
+            )));
+            const bool ansibleBecome = payload.value(
+                    "ansible_become",
+                    payload.value("ansibleBecome", payload.value("become", true))
+            );
+            const std::string tenantId = trim(payload.value("tenant_id", payload.value("tenantId", "")));
+            const std::string tenantName = trim(payload.value("tenant_name", payload.value("tenantName", "")));
+            const std::string tenantEnvironment = trim(payload.value(
+                    "tenant_environment",
+                    payload.value("tenantEnvironment", "")
+            ));
+            const std::string ansiblePlaybookRequested = trim(payload.value(
+                    "ansible_playbook",
+                    payload.value("ansiblePlaybook", "")
+            ));
+
+            nlohmann::json ansibleExtraVars = nlohmann::json::object();
+            if (payload.contains("ansible_extra_vars")) {
+                ansibleExtraVars = payload["ansible_extra_vars"];
+            } else if (payload.contains("ansibleExtraVars")) {
+                ansibleExtraVars = payload["ansibleExtraVars"];
+            }
+
+            const char* recruitTokenEnv = std::getenv("NMC_RECRUIT_TOKEN");
+            if (recruitTokenEnv && *recruitTokenEnv) {
+                if (recruitToken != std::string(recruitTokenEnv)) {
+                    return sendErrorResponse(res, 403, "Recruit token is required and does not match.");
+                }
+            }
+
+            if (host.empty() || !isSafeHost(host)) {
+                return sendErrorResponse(res, 400, "Invalid host. Use a hostname or IPv4 address.");
+            }
+            if (!isSafeUser(user)) {
+                return sendErrorResponse(res, 400, "Invalid SSH user.");
+            }
+            if (port <= 0 || port > 65535) {
+                return sendErrorResponse(res, 400, "Invalid SSH port. Expected 1-65535.");
+            }
+            if (!isKnownNodeType(nodeType)) {
+                return sendErrorResponse(res, 400, "Invalid node_type. Supported: bare-metal, app-install, vm, podman, kubernetes.");
+            }
+            if (hasControlChars(nodeName) || hasControlChars(region) || hasControlChars(continuumUrl)) {
+                return sendErrorResponse(res, 400, "Invalid control characters in request values.");
+            }
+            if (!isSafeTenantId(tenantId) || hasControlChars(tenantName) || hasControlChars(tenantEnvironment) ||
+                tenantName.size() > 128 || tenantEnvironment.size() > 64) {
+                return sendErrorResponse(res, 400, "Invalid tenant metadata.");
+            }
+            if (hasControlChars(ansiblePlaybookRequested)) {
+                return sendErrorResponse(res, 400, "ansible_playbook contains invalid control characters.");
+            }
+            if (sudoPassword.size() > 1024 || hasControlChars(sudoPassword)) {
+                return sendErrorResponse(res, 400, "Invalid sudo/become password value.");
+            }
+            if (!ansibleExtraVars.is_object()) {
+                return sendErrorResponse(res, 400, "ansible_extra_vars must be a JSON object.");
+            }
+            for (const auto& item : ansibleExtraVars.items()) {
+                if (!isSafeAnsibleVarKey(item.key())) {
+                    return sendErrorResponse(res, 400, "Invalid ansible_extra_vars key: " + item.key());
+                }
+                if (item.value().is_string() && hasControlChars(item.value().get<std::string>())) {
+                    return sendErrorResponse(res, 400, "ansible_extra_vars values cannot contain control characters.");
+                }
+            }
+
+            std::vector<std::string> capabilities;
+            std::string capabilitiesError;
+            if (!parseCapabilitiesField(payload, "capabilities", capabilities, capabilitiesError) ||
+                !parseCapabilitiesField(payload, "workloads", capabilities, capabilitiesError)) {
+                return sendErrorResponse(res, 400, capabilitiesError);
+            }
+            if (capabilities.empty()) {
+                capabilities = defaultCapabilitiesForNodeType(nodeType);
+            }
+
+            if (continuumAuthToken.empty() && propagateServerAuthToken && authMode == "token" && !authToken.empty()) {
+                continuumAuthToken = authToken;
+            }
+
+            std::string traceyAgentId;
+            std::string traceyStatusAddr;
+            std::string traceyReason;
+            if (!extractTraceyProvisioningRequest(payload, traceyAgentId, traceyStatusAddr, traceyReason)) {
+                return sendErrorResponse(res, 400, traceyReason);
+            }
+
+            std::string binaryArgsError;
+            std::vector<std::string> binaryArgs = parseBinaryArgs(payload, binaryArgsError);
+            if (!binaryArgsError.empty()) {
+                return sendErrorResponse(res, 400, binaryArgsError);
+            }
+            for (const auto& arg : binaryArgs) {
+                if (hasControlChars(arg)) {
+                    return sendErrorResponse(res, 400, "Binary arguments cannot contain control characters.");
+                }
+            }
+
+            const bool scriptBodyProvided = !scriptContent.empty();
+            const bool scriptPathProvided = !scriptPath.empty();
+            const bool binaryPathProvided = !binaryPath.empty();
+
+            if (scriptBodyProvided && scriptPathProvided) {
+                return sendErrorResponse(res, 400, "Provide either script or script_path, not both.");
+            }
+            if ((scriptBodyProvided || scriptPathProvided) && binaryPathProvided) {
+                return sendErrorResponse(res, 400, "Provide either script input or binary_path, not both.");
+            }
+
+            if (scriptContent.find('\0') != std::string::npos) {
+                return sendErrorResponse(res, 400, "Script content contains invalid null bytes.");
+            }
+
+            std::string scriptFileReadError;
+            if (scriptPathProvided) {
+                if (!isSafeLocalPath(scriptPath)) {
+                    return sendErrorResponse(res, 400, "Invalid script_path. Must be an absolute filesystem path.");
+                }
+                if (!readTextFile(scriptPath, 1024 * 1024, scriptContent, scriptFileReadError)) {
+                    return sendErrorResponse(res, 400, scriptFileReadError);
+                }
+            }
+
+            if (!binaryPath.empty()) {
+                if (!isSafeLocalPath(binaryPath)) {
+                    return sendErrorResponse(res, 400, "Invalid binary_path. Must be an absolute filesystem path.");
+                }
+                try {
+                    const std::filesystem::path fsPath(binaryPath);
+                    if (!std::filesystem::exists(fsPath) || !std::filesystem::is_regular_file(fsPath)) {
+                        return sendErrorResponse(res, 400, "binary_path does not exist or is not a file.");
+                    }
+                    if (std::filesystem::file_size(fsPath) > (100ULL * 1024ULL * 1024ULL)) {
+                        return sendErrorResponse(res, 400, "binary_path exceeds 100 MiB size limit.");
+                    }
+                } catch (const std::exception& e) {
+                    return sendErrorResponse(res, 400, "Unable to inspect binary_path: " + std::string(e.what()));
+                }
+            }
+
+            if (!sshKeyPath.empty()) {
+                if (!isSafeLocalPath(sshKeyPath)) {
+                    return sendErrorResponse(res, 400, "Invalid ssh_key_path. Must be an absolute filesystem path.");
+                }
+                try {
+                    const std::filesystem::path fsPath(sshKeyPath);
+                    if (!std::filesystem::exists(fsPath) || !std::filesystem::is_regular_file(fsPath)) {
+                        return sendErrorResponse(res, 400, "ssh_key_path does not exist or is not a file.");
+                    }
+                } catch (const std::exception& e) {
+                    return sendErrorResponse(res, 400, "Unable to inspect ssh_key_path: " + std::string(e.what()));
+                }
+            }
+
+            const bool useBinaryArtifact = binaryPathProvided;
+            if (!useBinaryArtifact && scriptContent.empty()) {
+                scriptContent = buildDefaultRecruitScript();
+            }
+
+            struct CleanupGuard {
+                std::vector<std::string> paths;
+                ~CleanupGuard() {
+                    for (const auto& path : paths) {
+                        if (!path.empty()) {
+                            ::unlink(path.c_str());
+                        }
+                    }
+                }
+            } cleanupGuard;
+
+            std::string localArtifactPath = binaryPath;
+            if (!useBinaryArtifact) {
+                std::string tempPath;
+                std::string tempError;
+                if (!writeTempFile(scriptContent, tempPath, tempError)) {
+                    return sendErrorResponse(res, 500, tempError);
+                }
+                localArtifactPath = tempPath;
+                cleanupGuard.paths.push_back(tempPath);
+            }
+
+            const std::string remotePath = rawRemotePath.empty()
+                                           ? (useBinaryArtifact ? "/tmp/nmc-recruit.bin" : "/tmp/nmc-recruit.sh")
+                                           : rawRemotePath;
+            if (!isSafeRemotePath(remotePath)) {
+                return sendErrorResponse(res, 400, "Invalid remote_path. Must be absolute and use only safe characters.");
+            }
+
+            const std::filesystem::path remoteFsPath(remotePath);
+            const std::string remoteDir = remoteFsPath.parent_path().empty()
+                                          ? std::string("/tmp")
+                                          : remoteFsPath.parent_path().string();
+
+            const std::string sshTarget = user + "@" + host;
+            auto appendSshCommonArgs = [&](std::vector<std::string>& args, bool forScp) {
+                args.push_back(forScp ? "-P" : "-p");
+                args.push_back(std::to_string(port));
+                args.push_back("-o");
+                args.push_back("BatchMode=yes");
+                args.push_back("-o");
+                args.push_back("StrictHostKeyChecking=accept-new");
+                args.push_back("-o");
+                args.push_back("ConnectTimeout=15");
+                args.push_back("-o");
+                args.push_back("ServerAliveInterval=15");
+                args.push_back("-o");
+                args.push_back("ServerAliveCountMax=2");
+                args.push_back("-o");
+                args.push_back("LogLevel=ERROR");
+                if (!sshKeyPath.empty()) {
+                    args.push_back("-i");
+                    args.push_back(sshKeyPath);
+                }
+            };
+
+            std::vector<std::string> mkdirArgs{"ssh"};
+            appendSshCommonArgs(mkdirArgs, false);
+            mkdirArgs.push_back(sshTarget);
+            mkdirArgs.push_back("mkdir -p " + shellQuote(remoteDir));
+
+            std::vector<std::string> scpArgs{"scp"};
+            appendSshCommonArgs(scpArgs, true);
+            scpArgs.push_back(localArtifactPath);
+            scpArgs.push_back(sshTarget + ":" + remotePath);
+
+            std::ostringstream remoteExec;
+            auto appendEnv = [&](const std::string& key, const std::string& value) {
+                if (!value.empty()) {
+                    remoteExec << key << "=" << shellQuote(value) << " ";
+                }
+            };
+            appendEnv("NMC_NODE_TYPE", nodeType);
+            appendEnv("NMC_NODE_REGION", region);
+            appendEnv("NMC_NODE_NAME", nodeName);
+            appendEnv("NMC_CONTINUUM_URL", continuumUrl);
+            appendEnv("NMC_CONTINUUM_AUTH_TOKEN", continuumAuthToken);
+            appendEnv("TRACEY_AGENT_ID", traceyAgentId);
+            appendEnv("TRACEY_STATUS_ADDR", traceyStatusAddr);
+
+            if (useBinaryArtifact) {
+                if (useSudo) {
+                    if (!sudoPassword.empty()) {
+                        remoteExec << "printf %s\\\\n " << shellQuote(sudoPassword)
+                                   << " | sudo -S -p '' -E " << shellQuote(remotePath);
+                    } else {
+                        remoteExec << "sudo -E " << shellQuote(remotePath);
+                    }
+                } else {
+                    remoteExec << shellQuote(remotePath);
+                }
+                for (const auto& arg : binaryArgs) {
+                    remoteExec << " " << shellQuote(arg);
+                }
+            } else {
+                if (useSudo) {
+                    if (!sudoPassword.empty()) {
+                        remoteExec << "printf %s\\\\n " << shellQuote(sudoPassword)
+                                   << " | sudo -S -p '' -E bash " << shellQuote(remotePath);
+                    } else {
+                        remoteExec << "sudo -E bash " << shellQuote(remotePath);
+                    }
+                } else {
+                    remoteExec << "bash " << shellQuote(remotePath);
+                }
+            }
+
+            std::vector<std::string> execArgs{"ssh"};
+            appendSshCommonArgs(execArgs, false);
+            execArgs.push_back(sshTarget);
+            execArgs.push_back("chmod +x " + shellQuote(remotePath) + " && " + remoteExec.str());
+
+            const bool enableApps = std::find(capabilities.begin(), capabilities.end(), "apps") != capabilities.end();
+            const bool enableVm = std::find(capabilities.begin(), capabilities.end(), "vm") != capabilities.end();
+            const bool enablePodman = std::find(capabilities.begin(), capabilities.end(), "podman") != capabilities.end();
+            const bool enableKubernetes = std::find(capabilities.begin(), capabilities.end(), "kubernetes") != capabilities.end();
+
+            std::vector<std::string> configureArgs;
+            std::string ansiblePlaybookPath;
+            if (autoConfigure) {
+                ansiblePlaybookPath = resolveRecruitPlaybookPath(ansiblePlaybookRequested);
+                if (ansiblePlaybookPath.empty()) {
+                    return sendErrorResponse(res, 400, "Unable to resolve ansible playbook. Provide ansible_playbook or set NMC_RECRUIT_ANSIBLE_PLAYBOOK.");
+                }
+
+                nlohmann::json mergedAnsibleVars = ansibleExtraVars;
+                mergedAnsibleVars["ansible_user"] = user;
+                mergedAnsibleVars["ansible_port"] = port;
+                mergedAnsibleVars["ansible_python_interpreter"] = "/usr/bin/python3";
+                mergedAnsibleVars["ansible_ssh_common_args"] = "-o StrictHostKeyChecking=accept-new -o ConnectTimeout=15";
+                if (!sshKeyPath.empty()) {
+                    mergedAnsibleVars["ansible_ssh_private_key_file"] = sshKeyPath;
+                }
+                mergedAnsibleVars["ansible_become"] = ansibleBecome;
+                if (ansibleBecome && !sudoPassword.empty()) {
+                    mergedAnsibleVars["ansible_become_password"] = sudoPassword;
+                    mergedAnsibleVars["ansible_become_pass"] = sudoPassword;
+                }
+                mergedAnsibleVars["nmc_tenant_id"] = tenantId;
+                mergedAnsibleVars["nmc_tenant_name"] = tenantName;
+                mergedAnsibleVars["nmc_tenant_environment"] = tenantEnvironment;
+                mergedAnsibleVars["nmc_requested_capabilities"] = capabilities;
+                mergedAnsibleVars["nmc_enable_apps"] = enableApps;
+                mergedAnsibleVars["nmc_enable_vm"] = enableVm;
+                mergedAnsibleVars["nmc_enable_podman"] = enablePodman;
+                mergedAnsibleVars["nmc_enable_kubernetes"] = enableKubernetes;
+                mergedAnsibleVars["nmc_node_host"] = host;
+                mergedAnsibleVars["nmc_node_name"] = nodeName;
+                mergedAnsibleVars["nmc_node_region"] = region;
+                mergedAnsibleVars["nmc_node_type"] = nodeType;
+                mergedAnsibleVars["nmc_continuum_url"] = continuumUrl;
+                if (!continuumAuthToken.empty()) {
+                    mergedAnsibleVars["nmc_continuum_auth_token"] = continuumAuthToken;
+                }
+                if (!traceyAgentId.empty()) {
+                    mergedAnsibleVars["nmc_tracey_agent_id"] = traceyAgentId;
+                }
+                if (!traceyStatusAddr.empty()) {
+                    mergedAnsibleVars["nmc_tracey_status_addr"] = traceyStatusAddr;
+                }
+
+                configureArgs = {
+                        "env",
+                        "ANSIBLE_HOST_KEY_CHECKING=False",
+                        "ANSIBLE_TIMEOUT=45",
+                        "ansible-playbook",
+                        "-i",
+                        host + ",",
+                        ansiblePlaybookPath,
+                        "--limit",
+                        host,
+                        "-u",
+                        user,
+                        "-e",
+                        mergedAnsibleVars.dump()
+                };
+                if (ansibleBecome) {
+                    configureArgs.push_back("--become");
+                }
+                if (!sshKeyPath.empty()) {
+                    configureArgs.push_back("--private-key");
+                    configureArgs.push_back(sshKeyPath);
+                }
+
+                if (!dryRun) {
+                    const ExecResult ansibleCheck = runShellCommand({"which", "ansible-playbook"});
+                    if (ansibleCheck.exitCode != 0) {
+                        return sendErrorResponse(res, 500, "ansible-playbook is required for auto_configure but is not available on the server host.");
+                    }
+                }
+            }
+
+            auto redactSensitive = [&](std::string value) {
+                const std::vector<std::string> sensitiveValues = {
+                        continuumAuthToken,
+                        sudoPassword
+                };
+                for (const auto& sensitive : sensitiveValues) {
+                    if (sensitive.empty()) {
+                        continue;
+                    }
+                    size_t offset = 0;
+                    while (true) {
+                        const auto found = value.find(sensitive, offset);
+                        if (found == std::string::npos) {
+                            break;
+                        }
+                        value.replace(found, sensitive.size(), "[redacted]");
+                        offset = found + 10;
+                    }
+                }
+                return value;
+            };
+
+            nlohmann::json diagnostics = {
+                    {"target", {{"host", host}, {"port", port}, {"user", user}}},
+                    {"node", {{"name", nodeName}, {"type", nodeType}, {"region", region}}},
+                    {"mode", useBinaryArtifact ? "binary" : "script"},
+                    {"auto_configure", {
+                            {"enabled", autoConfigure},
+                            {"become", ansibleBecome},
+                            {"tenant", {
+                                    {"id", tenantId},
+                                    {"name", tenantName},
+                                    {"environment", tenantEnvironment}
+                            }},
+                            {"capabilities", capabilities},
+                            {"playbook", ansiblePlaybookPath}
+                    }},
+                    {"artifact", {
+                            {"local_path", useBinaryArtifact ? localArtifactPath : "<generated-script>"},
+                            {"remote_path", remotePath}
+                    }},
+                    {"commands", {
+                            {"prepare", commandToShellString(mkdirArgs)},
+                            {"transfer", commandToShellString(scpArgs)},
+                            {"execute", redactSensitive(commandToShellString(execArgs))}
+                    }}
+            };
+            if (autoConfigure) {
+                diagnostics["commands"]["configure"] = redactSensitive(commandToShellString(configureArgs));
+            }
+
+            if (dryRun) {
+                Models::CloudResponse apiResponse;
+                apiResponse.success = true;
+                apiResponse.message = "Node recruitment dry-run generated successfully.";
+                apiResponse.data = diagnostics;
+                sendJsonResponse(res, apiResponse);
+                return;
+            }
+
+            auto sendStepFailure = [&](const std::string& stepName,
+                                       const ExecResult& result,
+                                       int statusCode,
+                                       const std::string& message) {
+                nlohmann::json failure = diagnostics;
+                failure["failed_step"] = stepName;
+                failure["step_exit_code"] = result.exitCode;
+                failure["step_output"] = redactSensitive(result.output);
+
+                Models::CloudResponse apiResponse;
+                apiResponse.success = false;
+                apiResponse.message = message;
+                apiResponse.data = failure;
+                sendJsonResponse(res, apiResponse);
+                res.status = statusCode;
+            };
+
+            const ExecResult prepareResult = runShellCommand(mkdirArgs);
+            diagnostics["prepare_output"] = prepareResult.output;
+            diagnostics["prepare_exit_code"] = prepareResult.exitCode;
+            if (prepareResult.exitCode != 0) {
+                sendStepFailure("prepare", prepareResult, 502, "Failed to create remote directory for recruitment artifact.");
+                return;
+            }
+
+            const ExecResult transferResult = runShellCommand(scpArgs);
+            diagnostics["transfer_output"] = transferResult.output;
+            diagnostics["transfer_exit_code"] = transferResult.exitCode;
+            if (transferResult.exitCode != 0) {
+                sendStepFailure("transfer", transferResult, 502, "Failed to transfer recruitment artifact to remote node.");
+                return;
+            }
+
+            const ExecResult execResult = runShellCommand(execArgs);
+            diagnostics["execute_output"] = redactSensitive(execResult.output);
+            diagnostics["execute_exit_code"] = execResult.exitCode;
+            if (execResult.exitCode != 0) {
+                sendStepFailure("execute", execResult, 502, "Recruitment artifact executed with errors on remote node.");
+                return;
+            }
+
+            if (autoConfigure) {
+                const ExecResult configureResult = runShellCommand(configureArgs);
+                diagnostics["configure_output"] = redactSensitive(configureResult.output);
+                diagnostics["configure_exit_code"] = configureResult.exitCode;
+                if (configureResult.exitCode != 0) {
+                    sendStepFailure("configure", configureResult, 502, "Node recruited, but Ansible auto-configuration failed.");
+                    return;
+                }
+            }
+
+            if (!traceyAgentId.empty()) {
+                std::lock_guard<std::mutex> lock(dataMutex);
+                upsertTraceyRequirementLocked("node", nodeName, region, traceyAgentId, traceyStatusAddr, nowEpochMs());
+                diagnostics["tracey"] = {
+                        {"required", true},
+                        {"agent_id", traceyAgentId},
+                        {"status_addr", traceyStatusAddr},
+                        {"compliance_state", "pending"}
+                };
+            } else {
+                diagnostics["tracey"] = {{"required", traceyEnforceManagedResources}};
+            }
+
+            Models::CloudResponse apiResponse;
+            apiResponse.success = true;
+            apiResponse.message = autoConfigure
+                                  ? "Node recruitment and auto-configuration completed successfully."
+                                  : "Node recruitment completed successfully.";
+            apiResponse.data = diagnostics;
+            sendJsonResponse(res, apiResponse);
+
+        } catch (const nlohmann::json::parse_error& e) {
+            sendErrorResponse(res, 400, "Invalid JSON body: " + std::string(e.what()));
+        } catch (const nlohmann::json::type_error& e) {
+            sendErrorResponse(res, 400, "Invalid JSON field type: " + std::string(e.what()));
+        } catch (const std::exception& e) {
+            sendErrorResponse(res, 500, "Server error: " + std::string(e.what()));
+        }
     }
 
 } // namespace NMC::Server

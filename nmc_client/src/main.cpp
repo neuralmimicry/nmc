@@ -9,6 +9,7 @@
 #include "Commands/VersionCommand.h"
 #include "Commands/ConnectionCommands.h"
 #include "Commands/RefinerCommands.h"
+#include "Commands/NodeCommands.h"
 #include <memory> // For std::make_shared
 #include "Core/Utils.h"
 
@@ -86,6 +87,10 @@ int main(int argc, char* argv[]) {
     connectionCmd->addSubcommand(std::make_shared<NMC::Commands::ConnectionSetTokenCommand>(apiClient));
     connectionCmd->addSubcommand(std::make_shared<NMC::Commands::ConnectionClearTokenCommand>(apiClient));
     parser.registerCommand(connectionCmd);
+
+    auto nodeCmd = std::make_shared<NMC::Commands::NodeCommand>(apiClient);
+    nodeCmd->addSubcommand(std::make_shared<NMC::Commands::NodeRecruitCommand>(apiClient));
+    parser.registerCommand(nodeCmd);
 
     auto refinerCmd = std::make_shared<NMC::Commands::RefinerCommand>(apiClient);
     refinerCmd->addSubcommand(std::make_shared<NMC::Commands::RefinerDeployCommand>(apiClient));

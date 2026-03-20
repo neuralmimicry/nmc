@@ -1,0 +1,1 @@
+cmd='/usr/local/bin/cmake;-E;chdir;<SOURCE_DIR>;./bootstrap;COMMAND;/usr/local/bin/cmake;-E;chdir;<BINARY_DIR>;<SOURCE_DIR>/configure;--prefix=<INSTALL_DIR>;--enable-shared;--disable-static'
