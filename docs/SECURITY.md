@@ -100,6 +100,7 @@ These items must be enforced outside code to meet ISO 27001 and SOC 2 expectatio
 - `NMC_OIDC_REQUIRED_SCOPE`: Comma-separated scopes that must be present (optional).
 - `NMC_RECRUIT_TOKEN`: Optional secondary secret required by `/node/recruit` for node onboarding authorization.
 - `NMC_RECRUIT_ANSIBLE_PLAYBOOK`: Optional default Ansible playbook path used when `/node/recruit` is called with `auto_configure=true` and no explicit `ansible_playbook`.
+- `NMC_RELEASE_CHECK_URL`: Optional override for the GitHub releases endpoint used by version update checks.
 - Compatibility aliases: `NM_AUTH_MODE`, `NM_AUTH_TOKEN`, and `NM_OIDC_*` are also honored for cross-project SSO setups.
 
 ### Environment Variables (Client)

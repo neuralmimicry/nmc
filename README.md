@@ -1,5 +1,7 @@
 # NMC CLI Application (NeuralMimicry Continuum)
 
+[![Build and Release](https://github.com/neuralmimicry/nmc/actions/workflows/build-and-release.yml/badge.svg)](https://github.com/neuralmimicry/nmc/actions/workflows/build-and-release.yml)
+
 This is a C++ CLI application named `nmc` (NeuralMimicry Continuum).
 It provides a modular and extensible framework for building command-line interfaces, with a focus on best practices for structure, security (conceptual), robustness, resilience, and ease of adding/amending/removing commands.
 
@@ -14,6 +16,7 @@ It provides a modular and extensible framework for building command-line interfa
 * implementations for cloud operations (Bucket, K8s, Model, SSH, VM).
 * Refiner lifecycle control commands for Kubernetes (`refiner deploy/status/scale/logs/remove`).
 * Continuum node recruitment flow (`node recruit`) with script/binary transfer to remote Ubuntu hosts.
+* Built-in GitHub release update checks for both client (`nmc version`) and server (`GET /server/version`).
 * Optional bearer token authentication for the Continuum control plane.
 
 **Project Structure:**
@@ -204,6 +207,11 @@ nmc connection unset-default: Unsets the current default connection and reverts 
     ./nmc version
     ```
 
+* **Display version without remote release check (offline-safe):**
+    ```bash
+    ./nmc version --no-check
+    ```
+
 **Extending the Application:**
 
 To add a new top-level command (e.g., `database`):
@@ -235,6 +243,7 @@ Detailed end-to-end workflows, including CLI parsing, connection management, and
 The server proxies OpenShift provisioning and visibility requests to the NeuralMimicry OpenShift portal API (oshift).
 Set the OpenShift portal base URL with the `NMC_OSHIFT_API_URL` environment variable when starting `nmc_server`.
 The default is `http://127.0.0.1:8000`.
+Server release status is available at `GET /server/version` and includes current version, latest release tag, and update availability.
 
 **Refiner Command Notes:**
 

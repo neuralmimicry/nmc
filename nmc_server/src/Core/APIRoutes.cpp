@@ -2,6 +2,7 @@
 #include "APIRoutes.h"
 #include "K8sHandlers.h"
 #include "ConnectionHandlers.h"
+#include "VersionCheck.h"
 #include "Utils.h"
 #include <cstdlib>
 #include <cctype>
@@ -1165,6 +1166,12 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
             }
             return true;
         };
+
+        // --- Server Metadata ---
+        svr.Get("/server/version", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            handleServerVersion(req, res);
+        });
 
         // --- Bucket Routes ---
         svr.Post("/bucket/create", [this, guard](const httplib::Request& req, httplib::Response& res) {
@@ -2482,6 +2489,29 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
     }
 
 // --- OpenShift Handlers ---
+    void APIRoutes::handleServerVersion(const httplib::Request& req, httplib::Response& res) {
+        (void)req;
+
+        const auto releaseInfo = VersionCheck::checkLatestRelease();
+
+        Models::CloudResponse apiResponse;
+        apiResponse.success = true;
+        apiResponse.message = "Server version information retrieved successfully.";
+        apiResponse.data = {
+                {"component", "nmc_server"},
+                {"current_version", releaseInfo.currentVersion},
+                {"repository", releaseInfo.repository},
+                {"release_check", {
+                        {"attempted", true},
+                        {"succeeded", releaseInfo.checkSucceeded},
+                        {"latest_version", releaseInfo.latestVersion},
+                        {"update_available", releaseInfo.updateAvailable},
+                        {"message", releaseInfo.message}
+                }}
+        };
+        sendJsonResponse(res, apiResponse);
+    }
+
     void APIRoutes::handleOpenShiftResources(const httplib::Request& req, httplib::Response& res) {
         Models::CloudResponse apiResponse = openShiftClient->getResources();
         sendJsonResponse(res, apiResponse);

@@ -1,474 +1,202 @@
-name: Build and Release NMC CLI
+name: Build and Release
 
-# This workflow is triggered on:
-# 1. Pushes to the 'main' branch (for continuous builds, though releases will be tagged).
-# 2. Manual trigger via 'workflow_dispatch'.
-# 3. When a GitHub Release is published in the 'neuralmimicry/nmc' repository itself.
-#    This allows you to control the official release version by creating a tag (e.g., v1.0.0)
-#    and then publishing a release from that tag in the private 'nmc' repo.
 on:
+  pull_request:
+    branches:
+      - main
   push:
     branches:
       - main
+    tags:
+      - "v*"
   workflow_dispatch:
-  release:
-    types: [published]
 
-# Define two jobs: 'build' and 'release'
+permissions:
+  contents: write
+
 jobs:
-  build:
-    # Use a matrix strategy to build for different OS and architectures.
-    strategy:
-      fail-fast: false # Don't cancel other matrix jobs if one fails
-      matrix:
-        # Define operating systems: Ubuntu for Linux, Windows for Windows.
-        # RHEL and native ARM64 runners typically require self-hosted runners.
-        os: [ubuntu-latest, windows-latest]
-        # Define architectures: x64 for both OS, arm64 only for Linux (self-hosted).
-        arch: [x64]
-        include:
-          - # CORRECTED: 'os' is now a list of labels for the self-hosted runner
-            os: [self-hosted, Linux, ARM64]
-            arch: arm64
-
-    # The runner environment depends on the current matrix OS.
-    runs-on: ${{ matrix.os }}
+  build-client-linux:
+    name: Build Client (Linux x64)
+    runs-on: ubuntu-latest
     steps:
-      # Step 1: Checkout the source code from the repository.
-      - name: Checkout NMC repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      # Step 2: Set up the C++ development environment based on OS and architecture.
-      - name: Setup C++ environment (Linux x64)
-        if: ${{ matrix.os == 'ubuntu-latest' && matrix.arch == 'x64' }}
+      - name: Compute build version
+        id: version
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            echo "value=${GITHUB_REF_NAME#v}" >> "${GITHUB_OUTPUT}"
+          else
+            echo "value=0.0.1-main.${GITHUB_RUN_NUMBER}" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential cmake
+          sudo apt-get install -y --no-install-recommends build-essential cmake
 
-      - name: Setup C++ environment (Linux ARM64 Native Build) # Updated name for native build
-        # CORRECTED: Use 'contains' for labels in the 'os' list
-        if: contains(matrix.os, 'self-hosted') && contains(matrix.os, 'ARM64') && matrix.arch == 'arm64'
+      - name: Configure
+        run: cmake -S nmc_client -B nmc_client/build -DCMAKE_BUILD_TYPE=Release -DNMC_CLIENT_VERSION=${{ steps.version.outputs.value }}
+
+      - name: Build
+        run: cmake --build nmc_client/build --config Release -- -j"$(nproc)"
+
+      - name: Smoke test
+        run: ./nmc_client/build/nmc version --no-check
+
+      - name: Package
         run: |
-          sudo apt-get update
-          # Install build tools for native ARM64 compilation.
-          # All cross-compilation specific steps (OpenSSL build, toolchain file creation) are removed.
-          sudo apt-get install -y \
-            build-essential \
-            cmake \
-            wget \
-            libssl-dev # libssl-dev is now installed directly for native ARM64
+          mkdir -p dist
+          cp nmc_client/build/nmc dist/nmc-client-linux-x64
+          tar -C dist -czf nmc-client-linux-x64.tar.gz nmc-client-linux-x64
 
-      - name: Setup C++ environment (Windows x64)
-        if: ${{ matrix.os == 'windows-latest' && matrix.arch == 'x64' }}
-        uses: ilammy/msvc-dev-cmd@v1 # Use this action to configure MSVC environment
-        with:
-          arch: x64
-
-      # Step 3: Create a dedicated directory for the build output.
-      # This build directory will be *inside* the nmc_client folder.
-      - name: Create Build Directory (nmc_client)
-        run: mkdir nmc_client/build
-
-      # Step 4: Configure CMake project (Linux x64)
-      - name: Configure CMake (Linux x64)
-        if: ${{ matrix.os == 'ubuntu-latest' && matrix.arch == 'x64' }}
-        run: cmake ..
-        working-directory: nmc_client/build # Adjusted working directory
-
-      - name: Configure CMake project (Linux ARM64 Native Build) # Updated name
-        # CORRECTED: Use 'contains' for labels in the 'os' list
-        if: contains(matrix.os, 'self-hosted') && contains(matrix.os, 'ARM64') && matrix.arch == 'arm64'
-        run: cmake ..
-        working-directory: nmc_client/build # Adjusted working directory
-
-      # Step 4: Configure CMake project (Windows x64)
-      - name: Configure CMake (Windows x64)
-        if: ${{ matrix.os == 'windows-latest' && matrix.arch == 'x64' }}
-        run: cmake ..
-        working-directory: nmc_client/build # Adjusted working directory
-
-      # Step 5: Build the 'nmc' executable using Make (Linux) or MSBuild (Windows).
-      - name: Build NMC executable (Linux)
-        # CORRECTED: Use 'contains' for self-hosted check
-        if: contains(matrix.os, 'ubuntu-latest') || contains(matrix.os, 'self-hosted')
-        run: make
-        working-directory: nmc_client/build # Adjusted working directory
-
-      - name: Build NMC executable (Windows)
-        if: ${{ matrix.os == 'windows-latest' }}
-        # On Windows, 'cmake --build .' will use MSBuild by default if MSVC is configured.
-        run: cmake --build . --config Release
-        working-directory: nmc_client/build # Adjusted working directory
-
-      # Step 6: Package the compiled executable into a platform-specific archive with a dedicated directory.
-      # This ensures the installer scripts can find the executable within an extracted folder.
-      - name: Package build artifacts (Linux)
-        # CORRECTED: Use 'contains' for self-hosted check
-        if: contains(matrix.os, 'ubuntu-latest') || contains(matrix.os, 'self-hosted')
-        run: |
-          # Create a directory named like 'nmc-Linux-x64' or 'nmc-Linux-arm64' at the root
-          mkdir -p nmc-${{ runner.os }}-${{ matrix.arch }}
-          # Copy the executable from nmc_client/build into this new directory
-          cp nmc_client/build/nmc nmc-${{ runner.os }}-${{ matrix.arch }}/nmc
-          # Create the tar.gz archive of this directory
-          tar -czvf nmc-${{ runner.os }}-${{ matrix.arch }}.tar.gz nmc-${{ runner.os }}-${{ matrix.arch }}
-        working-directory: . # Still run from root to easily find created directory
-
-      - name: Package build artifacts (Windows)
-        if: ${{ matrix.os == 'windows-latest' }}
-        run: |
-          # Create a directory named like 'nmc-Windows-x64' at the root
-          mkdir -p nmc-${{ runner.os }}-${{ matrix.arch }}
-          # Copy the executable from nmc_client\build\Release into this new directory
-          cp nmc_client\build\Release\nmc.exe nmc-${{ runner.os }}-${{ matrix.arch }}\nmc.exe
-          # Create the zip archive of this directory
-          7z a nmc-${{ runner.os }}-${{ matrix.arch }}.zip .\nmc-${{ runner.os }}-${{ matrix.arch }}
-        working-directory: . # Still run from root to easily find created directory
-
-      # Step 7: Upload the created archive as a workflow artifact.
-      # The artifact name now uniquely identifies the OS and architecture.
-      - name: Upload build artifact
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: nmc-cli-archive-${{ runner.os }}-${{ matrix.arch }} # Unique name for each archive artifact
-          path: nmc-${{ runner.os }}-${{ matrix.arch }}.* # Matches the .tar.gz or .zip file created
-          retention-days: 1 # How long to keep the artifact (1 day for temporary storage)
+          name: nmc-client-linux-x64
+          path: nmc-client-linux-x64.tar.gz
+          retention-days: 7
 
-  release:
-    # This job depends on the 'build' job completing successfully.
-    needs: build
-    runs-on: ubuntu-latest # This job runs on a single runner to consolidate assets.
-    # Define permissions required for this job. 'contents: write' is needed to create a release
-    # and upload assets to the target repository.
-    permissions:
-      contents: write
-
-    # This job will only run if the 'build' job succeeded and
-    # if the trigger was a 'push' to main or a 'release' was published.
-    if: success() && (github.event_name == 'push' || github.event_name == 'release')
-
+  build-client-windows:
+    name: Build Client (Windows x64)
+    runs-on: windows-latest
     steps:
-      # Install 7zip on Linux runner to handle Windows .zip files for listing
-      - name: Install 7zip (Linux)
-        run: sudo apt-get update && sudo apt-get install -y p7zip-full
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      # Step 1: Download all build artifacts created by the 'build' job's matrix runs.
-      - name: Download all build archives
+      - name: Compute build version
+        id: version
+        shell: pwsh
+        run: |
+          if ("${{ github.ref }}".StartsWith("refs/tags/v")) {
+            $version = "${{ github.ref_name }}".Substring(1)
+          } else {
+            $version = "0.0.1-main.${{ github.run_number }}"
+          }
+          "value=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Configure
+        run: cmake -S nmc_client -B nmc_client/build -DCMAKE_BUILD_TYPE=Release -DNMC_CLIENT_VERSION=${{ steps.version.outputs.value }}
+
+      - name: Build
+        run: cmake --build nmc_client/build --config Release
+
+      - name: Smoke test
+        shell: pwsh
+        run: .\nmc_client\build\Release\nmc.exe version --no-check
+
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item .\nmc_client\build\Release\nmc.exe .\dist\nmc-client-windows-x64.exe
+          Compress-Archive -Path .\dist\nmc-client-windows-x64.exe -DestinationPath .\nmc-client-windows-x64.zip -Force
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nmc-client-windows-x64
+          path: nmc-client-windows-x64.zip
+          retention-days: 7
+
+  build-server-linux:
+    name: Build Server (Linux x64)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compute build version
+        id: version
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            echo "value=${GITHUB_REF_NAME#v}" >> "${GITHUB_OUTPUT}"
+          else
+            echo "value=0.0.1-main.${GITHUB_RUN_NUMBER}" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake git pkg-config libssl-dev libspdlog-dev \
+            libwebsockets-dev autoconf automake libtool ca-certificates curl gawk
+
+      - name: Configure
+        run: cmake -S nmc_server -B nmc_server/build -DCMAKE_BUILD_TYPE=Release -DNMC_SERVER_VERSION=${{ steps.version.outputs.value }}
+
+      - name: Build
+        run: cmake --build nmc_server/build --config Release -- -j"$(nproc)"
+
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp nmc_server/build/nmc_server dist/nmc-server-linux-x64
+          tar -C dist -czf nmc-server-linux-x64.tar.gz nmc-server-linux-x64
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nmc-server-linux-x64
+          path: nmc-server-linux-x64.tar.gz
+          retention-days: 7
+
+  release-snapshot:
+    name: Publish Snapshot Release
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs:
+      - build-client-linux
+      - build-client-windows
+      - build-server-linux
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
-          # This downloads each artifact into its own subdirectory, named after the artifact.
-          # Example: ./nmc-cli-archive-Linux-x64/nmc-Linux-x64.tar.gz
-          # Example: ./nmc-cli-archive-Windows-x64/nmc-Windows-x64.zip
-          path: ./ # Download to the root of the workspace to easily find them
+          path: release-assets
+          merge-multiple: true
 
-      # Step 2: Prepare installer scripts for different platforms.
-      # Linux Installer Script (install-linux.sh)
-      - name: Create Linux Installation Script
-        id: create_linux_install_script
-        run: |
-          cat << 'EOF' > install-linux.sh
-          #!/bin/bash
-
-          set -e # Exit immediately if a command exits with a non-zero status
-
-          INSTALL_DIR="/usr/local/bin" # Default installation directory for the executable
-          NMC_EXECUTABLE="nmc"        # Name of the executable file
-
-          # Function to print usage instructions
-          print_usage() {
-              echo "Usage: $0 [--install-dir <path>] [--help]"
-              echo "Options:"
-              echo "  --install-dir <path>  Specify a custom installation directory (default: /usr/local/bin)"
-              echo "  --help                Display this help message and exit"
-          }
-
-          # Parse command line arguments provided to the install script
-          while [[ "$#" -gt 0 ]]; do
-              case "$1" in
-                  --install-dir)
-                      if [ -z "$2" ]; then
-                          echo "Error: --install-dir requires a path."
-                          print_usage
-                          exit 1
-                      fi
-                      INSTALL_DIR="$2"
-                      shift # Consume the argument value
-                      ;;
-                  --help)
-                      print_usage
-                      exit 0
-                      ;;
-                  *)
-                      echo "Error: Unknown option '$1'"
-                      print_usage
-                      exit 1
-                      ;;
-              esac
-              shift # Consume the option itself
-          done
-
-          echo "Attempting to install '${NMC_EXECUTABLE}' to '${INSTALL_DIR}'..."
-
-          # Determine system architecture and executable filename within the archive
-          ARCH=$(uname -m)
-          case "$ARCH" in
-              "x86_64")
-                  TARGET_OS_ARCH="Linux-x64"
-                  ;;
-              "aarch64")
-                  TARGET_OS_ARCH="Linux-arm64"
-                  ;;
-              *)
-                  echo "Error: Unsupported architecture: $ARCH. This installer supports x86_64 and aarch64 Linux."
-                  exit 1
-                  ;;
-          esac
-
-          DOWNLOAD_FILENAME="nmc-${TARGET_OS_ARCH}.tar.gz"
-          EXTRACTED_DIR_NAME="nmc-${TARGET_OS_ARCH}" # The folder created by tar -xzvf
-
-          # CORRECTED: Use the /latest/download URL
-          DOWNLOAD_URL="https://github.com/neuralmimicry/aarnn-network/releases/latest/download/${DOWNLOAD_FILENAME}"
-          
-          echo "Downloading ${DOWNLOAD_FILENAME} from ${DOWNLOAD_URL}..."
-          curl -LJO "$DOWNLOAD_URL" # -L for redirects, -J for remote name, -O for output to file
-          
-          if [ ! -f "$DOWNLOAD_FILENAME" ]; then
-              echo "Error: Downloaded archive file '$DOWNLOAD_FILENAME' not found. Download might have failed."
-              exit 1
-          fi
-
-          echo "Extracting ${DOWNLOAD_FILENAME}..."
-          tar -xzvf "$DOWNLOAD_FILENAME"
-          
-          if [ ! -d "$EXTRACTED_DIR_NAME" ]; then
-              echo "Error: Expected extracted directory '$EXTRACTED_DIR_NAME' not found after extraction. Archive content might be different than expected."
-              exit 1
-          fi
-          
-          echo "Attempting to install '${NMC_EXECUTABLE}' to '${INSTALL_DIR}'..."
-          
-          # Create the installation directory if it doesn't exist.
-          if [ ! -d "${INSTALL_DIR}" ]; then
-              echo "Creating installation directory: ${INSTALL_DIR}"
-              sudo mkdir -p "${INSTALL_DIR}" || { echo "Failed to create directory '${INSTALL_DIR}'. Do you have sufficient permissions (e.g., sudo)?"; exit 1; }
-          fi
-          
-          # Copy the executable to the target directory.
-          sudo cp "${EXTRACTED_DIR_NAME}/${NMC_EXECUTABLE}" "${INSTALL_DIR}/${NMC_EXECUTABLE}" || { echo "Failed to copy executable to '${INSTALL_DIR}'. Do you have sufficient permissions (e.g., sudo)?"; exit 1; }
-          
-          # Make the copied executable runnable.
-          sudo chmod +x "${INSTALL_DIR}/${NMC_EXECUTABLE}" || { echo "Failed to set executable permissions for '${INSTALL_DIR}/${NMC_EXECUTABLE}'."; exit 1; }
-          
-          echo "Cleaning up downloaded files..."
-          rm -rf "$DOWNLOAD_FILENAME" "$EXTRACTED_DIR_NAME"
-
-          echo ""
-          echo "========================================"
-          echo "'nmc' CLI Installation Complete!"
-          echo "The 'nmc' executable has been installed to: ${INSTALL_DIR}"
-          echo "You can now run 'nmc' from any directory in your terminal."
-          echo ""
-          echo "To verify, try running: ${INSTALL_DIR}/${NMC_EXECUTABLE} --help"
-          echo "========================================"
-          echo ""
-
-          EOF
-          chmod +x install-linux.sh
-
-      # Windows Installer Script (install.ps1)
-      - name: Create Windows Installation Script
-        id: create_windows_install_script
-        shell: pwsh # Explicitly use PowerShell for this step
-        run: |
-          $scriptContent = @"
-          # Requires PowerShell 5.1 or later
-          # Default installation directory. Using Program Files as a common location.
-          `$InstallDir = "`$env:ProgramFiles\nmc-cli`""
-          `$NmcExecutable = "nmc.exe"
-
-          # Function to print usage instructions
-          function Show-Usage {
-              Write-Host "Usage: ." + "`$(`$((Get-Variable MyInvocation).Value.MyCommand.Definition))) [-InstallDir <path>] [-Help]"
-              Write-Host "Options:"
-              Write-Host "  -InstallDir <path>  Specify a custom installation directory (default: `$env:ProgramFiles\nmc-cli`)"
-              Write-Host "  -Help               Display this help message and exit"
-          }
-
-          # Parse command line arguments
-          `$Script:Args = `$PSBoundParameters.GetEnumerator() | ForEach-Object { "`"`$(`$_.Key)=`$`$(`$_.Value)`"`" }"
-          [CmdletBinding()]
-          param (
-              [Parameter(Mandatory=`$false)]
-              [string]`$InstallDirParam,
-              [Parameter(Mandatory=`$false)]
-              [switch]`$Help
-          )
-
-          if (`$Help) {
-              Show-Usage
-              exit 0
-          }
-
-          if (`$PSBoundParameters.ContainsKey('InstallDirParam')) {
-              `$InstallDir = `$InstallDirParam
-          }
-
-          Write-Host "Attempting to install '`$NmcExecutable' to '`$InstallDir'..."
-
-          # The installer assumes the user has downloaded and extracted the nmc-windows-x64.zip
-          # which creates a folder named 'nmc-Windows-x64' containing the executable.
-          `$ExecutableSource = ".`\nmc-Windows-x64\`$NmcExecutable"
-
-          if (-not (Test-Path `$ExecutableSource)) {
-              Write-Error "'`$NmcExecutable' executable not found at '`$ExecutableSource'."
-              Write-Error "Please ensure the correct archive was downloaded and extracted into the current directory."
-              exit 1
-          }
-
-          # Create the installation directory if it doesn't exist.
-          if (-not (Test-Path `$InstallDir)) {
-              Write-Host "Creating installation directory: `$InstallDir"
-              try {
-                  New-Item -Path `$InstallDir -ItemType Directory -Force | Out-Null
-              }
-              catch {
-                  Write-Error "Failed to create directory '`$InstallDir'. Ensure you have administrative privileges (Run as Administrator)."
-                  exit 1
-              }
-          }
-
-          # Copy the executable to the target directory.
-          try {
-              Copy-Item -Path `$ExecutableSource -Destination "`$InstallDir\`$NmcExecutable" -Force
-          }
-          catch {
-              Write-Error "Failed to copy executable to '`$InstallDir'. Ensure you have administrative privileges (Run as Administrator)."
-              exit 1
-          }
-
-          # Add the installation directory to the system PATH for the current user (optional, but convenient)
-          # Note: For system-wide PATH, administrative privileges are needed and it requires a restart of CMD/PowerShell.
-          # For a robust solution, you might consider modifying system PATH or advising user to add manually.
-          # `$env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + `$InstallDir
-          # [System.Environment]::SetEnvironmentVariable("Path", `$env:Path, "Machine")
-
-          Write-Host ""
-          Write-Host "========================================"
-          Write-Host "'nmc' CLI Installation Complete!"
-          Write-Host "The '`$NmcExecutable' executable has been installed to: `$InstallDir"
-          Write-Host "You may need to restart your terminal (Command Prompt/PowerShell) for 'nmc' to be directly accessible from any location."
-          Write-Host ""
-          Write-Host "To verify, try navigating to the installation directory and running: `$InstallDir\`$NmcExecutable --help"
-          Write-Host "========================================"
-          Write-Host ""
-          "@
-
-          $scriptContent | Set-Content -Path install-windows.ps1
-
-      # Step 3: Determine the release version and name.
-      - name: Determine Release Version and Name
-        id: release_info
-        run: |
-          # Default base version for push/workflow_dispatch events
-          BASE_VERSION="v$(date +%Y%m%d%H%M%S)-${{ github.run_number }}"
-          
-          # If triggered by a GitHub Release from the source repo, use its tag.
-          # Crucially, strip any existing 'cli-' prefix from the tag name
-          # to prevent 'cli-cli-vX.Y.Z' in future cascading releases.
-          if [[ "${{ github.event_name }}" == "release" ]]; then
-            RAW_TAG_NAME="${{ github.event.release.tag_name }}"
-            # Use bash parameter expansion to remove longest match of 'cli-' from the beginning
-            BASE_VERSION="${RAW_TAG_NAME##cli-}"
-          fi
-          
-          # The tag name to be used in the *target* repository (aarnn-network), always prefixed with 'cli-'.
-          TARGET_REPO_TAG="cli-$BASE_VERSION"
-          
-          # The display name for the GitHub Release.
-          RELEASE_DISPLAY_NAME="NMC CLI Release $BASE_VERSION"
-
-          # Calculate the full curl command URL for the release body
-          # Corrected URL to point to the release asset for install-linux.sh
-          CURL_INSTALL_COMMAND="curl -sSL https://github.com/neuralmimicry/aarnn-network/releases/download/${TARGET_REPO_TAG}/install-linux.sh | sudo bash"
-          
-          # Output variables
-          echo "base_version=${BASE_VERSION}" >> $GITHUB_OUTPUT
-          echo "target_repo_tag=${TARGET_REPO_TAG}" >> $GITHUB_OUTPUT
-          echo "release_display_name=${RELEASE_DISPLAY_NAME}" >> $GITHUB_OUTPUT
-          echo "curl_install_command=${CURL_INSTALL_COMMAND}" >> $GITHUB_OUTPUT
-
-      # Step 4: List all files to be uploaded as release assets.
-      - name: List Artifact Files for Release
-        id: list_files
-        run: |
-          # Find all downloaded archives (these are the .tar.gz and .zip files themselves)
-          # These are located in subdirectories named after their artifact name.
-          # Example path: ./nmc-cli-archive-Linux-x64/nmc-Linux-x64.tar.gz
-          ARCHIVES_TO_UPLOAD=$(find . -type f \( -name "nmc-*.tar.gz" -o -name "nmc-*.zip" \))
-          
-          # Combine archives and installer scripts
-          ALL_FILES_TO_UPLOAD="${ARCHIVES_TO_UPLOAD}"$'\n'"install-linux.sh"$'\n'"install-windows.ps1"
-          
-          # Output as a multiline string for softprops/action-gh-release
-          echo "files_to_upload<<EOF" >> $GITHUB_OUTPUT
-          echo "${ALL_FILES_TO_UPLOAD}" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
-
-      # Step 5: Create a GitHub Release in the target public repository ('aarnn-network')
-      # and upload the executable archives and install scripts as assets.
-      - name: Create GitHub Release in aarnn-network
+      - name: Publish snapshot
         uses: softprops/action-gh-release@v2
         with:
-          token: ${{ secrets.NMC_RELEASE_PAT }}
-          repository: neuralmimicry/aarnn-network
-          tag_name: ${{ steps.release_info.outputs.target_repo_tag }}
-          name: ${{ steps.release_info.outputs.release_display_name }}
-          body: |
-            NMC CLI executable and installation scripts for version ${{ steps.release_info.outputs.base_version }}.
-            This release provides binaries for Linux (x64, ARM64) and Windows (x64), along with platform-specific installation scripts.
+          tag_name: snapshot-main
+          target_commitish: ${{ github.sha }}
+          name: Snapshot build (main)
+          prerelease: true
+          make_latest: false
+          generate_release_notes: true
+          overwrite_files: true
+          files: |
+            release-assets/nmc-client-linux-x64.tar.gz
+            release-assets/nmc-client-windows-x64.zip
+            release-assets/nmc-server-linux-x64.tar.gz
 
-            **Supported Platforms:**
-            * Linux (x64)
-            * Linux (ARM64) - Requires cross-compilation on x64 runner
-            * Windows (x64)
+  release-tag:
+    name: Publish Tagged Release
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs:
+      - build-client-linux
+      - build-client-windows
+      - build-server-linux
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
 
-            **Installation Instructions:**
-
-            **For Linux (x64, ARM64):**
-            To quickly install the latest version, run the following command in your terminal:
-            ```bash
-            ${{ steps.release_info.outputs.curl_install_command }}
-            ```
-            Alternatively, to download and run manually:
-            1. Download `nmc-linux-<arch>.tar.gz` and `install-linux.sh` from this release.
-            2. Extract the archive: `tar -xzvf nmc-linux-<arch>.tar.gz`
-            3. Place `install-linux.sh` in the same directory as the extracted `nmc-Linux-<arch>` folder.
-            4. Make executable: `chmod +x install-linux.sh`
-            5. Run: `./install-linux.sh`
-            6. (Optional) Install to a custom directory:
-               ```bash
-               ./install-linux.sh --install-dir /opt/nmc-cli
-               ```
-
-            **For Windows (x64):**
-            1. Download the `nmc-windows-x64.zip` archive and `install-windows.ps1` from this release.
-            2. Extract the archive. This will create a directory (e.g., `nmc-Windows-x64`) containing `nmc.exe`.
-               ```powershell
-               Expand-Archive -Path nmc-windows-x64.zip -DestinationPath .
-               ```
-            3. Place `install-windows.ps1` in the *same directory* as the extracted `nmc-Windows-x64` folder.
-            4. Open PowerShell *as Administrator* and navigate to the directory where you extracted the files.
-            5. Run the installation script:
-               ```powershell
-               .\\install-windows.ps1
-               ```
-            6. (Optional) Install to a custom directory:
-               ```powershell
-               .\\install-windows.ps1 -InstallDir "C:\Custom\Path\nmc-cli"
-               ```
-            *Note: You may need to restart your terminal for `nmc.exe` to be accessible from any directory.*
-
-          files: ${{ steps.list_files.outputs.files_to_upload }} # All collected files for upload
-          draft: false
+      - name: Publish tagged release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: NMC ${{ github.ref_name }}
           prerelease: false
+          make_latest: true
+          generate_release_notes: true
+          overwrite_files: true
+          files: |
+            release-assets/nmc-client-linux-x64.tar.gz
+            release-assets/nmc-client-windows-x64.zip
+            release-assets/nmc-server-linux-x64.tar.gz

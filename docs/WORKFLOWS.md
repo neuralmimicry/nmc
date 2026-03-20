@@ -20,6 +20,12 @@ This document describes the end-to-end workflows that the CLI and server follow,
 2. `execute` validates required args and flags, then constructs the API request.
 3. The command invokes `CloudAPIClient`, receives a `CloudResponse`, and prints output using the selected format.
 
+**Version Update Check Workflow**
+1. `nmc version` returns the local client version.
+2. Unless `--no-check` is used, the CLI queries GitHub Releases (`neuralmimicry/nmc`) for the latest tag and reports whether an update is available.
+3. `nmc_server` performs the same release check at startup and logs whether a newer release exists.
+4. `GET /server/version` exposes server version and release-check results through the API.
+
 **Connection Management Workflow**
 1. The client loads `~/.nmc/config.json` at startup and keeps an in-memory list of connections.
 2. `connection make` writes a new connection to disk and optionally sets it as default.

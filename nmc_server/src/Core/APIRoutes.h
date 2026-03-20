@@ -185,6 +185,7 @@ namespace NMC::Server {
         void handleOpenShiftResources(const httplib::Request& req, httplib::Response& res);
         void handleOpenShiftClusters(const httplib::Request& req, httplib::Response& res);
         void handleOpenShiftRequestCluster(const httplib::Request& req, httplib::Response& res);
+        void handleServerVersion(const httplib::Request& req, httplib::Response& res);
         void handleTraceyHeartbeat(const httplib::Request& req, httplib::Response& res);
         void handleListTraceyAgents(const httplib::Request& req, httplib::Response& res);
         void handleRecruitNode(const httplib::Request& req, httplib::Response& res);

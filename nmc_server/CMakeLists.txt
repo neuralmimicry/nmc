@@ -4,6 +4,7 @@ project(nmc_server CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
 set(CMAKE_POLICY_VERSION_MINIMUM 3.14) # Ensure policies are consistent with CMAKE_MINIMUM_REQUIRED
+set(NMC_SERVER_VERSION "0.0.1" CACHE STRING "NMC server semantic version")
 set(CMAKE_FIND_PACKAGE_PREFER_CONFIG TRUE)
 set(CMAKE_FIND_PACKAGE_NO_SYSTEM_PACKAGE_REGISTRY TRUE)
 set(CMAKE_FIND_PACKAGE_NO_DEFAULT_PATH TRUE)
@@ -162,6 +163,7 @@ set(NMC_SERVER_SOURCES
         src/Core/K8sHandlers.cpp
         src/Core/OIDCValidator.cpp
         src/Core/OpenShiftClient.cpp
+        src/Core/VersionCheck.cpp
         src/Core/Utils.cpp
 )
 
@@ -197,6 +199,7 @@ target_link_libraries(nmc_server PRIVATE
         # Link against Zstandard via the imported target
         ${ZSTD_LIBRARIES}
 )
+target_compile_definitions(nmc_server PRIVATE NMC_SERVER_VERSION="${NMC_SERVER_VERSION}")
 
 # Add compiler warnings for best practices
 if (CMAKE_CXX_COMPILER_ID MATCHES "(GNU|Clang)")

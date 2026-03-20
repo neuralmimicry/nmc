@@ -5,6 +5,7 @@ project(nmc CXX) # Project name is 'nmc' for the client executable
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
 set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+set(NMC_CLIENT_VERSION "0.0.1" CACHE STRING "NMC client semantic version")
 # Include FetchContent module for automatic dependency downloading
 include(FetchContent)
 
@@ -47,6 +48,7 @@ set(NMC_CLIENT_SOURCES
         src/Commands/VersionCommand.cpp
         src/Commands/VMCommands.cpp
         src/Core/CloudAPIClient.cpp
+        src/Core/VersionCheck.cpp
         src/Core/Utils.cpp
 )
 
@@ -67,6 +69,7 @@ target_link_libraries(nmc PRIVATE nlohmann_json::nlohmann_json httplib)
 # Add a compile definition to explicitly disable SSL support in httplib from the client's perspective.
 # This ensures that the #ifdef CPPHTTPLIB_OPENSSL_SUPPORT block in httplib.h is skipped.
 target_compile_definitions(nmc PRIVATE CPPHTTPLIB_NO_SSL_SUPPORT)
+target_compile_definitions(nmc PRIVATE NMC_CLIENT_VERSION="${NMC_CLIENT_VERSION}")
 
 
 # Optional: Add compiler warnings for best practices

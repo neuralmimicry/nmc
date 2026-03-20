@@ -4,6 +4,7 @@
 #include <iostream>
 #include <httplib.h>
 #include "APIRoutes.h"   // Our route handler class
+#include "VersionCheck.h"
 #include "K8sHandlers.h"
 #include <string>
 #include <vector>        // Required for std::vector
@@ -177,6 +178,22 @@ int main(int argc, char* argv[]) {
                 spdlog::warn("NMC_OIDC_INTROSPECTION_URL is not set. OIDC authentication will fail closed.");
             }
         }
+
+        const auto releaseInfo = NMC::Server::VersionCheck::checkLatestRelease();
+        spdlog::info("nmc_server version {}", releaseInfo.currentVersion);
+        if (releaseInfo.checkSucceeded) {
+            if (releaseInfo.updateAvailable) {
+                spdlog::warn("New release available: {} (current: {}).",
+                             releaseInfo.latestVersion,
+                             releaseInfo.currentVersion);
+            } else {
+                spdlog::info("Release check: current version is up to date (latest: {}).",
+                             releaseInfo.latestVersion);
+            }
+        } else {
+            spdlog::warn("Release check failed: {}", releaseInfo.message);
+        }
+
         //
         // 1) Handle '-k' or '-c' overrides, or fall back to env/default config.json
         //
