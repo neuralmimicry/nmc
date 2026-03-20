@@ -5,13 +5,15 @@
 #include <cctype>
 #include <cstdlib>
 #include <cstdio>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <set>
 #include <string>
+#ifndef _WIN32
 #include <sys/wait.h>
-#include <unistd.h>
+#endif
 #include <vector>
 
 #include <nlohmann/json.hpp>
@@ -116,6 +118,18 @@ std::string normalizeNodeType(const std::string& nodeType) {
 }
 
 std::string shellQuote(const std::string& value) {
+#ifdef _WIN32
+    std::string quoted = "\"";
+    for (const char ch : value) {
+        if (ch == '"') {
+            quoted += "\\\"";
+        } else {
+            quoted.push_back(ch);
+        }
+    }
+    quoted.push_back('"');
+    return quoted;
+#else
     std::string quoted = "'";
     for (const char ch : value) {
         if (ch == '\'') {
@@ -126,6 +140,7 @@ std::string shellQuote(const std::string& value) {
     }
     quoted.push_back('\'');
     return quoted;
+#endif
 }
 
 std::string commandToShellString(const std::vector<std::string>& args) {
@@ -149,7 +164,11 @@ ExecResult runShellCommand(const std::vector<std::string>& args, size_t outputLi
     }
 
     const std::string command = commandToShellString(args) + " 2>&1";
+#ifdef _WIN32
+    FILE* pipe = _popen(command.c_str(), "r");
+#else
     FILE* pipe = ::popen(command.c_str(), "r");
+#endif
     if (!pipe) {
         result.output = "Unable to execute command.";
         return result;
@@ -168,9 +187,20 @@ ExecResult runShellCommand(const std::vector<std::string>& args, size_t outputLi
         }
     }
 
-    const int status = ::pclose(pipe);
+    int status = -1;
+#ifdef _WIN32
+    status = _pclose(pipe);
+    if (status != -1) {
+        result.exitCode = status;
+    }
+#else
+    status = ::pclose(pipe);
     if (status != -1 && WIFEXITED(status)) {
         result.exitCode = WEXITSTATUS(status);
+    }
+#endif
+    if (status == -1) {
+        result.exitCode = 1;
     }
 
     if (outputTruncated) {
@@ -215,35 +245,43 @@ bool writeTempFile(const std::string& content, std::string& pathOut, std::string
     pathOut.clear();
     errorOut.clear();
 
-    char tmpName[] = "/tmp/nmc-recruit-XXXXXX";
-    const int fd = ::mkstemp(tmpName);
-    if (fd < 0) {
-        errorOut = "Failed to create temporary file.";
-        return false;
-    }
-    ::close(fd);
-
     try {
-        std::ofstream output(tmpName, std::ios::binary | std::ios::trunc);
+        const std::filesystem::path tempDir = std::filesystem::temp_directory_path();
+        std::filesystem::path tempFilePath;
+        bool reserved = false;
+        for (int attempt = 0; attempt < 100; ++attempt) {
+            const auto nonce = std::chrono::high_resolution_clock::now().time_since_epoch().count();
+            tempFilePath = tempDir / ("nmc-recruit-" + std::to_string(nonce) + "-" + std::to_string(attempt));
+            if (!std::filesystem::exists(tempFilePath)) {
+                reserved = true;
+                break;
+            }
+        }
+        if (!reserved) {
+            errorOut = "Failed to allocate temporary file path.";
+            return false;
+        }
+
+        std::ofstream output(tempFilePath, std::ios::binary | std::ios::trunc);
         if (!output.is_open()) {
             errorOut = "Failed to open temporary file for writing.";
-            ::unlink(tmpName);
             return false;
         }
         output << content;
         output.close();
+        std::error_code permsEc;
         std::filesystem::permissions(
-            tmpName,
+            tempFilePath,
             std::filesystem::perms::owner_read |
             std::filesystem::perms::owner_write |
             std::filesystem::perms::owner_exec,
-            std::filesystem::perm_options::replace
+            std::filesystem::perm_options::replace,
+            permsEc
         );
-        pathOut = tmpName;
+        pathOut = tempFilePath.string();
         return true;
     } catch (const std::exception& e) {
         errorOut = "Failed to write temporary file: " + std::string(e.what());
-        ::unlink(tmpName);
         return false;
     }
 }
@@ -640,7 +678,8 @@ Models::CloudResponse runDirectRecruitment(const nlohmann::json& payload) {
             ~CleanupGuard() {
                 for (const auto& path : paths) {
                     if (!path.empty()) {
-                        ::unlink(path.c_str());
+                        std::error_code ec;
+                        std::filesystem::remove(path, ec);
                     }
                 }
             }

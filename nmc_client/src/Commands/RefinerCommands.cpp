@@ -7,7 +7,9 @@
 #include <filesystem>
 #include <sstream>
 #include <string>
+#ifndef _WIN32
 #include <sys/wait.h>
+#endif
 #include <vector>
 
 #include <nlohmann/json.hpp>
@@ -22,6 +24,18 @@ struct CommandResult {
 };
 
 std::string shellQuote(const std::string& value) {
+#ifdef _WIN32
+    std::string quoted = "\"";
+    for (const char ch : value) {
+        if (ch == '"') {
+            quoted += "\\\"";
+        } else {
+            quoted.push_back(ch);
+        }
+    }
+    quoted.push_back('"');
+    return quoted;
+#else
     std::string quoted = "'";
     for (const char ch : value) {
         if (ch == '\'') {
@@ -32,6 +46,7 @@ std::string shellQuote(const std::string& value) {
     }
     quoted.push_back('\'');
     return quoted;
+#endif
 }
 
 bool hasControlChars(const std::string& value) {
@@ -58,7 +73,11 @@ CommandResult runCommand(const std::vector<std::string>& args) {
     }
     cmd << " 2>&1";
 
+#ifdef _WIN32
+    FILE* pipe = _popen(cmd.str().c_str(), "r");
+#else
     FILE* pipe = popen(cmd.str().c_str(), "r");
+#endif
     if (!pipe) {
         result.output = "Unable to execute command.";
         return result;
@@ -69,7 +88,16 @@ CommandResult runCommand(const std::vector<std::string>& args) {
         result.output.append(buffer.data());
     }
 
-    const int status = pclose(pipe);
+    int status = -1;
+#ifdef _WIN32
+    status = _pclose(pipe);
+    if (status == -1) {
+        result.exitCode = 1;
+    } else {
+        result.exitCode = status;
+    }
+#else
+    status = pclose(pipe);
     if (status == -1) {
         result.exitCode = 1;
     } else if (WIFEXITED(status)) {
@@ -77,6 +105,7 @@ CommandResult runCommand(const std::vector<std::string>& args) {
     } else {
         result.exitCode = 1;
     }
+#endif
     return result;
 }
 
