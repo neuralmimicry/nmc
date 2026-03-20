@@ -665,6 +665,22 @@ namespace NMC::Server {
             svr.Get("/docs", [](const httplib::Request& req, httplib::Response& res) {
                 res.set_content(Utils::readFile("./docs/index.html"), "text/html");
             });
+            svr.Get("/login", [](const httplib::Request& req, httplib::Response& res) {
+                res.set_content(Utils::readFile("./docs/login.html"), "text/html");
+            });
+            // Legacy launch path used by neuralmimicry.ai control-panel links.
+            svr.Get(R"(^/services/health/monitoring/?$)", [](const httplib::Request& req, httplib::Response& res) {
+                res.set_content(Utils::readFile("./docs/index.html"), "text/html");
+            });
+            svr.Get(R"(^/services/health/monitoring/index\.html$)", [](const httplib::Request& req, httplib::Response& res) {
+                res.set_content(Utils::readFile("./docs/index.html"), "text/html");
+            });
+            svr.Get(R"(^/services/health/monitoring/login/?$)", [](const httplib::Request& req, httplib::Response& res) {
+                res.set_content(Utils::readFile("./docs/login.html"), "text/html");
+            });
+            svr.Get("/logout", [](const httplib::Request& req, httplib::Response& res) {
+                res.set_redirect("/login");
+            });
         }
 
         auto guard = [this](const httplib::Request& req, httplib::Response& res) -> bool {

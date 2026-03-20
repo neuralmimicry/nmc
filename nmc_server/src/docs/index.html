@@ -4,30 +4,50 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Continuum Control Center</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;700&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="dashboard.css">
+    <link rel="stylesheet" href="/dashboard.css">
 </head>
 <body>
-<div class="background-glow"></div>
-<main class="layout">
-    <header class="hero">
-        <div>
-            <p class="eyebrow">Neural Mimicry Continuum</p>
-            <h1>Control Center</h1>
-            <p class="subtitle">Unified status and health monitoring for Kubernetes, OpenShift, VM workloads, and detected Tracey agents.</p>
-        </div>
-        <div class="auth-panel">
-            <label for="tokenInput">API Token</label>
-            <div class="token-row">
-                <input id="tokenInput" type="password" placeholder="Bearer or X-NMC-Token value">
-                <button id="saveTokenBtn" type="button">Apply</button>
-            </div>
-            <p class="hint">If authentication is enabled, provide your token once and the dashboard will include it automatically.</p>
-        </div>
-    </header>
+<div class="bg">
+    <span class="orb orb-1"></span>
+    <span class="orb orb-2"></span>
+    <span class="orb orb-3"></span>
+</div>
 
+<header class="site-nav">
+    <div class="site-nav-inner">
+        <a class="site-nav-brand" href="https://neuralmimicry.ai/" aria-label="Neuralmimicry main site">
+            <img class="site-nav-logo" src="/public/nmcontinuum.png" alt="Continuum logo">
+            <span>Continuum</span>
+        </a>
+        <div class="site-nav-links">
+            <a href="https://neuralmimicry.ai/">Home</a>
+            <a href="https://neuralmimicry.ai/about">About</a>
+            <a href="https://neuralmimicry.ai/solutions">Solutions</a>
+            <a href="https://neuralmimicry.ai/news">News</a>
+            <a href="https://neuralmimicry.ai/github">GitHub</a>
+            <a href="https://neuralmimicry.ai/team">Team</a>
+            <a href="https://neuralmimicry.ai/careers">Careers</a>
+        </div>
+        <div class="site-nav-actions">
+            <div class="site-nav-user">
+                <span>Auth</span>
+                <strong id="sessionLabel">Token not set</strong>
+            </div>
+            <a class="site-nav-link" href="https://neuralmimicry.ai/control-panel">Control Panel</a>
+            <button id="logoutBtn" class="site-nav-link site-nav-logout" type="button">Log out</button>
+        </div>
+    </div>
+</header>
+
+<header class="hero hero-compact">
+    <div>
+        <h1><img class="headline-logo" src="/public/nmcontinuum.png" alt="Continuum logo"> Control Center</h1>
+        <p class="subtitle">Unified status and health monitoring for Kubernetes, OpenShift, VM workloads, and detected Tracey agents.</p>
+    </div>
+    <a class="site-nav-link site-nav-cta" href="/login">Sign in</a>
+</header>
+
+<main class="layout">
     <section class="status-strip">
         <div class="status-pill" id="k8sApiPill">K8s API: <span>Checking</span></div>
         <div class="status-pill" id="authPill">Auth: <span>Unknown</span></div>
@@ -73,7 +93,7 @@
                     </tr>
                     </thead>
                     <tbody id="k8sRows">
-                    <tr><td colspan="3" class="empty">Loading cluster status…</td></tr>
+                    <tr><td colspan="3" class="empty">Loading cluster status...</td></tr>
                     </tbody>
                 </table>
             </div>
@@ -94,7 +114,7 @@
                     </tr>
                     </thead>
                     <tbody id="openshiftRows">
-                    <tr><td colspan="3" class="empty">Loading OpenShift status…</td></tr>
+                    <tr><td colspan="3" class="empty">Loading OpenShift status...</td></tr>
                     </tbody>
                 </table>
             </div>
@@ -117,7 +137,7 @@
                     </tr>
                     </thead>
                     <tbody id="traceyRows">
-                    <tr><td colspan="5" class="empty">Waiting for Tracey agents…</td></tr>
+                    <tr><td colspan="5" class="empty">Waiting for Tracey agents...</td></tr>
                     </tbody>
                 </table>
             </div>
@@ -142,7 +162,7 @@
                     </tr>
                     </thead>
                     <tbody id="traceyNetworkRows">
-                    <tr><td colspan="7" class="empty">Waiting for discovery announcements…</td></tr>
+                    <tr><td colspan="7" class="empty">Waiting for discovery announcements...</td></tr>
                     </tbody>
                 </table>
             </div>
@@ -168,17 +188,17 @@
             <span class="panel-tag">Documentation</span>
         </div>
         <div class="doc-links">
-            <a href="bucket.html">Bucket API</a>
-            <a href="k8s.html">Kubernetes API</a>
-            <a href="openshift.html">OpenShift API</a>
-            <a href="model.html">Model API</a>
-            <a href="ssh.html">SSH API</a>
-            <a href="tracey.html">Tracey Agent API</a>
-            <a href="vm.html">VM API</a>
+            <a href="/bucket.html">Bucket API</a>
+            <a href="/k8s.html">Kubernetes API</a>
+            <a href="/openshift.html">OpenShift API</a>
+            <a href="/model.html">Model API</a>
+            <a href="/ssh.html">SSH API</a>
+            <a href="/tracey.html">Tracey Agent API</a>
+            <a href="/vm.html">VM API</a>
         </div>
     </section>
 </main>
 
-<script src="dashboard.js"></script>
+<script src="/dashboard.js"></script>
 </body>
 </html>

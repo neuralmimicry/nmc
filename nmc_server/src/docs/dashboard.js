@@ -1,9 +1,10 @@
 (function () {
     const REFRESH_INTERVAL_MS = 15000;
+    const TOKEN_STORAGE_KEY = "nmc_dashboard_token";
 
     const nodes = {
-        tokenInput: document.getElementById("tokenInput"),
-        saveTokenBtn: document.getElementById("saveTokenBtn"),
+        sessionLabel: document.getElementById("sessionLabel"),
+        logoutBtn: document.getElementById("logoutBtn"),
         k8sMetric: document.getElementById("k8sMetric"),
         openshiftMetric: document.getElementById("openshiftMetric"),
         vmMetric: document.getElementById("vmMetric"),
@@ -21,6 +22,8 @@
         traceyStatus: document.getElementById("traceyStatus")
     };
 
+    let authToken = loadToken();
+
     function nowIsoTime() {
         return new Date().toLocaleTimeString();
     }
@@ -35,32 +38,50 @@
     }
 
     function loadToken() {
-        const urlToken = new URLSearchParams(window.location.search).get("token");
+        const urlToken = (new URLSearchParams(window.location.search).get("token") || "").trim();
         if (urlToken) {
-            localStorage.setItem("nmc_dashboard_token", urlToken);
+            localStorage.setItem(TOKEN_STORAGE_KEY, urlToken);
             return urlToken;
         }
-        return localStorage.getItem("nmc_dashboard_token") || "";
+        return (localStorage.getItem(TOKEN_STORAGE_KEY) || "").trim();
     }
 
     function saveToken(token) {
         const trimmed = (token || "").trim();
         if (trimmed) {
-            localStorage.setItem("nmc_dashboard_token", trimmed);
+            localStorage.setItem(TOKEN_STORAGE_KEY, trimmed);
         } else {
-            localStorage.removeItem("nmc_dashboard_token");
+            localStorage.removeItem(TOKEN_STORAGE_KEY);
         }
+        authToken = trimmed;
+        updateSessionLabel();
         return trimmed;
     }
 
-    function authHeaders() {
-        const token = (nodes.tokenInput.value || "").trim();
-        const headers = { "Accept": "application/json" };
+    function maskToken(token) {
         if (!token) {
+            return "Token not set";
+        }
+        if (token.length <= 10) {
+            return token;
+        }
+        return `${token.slice(0, 4)}...${token.slice(-4)}`;
+    }
+
+    function updateSessionLabel() {
+        if (!nodes.sessionLabel) {
+            return;
+        }
+        nodes.sessionLabel.textContent = authToken ? `Bearer ${maskToken(authToken)}` : "Token not set";
+    }
+
+    function authHeaders() {
+        const headers = { "Accept": "application/json" };
+        if (!authToken) {
             return headers;
         }
-        headers.Authorization = `Bearer ${token}`;
-        headers["X-NMC-Token"] = token;
+        headers.Authorization = `Bearer ${authToken}`;
+        headers["X-NMC-Token"] = authToken;
         return headers;
     }
 
@@ -158,20 +179,36 @@
         return { running, total: items.length };
     }
 
+    function redirectToLogin(reason) {
+        const query = new URLSearchParams();
+        if (reason) {
+            query.set("reason", reason);
+        }
+        const next = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+        if (next && !next.startsWith("/login")) {
+            query.set("next", next);
+        }
+        const suffix = query.toString();
+        window.location.href = suffix ? `/login?${suffix}` : "/login";
+    }
+
     function updateAuthPill(lastResults) {
         const unauthorized = lastResults.some((r) => r.status === 401);
-        const tokenPresent = Boolean((nodes.tokenInput.value || "").trim());
         if (unauthorized) {
-            setPill(nodes.authPill, "Auth", "Unauthorized", "rgba(239,71,111,0.8)");
-        } else if (tokenPresent) {
-            setPill(nodes.authPill, "Auth", "Token Applied", "rgba(101,208,144,0.8)");
+            setPill(nodes.authPill, "Auth", "Unauthorized", "rgba(239,68,68,0.85)");
+            window.setTimeout(() => redirectToLogin("unauthorized"), 400);
+            return;
+        }
+
+        if (authToken) {
+            setPill(nodes.authPill, "Auth", "Token Applied", "rgba(34,197,94,0.8)");
         } else {
-            setPill(nodes.authPill, "Auth", "Token Optional", "rgba(126,170,194,0.5)");
+            setPill(nodes.authPill, "Auth", "Token Optional", "rgba(216,210,202,0.45)");
         }
     }
 
     async function refreshDashboard() {
-        setPill(nodes.refreshPill, "Refresh", "Updating", "rgba(244,162,97,0.7)");
+        setPill(nodes.refreshPill, "Refresh", "Updating", "rgba(245,158,11,0.8)");
 
         const [
             k8sListRes,
@@ -258,19 +295,18 @@
         renderRows(nodes.traceyNetworkRows, traceyNetworkRows, "No discovered Tracey nodes yet.", 7);
 
         const k8sHealthy = k8sHealthRes.ok;
-        const k8sTone = k8sHealthy ? "rgba(101,208,144,0.8)" : "rgba(239,71,111,0.8)";
-        setPill(nodes.k8sApiPill, "K8s API", k8sHealthy ? "Healthy" : "Unavailable", k8sTone);
+        setPill(nodes.k8sApiPill, "K8s API", k8sHealthy ? "Healthy" : "Unavailable", k8sHealthy ? "rgba(34,197,94,0.8)" : "rgba(239,68,68,0.8)");
 
-        setCheck(nodes.connStatus, connectionRes.ok ? "Reachable" : "Unavailable", connectionRes.ok ? "#65d090" : "#ef476f");
-        setCheck(nodes.resourceStatus, openshiftResourcesRes.ok ? "Reachable" : "Unavailable", openshiftResourcesRes.ok ? "#65d090" : "#ef476f");
-        setCheck(nodes.vmInventoryStatus, vmListRes.ok ? `${vmItems.length} listed` : "Unavailable", vmListRes.ok ? "#65d090" : "#ef476f");
+        setCheck(nodes.connStatus, connectionRes.ok ? "Reachable" : "Unavailable", connectionRes.ok ? "#22c55e" : "#ef4444");
+        setCheck(nodes.resourceStatus, openshiftResourcesRes.ok ? "Reachable" : "Unavailable", openshiftResourcesRes.ok ? "#22c55e" : "#ef4444");
+        setCheck(nodes.vmInventoryStatus, vmListRes.ok ? `${vmItems.length} listed` : "Unavailable", vmListRes.ok ? "#22c55e" : "#ef4444");
         const reachableTracey = Number(traceySummary.reachable || 0);
         const discoveredTracey = Number(traceySummary.discovered || 0);
         const nonCompliantResources = Number(requirementSummary.noncompliant || 0);
         const managedResources = Number(requirementSummary.total || 0);
         const traceyTone = !traceyAgentsRes.ok
-            ? "#ef476f"
-            : (nonCompliantResources > 0 ? "#ffbf69" : "#65d090");
+            ? "#ef4444"
+            : (nonCompliantResources > 0 ? "#f59e0b" : "#22c55e");
         setCheck(
             nodes.traceyStatus,
             traceyAgentsRes.ok
@@ -279,27 +315,21 @@
             traceyTone
         );
 
-        setPill(nodes.refreshPill, "Refresh", `Updated ${nowIsoTime()}`, "rgba(126,170,194,0.5)");
+        setPill(nodes.refreshPill, "Refresh", `Updated ${nowIsoTime()}`, "rgba(216,210,202,0.45)");
     }
 
-    function initializeTokenUi() {
-        const initialToken = loadToken();
-        nodes.tokenInput.value = initialToken;
-        nodes.saveTokenBtn.addEventListener("click", () => {
-            const applied = saveToken(nodes.tokenInput.value);
-            nodes.tokenInput.value = applied;
-            refreshDashboard();
-        });
-        nodes.tokenInput.addEventListener("keydown", (event) => {
-            if (event.key === "Enter") {
-                const applied = saveToken(nodes.tokenInput.value);
-                nodes.tokenInput.value = applied;
-                refreshDashboard();
-            }
+    function initializeSessionUi() {
+        updateSessionLabel();
+        if (!nodes.logoutBtn) {
+            return;
+        }
+        nodes.logoutBtn.addEventListener("click", () => {
+            saveToken("");
+            redirectToLogin("logout");
         });
     }
 
-    initializeTokenUi();
+    initializeSessionUi();
     refreshDashboard();
     window.setInterval(refreshDashboard, REFRESH_INTERVAL_MS);
 })();
