@@ -1167,6 +1167,20 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
             return true;
         };
 
+        // --- Unauthenticated Health ---
+        // Lightweight probe for CLI connection checks and external monitors.
+        svr.Get("/health", [this](const httplib::Request& req, httplib::Response& res) {
+            ensureRequestId(req, res);
+            Models::CloudResponse apiResponse;
+            apiResponse.success = true;
+            apiResponse.message = "nmc_server is healthy.";
+            apiResponse.data = {
+                    {"status", "ok"},
+                    {"service", "nmc_server"}
+            };
+            sendJsonResponse(res, apiResponse);
+        });
+
         // --- Server Metadata ---
         svr.Get("/server/version", [this, guard](const httplib::Request& req, httplib::Response& res) {
             if (!guard(req, res)) return;
@@ -1313,6 +1327,10 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
         svr.Delete(R"(/ssh/delete/(.*))", [this, guard](const httplib::Request& req, httplib::Response& res) {
             if (!guard(req, res)) return;
             handleDeleteSSHKey(req, res);
+        });
+        svr.Get(R"(/ssh/get/(.*))", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            handleGetSSHKey(req, res);
         });
         svr.Get("/ssh/list", [this, guard](const httplib::Request& req, httplib::Response& res) {
             if (!guard(req, res)) return;
@@ -1907,6 +1925,34 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
         } else {
             sendErrorResponse(res, 404, "SSH key '" + id + "' not found.");
         }
+    }
+
+    /**
+     * @brief Handles retrieval of a single SSH key by ID.
+     *
+     * Returns redacted key metadata when found.
+     *
+     * @param req The httplib::Request object.
+     * @param res The httplib::Response object.
+     */
+    void APIRoutes::handleGetSSHKey(const httplib::Request& req, httplib::Response& res) {
+        const std::string id = req.matches[1];
+        if (id.empty()) {
+            return sendErrorResponse(res, 400, "SSH key ID is required.");
+        }
+
+        std::lock_guard<std::mutex> lock(dataMutex);
+        const auto it = std::find_if(sshKeys.begin(), sshKeys.end(),
+                                     [&](const Models::SSHKey& k) { return k.id == id; });
+        if (it == sshKeys.end()) {
+            return sendErrorResponse(res, 404, "SSH key '" + id + "' not found.");
+        }
+
+        Models::CloudResponse apiResponse;
+        apiResponse.success = true;
+        apiResponse.message = "SSH key '" + id + "' retrieved successfully.";
+        apiResponse.data = it->toJsonString();
+        sendJsonResponse(res, apiResponse);
     }
 
     /**

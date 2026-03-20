@@ -1,6 +1,6 @@
 # Security, ISO 27001, and SOC 2 Readiness
 
-This document describes security controls implemented in the NMC client/server codebase and the operational practices required to satisfy ISO 27001 and SOC 2 expectations. It is not a certification report, but a mapping of controls to code and deployment behaviors.
+This document describes security controls implemented in the NMC client/server codebase and the operational practices required to satisfy ISO 27001 and SOC 2 expectations. It is not a certification report, but a mapping of controls to code and deployment behaviours.
 
 ## Scope
 - **In scope**: `nmc_client`, `nmc_server`, and the OpenShift proxy integration to the NeuralMimicry OpenShift portal (oshift).
@@ -22,6 +22,7 @@ This document describes security controls implemented in the NMC client/server c
 - **Payload size limit** enforced by `NMC_MAX_BODY_BYTES` (default 1 MiB).
 - Consistent JSON error responses and status codes for all handlers.
 - `/node/recruit` validates SSH targets, paths, capability values, tenant metadata, and `ansible_extra_vars` keys to reduce command injection and malformed automation payloads.
+- `GET /health` exposes a minimal unauthenticated liveness response (`status`, `service`) with no sensitive payload data.
 
 ### Log Hygiene (ISO 27001 A.8, SOC 2 CC7)
 - Request bodies are **redacted** for sensitive endpoints:
@@ -98,7 +99,7 @@ These items must be enforced outside code to meet ISO 27001 and SOC 2 expectatio
 - `NMC_OIDC_AUDIENCE`: Expected `aud` claim (single or comma-separated list).
 - `NMC_OIDC_ALLOWED_AUDIENCES`: Comma-separated list of acceptable audiences (optional).
 - `NMC_OIDC_REQUIRED_SCOPE`: Comma-separated scopes that must be present (optional).
-- `NMC_RECRUIT_TOKEN`: Optional secondary secret required by `/node/recruit` for node onboarding authorization.
+- `NMC_RECRUIT_TOKEN`: Optional secondary secret required by `/node/recruit` for node onboarding authorisation.
 - `NMC_RECRUIT_ANSIBLE_PLAYBOOK`: Optional default Ansible playbook path used when `/node/recruit` is called with `auto_configure=true` and no explicit `ansible_playbook`.
 - `NMC_RELEASE_CHECK_URL`: Optional override for the GitHub releases endpoint used by version update checks.
 - Compatibility aliases: `NM_AUTH_MODE`, `NM_AUTH_TOKEN`, and `NM_OIDC_*` are also honored for cross-project SSO setups.

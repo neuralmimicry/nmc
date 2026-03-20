@@ -6,6 +6,7 @@
 #include <algorithm> // For std::find_if, std::remove_if
 #include <fstream>   // For file operations (std::ifstream, std::ofstream)
 #include <filesystem> // For creating directories (C++17)
+#include <array>
 #include <cstdlib>
 
 namespace {
@@ -55,9 +56,9 @@ namespace NMC::Core {
         return true;
     }
 
-    // Constructor: Initializes the httplib client with the server's host and port.
+    // Constructor: Initialises the httplib client with the server's host and port.
     CloudAPIClient::CloudAPIClient(const std::string& host, int port, const std::string& filePath)
-            : host(host), port(port), configFilePath(filePath) { // Initialize configFilePath
+            : host(host), port(port), configFilePath(filePath) { // Initialises configFilePath
         loadConnections(false); // Load connections on construction
         cli = std::make_unique<httplib::Client>(host, port);
         cli->set_connection_timeout(5);
@@ -452,35 +453,97 @@ namespace NMC::Core {
                     nlohmann::json{{"isActive", false}, {"status", "inconsistent"}}};
         }
 
-        // Now, attempt to ping the endpoint to check health
-        // Create a temporary httplib client for the specific connection's endpoint
-        // Use a host and port derived from the connection's endpoint URL
-        httplib::Client temp_cli(it->endpoint);
-        temp_cli.set_connection_timeout(5);
-        temp_cli.set_read_timeout(10);
-        temp_cli.set_write_timeout(10);
-        applyAuthHeaders(temp_cli, resolveAuthToken());
+        // Probe the selected endpoint with a tolerant fallback chain so older
+        // server versions still report useful reachability information.
+        std::unique_ptr<httplib::Client> tempCli;
+        initCliFromUrl(tempCli, it->endpoint, host, port);
+        tempCli->set_connection_timeout(5);
+        tempCli->set_read_timeout(10);
+        tempCli->set_write_timeout(10);
+        applyAuthHeaders(*tempCli, resolveAuthToken());
 
-        httplib::Result res = temp_cli.Get("/health"); // Assuming a /health endpoint for basic check
+        std::string probePath = "/health";
+        int probeHttpStatus = 0;
+        std::string status = "unhealthy";
+        std::string diagnostic = "";
+        bool reachable = false;
+        bool healthy = false;
+
+        // Probe in priority order and keep going when a route is unavailable or
+        // returns a non-fatal status, so older server versions are detected as
+        // reachable instead of being marked unhealthy immediately.
+        const std::array<std::string, 3> probeChain = {
+                "/health",
+                "/server/version",
+                "/connections/status"
+        };
+
+        for (const auto& path : probeChain) {
+            const httplib::Result probe = tempCli->Get(path);
+            probePath = path;
+
+            if (!probe) {
+                probeHttpStatus = 0;
+                diagnostic = "Probe to " + path + " failed: " + httplib::to_string(probe.error());
+                continue;
+            }
+
+            probeHttpStatus = probe->status;
+            reachable = true;
+
+            if (probe->status >= 200 && probe->status < 300) {
+                healthy = true;
+                status = "healthy";
+                diagnostic.clear();
+                break;
+            }
+
+            if (probe->status == 401 || probe->status == 403) {
+                status = "reachable_auth_required";
+                diagnostic = "Endpoint is reachable but authentication failed.";
+                break;
+            }
+
+            if (probe->status == 404 || probe->status == 405) {
+                status = "reachable_unknown_health";
+                diagnostic = "Endpoint is reachable but health route is unavailable.";
+                continue;
+            }
+
+            status = "reachable_unknown_health";
+            diagnostic = "HTTP status " + std::to_string(probe->status) + " from " + path + ".";
+        }
 
         Models::CloudResponse response;
-        if (res && res->status == 200) {
+        if (reachable) {
             response.success = true;
-            response.message = "Current connection: " + it->name + " (" + it->endpoint + ") is active and healthy.";
+            if (healthy) {
+                response.message = "Current connection: " + it->name + " (" + it->endpoint + ") is active and healthy.";
+            } else if (status == "reachable_auth_required") {
+                response.message = "Current connection: " + it->name + " (" + it->endpoint + ") is reachable, but authentication is required.";
+            } else {
+                response.message = "Current connection: " + it->name + " (" + it->endpoint + ") is reachable.";
+            }
             response.data = nlohmann::json{
                     {"name", it->name},
                     {"endpoint", it->endpoint},
                     {"isActive", it->isActive},
-                    {"status", "healthy"}
+                    {"status", status},
+                    {"probe_path", probePath},
+                    {"probe_http_status", probeHttpStatus},
+                    {"diagnostic", diagnostic}
             };
         } else {
             response.success = false;
-            response.message = "Connection to " + it->name + " (" + it->endpoint + ") failed or is unhealthy. Error: " + (res ? std::to_string(res->status) : httplib::to_string(res.error()));
+            response.message = "Connection to " + it->name + " (" + it->endpoint + ") failed. " + diagnostic;
             response.data = nlohmann::json{
                     {"name", it->name},
                     {"endpoint", it->endpoint},
                     {"isActive", it->isActive},
-                    {"status", "unhealthy"}
+                    {"status", "unhealthy"},
+                    {"probe_path", probePath},
+                    {"probe_http_status", probeHttpStatus},
+                    {"diagnostic", diagnostic}
             };
         }
         return response;
@@ -692,7 +755,7 @@ namespace NMC::Core {
         } catch (const nlohmann::json::parse_error &e) {
             std::cerr << "Error: Could not parse config file " << configFilePath << ". It might be corrupted. "
                       << e.what() << std::endl;
-            // Initialize with an empty config to prevent crashes
+            // Initialises with an empty config to prevent crashes
             connectionsConfig["connections"] = nlohmann::json::array();
             connectionsConfig["default_connection"] = "";
         }

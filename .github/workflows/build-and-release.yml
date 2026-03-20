@@ -18,9 +18,20 @@ permissions:
   contents: write
 
 jobs:
+  api-contract-test:
+    name: API Contract Test (Client/Server)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Run contract test
+        run: python3 tests/contracts/api_route_contract_test.py
+
   build-client-linux:
     name: Build Client (Linux x64)
     runs-on: ubuntu-latest
+    needs: api-contract-test
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -64,6 +75,7 @@ jobs:
   build-client-windows:
     name: Build Client (Windows x64)
     runs-on: windows-latest
+    needs: api-contract-test
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -103,9 +115,49 @@ jobs:
           path: nmc-client-windows-x64.zip
           retention-days: 7
 
+  build-client-macos:
+    name: Build Client (macOS)
+    runs-on: macos-latest
+    needs: api-contract-test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Compute build version
+        id: version
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            echo "value=${GITHUB_REF_NAME#v}" >> "${GITHUB_OUTPUT}"
+          else
+            echo "value=0.0.1-main.${GITHUB_RUN_NUMBER}" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Configure
+        run: cmake -S nmc_client -B nmc_client/build -DCMAKE_BUILD_TYPE=Release -DNMC_CLIENT_VERSION=${{ steps.version.outputs.value }}
+
+      - name: Build
+        run: cmake --build nmc_client/build --config Release -- -j"$(sysctl -n hw.ncpu)"
+
+      - name: Smoke test
+        run: ./nmc_client/build/nmc version --no-check
+
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp nmc_client/build/nmc dist/nmc-client-macos
+          tar -C dist -czf nmc-client-macos.tar.gz nmc-client-macos
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: nmc-client-macos
+          path: nmc-client-macos.tar.gz
+          retention-days: 7
+
   build-server-linux:
     name: Build Server (Linux x64)
     runs-on: ubuntu-latest
+    needs: api-contract-test
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -152,9 +204,13 @@ jobs:
     needs:
       - build-client-linux
       - build-client-windows
+      - build-client-macos
       - build-server-linux
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
       - name: Download all artifacts
         uses: actions/download-artifact@v8
         with:
@@ -169,11 +225,12 @@ jobs:
           set -euo pipefail
           ASSET_CLIENT_LINUX="release-assets/nmc-client-linux-x64.tar.gz"
           ASSET_CLIENT_WINDOWS="release-assets/nmc-client-windows-x64.zip"
+          ASSET_CLIENT_MACOS="release-assets/nmc-client-macos.tar.gz"
           ASSET_SERVER_LINUX="release-assets/nmc-server-linux-x64.tar.gz"
           TAG="snapshot-main"
           TITLE="Snapshot build (main)"
 
-          for asset in "$ASSET_CLIENT_LINUX" "$ASSET_CLIENT_WINDOWS" "$ASSET_SERVER_LINUX"; do
+          for asset in "$ASSET_CLIENT_LINUX" "$ASSET_CLIENT_WINDOWS" "$ASSET_CLIENT_MACOS" "$ASSET_SERVER_LINUX"; do
             if [[ ! -f "$asset" ]]; then
               echo "Missing release asset: $asset" >&2
               exit 1
@@ -197,12 +254,14 @@ jobs:
             gh release upload "$TAG" \
               "$ASSET_CLIENT_LINUX" \
               "$ASSET_CLIENT_WINDOWS" \
+              "$ASSET_CLIENT_MACOS" \
               "$ASSET_SERVER_LINUX" \
               --clobber
           else
             gh release create "$TAG" \
               "$ASSET_CLIENT_LINUX" \
               "$ASSET_CLIENT_WINDOWS" \
+              "$ASSET_CLIENT_MACOS" \
               "$ASSET_SERVER_LINUX" \
               --title "$TITLE" \
               --target "${GITHUB_SHA}" \
@@ -217,9 +276,13 @@ jobs:
     needs:
       - build-client-linux
       - build-client-windows
+      - build-client-macos
       - build-server-linux
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
       - name: Download all artifacts
         uses: actions/download-artifact@v8
         with:
@@ -234,11 +297,12 @@ jobs:
           set -euo pipefail
           ASSET_CLIENT_LINUX="release-assets/nmc-client-linux-x64.tar.gz"
           ASSET_CLIENT_WINDOWS="release-assets/nmc-client-windows-x64.zip"
+          ASSET_CLIENT_MACOS="release-assets/nmc-client-macos.tar.gz"
           ASSET_SERVER_LINUX="release-assets/nmc-server-linux-x64.tar.gz"
           TAG="${GITHUB_REF_NAME}"
           TITLE="NMC ${GITHUB_REF_NAME}"
 
-          for asset in "$ASSET_CLIENT_LINUX" "$ASSET_CLIENT_WINDOWS" "$ASSET_SERVER_LINUX"; do
+          for asset in "$ASSET_CLIENT_LINUX" "$ASSET_CLIENT_WINDOWS" "$ASSET_CLIENT_MACOS" "$ASSET_SERVER_LINUX"; do
             if [[ ! -f "$asset" ]]; then
               echo "Missing release asset: $asset" >&2
               exit 1
@@ -252,12 +316,14 @@ jobs:
             gh release upload "$TAG" \
               "$ASSET_CLIENT_LINUX" \
               "$ASSET_CLIENT_WINDOWS" \
+              "$ASSET_CLIENT_MACOS" \
               "$ASSET_SERVER_LINUX" \
               --clobber
           else
             gh release create "$TAG" \
               "$ASSET_CLIENT_LINUX" \
               "$ASSET_CLIENT_WINDOWS" \
+              "$ASSET_CLIENT_MACOS" \
               "$ASSET_SERVER_LINUX" \
               --title "$TITLE" \
               --latest \

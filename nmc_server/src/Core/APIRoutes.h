@@ -167,6 +167,7 @@ namespace NMC::Server {
         // --- SSH Key Handlers ---
         void handleCreateSSHKey(const httplib::Request& req, httplib::Response& res);
         void handleDeleteSSHKey(const httplib::Request& req, httplib::Response& res);
+        void handleGetSSHKey(const httplib::Request& req, httplib::Response& res);
         void handleListSSHKeys(const httplib::Request& req, httplib::Response& res);
 
         // --- VM Handlers ---

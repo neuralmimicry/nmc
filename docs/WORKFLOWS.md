@@ -1,6 +1,6 @@
 # NMC Workflows
 
-This document describes the end-to-end workflows that the CLI and server follow, plus where resilience and best-practice behaviors are enforced.
+This document describes the end-to-end workflows that the CLI and server follow, plus where resilience and best-practice behaviours are enforced.
 
 **Top-Level Architecture**
 - The `nmc_client` binary parses CLI input, validates required flags and arguments, and delegates to a shared `CloudAPIClient` instance.
@@ -32,9 +32,11 @@ This document describes the end-to-end workflows that the CLI and server follow,
 3. `connection select` marks one connection as active and updates the default in the config file.
 4. The API client rebuilds its internal HTTP client when a default connection is set or changed.
 5. `connection status` performs a lightweight health check on the active endpoint.
-6. Connection-level bearer tokens are persisted in `~/.nmc/config.json` and can be updated with `connection set-token` or removed with `connection clear-token`.
-7. The API client resolves the active token in this order: `NMC_OIDC_ACCESS_TOKEN`, `NMC_BEARER_TOKEN`, the active connection token, then `NMC_AUTH_TOKEN`.
-8. When a token is present, the client sends `Authorization: Bearer <token>` on all requests.
+6. Health probing uses `GET /health` first, then falls back to `GET /server/version` and `GET /connections/status` for compatibility with older server builds when routes are unavailable or transport failures occur.
+7. If the endpoint responds with `401` or `403`, the client reports the connection as reachable with authentication required.
+8. Connection-level bearer tokens are persisted in `~/.nmc/config.json` and can be updated with `connection set-token` or removed with `connection clear-token`.
+9. The API client resolves the active token in this order: `NMC_OIDC_ACCESS_TOKEN`, `NMC_BEARER_TOKEN`, the active connection token, then `NMC_AUTH_TOKEN`.
+10. When a token is present, the client sends `Authorization: Bearer <token>` on all requests.
 
 **Server Request Workflow**
 1. HTTP routes are registered in `APIRoutes` and dispatch to handler functions.
@@ -82,4 +84,4 @@ This document describes the end-to-end workflows that the CLI and server follow,
 - 2xx responses are treated as successful; non-2xx responses flow through the error path.
 - Connection state is persisted to disk after any mutation to avoid drift.
 - Response parsing falls back to raw body data when JSON parsing fails.
-- Default behaviors are explicit when configuration files are missing.
+- Default behaviours are explicit when configuration files are missing.

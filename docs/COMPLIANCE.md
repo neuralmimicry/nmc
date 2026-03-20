@@ -1,6 +1,6 @@
 # Compliance Posture (ISO 27001 / SOC 2)
 
-This repository includes controls that support ISO 27001 and SOC 2 alignment. It does not, by itself, confer certification. Compliance depends on organizational policies, audits, and evidence collection.
+This repository includes controls that support ISO 27001 and SOC 2 alignment. It does not, by itself, confer certification. Compliance depends on organisational policies, audits, and evidence collection.
 
 ## Scope
 - `nmc_server` API and authentication middleware.
@@ -19,7 +19,7 @@ This repository includes controls that support ISO 27001 and SOC 2 alignment. It
 - Secure development: configuration-driven controls and redaction guidance.
 
 ## SOC 2 Trust Services Alignment Notes
-- Security: authentication, authorization, and auditability.
+- Security: authentication, authorisation, and auditability.
 - Availability: operational guidance for TLS and monitoring.
 - Confidentiality: secret handling and permission hardening.
 
