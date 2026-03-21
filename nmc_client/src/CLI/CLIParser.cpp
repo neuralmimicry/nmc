@@ -230,7 +230,7 @@ bool CLIParser::parseArguments(std::vector<std::string>& args,
 }
 
 void CLIParser::printRootHelp() const {
-    std::cout << "CLI tool for NeuralMimicry Cloud" << std::endl;
+    std::cout << "CLI tool for NeuralMimicry Continuum Cloud Service" << std::endl;
     std::cout << "Usage:" << std::endl;
     std::cout << "  nmc [command]" << std::endl;
     std::cout << "Available Commands:" << std::endl;

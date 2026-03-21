@@ -382,9 +382,9 @@
       ansible.builtin.set_fact:
         nmc_k8s_available: >-
           {{
-            (nmc_k8s_probe_explicit is defined and nmc_k8s_probe_explicit.rc == 0)
+            (nmc_k8s_probe_explicit is defined and (nmc_k8s_probe_explicit.rc | default(1)) == 0)
             or
-            (nmc_k8s_probe_default is defined and nmc_k8s_probe_default.rc == 0)
+            (nmc_k8s_probe_default is defined and (nmc_k8s_probe_default.rc | default(1)) == 0)
           }}
 
     - name: Install Kubernetes when unavailable
@@ -479,20 +479,22 @@
             - name: Configure pkgs.k8s.io apt source
               ansible.builtin.copy:
                 dest: /etc/apt/sources.list.d/kubernetes.list
-                content: "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/{{ nmc_effective_k8s_series }}/deb/ /\n"
+                content: |
+                  deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/{{ nmc_effective_k8s_series }}/deb/ /
                 mode: "0644"
           rescue:
             - name: Install apt.kubernetes.io signing key
               ansible.builtin.shell: |
                 set -euo pipefail
-                curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | gpg --dearmor --batch --yes -o /etc/apt/keyrings/kubernetes-archive-keyring.gpg
+                curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | gpg --dearmor --batch --yes -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
               args:
                 executable: /bin/bash
 
             - name: Configure apt.kubernetes.io source
               ansible.builtin.copy:
                 dest: /etc/apt/sources.list.d/kubernetes.list
-                content: "deb [signed-by=/etc/apt/keyrings/kubernetes-archive-keyring.gpg] https://apt.kubernetes.io/ kubernetes-xenial main\n"
+                content: |
+                  deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/{{ nmc_effective_k8s_series }}/deb/ /
                 mode: "0644"
 
         - name: Install Kubernetes components
