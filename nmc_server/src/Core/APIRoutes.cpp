@@ -100,6 +100,132 @@ namespace NMC::Server {
             }
         }
 
+        void addUniqueString(std::vector<std::string>& values, const std::string& value) {
+            const std::string trimmed = trim(value);
+            if (trimmed.empty()) {
+                return;
+            }
+            if (std::find(values.begin(), values.end(), trimmed) == values.end()) {
+                values.push_back(trimmed);
+            }
+        }
+
+        void addUniqueInt(std::vector<int>& values, int value) {
+            if (value <= 0) {
+                return;
+            }
+            if (std::find(values.begin(), values.end(), value) == values.end()) {
+                values.push_back(value);
+            }
+        }
+
+        std::string firstStringValue(const nlohmann::json& objectNode, std::initializer_list<const char*> keys) {
+            if (!objectNode.is_object()) {
+                return "";
+            }
+            for (const char* key : keys) {
+                const auto it = objectNode.find(key);
+                if (it == objectNode.end() || !it->is_string()) {
+                    continue;
+                }
+                const std::string value = trim(it->get<std::string>());
+                if (!value.empty()) {
+                    return value;
+                }
+            }
+            return "";
+        }
+
+        int firstPositiveIntValue(const nlohmann::json& objectNode, std::initializer_list<const char*> keys) {
+            if (!objectNode.is_object()) {
+                return -1;
+            }
+            for (const char* key : keys) {
+                const auto it = objectNode.find(key);
+                if (it == objectNode.end()) {
+                    continue;
+                }
+                if (it->is_number_integer()) {
+                    const int value = it->get<int>();
+                    if (value > 0) {
+                        return value;
+                    }
+                    continue;
+                }
+                if (it->is_number_unsigned()) {
+                    const int value = static_cast<int>(it->get<unsigned int>());
+                    if (value > 0) {
+                        return value;
+                    }
+                }
+            }
+            return -1;
+        }
+
+        std::string openShiftClusterIdentityKey(const nlohmann::json& cluster) {
+            const std::string name = toLower(firstStringValue(cluster, {"name"}));
+            const std::string id = toLower(firstStringValue(cluster, {"id", "cluster_id", "uuid"}));
+            return name + "|" + id;
+        }
+
+        void appendClusterArray(const nlohmann::json& clusterArray,
+                                std::vector<nlohmann::json>& out,
+                                std::set<std::string>& seenKeys) {
+            if (!clusterArray.is_array()) {
+                return;
+            }
+            for (const auto& item : clusterArray) {
+                if (!item.is_object()) {
+                    continue;
+                }
+                nlohmann::json normalized = item;
+                normalizeClusterStatus(normalized);
+                const std::string key = openShiftClusterIdentityKey(normalized);
+                if (!key.empty() && seenKeys.find(key) != seenKeys.end()) {
+                    continue;
+                }
+                if (!key.empty()) {
+                    seenKeys.insert(key);
+                }
+                out.push_back(normalized);
+            }
+        }
+
+        std::vector<nlohmann::json> collectOpenShiftClusterObjects(const nlohmann::json& payload) {
+            std::vector<nlohmann::json> clusters;
+            std::set<std::string> seenKeys;
+
+            if (payload.is_array()) {
+                appendClusterArray(payload, clusters, seenKeys);
+                return clusters;
+            }
+
+            if (!payload.is_object()) {
+                return clusters;
+            }
+
+            if (payload.contains("clusters")) {
+                appendClusterArray(payload["clusters"], clusters, seenKeys);
+            }
+            if (payload.contains("data")) {
+                if (payload["data"].is_array()) {
+                    appendClusterArray(payload["data"], clusters, seenKeys);
+                } else if (payload["data"].is_object() && payload["data"].contains("clusters")) {
+                    appendClusterArray(payload["data"]["clusters"], clusters, seenKeys);
+                }
+            }
+            if (payload.contains("items")) {
+                appendClusterArray(payload["items"], clusters, seenKeys);
+            }
+            if (clusters.empty() && payload.contains("cluster") && payload["cluster"].is_object()) {
+                nlohmann::json normalized = payload["cluster"];
+                normalizeClusterStatus(normalized);
+                clusters.push_back(normalized);
+            }
+
+            return clusters;
+        }
+
         bool parseBoolValue(const char* raw, bool fallback) {
             if (!raw || !*raw) {
                 return fallback;
@@ -1288,6 +1414,10 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
             if (!guard(req, res)) return;
             k8sHandlers->handleGetK8sCluster(req, res);
         });
+        svr.Get(R"(/k8s/details/(.*))", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            k8sHandlers->handleGetK8sClusterDetails(req, res);
+        });
         svr.Get(R"(/k8s/get-config/(.*))", [this, guard](const httplib::Request& req, httplib::Response& res) {
             if (!guard(req, res)) return;
             k8sHandlers->handleGetKubeConfig(req, res);
@@ -1387,6 +1517,10 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
         svr.Get("/openshift/clusters", [this, guard](const httplib::Request& req, httplib::Response& res) {
             if (!guard(req, res)) return;
             handleOpenShiftClusters(req, res);
+        });
+        svr.Get(R"(/openshift/details/(.*))", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            handleOpenShiftClusterDetails(req, res);
         });
         svr.Post("/openshift/clusters/request", [this, guard](const httplib::Request& req, httplib::Response& res) {
             if (!guard(req, res)) return;
@@ -2586,6 +2720,128 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
         }
         sendJsonResponse(res, apiResponse);
         res.status = apiResponse.statusCode;
+    }
+
+    void APIRoutes::handleOpenShiftClusterDetails(const httplib::Request& req, httplib::Response& res) {
+        const std::string identifier = req.matches.size() > 1 ? trim(req.matches[1].str()) : "";
+        if (identifier.empty()) {
+            return sendErrorResponse(res, 400, "Missing OpenShift cluster identifier.");
+        }
+
+        Models::CloudResponse listResponse = openShiftClient->listClusters();
+        if (!listResponse.success) {
+            sendJsonResponse(res, listResponse);
+            res.status = listResponse.statusCode;
+            return;
+        }
+
+        const std::vector<nlohmann::json> clusters = collectOpenShiftClusterObjects(listResponse.data);
+        if (clusters.empty()) {
+            Models::CloudResponse notFound;
+            notFound.success = false;
+            notFound.statusCode = 404;
+            notFound.message = "OpenShift cluster '" + identifier + "' not found.";
+            notFound.data = nlohmann::json::object();
+            sendJsonResponse(res, notFound);
+            res.status = 404;
+            return;
+        }
+
+        const std::string needle = toLower(identifier);
+        nlohmann::json selectedCluster;
+        for (const auto& cluster : clusters) {
+            const std::string name = toLower(firstStringValue(cluster, {"name"}));
+            const std::string id = toLower(firstStringValue(cluster, {"id", "cluster_id", "uuid"}));
+            if (!name.empty() && name == needle) {
+                selectedCluster = cluster;
+                break;
+            }
+            if (!id.empty() && id == needle) {
+                selectedCluster = cluster;
+                break;
+            }
+        }
+
+        if (selectedCluster.is_null()) {
+            Models::CloudResponse notFound;
+            notFound.success = false;
+            notFound.statusCode = 404;
+            notFound.message = "OpenShift cluster '" + identifier + "' not found.";
+            notFound.data = nlohmann::json::object();
+            sendJsonResponse(res, notFound);
+            res.status = 404;
+            return;
+        }
+
+        normalizeClusterStatus(selectedCluster);
+
+        std::vector<std::string> endpointCandidates;
+        std::vector<std::string> ipsInUse;
+        std::vector<int> portsInUse;
+
+        const auto captureEndpoint = [&](const std::string& value) {
+            const std::string endpoint = trim(value);
+            if (endpoint.empty()) {
+                return;
+            }
+            addUniqueString(endpointCandidates, endpoint);
+            TraceyEndpoint parsed{};
+            if (parseTraceyEndpoint(endpoint, parsed)) {
+                addUniqueString(ipsInUse, parsed.host);
+                addUniqueInt(portsInUse, parsed.port);
+            }
+        };
+
+        captureEndpoint(firstStringValue(selectedCluster, {"endpoint", "api", "api_url", "url", "apiServer", "api_server"}));
+        captureEndpoint(firstStringValue(selectedCluster, {"console", "console_url", "consoleUrl"}));
+        if (selectedCluster.contains("networking") && selectedCluster["networking"].is_object()) {
+            const auto& networking = selectedCluster["networking"];
+            captureEndpoint(firstStringValue(networking, {"endpoint", "api", "api_url", "url", "apiServer", "api_server"}));
+            captureEndpoint(firstStringValue(networking, {"console", "console_url", "consoleUrl"}));
+
+            if (networking.contains("ips_in_use") && networking["ips_in_use"].is_array()) {
+                for (const auto& ip : networking["ips_in_use"]) {
+                    if (ip.is_string()) {
+                        addUniqueString(ipsInUse, ip.get<std::string>());
+                    }
+                }
+            }
+            if (networking.contains("ports_in_use") && networking["ports_in_use"].is_array()) {
+                for (const auto& port : networking["ports_in_use"]) {
+                    if (port.is_number_integer()) {
+                        addUniqueInt(portsInUse, port.get<int>());
+                    }
+                }
+            }
+        }
+
+        addUniqueInt(portsInUse, firstPositiveIntValue(selectedCluster, {"port", "api_port", "apiPort", "service_port"}));
+        if (selectedCluster.contains("networking") && selectedCluster["networking"].is_object()) {
+            addUniqueInt(portsInUse, firstPositiveIntValue(selectedCluster["networking"], {"port", "api_port", "apiPort", "service_port"}));
+        }
+
+        std::sort(endpointCandidates.begin(), endpointCandidates.end());
+        std::sort(ipsInUse.begin(), ipsInUse.end());
+        std::sort(portsInUse.begin(), portsInUse.end());
+
+        nlohmann::json details = selectedCluster;
+        nlohmann::json networkingPayload = nlohmann::json::object();
+        if (details.contains("networking") && details["networking"].is_object()) {
+            networkingPayload = details["networking"];
+        }
+        networkingPayload["endpoint"] = firstStringValue(details, {"endpoint", "api", "api_url", "url", "apiServer", "api_server"});
+        networkingPayload["endpoint_candidates"] = endpointCandidates;
+        networkingPayload["ips_in_use"] = ipsInUse;
+        networkingPayload["ports_in_use"] = portsInUse;
+        details["networking"] = networkingPayload;
+
+        Models::CloudResponse apiResponse;
+        apiResponse.success = true;
+        apiResponse.statusCode = 200;
+        apiResponse.message = "OpenShift cluster details retrieved.";
+        apiResponse.data = details;
+        sendJsonResponse(res, apiResponse);
+        res.status = 200;
     }
 
     void APIRoutes::handleOpenShiftRequestCluster(const httplib::Request& req, httplib::Response& res) {

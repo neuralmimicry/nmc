@@ -387,6 +387,25 @@ td {
     font-size: 0.84rem;
 }
 
+.cluster-link {
+    border: 0;
+    padding: 0;
+    margin: 0;
+    color: #ffffff;
+    background: transparent;
+    font-family: var(--font-mono);
+    font-size: 0.84rem;
+    cursor: pointer;
+    text-decoration: underline;
+    text-decoration-color: rgba(227, 85, 40, 0.55);
+    text-underline-offset: 3px;
+}
+
+.cluster-link:hover {
+    color: var(--accent-2);
+    text-decoration-color: rgba(240, 122, 82, 0.9);
+}
+
 .empty {
     color: var(--muted);
     font-family: var(--font-primary);
@@ -419,6 +438,126 @@ td {
 .badge-neutral {
     background: rgba(201, 204, 211, 0.16);
     color: #d4dae2;
+}
+
+.cluster-modal-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 60;
+    display: grid;
+    place-items: center;
+    padding: 1rem;
+    background: rgba(8, 14, 20, 0.72);
+    backdrop-filter: blur(4px);
+}
+
+.cluster-modal-shell {
+    width: min(960px, 100%);
+    max-height: min(84vh, 860px);
+    overflow: auto;
+    border-radius: 14px;
+    border: 1px solid var(--border);
+    background: rgba(24, 36, 48, 0.95);
+    box-shadow: 0 24px 48px rgba(0, 0, 0, 0.45);
+    padding: 1rem;
+}
+
+.cluster-modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.8rem;
+}
+
+.cluster-modal-header h3 {
+    margin: 0;
+    font-size: 1.05rem;
+}
+
+.cluster-modal-close {
+    border: 1px solid rgba(255, 255, 255, 0.28);
+    border-radius: 999px;
+    background: transparent;
+    color: #ffffff;
+    padding: 0.35rem 0.75rem;
+    font-size: 0.8rem;
+    cursor: pointer;
+}
+
+.cluster-modal-close:hover {
+    border-color: rgba(240, 122, 82, 0.85);
+    color: var(--accent-2);
+}
+
+.cluster-modal-subtitle {
+    margin: 0.65rem 0 0.85rem;
+    color: var(--muted);
+    font-size: 0.84rem;
+}
+
+.cluster-modal-body {
+    display: grid;
+    gap: 0.8rem;
+}
+
+.cluster-detail-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.65rem;
+}
+
+.detail-card {
+    border: 1px solid rgba(255, 255, 255, 0.11);
+    border-radius: 10px;
+    background: rgba(15, 24, 33, 0.62);
+    padding: 0.65rem;
+}
+
+.detail-card h4 {
+    margin: 0 0 0.4rem;
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--muted);
+}
+
+.detail-pills {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+}
+
+.detail-pill {
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    border-radius: 999px;
+    padding: 0.17rem 0.52rem;
+    font-family: var(--font-mono);
+    font-size: 0.74rem;
+    color: #f3f0ed;
+    background: rgba(35, 53, 68, 0.62);
+}
+
+.detail-json {
+    margin: 0;
+    max-height: 280px;
+    overflow: auto;
+    border-radius: 10px;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    background: rgba(10, 16, 24, 0.78);
+    padding: 0.72rem;
+    color: #f8fafc;
+    font-family: var(--font-mono);
+    font-size: 0.77rem;
+    line-height: 1.46;
+}
+
+.detail-table th,
+.detail-table td {
+    font-size: 0.75rem;
+}
+
+body.modal-open {
+    overflow: hidden;
 }
 
 .checks {
@@ -662,6 +801,10 @@ a.ghost:hover {
     }
 
     .checks {
+        grid-template-columns: 1fr;
+    }
+
+    .cluster-detail-grid {
         grid-template-columns: 1fr;
     }
 }

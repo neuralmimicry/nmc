@@ -19,10 +19,20 @@
         connStatus: document.getElementById("connStatus"),
         resourceStatus: document.getElementById("resourceStatus"),
         vmInventoryStatus: document.getElementById("vmInventoryStatus"),
-        traceyStatus: document.getElementById("traceyStatus")
+        traceyStatus: document.getElementById("traceyStatus"),
+        clusterDetailsModal: document.getElementById("clusterDetailsModal"),
+        clusterDetailsClose: document.getElementById("clusterDetailsClose"),
+        clusterDetailsSubtitle: document.getElementById("clusterDetailsSubtitle"),
+        clusterDetailsBody: document.getElementById("clusterDetailsBody"),
+        openshiftDetailsModal: document.getElementById("openshiftDetailsModal"),
+        openshiftDetailsClose: document.getElementById("openshiftDetailsClose"),
+        openshiftDetailsSubtitle: document.getElementById("openshiftDetailsSubtitle"),
+        openshiftDetailsBody: document.getElementById("openshiftDetailsBody")
     };
 
     let authToken = loadToken();
+    let clusterDetailsRequestSeq = 0;
+    let openshiftDetailsRequestSeq = 0;
 
     function nowIsoTime() {
         return new Date().toLocaleTimeString();
@@ -179,6 +189,327 @@
         return { running, total: items.length };
     }
 
+    function toArray(value) {
+        return Array.isArray(value) ? value : [];
+    }
+
+    function updateModalBodyLock() {
+        const k8sOpen = nodes.clusterDetailsModal && !nodes.clusterDetailsModal.hidden;
+        const openshiftOpen = nodes.openshiftDetailsModal && !nodes.openshiftDetailsModal.hidden;
+        document.body.classList.toggle("modal-open", Boolean(k8sOpen || openshiftOpen));
+    }
+
+    function setClusterDetailsModalOpen(open) {
+        if (!nodes.clusterDetailsModal) {
+            return;
+        }
+        nodes.clusterDetailsModal.hidden = !open;
+        updateModalBodyLock();
+    }
+
+    function closeClusterDetailsModal() {
+        clusterDetailsRequestSeq += 1;
+        setClusterDetailsModalOpen(false);
+    }
+
+    function setOpenShiftDetailsModalOpen(open) {
+        if (!nodes.openshiftDetailsModal) {
+            return;
+        }
+        nodes.openshiftDetailsModal.hidden = !open;
+        updateModalBodyLock();
+    }
+
+    function closeOpenShiftDetailsModal() {
+        openshiftDetailsRequestSeq += 1;
+        setOpenShiftDetailsModalOpen(false);
+    }
+
+    function detailPillsHtml(values, emptyText) {
+        if (!values.length) {
+            return `<span class="empty">${escapeHtml(emptyText)}</span>`;
+        }
+        return values
+            .map((value) => `<span class="detail-pill">${escapeHtml(value)}</span>`)
+            .join("");
+    }
+
+    function serviceAddressSummary(service) {
+        const entries = [];
+        const clusterIp = String(service.cluster_ip || "").trim();
+        if (clusterIp) {
+            entries.push(clusterIp);
+        }
+        for (const ip of toArray(service.external_ips)) {
+            const val = String(ip || "").trim();
+            if (val) {
+                entries.push(val);
+            }
+        }
+        for (const ingress of toArray(service.load_balancer)) {
+            const val = String(ingress || "").trim();
+            if (val) {
+                entries.push(val);
+            }
+        }
+        if (!entries.length) {
+            return "-";
+        }
+        return entries.join(", ");
+    }
+
+    function servicePortSummary(service) {
+        const ports = toArray(service.ports);
+        if (!ports.length) {
+            return "-";
+        }
+        return ports.map((entry) => {
+            const protocol = String(entry.protocol || "TCP");
+            const servicePort = Number(entry.port);
+            const targetPort = entry.target_port;
+            const nodePort = Number(entry.node_port);
+            let summary = `${protocol}:${Number.isFinite(servicePort) && servicePort > 0 ? servicePort : "-"}`;
+            if (targetPort !== null && targetPort !== undefined && String(targetPort).trim() !== "") {
+                summary += ` -> ${targetPort}`;
+            }
+            if (Number.isFinite(nodePort) && nodePort > 0) {
+                summary += ` (node ${nodePort})`;
+            }
+            return escapeHtml(summary);
+        }).join("<br>");
+    }
+
+    function renderClusterDetailsModal(details, fallbackName) {
+        if (!nodes.clusterDetailsSubtitle || !nodes.clusterDetailsBody) {
+            return;
+        }
+
+        const clusterName = String(details.name || fallbackName || "unknown");
+        const clusterStatus = String(details.status || "Unknown");
+        const clusterId = String(details.id || "-");
+        const clusterRegion = String(details.region || details.location || "-");
+        const clusterSource = String(details.source || "-");
+        const networking = details.networking && typeof details.networking === "object" ? details.networking : {};
+        const ipsInUse = toArray(networking.ips_in_use).map((value) => String(value)).filter((value) => value.length > 0);
+        const portsInUse = toArray(networking.ports_in_use).map((value) => String(value)).filter((value) => value.length > 0);
+        const services = toArray(networking.services);
+
+        nodes.clusterDetailsSubtitle.textContent = `${clusterName} • ${clusterStatus}`;
+
+        const serviceRows = services.map((service) => {
+            const name = String(service.name || "unknown");
+            const namespace = String(service.namespace || "-");
+            const type = String(service.type || "-");
+            return `<tr><td>${escapeHtml(name)}</td><td>${escapeHtml(namespace)}</td><td>${escapeHtml(type)}</td><td>${escapeHtml(serviceAddressSummary(service))}</td><td>${servicePortSummary(service)}</td></tr>`;
+        }).join("");
+
+        nodes.clusterDetailsBody.innerHTML = `
+            <div class="cluster-detail-grid">
+                <section class="detail-card">
+                    <h4>Identity</h4>
+                    <p><strong>Name:</strong> ${escapeHtml(clusterName)}</p>
+                    <p><strong>ID:</strong> ${escapeHtml(clusterId)}</p>
+                    <p><strong>Region:</strong> ${escapeHtml(clusterRegion)}</p>
+                    <p><strong>Source:</strong> ${escapeHtml(clusterSource)}</p>
+                </section>
+                <section class="detail-card">
+                    <h4>API Endpoint</h4>
+                    <p>${escapeHtml(String(networking.api_server || "-"))}</p>
+                </section>
+                <section class="detail-card">
+                    <h4>IP Addresses In Use</h4>
+                    <div class="detail-pills">${detailPillsHtml(ipsInUse, "No IP addresses detected.")}</div>
+                </section>
+                <section class="detail-card">
+                    <h4>Ports In Use</h4>
+                    <div class="detail-pills">${detailPillsHtml(portsInUse, "No ports detected.")}</div>
+                </section>
+            </div>
+            <section class="detail-card">
+                <h4>Services</h4>
+                ${serviceRows
+                    ? `<div class="table-wrap"><table class="detail-table"><thead><tr><th>Name</th><th>Namespace</th><th>Type</th><th>Addresses</th><th>Ports</th></tr></thead><tbody>${serviceRows}</tbody></table></div>`
+                    : `<p class="empty">No service details reported for this cluster.</p>`}
+            </section>
+            <section class="detail-card">
+                <h4>Raw Payload</h4>
+                <pre class="detail-json">${escapeHtml(JSON.stringify(details, null, 2))}</pre>
+            </section>
+        `;
+    }
+
+    function renderOpenShiftDetailsModal(details, fallbackName) {
+        if (!nodes.openshiftDetailsSubtitle || !nodes.openshiftDetailsBody) {
+            return;
+        }
+
+        const clusterName = String(details.name || fallbackName || details.id || "unknown");
+        const clusterStatus = String(details.status || "Unknown");
+        const clusterId = String(details.id || details.cluster_id || details.uuid || "-");
+        const clusterRegion = String(details.region || details.location || "-");
+        const provider = String(details.provider || details.platform || details.cloud || "-");
+        const org = String(details.organization || details.org || "-");
+        const networking = details.networking && typeof details.networking === "object" ? details.networking : {};
+        const endpoint = String(networking.endpoint || details.endpoint || details.api || "-");
+        const ipsInUse = toArray(networking.ips_in_use).map((value) => String(value)).filter((value) => value.length > 0);
+        const portsInUse = toArray(networking.ports_in_use).map((value) => String(value)).filter((value) => value.length > 0);
+        const endpointCandidates = toArray(networking.endpoint_candidates).map((value) => String(value)).filter((value) => value.length > 0);
+
+        nodes.openshiftDetailsSubtitle.textContent = `${clusterName} • ${clusterStatus}`;
+        nodes.openshiftDetailsBody.innerHTML = `
+            <div class="cluster-detail-grid">
+                <section class="detail-card">
+                    <h4>Identity</h4>
+                    <p><strong>Name:</strong> ${escapeHtml(clusterName)}</p>
+                    <p><strong>ID:</strong> ${escapeHtml(clusterId)}</p>
+                    <p><strong>Region:</strong> ${escapeHtml(clusterRegion)}</p>
+                    <p><strong>Provider:</strong> ${escapeHtml(provider)}</p>
+                    <p><strong>Organization:</strong> ${escapeHtml(org)}</p>
+                </section>
+                <section class="detail-card">
+                    <h4>Primary Endpoint</h4>
+                    <p>${escapeHtml(endpoint)}</p>
+                </section>
+                <section class="detail-card">
+                    <h4>IP Addresses In Use</h4>
+                    <div class="detail-pills">${detailPillsHtml(ipsInUse, "No IP addresses detected.")}</div>
+                </section>
+                <section class="detail-card">
+                    <h4>Ports In Use</h4>
+                    <div class="detail-pills">${detailPillsHtml(portsInUse, "No ports detected.")}</div>
+                </section>
+            </div>
+            <section class="detail-card">
+                <h4>Known Endpoints</h4>
+                <div class="detail-pills">${detailPillsHtml(endpointCandidates, "No endpoint candidates reported.")}</div>
+            </section>
+            <section class="detail-card">
+                <h4>Raw Payload</h4>
+                <pre class="detail-json">${escapeHtml(JSON.stringify(details, null, 2))}</pre>
+            </section>
+        `;
+    }
+
+    async function openClusterDetailsModal(clusterKey, clusterName) {
+        if (!clusterKey || !nodes.clusterDetailsSubtitle || !nodes.clusterDetailsBody) {
+            return;
+        }
+        closeOpenShiftDetailsModal();
+        const requestSeq = ++clusterDetailsRequestSeq;
+        setClusterDetailsModalOpen(true);
+        nodes.clusterDetailsSubtitle.textContent = `Loading details for ${clusterName || clusterKey}...`;
+        nodes.clusterDetailsBody.innerHTML = `<p class="empty">Loading cluster details...</p>`;
+
+        const detailsRes = await fetchJson(`/k8s/details/${encodeURIComponent(clusterKey)}`);
+        if (requestSeq !== clusterDetailsRequestSeq) {
+            return;
+        }
+
+        if (!detailsRes.ok) {
+            const message = detailsRes.payload && typeof detailsRes.payload === "object"
+                ? String(detailsRes.payload.message || "Failed to load cluster details.")
+                : "Failed to load cluster details.";
+            nodes.clusterDetailsSubtitle.textContent = `${clusterName || clusterKey} • unavailable`;
+            nodes.clusterDetailsBody.innerHTML = `<p class="empty">${escapeHtml(message)}</p>`;
+            return;
+        }
+
+        const detailsPayload = responseData(detailsRes.payload) || {};
+        renderClusterDetailsModal(detailsPayload, clusterName || clusterKey);
+    }
+
+    async function openOpenShiftDetailsModal(clusterKey, clusterName) {
+        if (!clusterKey || !nodes.openshiftDetailsSubtitle || !nodes.openshiftDetailsBody) {
+            return;
+        }
+        closeClusterDetailsModal();
+        const requestSeq = ++openshiftDetailsRequestSeq;
+        setOpenShiftDetailsModalOpen(true);
+        nodes.openshiftDetailsSubtitle.textContent = `Loading details for ${clusterName || clusterKey}...`;
+        nodes.openshiftDetailsBody.innerHTML = `<p class="empty">Loading OpenShift cluster details...</p>`;
+
+        const detailsRes = await fetchJson(`/openshift/details/${encodeURIComponent(clusterKey)}`);
+        if (requestSeq !== openshiftDetailsRequestSeq) {
+            return;
+        }
+
+        if (!detailsRes.ok) {
+            const message = detailsRes.payload && typeof detailsRes.payload === "object"
+                ? String(detailsRes.payload.message || "Failed to load OpenShift cluster details.")
+                : "Failed to load OpenShift cluster details.";
+            nodes.openshiftDetailsSubtitle.textContent = `${clusterName || clusterKey} • unavailable`;
+            nodes.openshiftDetailsBody.innerHTML = `<p class="empty">${escapeHtml(message)}</p>`;
+            return;
+        }
+
+        const detailsPayload = responseData(detailsRes.payload) || {};
+        renderOpenShiftDetailsModal(detailsPayload, clusterName || clusterKey);
+    }
+
+    function initializeClusterDetailsUi() {
+        if (nodes.k8sRows) {
+            nodes.k8sRows.addEventListener("click", (event) => {
+                const trigger = event.target.closest("button[data-cluster-key]");
+                if (!trigger) {
+                    return;
+                }
+                event.preventDefault();
+                const clusterKey = String(trigger.getAttribute("data-cluster-key") || "").trim();
+                const clusterName = String(trigger.getAttribute("data-cluster-name") || clusterKey).trim();
+                openClusterDetailsModal(clusterKey, clusterName);
+            });
+        }
+
+        if (nodes.openshiftRows) {
+            nodes.openshiftRows.addEventListener("click", (event) => {
+                const trigger = event.target.closest("button[data-openshift-key]");
+                if (!trigger) {
+                    return;
+                }
+                event.preventDefault();
+                const clusterKey = String(trigger.getAttribute("data-openshift-key") || "").trim();
+                const clusterName = String(trigger.getAttribute("data-openshift-name") || clusterKey).trim();
+                openOpenShiftDetailsModal(clusterKey, clusterName);
+            });
+        }
+
+        if (nodes.clusterDetailsClose) {
+            nodes.clusterDetailsClose.addEventListener("click", closeClusterDetailsModal);
+        }
+
+        if (nodes.openshiftDetailsClose) {
+            nodes.openshiftDetailsClose.addEventListener("click", closeOpenShiftDetailsModal);
+        }
+
+        if (nodes.clusterDetailsModal) {
+            nodes.clusterDetailsModal.addEventListener("click", (event) => {
+                if (event.target === nodes.clusterDetailsModal) {
+                    closeClusterDetailsModal();
+                }
+            });
+        }
+
+        if (nodes.openshiftDetailsModal) {
+            nodes.openshiftDetailsModal.addEventListener("click", (event) => {
+                if (event.target === nodes.openshiftDetailsModal) {
+                    closeOpenShiftDetailsModal();
+                }
+            });
+        }
+
+        window.addEventListener("keydown", (event) => {
+            if (event.key !== "Escape") {
+                return;
+            }
+            if (nodes.clusterDetailsModal && !nodes.clusterDetailsModal.hidden) {
+                closeClusterDetailsModal();
+            }
+            if (nodes.openshiftDetailsModal && !nodes.openshiftDetailsModal.hidden) {
+                closeOpenShiftDetailsModal();
+            }
+        });
+    }
+
     function redirectToLogin(reason) {
         const query = new URLSearchParams();
         if (reason) {
@@ -245,6 +576,8 @@
         const k8sRows = k8sItems.map((cluster) => {
             const name = cluster.name || cluster.id || "unknown";
             const region = cluster.region || cluster.location || "-";
+            const clusterLookup = cluster.name || cluster.id || "";
+            const clusterId = cluster.id || clusterLookup || "unknown";
             const refiner = cluster.refiner && typeof cluster.refiner === "object" ? cluster.refiner : null;
             let status = cluster.status || "Unknown";
             if (refiner) {
@@ -254,7 +587,10 @@
                     status = `${status} (Refiner ${available}/${desired})`;
                 }
             }
-            return `<tr><td>${escapeHtml(name)}</td><td>${escapeHtml(region)}</td><td>${statusBadge(status)}</td></tr>`;
+            const clusterButton = clusterLookup
+                ? `<button class="cluster-link" type="button" data-cluster-key="${escapeHtml(clusterLookup)}" data-cluster-name="${escapeHtml(name)}" data-cluster-id="${escapeHtml(clusterId)}">${escapeHtml(name)}</button>`
+                : escapeHtml(name);
+            return `<tr><td>${clusterButton}</td><td>${escapeHtml(region)}</td><td>${statusBadge(status)}</td></tr>`;
         });
         renderRows(nodes.k8sRows, k8sRows, "No Kubernetes clusters detected.", 3);
 
@@ -265,7 +601,11 @@
             const name = cluster.name || cluster.id || "unknown";
             const endpoint = cluster.endpoint || cluster.api || "-";
             const status = cluster.status || "Unknown";
-            return `<tr><td>${escapeHtml(name)}</td><td>${escapeHtml(endpoint)}</td><td>${statusBadge(status)}</td></tr>`;
+            const clusterLookup = cluster.name || cluster.id || "";
+            const clusterButton = clusterLookup
+                ? `<button class="cluster-link" type="button" data-openshift-key="${escapeHtml(clusterLookup)}" data-openshift-name="${escapeHtml(name)}">${escapeHtml(name)}</button>`
+                : escapeHtml(name);
+            return `<tr><td>${clusterButton}</td><td>${escapeHtml(endpoint)}</td><td>${statusBadge(status)}</td></tr>`;
         });
         renderRows(nodes.openshiftRows, openshiftRows, "No OpenShift clusters detected.", 3);
 
@@ -343,6 +683,7 @@
     }
 
     initializeSessionUi();
+    initializeClusterDetailsUi();
     refreshDashboard();
     window.setInterval(refreshDashboard, REFRESH_INTERVAL_MS);
 })();

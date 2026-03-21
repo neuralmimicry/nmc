@@ -120,6 +120,45 @@
     </section>
 
     <section>
+        <h2>Get K8s Cluster Network Details</h2>
+        <p><strong>Endpoint:</strong> <code>GET /k8s/details/{idOrName}</code></p>
+        <p>Retrieves enriched cluster details, including discovered IP addresses and ports in use. Supports IDs and names (for example <code>refiner-local</code>).</p>
+        <h3>Successful Response (HTTP 200 OK):</h3>
+        <pre><code class="language-json">
+{
+    "success": true,
+    "message": "K8s cluster details retrieved.",
+    "data": {
+        "id": "k8s-local-refiner",
+        "name": "refiner-local",
+        "region": "local",
+        "status": "Running",
+        "networking": {
+            "api_server": "https://127.0.0.1:6443",
+            "ips_in_use": [
+                "10.96.10.25",
+                "192.168.49.2"
+            ],
+            "ports_in_use": [
+                443,
+                6443,
+                31080
+            ],
+            "services": [
+                {
+                    "name": "refiner",
+                    "namespace": "refiner",
+                    "type": "NodePort",
+                    "cluster_ip": "10.96.10.25"
+                }
+            ]
+        }
+    }
+}
+            </code></pre>
+    </section>
+
+    <section>
         <h2>Get KubeConfig</h2>
         <p><strong>Endpoint:</strong> <code>GET /k8s/get-config/{id}</code></p>
         <p>Retrieves the KubeConfig YAML for a specific Kubernetes cluster, allowing CLI tools (like <code>kubectl</code>) to connect.</p>

@@ -7,6 +7,8 @@
 #include <iostream>
 #include <stdexcept>
 #include <string> // Required for std::to_string
+#include <utility>
+#include <vector>
 
 // Include necessary headers for Kubernetes C client types
 #include <kubernetes/include/apiClient.h> // For apiClient_t
@@ -76,6 +78,114 @@ namespace {
         }
 
         return std::nullopt;
+    }
+
+    std::string extractClusterIdentifierFromRequest(const httplib::Request& req) {
+        const auto pathIdIt = req.path_params.find("id");
+        if (pathIdIt != req.path_params.end() && !pathIdIt->second.empty()) {
+            return pathIdIt->second;
+        }
+        if (req.matches.size() > 1) {
+            return req.matches[1].str();
+        }
+        return "";
+    }
+
+    bool isLocalClusterIdentifier(const std::string& identifier) {
+        const std::string normalized = toLowerCopy(identifier);
+        return normalized == "refiner-local"
+               || normalized == "k8s-local-refiner"
+               || normalized == "local-refiner";
+    }
+
+    void addUniqueIp(std::vector<std::string>& ips, const std::string& ipOrHost) {
+        if (ipOrHost.empty() || ipOrHost == "None") {
+            return;
+        }
+        if (std::find(ips.begin(), ips.end(), ipOrHost) == ips.end()) {
+            ips.push_back(ipOrHost);
+        }
+    }
+
+    void addUniquePort(std::vector<int>& ports, int port) {
+        if (port <= 0) {
+            return;
+        }
+        if (std::find(ports.begin(), ports.end(), port) == ports.end()) {
+            ports.push_back(port);
+        }
+    }
+
+    bool parseIntegerPort(const std::string& value, int& parsedPort) {
+        if (value.empty()) {
+            return false;
+        }
+
+        for (const char ch : value) {
+            if (!std::isdigit(static_cast<unsigned char>(ch))) {
+                return false;
+            }
+        }
+
+        try {
+            parsedPort = std::stoi(value);
+            return parsedPort > 0;
+        } catch (const std::exception&) {
+            return false;
+        }
+    }
+
+    std::pair<std::string, int> extractHostAndPortFromEndpoint(const std::string& endpoint) {
+        if (endpoint.empty()) {
+            return {"", -1};
+        }
+
+        std::string hostPort = endpoint;
+        const std::size_t schemePos = hostPort.find("://");
+        if (schemePos != std::string::npos) {
+            hostPort = hostPort.substr(schemePos + 3);
+        }
+
+        const std::size_t slashPos = hostPort.find('/');
+        if (slashPos != std::string::npos) {
+            hostPort = hostPort.substr(0, slashPos);
+        }
+
+        if (hostPort.empty()) {
+            return {"", -1};
+        }
+
+        if (hostPort.front() == '[') { // IPv6 literal form: [::1]:6443
+            const std::size_t closeBracket = hostPort.find(']');
+            if (closeBracket == std::string::npos) {
+                return {"", -1};
+            }
+            const std::string host = hostPort.substr(1, closeBracket - 1);
+            int port = -1;
+            if (closeBracket + 2 <= hostPort.size() && hostPort.size() > closeBracket + 1 && hostPort[closeBracket + 1] == ':') {
+                const std::string portText = hostPort.substr(closeBracket + 2);
+                int parsed = -1;
+                if (parseIntegerPort(portText, parsed)) {
+                    port = parsed;
+                }
+            }
+            return {host, port};
+        }
+
+        const std::size_t firstColon = hostPort.find(':');
+        const std::size_t lastColon = hostPort.rfind(':');
+        if (firstColon != std::string::npos && firstColon == lastColon) {
+            const std::string host = hostPort.substr(0, lastColon);
+            const std::string portText = hostPort.substr(lastColon + 1);
+            int port = -1;
+            int parsed = -1;
+            if (parseIntegerPort(portText, parsed)) {
+                port = parsed;
+            }
+            return {host, port};
+        }
+
+        return {hostPort, -1};
     }
 } // namespace
 
@@ -336,6 +446,492 @@ namespace NMC {
                 }
                 if (read_object_str) free(read_object_str);
                 genericClient_free(genericClient);
+
+            } catch (const std::exception& e) {
+                sendErrorResponse(res, 500, "Server error: " + std::string(e.what()));
+            }
+        }
+
+        void K8sHandlers::handleGetK8sClusterDetails(const httplib::Request& req, httplib::Response& res) {
+            try {
+                const std::string identifier = extractClusterIdentifierFromRequest(req);
+                if (identifier.empty()) {
+                    return sendErrorResponse(res, 400, "Missing cluster identifier.");
+                }
+
+                std::vector<std::string> ipsInUse;
+                std::vector<int> portsInUse;
+                const std::string apiServerEndpoint = basePath ? std::string(basePath) : "";
+                const auto [apiServerHost, apiServerPort] = extractHostAndPortFromEndpoint(apiServerEndpoint);
+                addUniqueIp(ipsInUse, apiServerHost);
+                addUniquePort(portsInUse, apiServerPort);
+
+                if (isLocalClusterIdentifier(identifier)) {
+                    int totalNodes = 0;
+                    int readyNodes = 0;
+                    std::string localRegion = "local";
+                    nlohmann::json nodeRows = nlohmann::json::array();
+
+                    if (apiClient) {
+                        v1_node_list_t* nodeList = CoreV1API_listNode(
+                                apiClient,
+                                NULL, // pretty
+                                NULL, // allowWatchBookmarks
+                                NULL, // continue
+                                NULL, // fieldSelector
+                                NULL, // labelSelector
+                                NULL, // limit
+                                NULL, // resourceVersion
+                                NULL, // resourceVersionMatch
+                                NULL, // sendInitialEvents
+                                NULL, // timeoutSeconds
+                                NULL  // watch
+                        );
+
+                        if (nodeList && nodeList->items) {
+                            listEntry_t* nodeEntry = nullptr;
+                            list_ForEach(nodeEntry, nodeList->items) {
+                                v1_node_t* node = static_cast<v1_node_t*>(nodeEntry->data);
+                                if (!node) {
+                                    continue;
+                                }
+
+                                totalNodes += 1;
+
+                                bool nodeReady = false;
+                                nlohmann::json nodeAddresses = nlohmann::json::array();
+                                if (node->status && node->status->addresses) {
+                                    listEntry_t* addrEntry = nullptr;
+                                    list_ForEach(addrEntry, node->status->addresses) {
+                                        v1_node_address_t* address = static_cast<v1_node_address_t*>(addrEntry->data);
+                                        if (!address || !address->address) {
+                                            continue;
+                                        }
+                                        const std::string addressType = address->type ? std::string(address->type) : "Unknown";
+                                        const std::string addressValue = std::string(address->address);
+                                        nodeAddresses.push_back({
+                                                {"type", addressType},
+                                                {"address", addressValue}
+                                        });
+                                        addUniqueIp(ipsInUse, addressValue);
+                                    }
+                                }
+
+                                if (node->status && node->status->conditions) {
+                                    listEntry_t* condEntry = nullptr;
+                                    list_ForEach(condEntry, node->status->conditions) {
+                                        v1_node_condition_t* condition = static_cast<v1_node_condition_t*>(condEntry->data);
+                                        if (!condition || !condition->type || !condition->status) {
+                                            continue;
+                                        }
+                                        if (std::strcmp(condition->type, "Ready") == 0
+                                            && std::strcmp(condition->status, "True") == 0) {
+                                            nodeReady = true;
+                                            break;
+                                        }
+                                    }
+                                } else {
+                                    nodeReady = true;
+                                }
+                                if (nodeReady) {
+                                    readyNodes += 1;
+                                }
+
+                                if (localRegion == "local" && node->metadata && node->metadata->labels) {
+                                    listEntry_t* labelEntry = nullptr;
+                                    list_ForEach(labelEntry, node->metadata->labels) {
+                                        keyValuePair_t* kvp = static_cast<keyValuePair_t*>(labelEntry->data);
+                                        if (!kvp || !kvp->key || !kvp->value) {
+                                            continue;
+                                        }
+                                        if (std::strcmp(static_cast<const char*>(kvp->key), "topology.kubernetes.io/region") == 0
+                                            || std::strcmp(static_cast<const char*>(kvp->key), "failure-domain.beta.kubernetes.io/region") == 0) {
+                                            localRegion = static_cast<const char*>(kvp->value);
+                                            break;
+                                        }
+                                    }
+                                }
+
+                                const std::string nodeName = (node->metadata && node->metadata->name)
+                                                             ? std::string(node->metadata->name)
+                                                             : std::string("unknown");
+                                nodeRows.push_back({
+                                        {"name", nodeName},
+                                        {"ready", nodeReady},
+                                        {"addresses", nodeAddresses}
+                                });
+                            }
+                        }
+
+                        if (nodeList) {
+                            v1_node_list_free(nodeList);
+                        }
+                    }
+
+                    bool refinerObserved = false;
+                    int desiredReplicas = 0;
+                    int readyReplicas = 0;
+                    int availableReplicas = 0;
+                    std::string refinerNamespace = "refiner";
+                    std::string refinerDeploymentName = "refiner";
+
+                    genericClient_t* deploymentClient = nullptr;
+                    char* deploymentRaw = nullptr;
+                    char* deploymentListRaw = nullptr;
+                    try {
+                        deploymentClient = getGenericClient("apps", "v1", "deployments");
+                        if (deploymentClient) {
+                            deploymentRaw = Generic_readNamespacedResource(
+                                    deploymentClient,
+                                    (char*)"refiner",
+                                    (char*)"refiner"
+                            );
+
+                            std::optional<nlohmann::json> deploymentJson;
+                            if (deploymentRaw) {
+                                deploymentJson = nlohmann::json::parse(deploymentRaw);
+                            } else {
+                                deploymentListRaw = Generic_listNamespaced(deploymentClient, (char*)"refiner");
+                                if (deploymentListRaw) {
+                                    const auto deploymentListJson = nlohmann::json::parse(deploymentListRaw);
+                                    deploymentJson = findRefinerDeploymentFromList(deploymentListJson);
+                                }
+                            }
+
+                            if (deploymentJson && deploymentJson->is_object()) {
+                                refinerObserved = true;
+                                if (deploymentJson->contains("metadata") && (*deploymentJson)["metadata"].is_object()) {
+                                    const auto& metadata = (*deploymentJson)["metadata"];
+                                    refinerNamespace = metadata.value("namespace", refinerNamespace);
+                                    refinerDeploymentName = metadata.value("name", refinerDeploymentName);
+                                }
+                                if (deploymentJson->contains("spec") && (*deploymentJson)["spec"].is_object()) {
+                                    desiredReplicas = (*deploymentJson)["spec"].value("replicas", 0);
+                                }
+                                if (deploymentJson->contains("status") && (*deploymentJson)["status"].is_object()) {
+                                    readyReplicas = (*deploymentJson)["status"].value("readyReplicas", 0);
+                                    availableReplicas = (*deploymentJson)["status"].value("availableReplicas", 0);
+                                }
+                            }
+                        }
+                    } catch (const std::exception&) {
+                        // Keep fallback behaviour non-fatal when deployment lookup fails.
+                    }
+
+                    if (deploymentRaw) {
+                        free(deploymentRaw);
+                    }
+                    if (deploymentListRaw) {
+                        free(deploymentListRaw);
+                    }
+                    if (deploymentClient) {
+                        genericClient_free(deploymentClient);
+                    }
+
+                    nlohmann::json serviceRows = nlohmann::json::array();
+                    if (apiClient) {
+                        v1_service_list_t* serviceList = CoreV1API_listNamespacedService(
+                                apiClient,
+                                (char*)refinerNamespace.c_str(),
+                                NULL, // pretty
+                                NULL, // allowWatchBookmarks
+                                NULL, // continue
+                                NULL, // fieldSelector
+                                NULL, // labelSelector
+                                NULL, // limit
+                                NULL, // resourceVersion
+                                NULL, // resourceVersionMatch
+                                NULL, // sendInitialEvents
+                                NULL, // timeoutSeconds
+                                NULL  // watch
+                        );
+
+                        if (serviceList && serviceList->items) {
+                            listEntry_t* serviceEntry = nullptr;
+                            list_ForEach(serviceEntry, serviceList->items) {
+                                v1_service_t* service = static_cast<v1_service_t*>(serviceEntry->data);
+                                if (!service) {
+                                    continue;
+                                }
+
+                                const std::string serviceName = (service->metadata && service->metadata->name)
+                                                                ? std::string(service->metadata->name)
+                                                                : std::string("unknown");
+                                const std::string serviceNamespace = (service->metadata && service->metadata->_namespace)
+                                                                     ? std::string(service->metadata->_namespace)
+                                                                     : refinerNamespace;
+
+                                std::string serviceType = "ClusterIP";
+                                std::string clusterIp = "";
+                                nlohmann::json externalIps = nlohmann::json::array();
+                                nlohmann::json loadBalancer = nlohmann::json::array();
+                                nlohmann::json portRows = nlohmann::json::array();
+
+                                if (service->spec) {
+                                    if (service->spec->type) {
+                                        serviceType = service->spec->type;
+                                    }
+                                    if (service->spec->cluster_ip) {
+                                        clusterIp = service->spec->cluster_ip;
+                                        addUniqueIp(ipsInUse, clusterIp);
+                                    }
+                                    if (service->spec->cluster_ips) {
+                                        listEntry_t* clusterIpEntry = nullptr;
+                                        list_ForEach(clusterIpEntry, service->spec->cluster_ips) {
+                                            const char* clusterIpValue = static_cast<const char*>(clusterIpEntry->data);
+                                            if (!clusterIpValue) {
+                                                continue;
+                                            }
+                                            addUniqueIp(ipsInUse, clusterIpValue);
+                                        }
+                                    }
+                                    if (service->spec->external_ips) {
+                                        listEntry_t* externalIpEntry = nullptr;
+                                        list_ForEach(externalIpEntry, service->spec->external_ips) {
+                                            const char* externalIp = static_cast<const char*>(externalIpEntry->data);
+                                            if (!externalIp) {
+                                                continue;
+                                            }
+                                            externalIps.push_back(externalIp);
+                                            addUniqueIp(ipsInUse, externalIp);
+                                        }
+                                    }
+                                    if (service->spec->load_balancer_ip) {
+                                        addUniqueIp(ipsInUse, service->spec->load_balancer_ip);
+                                    }
+                                    if (service->spec->ports) {
+                                        listEntry_t* portEntry = nullptr;
+                                        list_ForEach(portEntry, service->spec->ports) {
+                                            v1_service_port_t* servicePort = static_cast<v1_service_port_t*>(portEntry->data);
+                                            if (!servicePort) {
+                                                continue;
+                                            }
+                                            addUniquePort(portsInUse, servicePort->port);
+                                            addUniquePort(portsInUse, servicePort->node_port);
+
+                                            nlohmann::json targetPort = nullptr;
+                                            if (servicePort->target_port) {
+                                                if (servicePort->target_port->type == IOS_DATA_TYPE_INT) {
+                                                    targetPort = servicePort->target_port->i;
+                                                    addUniquePort(portsInUse, servicePort->target_port->i);
+                                                } else if (servicePort->target_port->type == IOS_DATA_TYPE_STRING && servicePort->target_port->s) {
+                                                    targetPort = servicePort->target_port->s;
+                                                    int parsedTargetPort = -1;
+                                                    if (parseIntegerPort(servicePort->target_port->s, parsedTargetPort)) {
+                                                        addUniquePort(portsInUse, parsedTargetPort);
+                                                    }
+                                                }
+                                            }
+
+                                            portRows.push_back({
+                                                    {"name", servicePort->name ? std::string(servicePort->name) : std::string("")},
+                                                    {"protocol", servicePort->protocol ? std::string(servicePort->protocol) : std::string("TCP")},
+                                                    {"port", servicePort->port},
+                                                    {"target_port", targetPort},
+                                                    {"node_port", servicePort->node_port}
+                                            });
+                                        }
+                                    }
+                                }
+
+                                if (service->status && service->status->load_balancer && service->status->load_balancer->ingress) {
+                                    listEntry_t* ingressEntry = nullptr;
+                                    list_ForEach(ingressEntry, service->status->load_balancer->ingress) {
+                                        v1_load_balancer_ingress_t* ingress = static_cast<v1_load_balancer_ingress_t*>(ingressEntry->data);
+                                        if (!ingress) {
+                                            continue;
+                                        }
+                                        if (ingress->ip) {
+                                            loadBalancer.push_back(ingress->ip);
+                                            addUniqueIp(ipsInUse, ingress->ip);
+                                        } else if (ingress->hostname) {
+                                            loadBalancer.push_back(ingress->hostname);
+                                            addUniqueIp(ipsInUse, ingress->hostname);
+                                        }
+                                    }
+                                }
+
+                                serviceRows.push_back({
+                                        {"name", serviceName},
+                                        {"namespace", serviceNamespace},
+                                        {"type", serviceType},
+                                        {"cluster_ip", clusterIp},
+                                        {"external_ips", externalIps},
+                                        {"load_balancer", loadBalancer},
+                                        {"ports", portRows}
+                                });
+                            }
+                        }
+
+                        if (serviceList) {
+                            v1_service_list_free(serviceList);
+                        }
+                    }
+
+                    bool refinerHealthy = false;
+                    std::string localStatus = (totalNodes > 0) ? "Running" : "Unavailable";
+                    if (refinerObserved) {
+                        if (desiredReplicas <= 0) {
+                            localStatus = "Suspended";
+                            refinerHealthy = true;
+                        } else if (readyReplicas >= desiredReplicas && availableReplicas >= desiredReplicas) {
+                            localStatus = "Running";
+                            refinerHealthy = true;
+                        } else if (readyReplicas > 0 || availableReplicas > 0) {
+                            localStatus = "Degraded";
+                        } else {
+                            localStatus = "Pending";
+                        }
+                    }
+
+                    std::sort(ipsInUse.begin(), ipsInUse.end());
+                    std::sort(portsInUse.begin(), portsInUse.end());
+
+                    Models::CloudResponse apiResponse;
+                    apiResponse.success = true;
+                    apiResponse.message = "K8s cluster details retrieved.";
+                    apiResponse.data = {
+                            {"id", "k8s-local-refiner"},
+                            {"name", "refiner-local"},
+                            {"region", localRegion},
+                            {"status", localStatus},
+                            {"source", "local-kubeconfig"},
+                            {"total_nodes", totalNodes},
+                            {"ready_nodes", readyNodes},
+                            {"refiner", {
+                                                 {"observed", refinerObserved},
+                                                 {"healthy", refinerHealthy},
+                                                 {"namespace", refinerNamespace},
+                                                 {"deployment", refinerDeploymentName},
+                                                 {"desired_replicas", desiredReplicas},
+                                                 {"ready_replicas", readyReplicas},
+                                                 {"available_replicas", availableReplicas}
+                                         }},
+                            {"networking", {
+                                                   {"api_server", apiServerEndpoint},
+                                                   {"nodes", nodeRows},
+                                                   {"services", serviceRows},
+                                                   {"ips_in_use", ipsInUse},
+                                                   {"ports_in_use", portsInUse}
+                                           }}
+                    };
+                    return sendJsonResponse(res, apiResponse);
+                }
+
+                genericClient_t* genericClient = nullptr;
+                char* readObject = nullptr;
+                char* listObject = nullptr;
+                std::optional<nlohmann::json> resolvedObject;
+
+                try {
+                    genericClient = getGenericClient(K8S_CLUSTER_CRD_GROUP, K8S_CLUSTER_CRD_VERSION, K8S_CLUSTER_CRD_PLURAL);
+                    if (!genericClient) {
+                        return sendErrorResponse(res, 500, "Failed to create generic Kubernetes client.");
+                    }
+
+                    readObject = Generic_readNamespacedResource(
+                            genericClient,
+                            (char*)"default",
+                            (char*)identifier.c_str()
+                    );
+                    if (readObject) {
+                        resolvedObject = nlohmann::json::parse(readObject);
+                    } else {
+                        listObject = Generic_listNamespaced(genericClient, (char*)"default");
+                        if (listObject) {
+                            const auto listJson = nlohmann::json::parse(listObject);
+                            if (listJson.contains("items") && listJson["items"].is_array()) {
+                                for (const auto& item : listJson["items"]) {
+                                    if (!item.is_object()) {
+                                        continue;
+                                    }
+                                    const auto metadata = item.value("metadata", nlohmann::json::object());
+                                    const std::string itemName = metadata.value("name", "");
+                                    const std::string itemUid = metadata.value("uid", "");
+                                    if (identifier == itemName || identifier == itemUid) {
+                                        resolvedObject = item;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } catch (const std::exception&) {
+                    // Handled below via empty `resolvedObject`.
+                }
+
+                if (readObject) {
+                    free(readObject);
+                }
+                if (listObject) {
+                    free(listObject);
+                }
+                if (genericClient) {
+                    genericClient_free(genericClient);
+                }
+
+                if (!resolvedObject) {
+                    return sendErrorResponse(res, 404, "K8s cluster '" + identifier + "' not found.");
+                }
+
+                const auto cluster = parseKubernetesObjectToK8sCluster(*resolvedObject);
+                if (!cluster) {
+                    return sendErrorResponse(res, 500, "Failed to parse retrieved Kubernetes object for cluster '" + identifier + "'.");
+                }
+
+                nlohmann::json clusterData = cluster->toJsonString();
+                std::vector<std::string> endpointCandidates;
+                auto captureEndpointCandidate = [&](const nlohmann::json& objectNode, const char* key) {
+                    if (objectNode.is_object() && objectNode.contains(key) && objectNode[key].is_string()) {
+                        const std::string endpoint = objectNode[key].get<std::string>();
+                        if (endpoint.empty()) {
+                            return;
+                        }
+                        if (std::find(endpointCandidates.begin(), endpointCandidates.end(), endpoint) == endpointCandidates.end()) {
+                            endpointCandidates.push_back(endpoint);
+                        }
+                        const auto [host, port] = extractHostAndPortFromEndpoint(endpoint);
+                        addUniqueIp(ipsInUse, host);
+                        addUniquePort(portsInUse, port);
+                    }
+                };
+
+                if (resolvedObject->contains("spec")) {
+                    const auto& spec = (*resolvedObject)["spec"];
+                    captureEndpointCandidate(spec, "endpoint");
+                    captureEndpointCandidate(spec, "server");
+                    captureEndpointCandidate(spec, "api_server");
+                    captureEndpointCandidate(spec, "apiServer");
+                    if (spec.is_object() && spec.contains("port") && spec["port"].is_number_integer()) {
+                        addUniquePort(portsInUse, spec["port"].get<int>());
+                    }
+                }
+                if (resolvedObject->contains("status")) {
+                    const auto& status = (*resolvedObject)["status"];
+                    captureEndpointCandidate(status, "endpoint");
+                    captureEndpointCandidate(status, "server");
+                    captureEndpointCandidate(status, "api_server");
+                    captureEndpointCandidate(status, "apiServer");
+                    if (status.is_object() && status.contains("port") && status["port"].is_number_integer()) {
+                        addUniquePort(portsInUse, status["port"].get<int>());
+                    }
+                }
+
+                std::sort(ipsInUse.begin(), ipsInUse.end());
+                std::sort(portsInUse.begin(), portsInUse.end());
+
+                clusterData["networking"] = {
+                        {"api_server", apiServerEndpoint},
+                        {"endpoint_candidates", endpointCandidates},
+                        {"ips_in_use", ipsInUse},
+                        {"ports_in_use", portsInUse}
+                };
+
+                Models::CloudResponse apiResponse;
+                apiResponse.success = true;
+                apiResponse.message = "K8s cluster details retrieved.";
+                apiResponse.data = clusterData;
+                sendJsonResponse(res, apiResponse);
 
             } catch (const std::exception& e) {
                 sendErrorResponse(res, 500, "Server error: " + std::string(e.what()));

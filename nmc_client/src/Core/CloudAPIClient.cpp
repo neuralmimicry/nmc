@@ -211,8 +211,15 @@ namespace NMC::Core {
     }
 
     Models::CloudResponse CloudAPIClient::getK8sCluster(const std::string& id) {
-        auto res = cli->Get("/k8s/get/" + id);
-        return processHttpResponse(res, "K8s cluster details retrieved.");
+        auto res = cli->Get("/k8s/details/" + id);
+        auto apiResponse = processHttpResponse(res, "K8s cluster details retrieved.");
+        if (apiResponse.success || (res && res->status != 404)) {
+            return apiResponse;
+        }
+
+        // Backward compatibility for older servers that do not expose /k8s/details.
+        auto fallbackRes = cli->Get("/k8s/get/" + id);
+        return processHttpResponse(fallbackRes, "K8s cluster details retrieved.");
     }
 
     Models::CloudResponse CloudAPIClient::getKubeConfig(const std::string& id) {
@@ -404,6 +411,57 @@ namespace NMC::Core {
     Models::CloudResponse CloudAPIClient::listOpenShiftClusters() {
         auto res = cli->Get("/openshift/clusters");
         return processHttpResponse(res, "OpenShift clusters listed.");
+    }
+
+    Models::CloudResponse CloudAPIClient::getOpenShiftClusterDetails(const std::string& idOrName) {
+        auto res = cli->Get("/openshift/details/" + idOrName);
+        auto apiResponse = processHttpResponse(res, "OpenShift cluster details retrieved.");
+        if (apiResponse.success || (res && res->status != 404)) {
+            return apiResponse;
+        }
+
+        // Backward compatibility for older servers that do not expose /openshift/details.
+        auto listRes = listOpenShiftClusters();
+        if (!listRes.success) {
+            return listRes;
+        }
+
+        nlohmann::json clusters = nlohmann::json::array();
+        if (listRes.data.is_array()) {
+            clusters = listRes.data;
+        } else if (listRes.data.is_object() && listRes.data.contains("data") && listRes.data["data"].is_array()) {
+            clusters = listRes.data["data"];
+        } else if (listRes.data.is_object() && listRes.data.contains("clusters") && listRes.data["clusters"].is_array()) {
+            clusters = listRes.data["clusters"];
+        }
+
+        nlohmann::json selected = nullptr;
+        for (const auto& cluster : clusters) {
+            if (!cluster.is_object()) {
+                continue;
+            }
+            const std::string name = cluster.value("name", "");
+            const std::string id = cluster.value("id", cluster.value("cluster_id", cluster.value("uuid", "")));
+            if (name == idOrName || id == idOrName) {
+                selected = cluster;
+                break;
+            }
+        }
+
+        Models::CloudResponse fallback;
+        if (selected.is_null()) {
+            fallback.success = false;
+            fallback.message = "OpenShift cluster '" + idOrName + "' not found.";
+            fallback.data = nlohmann::json::object();
+            fallback.statusCode = 404;
+            return fallback;
+        }
+
+        fallback.success = true;
+        fallback.message = "OpenShift cluster details retrieved.";
+        fallback.data = selected;
+        fallback.statusCode = 200;
+        return fallback;
     }
 
     Models::CloudResponse CloudAPIClient::requestOpenShiftCluster(const std::string& name,

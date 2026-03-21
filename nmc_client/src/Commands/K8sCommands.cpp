@@ -61,9 +61,9 @@ int K8sDeleteCommand::execute(const std::map<std::string, std::string>& parsedFl
 // --- K8sGetCommand ---
 K8sGetCommand::K8sGetCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client) : BaseCommand("get", "Get k8s cluster", std::move(client)) {
     addAlias("gk");
-    usage = "nmc k8s get ID";
-    examples = "nmc k8s get ID";
-    addArgument(CLI::Argument("ID", "ID of the K8s cluster to get", true, 0));
+    usage = "nmc k8s get ID_OR_NAME";
+    examples = "nmc k8s get refiner-local";
+    addArgument(CLI::Argument("ID_OR_NAME", "ID or name of the K8s cluster to get", true, 0));
 }
 
 int K8sGetCommand::execute(const std::map<std::string, std::string>& parsedFlags, const std::vector<std::string>& parsedArgs, const CLI::GlobalFlags& globalFlags) {

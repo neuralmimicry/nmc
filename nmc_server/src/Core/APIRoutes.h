@@ -185,6 +185,7 @@ namespace NMC::Server {
         // --- OpenShift Handlers ---
         void handleOpenShiftResources(const httplib::Request& req, httplib::Response& res);
         void handleOpenShiftClusters(const httplib::Request& req, httplib::Response& res);
+        void handleOpenShiftClusterDetails(const httplib::Request& req, httplib::Response& res);
         void handleOpenShiftRequestCluster(const httplib::Request& req, httplib::Response& res);
         void handleServerVersion(const httplib::Request& req, httplib::Response& res);
         void handleTraceyHeartbeat(const httplib::Request& req, httplib::Response& res);

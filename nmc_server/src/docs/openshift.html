@@ -54,6 +54,36 @@
     </section>
 
     <section>
+        <h2>Get OpenShift Cluster Details</h2>
+        <p><strong>Endpoint:</strong> <code>GET /openshift/details/{idOrName}</code></p>
+        <p>Returns details for one OpenShift cluster, including endpoint-derived IP/host and ports in use.</p>
+        <h3>Successful Response (HTTP 200 OK):</h3>
+        <pre><code class="language-json">
+{
+    "success": true,
+    "message": "OpenShift cluster details retrieved.",
+    "data": {
+        "name": "hpc-cluster-prod",
+        "status": "Ready",
+        "endpoint": "https://api.hpc-cluster-prod.example.com:6443",
+        "networking": {
+            "endpoint": "https://api.hpc-cluster-prod.example.com:6443",
+            "endpoint_candidates": [
+                "https://api.hpc-cluster-prod.example.com:6443"
+            ],
+            "ips_in_use": [
+                "api.hpc-cluster-prod.example.com"
+            ],
+            "ports_in_use": [
+                6443
+            ]
+        }
+    }
+}
+            </code></pre>
+    </section>
+
+    <section>
         <h2>Request OpenShift Cluster</h2>
         <p><strong>Endpoint:</strong> <code>POST /openshift/clusters/request</code></p>
         <p>Submits a provisioning request to the OpenShift portal API.</p>

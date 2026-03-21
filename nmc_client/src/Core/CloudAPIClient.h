@@ -73,6 +73,7 @@ namespace NMC::Core {
         // OpenShift / Continuum Operations (via NeuralMimicry OpenShift portal API)
         Models::CloudResponse listOpenShiftResources();
         Models::CloudResponse listOpenShiftClusters();
+        Models::CloudResponse getOpenShiftClusterDetails(const std::string& idOrName);
         Models::CloudResponse requestOpenShiftCluster(const std::string& name,
                                                       const std::string& organization,
                                                       int gpuCount,

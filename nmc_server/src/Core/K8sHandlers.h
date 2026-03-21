@@ -63,6 +63,7 @@ namespace NMC {
             void handleCreateK8sCluster(const httplib::Request& req, httplib::Response& res);
             void handleDeleteK8sCluster(const httplib::Request& req, httplib::Response& res);
             void handleGetK8sCluster(const httplib::Request& req, httplib::Response& res);
+            void handleGetK8sClusterDetails(const httplib::Request& req, httplib::Response& res);
             void handleGetKubeConfig(const httplib::Request& req, httplib::Response& res);
             void handleListK8sClusters(const httplib::Request& req, httplib::Response& res);
             void handleListK8sLocations(const httplib::Request& req, httplib::Response& res);

@@ -288,32 +288,30 @@ namespace NMC::Commands {
         finalResponse.data = nlohmann::json::object();
 
         while (true) {
-            Models::CloudResponse response = apiClient->listOpenShiftClusters();
+            Models::CloudResponse response = apiClient->getOpenShiftClusterDetails(name);
             if (!response.success) {
                 if (!watch) {
                     printOutput(response, globalFlags);
                     return 1;
                 }
                 if (globalFlags.outputFormat.empty()) {
-                    std::cerr << "Warning: failed to fetch clusters, retrying..." << std::endl;
+                    std::cerr << "Warning: failed to fetch OpenShift details, retrying..." << std::endl;
                 }
             } else {
-                nlohmann::json clusters = nlohmann::json::array();
-                if (response.data.is_array()) {
-                    clusters = response.data;
-                } else if (response.data.is_object() && response.data.contains("data") && response.data["data"].is_array()) {
-                    clusters = response.data["data"];
+                nlohmann::json found = response.data;
+                if (!found.is_object() && response.data.is_object() && response.data.contains("data") && response.data["data"].is_object()) {
+                    found = response.data["data"];
                 }
 
-                nlohmann::json found;
-                for (const auto& cluster : clusters) {
-                    if (cluster.contains("name") && cluster["name"].is_string() && cluster["name"].get<std::string>() == name) {
-                        found = cluster;
-                        break;
+                if (!found.is_object()) {
+                    if (!watch) {
+                        finalResponse.success = false;
+                        finalResponse.message = "Cluster '" + name + "' status payload was not an object.";
+                        finalResponse.data = nlohmann::json::object();
+                        printOutput(finalResponse, globalFlags);
+                        return 1;
                     }
-                }
-
-                if (!found.is_null()) {
+                } else {
                     const std::string rawStatus = found.value("status", "Unknown");
                     const std::string status = normalizeStatus(rawStatus);
                     found["status"] = status;
@@ -338,17 +336,6 @@ namespace NMC::Commands {
                     if (status == "Failed") {
                         printOutput(finalResponse, globalFlags);
                         return 1;
-                    }
-                } else {
-                    if (!watch) {
-                        finalResponse.success = false;
-                        finalResponse.message = "Cluster '" + name + "' not found.";
-                        finalResponse.data = nlohmann::json::object();
-                        printOutput(finalResponse, globalFlags);
-                        return 1;
-                    }
-                    if (globalFlags.outputFormat.empty()) {
-                        std::cout << "Cluster '" << name << "' not found yet. Retrying..." << std::endl;
                     }
                 }
             }
