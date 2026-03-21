@@ -461,7 +461,7 @@
                 nmc_k8s_version_series
                 if (nmc_k8s_version_series | length) > 0
                 else (
-                  ('v' ~ ((nmc_k8s_stable.stdout | trim | regex_replace('^v', '')) | regex_replace('\\.[0-9]+$', '')))
+                  (nmc_k8s_stable.stdout | trim | regex_replace('^(v[0-9]+\.[0-9]+)\.[0-9]+$', '\1'))
                   if (nmc_k8s_stable is defined and nmc_k8s_stable.rc == 0 and (nmc_k8s_stable.stdout | trim | length) > 0)
                   else 'v1.30'
                 )
