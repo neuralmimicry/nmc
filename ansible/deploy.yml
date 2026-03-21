@@ -593,6 +593,23 @@
             - nmc_apiserver_running.rc == 0
             - not nmc_admin_conf_after_install.stat.exists
 
+        - name: Kill any remaining kube-apiserver processes
+          ansible.builtin.command: pkill -9 -f kube-apiserver
+          when:
+            - nmc_apiserver_running.rc == 0
+            - not nmc_admin_conf_after_install.stat.exists
+          failed_when: false
+
+        - name: Wait for port 6443 to be released
+          ansible.builtin.wait_for:
+            port: 6443
+            state: stopped
+            timeout: 10
+          when:
+            - nmc_apiserver_running.rc == 0
+            - not nmc_admin_conf_after_install.stat.exists
+          failed_when: false
+
         - name: Restart kubelet after cleanup
           ansible.builtin.systemd:
             name: kubelet
