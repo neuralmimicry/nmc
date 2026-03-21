@@ -378,6 +378,11 @@
         - nmc_kubectl_cmd.rc == 0
         - nmc_probe_kubeconfig | length == 0
 
+    - name: Check if Kubernetes has been initialized
+      ansible.builtin.stat:
+        path: /etc/kubernetes/admin.conf
+      register: nmc_k8s_initialized
+
     - name: Set Kubernetes availability fact
       ansible.builtin.set_fact:
         nmc_k8s_available: >-
@@ -385,6 +390,8 @@
             (nmc_k8s_probe_explicit is defined and (nmc_k8s_probe_explicit.rc | default(1)) == 0)
             or
             (nmc_k8s_probe_default is defined and (nmc_k8s_probe_default.rc | default(1)) == 0)
+            or
+            nmc_k8s_initialized.stat.exists
           }}
 
     - name: Install Kubernetes when unavailable
