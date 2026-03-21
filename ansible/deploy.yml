@@ -576,6 +576,14 @@
             - nmc_k8s_partial_init.stat.exists
             - not nmc_admin_conf_after_install.stat.exists
 
+        - name: Restart containerd after reset
+          ansible.builtin.systemd:
+            name: containerd
+            state: restarted
+          when:
+            - nmc_k8s_partial_init.stat.exists
+            - not nmc_admin_conf_after_install.stat.exists
+
         - name: Initialize single-node control plane
           ansible.builtin.command: >-
             kubeadm init
