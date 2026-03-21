@@ -565,6 +565,17 @@
             path: /etc/kubernetes/admin.conf
           register: nmc_admin_conf_after_install
 
+        - name: Check for partial Kubernetes initialization
+          ansible.builtin.stat:
+            path: /etc/kubernetes/manifests/kube-apiserver.yaml
+          register: nmc_k8s_partial_init
+
+        - name: Reset partial Kubernetes initialization
+          ansible.builtin.command: kubeadm reset --force --cri-socket=unix:///var/run/containerd/containerd.sock
+          when:
+            - nmc_k8s_partial_init.stat.exists
+            - not nmc_admin_conf_after_install.stat.exists
+
         - name: Initialize single-node control plane
           ansible.builtin.command: >-
             kubeadm init
