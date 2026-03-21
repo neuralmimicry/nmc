@@ -565,23 +565,40 @@
             path: /etc/kubernetes/admin.conf
           register: nmc_admin_conf_after_install
 
-        - name: Check for partial Kubernetes initialization
-          ansible.builtin.stat:
-            path: /etc/kubernetes/manifests/kube-apiserver.yaml
-          register: nmc_k8s_partial_init
+        - name: Check for running kube-apiserver
+          ansible.builtin.command: pgrep -f kube-apiserver
+          register: nmc_apiserver_running
+          changed_when: false
+          failed_when: false
+
+        - name: Stop kubelet to terminate stale pods
+          ansible.builtin.systemd:
+            name: kubelet
+            state: stopped
+          when:
+            - nmc_apiserver_running.rc == 0
+            - not nmc_admin_conf_after_install.stat.exists
 
         - name: Reset partial Kubernetes initialization
           ansible.builtin.command: kubeadm reset --force --cri-socket=unix:///var/run/containerd/containerd.sock
           when:
-            - nmc_k8s_partial_init.stat.exists
+            - nmc_apiserver_running.rc == 0
             - not nmc_admin_conf_after_install.stat.exists
 
-        - name: Restart containerd after reset
+        - name: Restart containerd to clear stale pods
           ansible.builtin.systemd:
             name: containerd
             state: restarted
           when:
-            - nmc_k8s_partial_init.stat.exists
+            - nmc_apiserver_running.rc == 0
+            - not nmc_admin_conf_after_install.stat.exists
+
+        - name: Restart kubelet after cleanup
+          ansible.builtin.systemd:
+            name: kubelet
+            state: restarted
+          when:
+            - nmc_apiserver_running.rc == 0
             - not nmc_admin_conf_after_install.stat.exists
 
         - name: Initialize single-node control plane
