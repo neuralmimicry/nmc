@@ -563,6 +563,7 @@
             kubeadm init
             --pod-network-cidr={{ nmc_k8s_pod_cidr }}
             --service-cidr={{ nmc_k8s_service_cidr }}
+            --cri-socket=unix:///var/run/containerd/containerd.sock
           when: not nmc_admin_conf_after_install.stat.exists
 
         - name: Wait for Kubernetes API healthz
