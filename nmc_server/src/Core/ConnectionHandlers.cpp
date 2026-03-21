@@ -36,25 +36,44 @@ namespace NMC::Server {
 
     void ConnectionHandlers::handleGetConnectionStatus(const httplib::Request& req, httplib::Response& res) {
         NMC::Server::Models::CloudResponse apiResponse;
+        apiResponse.statusCode = 200;
+
         if (s_currentConnectionName.empty()) {
-            apiResponse.success = false;
-            apiResponse.message = "No active connection.";
-            apiResponse.statusCode = 404;
-        } else {
-            auto it = std::find_if(s_connections.begin(), s_connections.end(),
-                                   [](const NMC::Server::Models::Connection& conn) { return conn.name == s_currentConnectionName; });
-            if (it != s_connections.end()) {
-                it->healthStatus = simulateHealthCheck(it->endpoint); // Update health status
-                apiResponse.success = true;
-                apiResponse.message = "Current connection status.";
-                apiResponse.data = it->toJsonString(); // Return connection details as JSON object
-                apiResponse.statusCode = 200;
-            } else {
-                apiResponse.success = false;
-                apiResponse.message = "Active connection '" + s_currentConnectionName + "' not found in stored connections. Inconsistency detected.";
-                apiResponse.statusCode = 500; // Internal server error
+            auto activeIt = std::find_if(
+                    s_connections.begin(),
+                    s_connections.end(),
+                    [](const NMC::Server::Models::Connection& conn) { return conn.isActive; }
+            );
+            if (activeIt != s_connections.end()) {
+                s_currentConnectionName = activeIt->name;
             }
         }
+
+        auto it = std::find_if(
+                s_connections.begin(),
+                s_connections.end(),
+                [](const NMC::Server::Models::Connection& conn) { return conn.name == s_currentConnectionName; }
+        );
+
+        if (it != s_connections.end()) {
+            it->healthStatus = simulateHealthCheck(it->endpoint); // Update health status
+            apiResponse.success = true;
+            apiResponse.message = "Current connection status.";
+            apiResponse.data = it->toJsonString(); // Return connection details as JSON object
+        } else {
+            // Continuum can still serve local Kubernetes/Refiner status with no
+            // cloud connection selected. Report this as reachable local mode.
+            apiResponse.success = true;
+            apiResponse.message = "No active cloud connection. Local Kubernetes mode is available.";
+            apiResponse.data = nlohmann::json{
+                    {"name", ""},
+                    {"endpoint", ""},
+                    {"isActive", false},
+                    {"status", "local_only"},
+                    {"mode", "local"}
+            };
+        }
+
         res.set_content(apiResponse.toJsonString().dump(), "application/json");
         res.status = apiResponse.statusCode;
     }

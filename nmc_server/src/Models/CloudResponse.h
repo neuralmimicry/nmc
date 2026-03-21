@@ -17,7 +17,7 @@ namespace NMC {
                 nlohmann::json data; // Now can hold any JSON data
                 int statusCode; // HTTP status code
 
-                CloudResponse() : success(false), message(""), data(""), statusCode(200) {}
+                CloudResponse() : success(false), message(""), data(nlohmann::json::object()), statusCode(200) {}
 
                 // Helper to convert to JSON
                 nlohmann::json toJsonString() const {

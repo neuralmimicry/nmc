@@ -245,7 +245,15 @@
         const k8sRows = k8sItems.map((cluster) => {
             const name = cluster.name || cluster.id || "unknown";
             const region = cluster.region || cluster.location || "-";
-            const status = cluster.status || "Unknown";
+            const refiner = cluster.refiner && typeof cluster.refiner === "object" ? cluster.refiner : null;
+            let status = cluster.status || "Unknown";
+            if (refiner) {
+                const desired = Number(refiner.desired_replicas);
+                const available = Number(refiner.available_replicas);
+                if (Number.isFinite(desired) && Number.isFinite(available)) {
+                    status = `${status} (Refiner ${available}/${desired})`;
+                }
+            }
             return `<tr><td>${escapeHtml(name)}</td><td>${escapeHtml(region)}</td><td>${statusBadge(status)}</td></tr>`;
         });
         renderRows(nodes.k8sRows, k8sRows, "No Kubernetes clusters detected.", 3);
@@ -297,7 +305,12 @@
         const k8sHealthy = k8sHealthRes.ok;
         setPill(nodes.k8sApiPill, "K8s API", k8sHealthy ? "Healthy" : "Unavailable", k8sHealthy ? "rgba(34,197,94,0.8)" : "rgba(239,68,68,0.8)");
 
-        setCheck(nodes.connStatus, connectionRes.ok ? "Reachable" : "Unavailable", connectionRes.ok ? "#22c55e" : "#ef4444");
+        const connectionData = responseData(connectionRes.payload) || {};
+        const connectionState = String(connectionData.status || "").toLowerCase();
+        const connectionText = connectionRes.ok
+            ? (connectionState === "local_only" ? "Reachable (Local mode)" : "Reachable")
+            : "Unavailable";
+        setCheck(nodes.connStatus, connectionText, connectionRes.ok ? "#22c55e" : "#ef4444");
         setCheck(nodes.resourceStatus, openshiftResourcesRes.ok ? "Reachable" : "Unavailable", openshiftResourcesRes.ok ? "#22c55e" : "#ef4444");
         setCheck(nodes.vmInventoryStatus, vmListRes.ok ? `${vmItems.length} listed` : "Unavailable", vmListRes.ok ? "#22c55e" : "#ef4444");
         const reachableTracey = Number(traceySummary.reachable || 0);

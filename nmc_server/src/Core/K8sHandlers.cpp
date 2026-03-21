@@ -2,6 +2,8 @@
 #include "K8sHandlers.h"
 #include "Utils.h" // For Utils::generateUniqueId
 #include <algorithm> // Not as much needed now, but keeping for general utility
+#include <cctype>
+#include <cstring>
 #include <iostream>
 #include <stdexcept>
 #include <string> // Required for std::to_string
@@ -11,6 +13,71 @@
 #include <kubernetes/include/generic.h>   // For genericClient_t, genericClient_create, genericClient_free
 #include <kubernetes/include/keyValuePair.h> // For keyValuePair_t
 #include <kubernetes/api/CoreV1API.h>     // For CoreV1API functions
+
+namespace {
+    std::string toLowerCopy(std::string value) {
+        for (auto& ch : value) {
+            ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+        }
+        return value;
+    }
+
+    bool clusterMatchesFilter(const nlohmann::json& cluster, const std::string& filterName) {
+        const std::string needle = toLowerCopy(filterName);
+        if (needle.empty()) {
+            return true;
+        }
+
+        const std::string name = cluster.value("name", "");
+        const std::string id = cluster.value("id", "");
+        const std::string region = cluster.value("region", "");
+        const std::string joined = toLowerCopy(name + " " + id + " " + region);
+        return joined.find(needle) != std::string::npos;
+    }
+
+    bool jsonLabelEquals(const nlohmann::json& labels, const char* key, const char* expected) {
+        return labels.contains(key)
+               && labels[key].is_string()
+               && labels[key].get<std::string>() == expected;
+    }
+
+    std::optional<nlohmann::json> findRefinerDeploymentFromList(const nlohmann::json& deploymentList) {
+        if (!deploymentList.is_object() || !deploymentList.contains("items") || !deploymentList["items"].is_array()) {
+            return std::nullopt;
+        }
+
+        for (const auto& item : deploymentList["items"]) {
+            if (!item.is_object()) {
+                continue;
+            }
+
+            const auto metadataIt = item.find("metadata");
+            if (metadataIt == item.end() || !metadataIt->is_object()) {
+                continue;
+            }
+
+            const auto& metadata = *metadataIt;
+            const std::string name = metadata.value("name", "");
+            if (name == "refiner") {
+                return item;
+            }
+
+            const auto labelsIt = metadata.find("labels");
+            if (labelsIt == metadata.end() || !labelsIt->is_object()) {
+                continue;
+            }
+
+            const auto& labels = *labelsIt;
+            if (jsonLabelEquals(labels, "nmc.neuralmimicry.ai/workload", "refiner")
+                || jsonLabelEquals(labels, "app.kubernetes.io/name", "refiner")
+                || jsonLabelEquals(labels, "app", "refiner")) {
+                return item;
+            }
+        }
+
+        return std::nullopt;
+    }
+} // namespace
 
 namespace NMC {
     namespace Server {
@@ -349,63 +416,239 @@ users:
 
         void K8sHandlers::handleListK8sClusters(const httplib::Request& req, httplib::Response& res) {
             try {
-                genericClient_t* genericClient = getGenericClient(
-                    K8S_CLUSTER_CRD_GROUP,
-                    K8S_CLUSTER_CRD_VERSION,
-                    K8S_CLUSTER_CRD_PLURAL
-                );
-                if (!genericClient) {
-                    return sendErrorResponse(res, 500, "Failed to create Kubernetes client.");
-                }
-
-                // Attempt to fetch the CRD list
-                char* list_str = Generic_listNamespaced(
-                    genericClient,
-                    (char*)"default"
-                    );
+                const std::string filterName = req.get_param_value("filter-name");
 
                 Models::CloudResponse apiResponse;
+                apiResponse.success = true;
+                apiResponse.data = nlohmann::json::object();
                 apiResponse.data["clusters"] = nlohmann::json::array();
 
-                if (list_str) {
-                    // Got a response—parse items[]
-                    auto list_obj = nlohmann::json::parse(list_str);
-                    if (list_obj.contains("items") && list_obj["items"].is_array()) {
-                        for (auto& item : list_obj["items"]) {
-                            if (auto c = parseKubernetesObjectToK8sCluster(item)) {
-                                auto j = c->toJsonString();
-                                // ensure status is explicit
-                                j["status"] = c->status;
-                                apiResponse.data["clusters"].push_back(j);
+                std::string crdWarning;
+
+                // Attempt CRD-backed cluster listing first.
+                genericClient_t* genericClient = nullptr;
+                char* listStr = nullptr;
+                try {
+                    genericClient = getGenericClient(
+                            K8S_CLUSTER_CRD_GROUP,
+                            K8S_CLUSTER_CRD_VERSION,
+                            K8S_CLUSTER_CRD_PLURAL
+                    );
+                    if (genericClient) {
+                        listStr = Generic_listNamespaced(genericClient, (char*)"default");
+                    }
+
+                    if (listStr) {
+                        const auto listObject = nlohmann::json::parse(listStr);
+                        if (listObject.contains("items") && listObject["items"].is_array()) {
+                            for (const auto& item : listObject["items"]) {
+                                if (auto cluster = parseKubernetesObjectToK8sCluster(item)) {
+                                    nlohmann::json clusterJson = cluster->toJsonString();
+                                    clusterJson["status"] = cluster->status;
+                                    if (clusterMatchesFilter(clusterJson, filterName)) {
+                                        apiResponse.data["clusters"].push_back(clusterJson);
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        crdWarning = "K8s CRD listing unavailable from API client; using local cluster fallback.";
+                    }
+                } catch (const std::exception& e) {
+                    crdWarning = "K8s CRD listing failed; using local cluster fallback. Detail: " + std::string(e.what());
+                }
+
+                if (listStr) {
+                    free(listStr);
+                }
+                if (genericClient) {
+                    genericClient_free(genericClient);
+                }
+
+                // Build a local fallback cluster entry using node and Refiner deployment state.
+                int totalNodes = 0;
+                int readyNodes = 0;
+                std::string localRegion = "local";
+                if (apiClient) {
+                    v1_node_list_t* nodeList = CoreV1API_listNode(
+                            apiClient,
+                            NULL, // pretty
+                            NULL, // allowWatchBookmarks
+                            NULL, // continue
+                            NULL, // fieldSelector
+                            NULL, // labelSelector
+                            NULL, // limit
+                            NULL, // resourceVersion
+                            NULL, // resourceVersionMatch
+                            NULL, // sendInitialEvents
+                            NULL, // timeoutSeconds
+                            NULL  // watch
+                    );
+
+                    if (nodeList && nodeList->items) {
+                        listEntry_t* nodeEntry = nullptr;
+                        list_ForEach(nodeEntry, nodeList->items) {
+                            v1_node_t* node = static_cast<v1_node_t*>(nodeEntry->data);
+                            if (!node) {
+                                continue;
+                            }
+                            totalNodes += 1;
+                            // Conservative fallback: treat listed nodes as usable capacity.
+                            readyNodes += 1;
+
+                            if (localRegion == "local" && node->metadata && node->metadata->labels) {
+                                listEntry_t* labelEntry = nullptr;
+                                list_ForEach(labelEntry, node->metadata->labels) {
+                                    keyValuePair_t* kvp = static_cast<keyValuePair_t*>(labelEntry->data);
+                                    if (!kvp || !kvp->key || !kvp->value) {
+                                        continue;
+                                    }
+                                    if (std::strcmp(static_cast<const char*>(kvp->key), "topology.kubernetes.io/region") == 0
+                                        || std::strcmp(static_cast<const char*>(kvp->key), "failure-domain.beta.kubernetes.io/region") == 0) {
+                                        localRegion = static_cast<const char*>(kvp->value);
+                                        break;
+                                    }
+                                }
                             }
                         }
                     }
-                    apiResponse.success = true;
-                    apiResponse.message = "Successfully listed K8s clusters.";
-                }
-                else {
-                    // Failure (e.g. DNS resolution): still return a valid JSON
-                    std::string serverId = basePath ? basePath : "unknown";
-                    apiResponse.success = false;
-                    apiResponse.message = "K8s clusters unavailable for server: " + serverId;
-                    // build a JSON object for the unavailable cluster
-                    nlohmann::json unavailable;
-                    unavailable["name"]   = serverId;
-                    unavailable["status"] = "unavailable";
-                    unavailable["error"]  = "Couldn’t resolve host name";
 
+                    if (nodeList) {
+                        v1_node_list_free(nodeList);
+                    }
+                }
+
+                bool refinerObserved = false;
+                int desiredReplicas = 0;
+                int readyReplicas = 0;
+                int availableReplicas = 0;
+                std::string refinerNamespace = "refiner";
+                std::string refinerDeploymentName = "refiner";
+
+                genericClient_t* deploymentClient = nullptr;
+                char* deploymentRaw = nullptr;
+                char* deploymentListRaw = nullptr;
+                try {
+                    deploymentClient = getGenericClient("apps", "v1", "deployments");
+                    if (deploymentClient) {
+                        deploymentRaw = Generic_readNamespacedResource(
+                                deploymentClient,
+                                (char*)"refiner",
+                                (char*)"refiner"
+                        );
+
+                        std::optional<nlohmann::json> deploymentJson;
+                        if (deploymentRaw) {
+                            deploymentJson = nlohmann::json::parse(deploymentRaw);
+                        } else {
+                            deploymentListRaw = Generic_listNamespaced(deploymentClient, (char*)"refiner");
+                            if (deploymentListRaw) {
+                                const auto deploymentListJson = nlohmann::json::parse(deploymentListRaw);
+                                deploymentJson = findRefinerDeploymentFromList(deploymentListJson);
+                            }
+                        }
+
+                        if (deploymentJson && deploymentJson->is_object()) {
+                            refinerObserved = true;
+                            if (deploymentJson->contains("metadata") && (*deploymentJson)["metadata"].is_object()) {
+                                const auto& metadata = (*deploymentJson)["metadata"];
+                                refinerNamespace = metadata.value("namespace", refinerNamespace);
+                                refinerDeploymentName = metadata.value("name", refinerDeploymentName);
+                            }
+                            if (deploymentJson->contains("spec") && (*deploymentJson)["spec"].is_object()) {
+                                desiredReplicas = (*deploymentJson)["spec"].value("replicas", 0);
+                            }
+                            if (deploymentJson->contains("status") && (*deploymentJson)["status"].is_object()) {
+                                readyReplicas = (*deploymentJson)["status"].value("readyReplicas", 0);
+                                availableReplicas = (*deploymentJson)["status"].value("availableReplicas", 0);
+                            }
+                        }
+                    }
+                } catch (const std::exception&) {
+                    // Keep fallback behaviour non-fatal when deployment lookup fails.
+                }
+
+                if (deploymentRaw) {
+                    free(deploymentRaw);
+                }
+                if (deploymentListRaw) {
+                    free(deploymentListRaw);
+                }
+                if (deploymentClient) {
+                    genericClient_free(deploymentClient);
+                }
+
+                bool refinerHealthy = false;
+                std::string localStatus = (totalNodes > 0) ? "Running" : "Unavailable";
+                if (refinerObserved) {
+                    if (desiredReplicas <= 0) {
+                        localStatus = "Suspended";
+                        refinerHealthy = true;
+                    } else if (readyReplicas >= desiredReplicas && availableReplicas >= desiredReplicas) {
+                        localStatus = "Running";
+                        refinerHealthy = true;
+                    } else if (readyReplicas > 0 || availableReplicas > 0) {
+                        localStatus = "Degraded";
+                    } else {
+                        localStatus = "Pending";
+                    }
+                }
+
+                nlohmann::json localCluster = {
+                        {"id", "k8s-local-refiner"},
+                        {"name", "refiner-local"},
+                        {"region", localRegion},
+                        {"status", localStatus},
+                        {"source", "local-kubeconfig"},
+                        {"total_nodes", totalNodes},
+                        {"ready_nodes", readyNodes}
+                };
+                localCluster["refiner"] = {
+                        {"observed", refinerObserved},
+                        {"healthy", refinerHealthy},
+                        {"namespace", refinerNamespace},
+                        {"deployment", refinerDeploymentName},
+                        {"desired_replicas", desiredReplicas},
+                        {"ready_replicas", readyReplicas},
+                        {"available_replicas", availableReplicas}
+                };
+
+                bool localPresent = false;
+                for (const auto& existing : apiResponse.data["clusters"]) {
+                    if (existing.is_object() && existing.value("name", "") == localCluster.value("name", "")) {
+                        localPresent = true;
+                        break;
+                    }
+                }
+                if (!localPresent && clusterMatchesFilter(localCluster, filterName)) {
+                    apiResponse.data["clusters"].push_back(localCluster);
+                }
+
+                if (apiResponse.data["clusters"].empty() && filterName.empty()) {
+                    nlohmann::json unavailable = {
+                            {"id", "k8s-unavailable"},
+                            {"name", (basePath ? std::string(basePath) : std::string("k8s-local"))},
+                            {"region", "local"},
+                            {"status", "Unavailable"},
+                            {"source", "kubernetes-api"}
+                    };
                     apiResponse.data["clusters"].push_back(unavailable);
+                    if (crdWarning.empty()) {
+                        crdWarning = "K8s cluster CRDs and local node probes were unavailable.";
+                    }
                 }
 
-                    sendJsonResponse(res, apiResponse);
-
-                    if (list_str)         free(list_str);
-                    genericClient_free(genericClient);
+                if (!crdWarning.empty()) {
+                    apiResponse.data["warning"] = crdWarning;
                 }
-                catch (const std::exception& e) {
-                    sendErrorResponse(res, 500, "Server error: " + std::string(e.what()));
-                }
+                apiResponse.message = apiResponse.data["clusters"].empty()
+                                      ? "No Kubernetes clusters matched the current query."
+                                      : "Successfully listed K8s clusters.";
+                sendJsonResponse(res, apiResponse);
+            } catch (const std::exception& e) {
+                sendErrorResponse(res, 500, "Server error: " + std::string(e.what()));
             }
+        }
 
         void K8sHandlers::handleListK8sLocations(const httplib::Request& req, httplib::Response& res) {
             try {

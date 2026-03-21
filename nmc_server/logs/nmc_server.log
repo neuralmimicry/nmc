@@ -1,0 +1,10 @@
+[2026-03-21 16:57:40.673] [nmc] [warning] NMC_AUTH_TOKEN is not set. API authentication is disabled.
+[2026-03-21 16:57:41.241] [nmc] [info] nmc_server version 0.0.1-test
+[2026-03-21 16:57:41.241] [nmc] [warning] Release check failed: No published GitHub releases found for neuralmimicry/nmc.
+[2026-03-21 16:57:41.241] [nmc] [info] No K8s env vars found; loading '/home/pbisaacs/.nmc/config.json'
+[2026-03-21 16:57:41.242] [nmc] [info] Starting NMC server initialization
+[2026-03-21 16:57:41.243] [nmc] [warning] Unable to load Kubernetes kubeconfig (rc=-1); disabling health monitor
+[2026-03-21 16:57:41.243] [nmc] [info] Kubernetes C client global environment set up
+[2026-03-21 16:57:41.243] [nmc] [warning] K8s health monitor is disabled due to Kubernetes client initialization failure
+[2026-03-21 16:57:41.243] [nmc] [info] NMC Server listening on http://0.0.0.0:18080
+[2026-03-21 16:57:41.243] [nmc] [info] Press Ctrl+C to stop the server
