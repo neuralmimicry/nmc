@@ -451,6 +451,10 @@ td {
     backdrop-filter: blur(4px);
 }
 
+.cluster-modal-overlay[hidden] {
+    display: none !important;
+}
+
 .cluster-modal-shell {
     width: min(960px, 100%);
     max-height: min(84vh, 860px);
