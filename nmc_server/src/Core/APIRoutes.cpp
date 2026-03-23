@@ -162,6 +162,38 @@ namespace NMC::Server {
             return -1;
         }
 
+        int64_t firstInt64Value(const nlohmann::json& objectNode,
+                                std::initializer_list<const char*> keys,
+                                int64_t fallback) {
+            if (!objectNode.is_object()) {
+                return fallback;
+            }
+            for (const char* key : keys) {
+                const auto it = objectNode.find(key);
+                if (it == objectNode.end() || it->is_null()) {
+                    continue;
+                }
+                if (it->is_number_integer()) {
+                    return it->get<int64_t>();
+                }
+                if (it->is_number_unsigned()) {
+                    return static_cast<int64_t>(it->get<uint64_t>());
+                }
+                if (it->is_string()) {
+                    const std::string value = trim(it->get<std::string>());
+                    if (value.empty()) {
+                        continue;
+                    }
+                    try {
+                        return std::stoll(value);
+                    } catch (const std::exception&) {
+                        continue;
+                    }
+                }
+            }
+            return fallback;
+        }
+
         std::string openShiftClusterIdentityKey(const nlohmann::json& cluster) {
             const std::string name = toLower(firstStringValue(cluster, {"name"}));
             const std::string id = toLower(firstStringValue(cluster, {"id", "cluster_id", "uuid"}));
@@ -1222,6 +1254,7 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                 api_server_url_value,
                 kubeconfigPath,
                 dataMutex,
+                vclusterConfigs,
                 [this](httplib::Response& res, const Models::CloudResponse& apiResponse) {
                     sendJsonResponse(res, apiResponse);
                 },
@@ -1441,6 +1474,74 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
         svr.Post(R"(/k8s/suspend/(.*))", [this, guard](const httplib::Request& req, httplib::Response& res) {
             if (!guard(req, res)) return;
             k8sHandlers->handleSuspendK8sCluster(req, res);
+        });
+
+        // --- VCluster Routes ---
+        svr.Post("/vcluster/create", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            k8sHandlers->handleCreateVCluster(req, res);
+        });
+        svr.Delete(R"(/vcluster/delete/(.*))", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            k8sHandlers->handleDeleteVCluster(req, res);
+        });
+        svr.Get(R"(/vcluster/get/(.*))", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            k8sHandlers->handleGetVCluster(req, res);
+        });
+        svr.Get("/vcluster/list", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            k8sHandlers->handleListVClusters(req, res);
+        });
+        svr.Get(R"(/vcluster/get-config/(.*))", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            k8sHandlers->handleGetVClusterKubeConfig(req, res);
+        });
+
+        // --- VCluster Lifecycle Routes ---
+        svr.Post(R"(/vcluster/pause/(.*))", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            k8sHandlers->handlePauseVCluster(req, res);
+        });
+        svr.Post(R"(/vcluster/resume/(.*))", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            k8sHandlers->handleResumeVCluster(req, res);
+        });
+        svr.Post(R"(/vcluster/backup/(.*))", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            k8sHandlers->handleBackupVCluster(req, res);
+        });
+        svr.Post("/vcluster/restore", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            k8sHandlers->handleRestoreVCluster(req, res);
+        });
+        svr.Post(R"(/vcluster/upgrade/(.*))", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            k8sHandlers->handleUpgradeVCluster(req, res);
+        });
+
+        // --- VCluster Configuration Routes ---
+        svr.Get(R"(/vcluster/config/(.*))", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            k8sHandlers->handleGetVClusterConfig(req, res);
+        });
+        svr.Put(R"(/vcluster/config/(.*))", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            k8sHandlers->handleUpdateVClusterConfig(req, res);
+        });
+
+        // --- VCluster Monitoring Routes ---
+        svr.Get(R"(/vcluster/metrics/(.*))", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            k8sHandlers->handleGetVClusterMetrics(req, res);
+        });
+        svr.Get(R"(/vcluster/health/(.*))", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            k8sHandlers->handleGetVClusterHealth(req, res);
+        });
+        svr.Get(R"(/vcluster/resources/(.*))", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            k8sHandlers->handleGetVClusterResources(req, res);
         });
 
         // --- Model Routes ---
@@ -2970,7 +3071,12 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
 
                         auto payload = nlohmann::json::parse(buffer.data(), buffer.data() + bytes, nullptr, false);
                         if (payload.is_object()) {
-                            ingestTraceyDiscoveryAnnouncement(payload, senderAddress, nowEpochMs());
+                            try {
+                                ingestTraceyDiscoveryAnnouncement(payload, senderAddress, nowEpochMs());
+                            } catch (const std::exception& e) {
+                                std::cerr << "[WARN] Ignoring invalid Tracey discovery payload from "
+                                          << senderAddress << ": " << e.what() << std::endl;
+                            }
                         }
                     } else if (bytes < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
                         std::cerr << "[WARN] Tracey discovery recvfrom() failed: " << std::strerror(errno) << std::endl;
@@ -3027,12 +3133,12 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
             return;
         }
 
-        const std::string agentId = payload.value("agent_id", "");
+        const std::string agentId = firstStringValue(payload, {"agent_id", "agentId", "id"});
         if (agentId.empty()) {
             return;
         }
 
-        const int64_t announcedTsMs = payload.value("ts_ms", receivedAtMs);
+        const int64_t announcedTsMs = firstInt64Value(payload, {"ts_ms", "timestamp_ms"}, receivedAtMs);
         if (announcedTsMs > 0 && receivedAtMs >= announcedTsMs && (receivedAtMs - announcedTsMs) > traceyDiscoveryMaxAgeMs) {
             return;
         }
@@ -3043,8 +3149,8 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
             return;
         }
 
-        const std::string announceAddr = payload.value("addr", "");
-        const std::string rawStatusAddr = payload.value("status_addr", "");
+        const std::string announceAddr = firstStringValue(payload, {"addr", "announce_addr", "announceAddr"});
+        const std::string rawStatusAddr = firstStringValue(payload, {"status_addr", "statusAddr"});
         TraceyEndpoint endpoint;
         const bool hasEndpoint = !rawStatusAddr.empty() && parseTraceyEndpoint(rawStatusAddr, endpoint);
         const bool endpointAllowed = hasEndpoint && isLocalOrPrivateHost(endpoint.host, traceyAllowPublicAddr);
@@ -3246,16 +3352,13 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
     void APIRoutes::handleTraceyHeartbeat(const httplib::Request& req, httplib::Response& res) {
         try {
             const auto body = nlohmann::json::parse(req.body);
-            std::string agentId = body.value("agent_id", "");
-            if (agentId.empty()) {
-                agentId = body.value("id", "");
-            }
+            std::string agentId = firstStringValue(body, {"agent_id", "id"});
             if (agentId.empty()) {
                 return sendErrorResponse(res, 400, "Missing required parameter: agent_id.");
             }
 
             const int64_t nowMs = nowEpochMs();
-            const std::string rawStatusAddr = body.value("status_addr", "");
+            const std::string rawStatusAddr = firstStringValue(body, {"status_addr", "statusAddr"});
             TraceyEndpoint endpoint;
             const bool hasEndpoint = !rawStatusAddr.empty() && parseTraceyEndpoint(rawStatusAddr, endpoint);
             const bool endpointAllowed = hasEndpoint && isLocalOrPrivateHost(endpoint.host, traceyAllowPublicAddr);
@@ -3264,19 +3367,30 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
             auto& agent = traceyAgents[agentId];
             agent.agentId = agentId;
             agent.source = mergeTraceySource(agent.source, "heartbeat");
-            const std::string cluster = body.value("cluster", body.value("cluster_id", ""));
+            const std::string cluster = firstStringValue(body, {"cluster", "cluster_id"});
             if (!cluster.empty()) {
                 agent.cluster = cluster;
             }
-            agent.status = normalizeTraceyStatus(body.value("status", agent.status.empty() ? "healthy" : agent.status));
-            agent.version = body.value("version", agent.version);
-            agent.host = body.value("host", body.value("hostname", agent.host));
-            if (body.contains("metrics")) {
+            const std::string reportedStatus = firstStringValue(body, {"status"});
+            if (!reportedStatus.empty()) {
+                agent.status = normalizeTraceyStatus(reportedStatus);
+            } else if (agent.status.empty()) {
+                agent.status = "healthy";
+            }
+            const std::string version = firstStringValue(body, {"version"});
+            if (!version.empty()) {
+                agent.version = version;
+            }
+            const std::string host = firstStringValue(body, {"host", "hostname"});
+            if (!host.empty()) {
+                agent.host = host;
+            }
+            if (body.contains("metrics") && !body["metrics"].is_null()) {
                 agent.metrics = body["metrics"];
             } else if (agent.metrics.is_null()) {
                 agent.metrics = nlohmann::json::object();
             }
-            if (body.contains("capabilities")) {
+            if (body.contains("capabilities") && !body["capabilities"].is_null()) {
                 agent.capabilities = body["capabilities"];
             } else if (agent.capabilities.is_null()) {
                 agent.capabilities = nlohmann::json::object();

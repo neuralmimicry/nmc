@@ -49,6 +49,29 @@ namespace NMC::Core {
         Models::CloudResponse resumeK8sCluster(const std::string& id);
         Models::CloudResponse suspendK8sCluster(const std::string& id);
 
+        // VCluster Operations
+        Models::CloudResponse createVCluster(const std::string& name, const std::string& vclusterNamespace = "");
+        Models::CloudResponse deleteVCluster(const std::string& id);
+        Models::CloudResponse getVCluster(const std::string& id);
+        Models::CloudResponse listVClusters(const std::string& filterName = "");
+        Models::CloudResponse getVClusterKubeConfig(const std::string& id);
+
+        // VCluster Lifecycle Operations
+        Models::CloudResponse pauseVCluster(const std::string& id);
+        Models::CloudResponse resumeVCluster(const std::string& id);
+        Models::CloudResponse backupVCluster(const std::string& id, const std::string& backupName = "");
+        Models::CloudResponse restoreVCluster(const std::string& backupName, const std::string& targetName = "");
+        Models::CloudResponse upgradeVCluster(const std::string& id, const std::string& newVersion);
+
+        // VCluster Configuration Operations
+        Models::CloudResponse getVClusterConfig(const std::string& id);
+        Models::CloudResponse updateVClusterConfig(const std::string& id, const nlohmann::json& config);
+
+        // VCluster Monitoring Operations
+        Models::CloudResponse getVClusterMetrics(const std::string& id);
+        Models::CloudResponse getVClusterHealth(const std::string& id);
+        Models::CloudResponse getVClusterResources(const std::string& id);
+
         // Model Operations
         Models::CloudResponse uploadModel(const std::string& filePath, const std::string& sku, const std::string& registryName, const std::string& tag);
 

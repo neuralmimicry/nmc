@@ -2,6 +2,7 @@
 #include "Commands/RootCommand.h"
 #include "Commands/BucketCommands.h"
 #include "Commands/K8sCommands.h"
+#include "Commands/VClusterCommands.h"
 #include "Commands/ModelCommands.h"
 #include "Commands/SSHCommands.h"
 #include "Commands/OpenShiftCommands.h"
@@ -57,6 +58,24 @@ int main(int argc, char* argv[]) {
     k8sCmd->addSubcommand(std::make_shared<NMC::Commands::K8sResumeCommand>(apiClient));
     k8sCmd->addSubcommand(std::make_shared<NMC::Commands::K8sSuspendCommand>(apiClient));
     parser.registerCommand(k8sCmd);
+
+    auto vclusterCmd = std::make_shared<NMC::Commands::VClusterCommand>(apiClient);
+    vclusterCmd->addSubcommand(std::make_shared<NMC::Commands::VClusterCreateCommand>(apiClient));
+    vclusterCmd->addSubcommand(std::make_shared<NMC::Commands::VClusterDeleteCommand>(apiClient));
+    vclusterCmd->addSubcommand(std::make_shared<NMC::Commands::VClusterGetCommand>(apiClient));
+    vclusterCmd->addSubcommand(std::make_shared<NMC::Commands::VClusterGetConfigCommand>(apiClient));
+    vclusterCmd->addSubcommand(std::make_shared<NMC::Commands::VClusterListCommand>(apiClient));
+    vclusterCmd->addSubcommand(std::make_shared<NMC::Commands::VClusterPauseCommand>(apiClient));
+    vclusterCmd->addSubcommand(std::make_shared<NMC::Commands::VClusterResumeCommand>(apiClient));
+    vclusterCmd->addSubcommand(std::make_shared<NMC::Commands::VClusterBackupCommand>(apiClient));
+    vclusterCmd->addSubcommand(std::make_shared<NMC::Commands::VClusterRestoreCommand>(apiClient));
+    vclusterCmd->addSubcommand(std::make_shared<NMC::Commands::VClusterUpgradeCommand>(apiClient));
+    vclusterCmd->addSubcommand(std::make_shared<NMC::Commands::VClusterConfigGetCommand>(apiClient));
+    vclusterCmd->addSubcommand(std::make_shared<NMC::Commands::VClusterConfigUpdateCommand>(apiClient));
+    vclusterCmd->addSubcommand(std::make_shared<NMC::Commands::VClusterMetricsCommand>(apiClient));
+    vclusterCmd->addSubcommand(std::make_shared<NMC::Commands::VClusterHealthCommand>(apiClient));
+    vclusterCmd->addSubcommand(std::make_shared<NMC::Commands::VClusterResourcesCommand>(apiClient));
+    parser.registerCommand(vclusterCmd);
 
     auto modelCmd = std::make_shared<NMC::Commands::ModelCommand>(apiClient);
     modelCmd->addSubcommand(std::make_shared<NMC::Commands::ModelUploadCommand>(apiClient));

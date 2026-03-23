@@ -6,10 +6,12 @@
         sessionLabel: document.getElementById("sessionLabel"),
         logoutBtn: document.getElementById("logoutBtn"),
         k8sMetric: document.getElementById("k8sMetric"),
+        vclusterMetric: document.getElementById("vclusterMetric"),
         openshiftMetric: document.getElementById("openshiftMetric"),
         vmMetric: document.getElementById("vmMetric"),
         traceyMetric: document.getElementById("traceyMetric"),
         k8sRows: document.getElementById("k8sRows"),
+        vclusterRows: document.getElementById("vclusterRows"),
         openshiftRows: document.getElementById("openshiftRows"),
         traceyRows: document.getElementById("traceyRows"),
         traceyNetworkRows: document.getElementById("traceyNetworkRows"),
@@ -543,6 +545,7 @@
 
         const [
             k8sListRes,
+            vclusterListRes,
             openshiftClustersRes,
             vmListRes,
             traceyAgentsRes,
@@ -551,6 +554,7 @@
             openshiftResourcesRes
         ] = await Promise.all([
             fetchJson("/k8s/list"),
+            fetchJson("/vcluster/list"),
             fetchJson("/openshift/clusters"),
             fetchJson("/vm/list"),
             fetchJson("/tracey/agents"),
@@ -561,6 +565,7 @@
 
         const allResponses = [
             k8sListRes,
+            vclusterListRes,
             openshiftClustersRes,
             vmListRes,
             traceyAgentsRes,
@@ -593,6 +598,21 @@
             return `<tr><td>${clusterButton}</td><td>${escapeHtml(region)}</td><td>${statusBadge(status)}</td></tr>`;
         });
         renderRows(nodes.k8sRows, k8sRows, "No Kubernetes clusters detected.", 3);
+
+        const vclusterItems = arrayFromUnknown(vclusterListRes.payload);
+        const vclusterHealthy = vclusterItems.filter(vc => {
+            const status = String(vc.status || "").toLowerCase();
+            return status === "running" || status === "healthy";
+        }).length;
+        nodes.vclusterMetric.textContent = `${vclusterHealthy} / ${vclusterItems.length}`;
+        const vclusterRows = vclusterItems.map((vcluster) => {
+            const name = vcluster.name || vcluster.id || "unknown";
+            const namespace = vcluster.vcluster_namespace || vcluster.namespace || "-";
+            const status = vcluster.status || "Unknown";
+            const health = vcluster.health || "Unknown";
+            return `<tr><td>${escapeHtml(name)}</td><td>${escapeHtml(namespace)}</td><td>${statusBadge(status)}</td><td>${statusBadge(health)}</td></tr>`;
+        });
+        renderRows(nodes.vclusterRows, vclusterRows, "No vclusters detected.", 4);
 
         const openshiftItems = arrayFromUnknown(openshiftClustersRes.payload);
         const openshiftSummary = summarizeRunning(openshiftItems);

@@ -53,6 +53,7 @@ namespace NMC {
                     const std::string& api_server_url,
                     const std::string& kubeconfig_path,
                     std::mutex& mutex_ref,
+                    std::unordered_map<std::string, Models::VClusterConfig>& vcluster_configs_ref,
                     std::function<void(httplib::Response&, const Models::CloudResponse&)> send_json_cb,
             std::function<void(httplib::Response&, int, const std::string&)> send_error_cb
             );
@@ -71,6 +72,29 @@ namespace NMC {
             void handleResumeK8sCluster(const httplib::Request& req, httplib::Response& res);
             void handleSuspendK8sCluster(const httplib::Request& req, httplib::Response& res);
 
+            // Vcluster management handlers
+            void handleCreateVCluster(const httplib::Request& req, httplib::Response& res);
+            void handleDeleteVCluster(const httplib::Request& req, httplib::Response& res);
+            void handleGetVCluster(const httplib::Request& req, httplib::Response& res);
+            void handleListVClusters(const httplib::Request& req, httplib::Response& res);
+            void handleGetVClusterKubeConfig(const httplib::Request& req, httplib::Response& res);
+
+            // Vcluster lifecycle handlers
+            void handlePauseVCluster(const httplib::Request& req, httplib::Response& res);
+            void handleResumeVCluster(const httplib::Request& req, httplib::Response& res);
+            void handleBackupVCluster(const httplib::Request& req, httplib::Response& res);
+            void handleRestoreVCluster(const httplib::Request& req, httplib::Response& res);
+            void handleUpgradeVCluster(const httplib::Request& req, httplib::Response& res);
+
+            // Vcluster configuration handlers
+            void handleGetVClusterConfig(const httplib::Request& req, httplib::Response& res);
+            void handleUpdateVClusterConfig(const httplib::Request& req, httplib::Response& res);
+
+            // Vcluster monitoring handlers
+            void handleGetVClusterMetrics(const httplib::Request& req, httplib::Response& res);
+            void handleGetVClusterHealth(const httplib::Request& req, httplib::Response& res);
+            void handleGetVClusterResources(const httplib::Request& req, httplib::Response& res);
+
         private:
             // Kubernetes C client related members
             apiClient_t *apiClient;
@@ -83,7 +107,18 @@ namespace NMC {
             // Internal helper for generic client calls
             genericClient_t *getGenericClient(const std::string& group, const std::string& version, const std::string& plural);
 
+            // VCluster helper methods
+            bool createServiceAccount(const std::string& ns, const std::string& name);
+            bool createRBACResources(const std::string& ns, const std::string& sa_name, const std::vector<std::string>& roles);
+            bool createPodDisruptionBudget(const std::string& ns, const std::string& name, int minAvailable, const std::map<std::string, std::string>& matchLabels);
+            bool createIngress(const std::string& ns, const std::string& name, const Models::NetworkingConfig& netConfig);
+            nlohmann::json buildVClusterStatefulSet(const std::string& name, const std::string& ns, const Models::VClusterConfig& config);
+            nlohmann::json buildVClusterService(const std::string& name, const std::string& ns, const Models::NetworkingConfig& netConfig);
+            std::string extractClusterIdentifierFromRequest(const httplib::Request& req);
+            bool clusterMatchesFilter(const nlohmann::json& cluster, const std::string& filterName);
+
             std::mutex& dataMutex; /**< Reference to the mutex (still useful for general thread safety). */
+            std::unordered_map<std::string, Models::VClusterConfig>& vclusterConfigsRef; /**< Reference to VCluster configs storage */
 
             // Callbacks for sending responses, provided by APIRoutes
             std::function<void(httplib::Response&, const Models::CloudResponse&)> sendJsonResponse;

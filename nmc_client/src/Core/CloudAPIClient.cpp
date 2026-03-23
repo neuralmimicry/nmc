@@ -284,6 +284,105 @@ namespace NMC::Core {
         return processHttpResponse(res, "K8s cluster '" + id + "' suspended.");
     }
 
+// --- VCluster Operations ---
+    Models::CloudResponse CloudAPIClient::createVCluster(const std::string& name, const std::string& vclusterNamespace) {
+        nlohmann::json request_body;
+        request_body["name"] = name;
+        if (!vclusterNamespace.empty()) {
+            request_body["namespace"] = vclusterNamespace;
+        }
+        auto res = cli->Post("/vcluster/create", request_body.dump(), "application/json");
+        return processHttpResponse(res, "VCluster '" + name + "' created.");
+    }
+
+    Models::CloudResponse CloudAPIClient::deleteVCluster(const std::string& id) {
+        auto res = cli->Delete("/vcluster/delete/" + id);
+        return processHttpResponse(res, "VCluster '" + id + "' deleted.");
+    }
+
+    Models::CloudResponse CloudAPIClient::getVCluster(const std::string& id) {
+        auto res = cli->Get("/vcluster/get/" + id);
+        return processHttpResponse(res, "VCluster '" + id + "' retrieved.");
+    }
+
+    Models::CloudResponse CloudAPIClient::listVClusters(const std::string& filterName) {
+        std::string endpoint = "/vcluster/list";
+        if (!filterName.empty()) {
+            endpoint += "?filter-name=" + filterName;
+        }
+        auto res = cli->Get(endpoint);
+        return processHttpResponse(res, "VClusters listed.");
+    }
+
+    Models::CloudResponse CloudAPIClient::getVClusterKubeConfig(const std::string& id) {
+        auto res = cli->Get("/vcluster/get-config/" + id);
+        return processHttpResponse(res, "VCluster kubeconfig for '" + id + "' retrieved.");
+    }
+
+// --- VCluster Lifecycle Operations ---
+    Models::CloudResponse CloudAPIClient::pauseVCluster(const std::string& id) {
+        auto res = cli->Post("/vcluster/pause/" + id, "", "application/json");
+        return processHttpResponse(res, "VCluster '" + id + "' paused.");
+    }
+
+    Models::CloudResponse CloudAPIClient::resumeVCluster(const std::string& id) {
+        auto res = cli->Post("/vcluster/resume/" + id, "", "application/json");
+        return processHttpResponse(res, "VCluster '" + id + "' resumed.");
+    }
+
+    Models::CloudResponse CloudAPIClient::backupVCluster(const std::string& id, const std::string& backupName) {
+        nlohmann::json request_body;
+        if (!backupName.empty()) {
+            request_body["backup_name"] = backupName;
+        }
+        auto res = cli->Post("/vcluster/backup/" + id, request_body.dump(), "application/json");
+        return processHttpResponse(res, "VCluster '" + id + "' backed up.");
+    }
+
+    Models::CloudResponse CloudAPIClient::restoreVCluster(const std::string& backupName, const std::string& targetName) {
+        nlohmann::json request_body;
+        request_body["backup_name"] = backupName;
+        if (!targetName.empty()) {
+            request_body["target_name"] = targetName;
+        }
+        auto res = cli->Post("/vcluster/restore", request_body.dump(), "application/json");
+        return processHttpResponse(res, "VCluster restored from backup '" + backupName + "'.");
+    }
+
+    Models::CloudResponse CloudAPIClient::upgradeVCluster(const std::string& id, const std::string& newVersion) {
+        nlohmann::json request_body;
+        request_body["new_version"] = newVersion;
+        auto res = cli->Post("/vcluster/upgrade/" + id, request_body.dump(), "application/json");
+        return processHttpResponse(res, "VCluster '" + id + "' upgraded to version '" + newVersion + "'.");
+    }
+
+// --- VCluster Configuration Operations ---
+    Models::CloudResponse CloudAPIClient::getVClusterConfig(const std::string& id) {
+        auto res = cli->Get("/vcluster/config/" + id);
+        return processHttpResponse(res, "VCluster configuration for '" + id + "' retrieved.");
+    }
+
+    Models::CloudResponse CloudAPIClient::updateVClusterConfig(const std::string& id, const nlohmann::json& config) {
+        auto res = cli->Put("/vcluster/config/" + id, config.dump(), "application/json");
+        return processHttpResponse(res, "VCluster configuration for '" + id + "' updated.");
+    }
+
+// --- VCluster Monitoring Operations ---
+    Models::CloudResponse CloudAPIClient::getVClusterMetrics(const std::string& id) {
+        auto res = cli->Get("/vcluster/metrics/" + id);
+        return processHttpResponse(res, "VCluster metrics for '" + id + "' retrieved.");
+    }
+
+    Models::CloudResponse CloudAPIClient::getVClusterHealth(const std::string& id) {
+        auto res = cli->Get("/vcluster/health/" + id);
+        return processHttpResponse(res, "VCluster health for '" + id + "' retrieved.");
+    }
+
+    Models::CloudResponse CloudAPIClient::getVClusterResources(const std::string& id) {
+        auto res = cli->Get("/vcluster/resources/" + id);
+        return processHttpResponse(res, "VCluster resources for '" + id + "' retrieved.");
+    }
+
 // --- Model Operations ---
     Models::CloudResponse CloudAPIClient::uploadModel(const std::string& filePath, const std::string& sku, const std::string& registryName, const std::string& tag) {
         nlohmann::json request_body;

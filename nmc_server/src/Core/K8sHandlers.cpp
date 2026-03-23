@@ -196,10 +196,12 @@ namespace NMC {
                 const std::string& api_server_url,
                 const std::string &kubeconfig_path,
                 std::mutex &mutex_ref,
+                std::unordered_map<std::string, Models::VClusterConfig>& vcluster_configs_ref,
                 std::function<void(httplib::Response&, const Models::CloudResponse&)> send_json_cb,
         std::function<void(httplib::Response&, int, const std::string&)> send_error_cb
         ) :
         dataMutex(mutex_ref),
+        vclusterConfigsRef(vcluster_configs_ref),
         sendJsonResponse(send_json_cb),
         sendErrorResponse(send_error_cb),
         apiClient(nullptr), // Initialize to nullptr
@@ -1441,6 +1443,379 @@ users:
                 }
                 if (patched_object_str) free(patched_object_str);
                 genericClient_free(genericClient);
+
+            } catch (const std::exception& e) {
+                sendErrorResponse(res, 500, "Server error: " + std::string(e.what()));
+            }
+        }
+
+        // Vcluster management implementation
+        void K8sHandlers::handleListVClusters(const httplib::Request& req, httplib::Response& res) {
+            try {
+                const std::string filterName = req.get_param_value("filter-name");
+
+                Models::CloudResponse apiResponse;
+                apiResponse.success = true;
+                apiResponse.data = nlohmann::json::object();
+                apiResponse.data["vclusters"] = nlohmann::json::array();
+
+                // List all namespaces and find vcluster StatefulSets
+                genericClient_t *namespaceClient = getGenericClient("", "v1", "namespaces");
+                if (!namespaceClient) {
+                    return sendErrorResponse(res, 500, "Failed to create namespace client.");
+                }
+
+                char *ns_list_str = Generic_list(namespaceClient);
+                if (!ns_list_str) {
+                    genericClient_free(namespaceClient);
+                    return sendErrorResponse(res, 500, "Failed to list namespaces.");
+                }
+
+                auto ns_list = nlohmann::json::parse(ns_list_str);
+                free(ns_list_str);
+                genericClient_free(namespaceClient);
+
+                genericClient_t *stsClient = getGenericClient("apps", "v1", "statefulsets");
+                if (!stsClient) {
+                    return sendErrorResponse(res, 500, "Failed to create StatefulSet client.");
+                }
+
+                if (ns_list.contains("items") && ns_list["items"].is_array()) {
+                    for (const auto& ns : ns_list["items"]) {
+                        std::string ns_name = ns["metadata"].value("name", "");
+                        if (ns_name.find("vcluster") == std::string::npos) {
+                            continue;
+                        }
+
+                        char *sts_list_str = Generic_listNamespaced(stsClient, (char*)ns_name.c_str());
+                        if (!sts_list_str) continue;
+
+                        auto sts_list = nlohmann::json::parse(sts_list_str);
+                        free(sts_list_str);
+
+                        if (sts_list.contains("items") && sts_list["items"].is_array()) {
+                            for (const auto& sts : sts_list["items"]) {
+                                auto labels = sts["metadata"].value("labels", nlohmann::json::object());
+                                if (labels.value("vcluster.loft.sh/managed-by", "") == "nmc-server") {
+                                    Models::K8sCluster vcluster;
+                                    vcluster.id = sts["metadata"].value("uid", "");
+                                    vcluster.name = sts["metadata"].value("name", "");
+                                    vcluster.region = "vcluster";
+                                    vcluster.is_vcluster = true;
+                                    vcluster.parent_cluster = basePath ? std::string(basePath) : "local";
+                                    vcluster.vcluster_namespace = ns_name;
+
+                                    // Determine status from StatefulSet
+                                    int readyReplicas = sts["status"].value("readyReplicas", 0);
+                                    int replicas = sts["spec"].value("replicas", 1);
+                                    if (readyReplicas >= replicas) {
+                                        vcluster.status = "Running";
+                                    } else if (readyReplicas > 0) {
+                                        vcluster.status = "Degraded";
+                                    } else {
+                                        vcluster.status = "Pending";
+                                    }
+
+                                    nlohmann::json vclusterJson = vcluster.toJsonString();
+                                    if (clusterMatchesFilter(vclusterJson, filterName)) {
+                                        apiResponse.data["vclusters"].push_back(vclusterJson);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                genericClient_free(stsClient);
+
+                apiResponse.message = apiResponse.data["vclusters"].empty()
+                                      ? "No vclusters found."
+                                      : "Successfully listed vclusters.";
+                sendJsonResponse(res, apiResponse);
+
+            } catch (const std::exception& e) {
+                sendErrorResponse(res, 500, "Server error: " + std::string(e.what()));
+            }
+        }
+
+        void K8sHandlers::handleGetVCluster(const httplib::Request& req, httplib::Response& res) {
+            try {
+                std::string id = extractClusterIdentifierFromRequest(req);
+                if (id.empty()) {
+                    return sendErrorResponse(res, 400, "Missing vcluster identifier.");
+                }
+
+                // Search for vcluster in all namespaces
+                genericClient_t *namespaceClient = getGenericClient("", "v1", "namespaces");
+                if (!namespaceClient) {
+                    return sendErrorResponse(res, 500, "Failed to create namespace client.");
+                }
+
+                char *ns_list_str = Generic_list(namespaceClient);
+                if (!ns_list_str) {
+                    genericClient_free(namespaceClient);
+                    return sendErrorResponse(res, 500, "Failed to list namespaces.");
+                }
+
+                auto ns_list = nlohmann::json::parse(ns_list_str);
+                free(ns_list_str);
+                genericClient_free(namespaceClient);
+
+                genericClient_t *stsClient = getGenericClient("apps", "v1", "statefulsets");
+                if (!stsClient) {
+                    return sendErrorResponse(res, 500, "Failed to create StatefulSet client.");
+                }
+
+                bool found = false;
+                Models::K8sCluster vcluster;
+
+                if (ns_list.contains("items") && ns_list["items"].is_array()) {
+                    for (const auto& ns : ns_list["items"]) {
+                        std::string ns_name = ns["metadata"].value("name", "");
+                        if (ns_name.find("vcluster") == std::string::npos) {
+                            continue;
+                        }
+
+                        char *sts_read_str = Generic_readNamespacedResource(
+                            stsClient,
+                            (char*)ns_name.c_str(),
+                            (char*)id.c_str()
+                        );
+
+                        if (sts_read_str) {
+                            auto sts = nlohmann::json::parse(sts_read_str);
+                            free(sts_read_str);
+
+                            auto labels = sts["metadata"].value("labels", nlohmann::json::object());
+                            if (labels.value("vcluster.loft.sh/managed-by", "") == "nmc-server") {
+                                vcluster.id = sts["metadata"].value("uid", "");
+                                vcluster.name = sts["metadata"].value("name", "");
+                                vcluster.region = "vcluster";
+                                vcluster.is_vcluster = true;
+                                vcluster.parent_cluster = basePath ? std::string(basePath) : "local";
+                                vcluster.vcluster_namespace = ns_name;
+
+                                int readyReplicas = sts["status"].value("readyReplicas", 0);
+                                int replicas = sts["spec"].value("replicas", 1);
+                                if (readyReplicas >= replicas) {
+                                    vcluster.status = "Running";
+                                } else if (readyReplicas > 0) {
+                                    vcluster.status = "Degraded";
+                                } else {
+                                    vcluster.status = "Pending";
+                                }
+
+                                found = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                genericClient_free(stsClient);
+
+                if (!found) {
+                    return sendErrorResponse(res, 404, "VCluster '" + id + "' not found.");
+                }
+
+                Models::CloudResponse apiResponse;
+                apiResponse.success = true;
+                apiResponse.message = "VCluster '" + id + "' retrieved successfully.";
+                apiResponse.data = vcluster.toJsonString();
+                sendJsonResponse(res, apiResponse);
+
+            } catch (const std::exception& e) {
+                sendErrorResponse(res, 500, "Server error: " + std::string(e.what()));
+            }
+        }
+
+        void K8sHandlers::handleDeleteVCluster(const httplib::Request& req, httplib::Response& res) {
+            try {
+                std::string id = extractClusterIdentifierFromRequest(req);
+                if (id.empty()) {
+                    return sendErrorResponse(res, 400, "Missing vcluster identifier.");
+                }
+
+                // Find and delete the vcluster StatefulSet and its namespace
+                genericClient_t *namespaceClient = getGenericClient("", "v1", "namespaces");
+                if (!namespaceClient) {
+                    return sendErrorResponse(res, 500, "Failed to create namespace client.");
+                }
+
+                char *ns_list_str = Generic_list(namespaceClient);
+                if (!ns_list_str) {
+                    genericClient_free(namespaceClient);
+                    return sendErrorResponse(res, 500, "Failed to list namespaces.");
+                }
+
+                auto ns_list = nlohmann::json::parse(ns_list_str);
+                free(ns_list_str);
+
+                genericClient_t *stsClient = getGenericClient("apps", "v1", "statefulsets");
+                if (!stsClient) {
+                    genericClient_free(namespaceClient);
+                    return sendErrorResponse(res, 500, "Failed to create StatefulSet client.");
+                }
+
+                bool found = false;
+                std::string target_namespace;
+
+                if (ns_list.contains("items") && ns_list["items"].is_array()) {
+                    for (const auto& ns : ns_list["items"]) {
+                        std::string ns_name = ns["metadata"].value("name", "");
+                        if (ns_name.find("vcluster") == std::string::npos) {
+                            continue;
+                        }
+
+                        char *sts_read_str = Generic_readNamespacedResource(
+                            stsClient,
+                            (char*)ns_name.c_str(),
+                            (char*)id.c_str()
+                        );
+
+                        if (sts_read_str) {
+                            auto sts = nlohmann::json::parse(sts_read_str);
+                            free(sts_read_str);
+
+                            auto labels = sts["metadata"].value("labels", nlohmann::json::object());
+                            if (labels.value("vcluster.loft.sh/managed-by", "") == "nmc-server") {
+                                target_namespace = ns_name;
+                                found = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                if (!found) {
+                    genericClient_free(stsClient);
+                    genericClient_free(namespaceClient);
+                    return sendErrorResponse(res, 404, "VCluster '" + id + "' not found.");
+                }
+
+                // Delete the StatefulSet
+                char *sts_delete_str = Generic_deleteNamespacedResource(
+                    stsClient,
+                    (char*)target_namespace.c_str(),
+                    (char*)id.c_str()
+                );
+                if (sts_delete_str) free(sts_delete_str);
+                genericClient_free(stsClient);
+
+                // Optionally delete the namespace
+                char *ns_delete_str = Generic_deleteResource(
+                    namespaceClient,
+                    (char*)target_namespace.c_str()
+                );
+                if (ns_delete_str) free(ns_delete_str);
+                genericClient_free(namespaceClient);
+
+                Models::CloudResponse apiResponse;
+                apiResponse.success = true;
+                apiResponse.message = "VCluster '" + id + "' deleted successfully.";
+                sendJsonResponse(res, apiResponse);
+
+            } catch (const std::exception& e) {
+                sendErrorResponse(res, 500, "Server error: " + std::string(e.what()));
+            }
+        }
+
+        void K8sHandlers::handleGetVClusterKubeConfig(const httplib::Request& req, httplib::Response& res) {
+            try {
+                std::string id = extractClusterIdentifierFromRequest(req);
+                if (id.empty()) {
+                    return sendErrorResponse(res, 400, "Missing vcluster identifier.");
+                }
+
+                // Find the vcluster and retrieve its kubeconfig secret
+                genericClient_t *namespaceClient = getGenericClient("", "v1", "namespaces");
+                if (!namespaceClient) {
+                    return sendErrorResponse(res, 500, "Failed to create namespace client.");
+                }
+
+                char *ns_list_str = Generic_list(namespaceClient);
+                if (!ns_list_str) {
+                    genericClient_free(namespaceClient);
+                    return sendErrorResponse(res, 500, "Failed to list namespaces.");
+                }
+
+                auto ns_list = nlohmann::json::parse(ns_list_str);
+                free(ns_list_str);
+                genericClient_free(namespaceClient);
+
+                std::string target_namespace;
+                bool found = false;
+
+                genericClient_t *stsClient = getGenericClient("apps", "v1", "statefulsets");
+                if (!stsClient) {
+                    return sendErrorResponse(res, 500, "Failed to create StatefulSet client.");
+                }
+
+                if (ns_list.contains("items") && ns_list["items"].is_array()) {
+                    for (const auto& ns : ns_list["items"]) {
+                        std::string ns_name = ns["metadata"].value("name", "");
+                        if (ns_name.find("vcluster") == std::string::npos) {
+                            continue;
+                        }
+
+                        char *sts_read_str = Generic_readNamespacedResource(
+                            stsClient,
+                            (char*)ns_name.c_str(),
+                            (char*)id.c_str()
+                        );
+
+                        if (sts_read_str) {
+                            auto sts = nlohmann::json::parse(sts_read_str);
+                            free(sts_read_str);
+
+                            auto labels = sts["metadata"].value("labels", nlohmann::json::object());
+                            if (labels.value("vcluster.loft.sh/managed-by", "") == "nmc-server") {
+                                target_namespace = ns_name;
+                                found = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                genericClient_free(stsClient);
+
+                if (!found) {
+                    return sendErrorResponse(res, 404, "VCluster '" + id + "' not found.");
+                }
+
+                // Get the kubeconfig from the vcluster secret
+                genericClient_t *secretClient = getGenericClient("", "v1", "secrets");
+                if (!secretClient) {
+                    return sendErrorResponse(res, 500, "Failed to create secret client.");
+                }
+
+                std::string secret_name = "vc-" + id;
+                char *secret_str = Generic_readNamespacedResource(
+                    secretClient,
+                    (char*)target_namespace.c_str(),
+                    (char*)secret_name.c_str()
+                );
+
+                if (!secret_str) {
+                    genericClient_free(secretClient);
+                    return sendErrorResponse(res, 404, "VCluster kubeconfig secret not found.");
+                }
+
+                auto secret = nlohmann::json::parse(secret_str);
+                free(secret_str);
+                genericClient_free(secretClient);
+
+                std::string kubeconfig_content = "Kubeconfig for vcluster '" + id + "' not yet available.";
+                if (secret.contains("data") && secret["data"].contains("config")) {
+                    kubeconfig_content = secret["data"]["config"].get<std::string>();
+                }
+
+                Models::CloudResponse apiResponse;
+                apiResponse.success = true;
+                apiResponse.message = "VCluster kubeconfig retrieved successfully.";
+                apiResponse.data["kubeconfig"] = kubeconfig_content;
+                sendJsonResponse(res, apiResponse);
 
             } catch (const std::exception& e) {
                 sendErrorResponse(res, 500, "Server error: " + std::string(e.what()));

@@ -62,6 +62,7 @@ namespace NMC::Server {
         std::vector<Models::SSHKey> sshKeys;
         std::vector<Models::VM> vms;
         std::vector<Models::Connection> connections;
+        std::unordered_map<std::string, Models::VClusterConfig> vclusterConfigs; // config_id -> VClusterConfig
         struct TraceyAgent {
             std::string agentId;
             std::string cluster;

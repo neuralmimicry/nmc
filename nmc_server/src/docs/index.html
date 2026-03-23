@@ -61,6 +61,11 @@
             <p class="label">Running / Total</p>
         </article>
         <article class="card">
+            <h2>VClusters</h2>
+            <p class="metric" id="vclusterMetric">-- / --</p>
+            <p class="label">Healthy / Total</p>
+        </article>
+        <article class="card">
             <h2>OpenShift Clusters</h2>
             <p class="metric" id="openshiftMetric">-- / --</p>
             <p class="label">Ready / Total</p>
@@ -94,6 +99,28 @@
                     </thead>
                     <tbody id="k8sRows">
                     <tr><td colspan="3" class="empty">Loading cluster status...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </article>
+
+        <article class="panel">
+            <div class="panel-title-row">
+                <h3>VCluster Status</h3>
+                <span class="panel-tag">/vcluster/list</span>
+            </div>
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>Namespace</th>
+                        <th>Status</th>
+                        <th>Health</th>
+                    </tr>
+                    </thead>
+                    <tbody id="vclusterRows">
+                    <tr><td colspan="4" class="empty">Loading vcluster status...</td></tr>
                     </tbody>
                 </table>
             </div>
@@ -190,6 +217,7 @@
         <div class="doc-links">
             <a href="/bucket.html">Bucket API</a>
             <a href="/k8s.html">Kubernetes API</a>
+            <a href="/vcluster.html">VCluster API</a>
             <a href="/openshift.html">OpenShift API</a>
             <a href="/model.html">Model API</a>
             <a href="/node.html">Node Recruitment API</a>

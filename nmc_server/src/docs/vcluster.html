@@ -1,0 +1,211 @@
+
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VCluster API Documentation</title>
+    <link rel="stylesheet" href="style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+<div class="container">
+    <header>
+        <h1>VCluster API Endpoints</h1>
+        <p class="tagline">Manage virtual Kubernetes clusters within your host clusters</p>
+        <a href="index.html" class="back-link">&larr; Back to API Home</a>
+    </header>
+
+    <section>
+        <h2>What is VCluster?</h2>
+        <p>VClusters are fully functional virtual Kubernetes clusters that run inside namespaces of a host cluster. They provide strong isolation and allow teams to manage their own Kubernetes environments without requiring separate physical clusters.</p>
+        <p><strong>Benefits:</strong></p>
+        <ul>
+            <li>Cost-effective: Multiple virtual clusters on a single host</li>
+            <li>Isolation: Each vcluster has its own API server and control plane</li>
+            <li>Fast provisioning: Deploys in seconds</li>
+            <li>Full Kubernetes API: Behaves like a real cluster</li>
+        </ul>
+    </section>
+
+    <section>
+        <h2>Create VCluster</h2>
+        <p><strong>Endpoint:</strong> <code>POST /vcluster/create</code></p>
+        <p>Creates a new virtual Kubernetes cluster.</p>
+        <h3>Request Body:</h3>
+        <pre><code class="language-json">
+{
+    "name": "my-vcluster",
+    "namespace": "vcluster-my-vcluster"  // Optional, defaults to "vcluster-{name}"
+}
+            </code></pre>
+        <h3>Successful Response (HTTP 200 OK):</h3>
+        <pre><code class="language-json">
+{
+    "success": true,
+    "message": "VCluster 'my-vcluster' created successfully.",
+    "data": {
+        "id": "abc123def456",
+        "name": "my-vcluster",
+        "region": "vcluster",
+        "status": "Provisioning",
+        "is_vcluster": true,
+        "parent_cluster": "https://127.0.0.1:6443",
+        "vcluster_namespace": "vcluster-my-vcluster"
+    }
+}
+            </code></pre>
+        <h3>Error Response (HTTP 400 Bad Request if name missing):</h3>
+        <pre><code class="language-json">
+{
+    "success": false,
+    "message": "Missing required parameter: name.",
+    "data": {}
+}
+            </code></pre>
+    </section>
+
+    <section>
+        <h2>Delete VCluster</h2>
+        <p><strong>Endpoint:</strong> <code>DELETE /vcluster/delete/{id_or_name}</code></p>
+        <p>Deletes a specific virtual cluster by its ID or name.</p>
+        <h3>Path Parameters:</h3>
+        <ul>
+            <li><code>id_or_name</code> (string): The ID or name of the vcluster to delete.</li>
+        </ul>
+        <h3>Successful Response (HTTP 200 OK):</h3>
+        <pre><code class="language-json">
+{
+    "success": true,
+    "message": "VCluster 'my-vcluster' deleted successfully.",
+    "data": null
+}
+            </code></pre>
+        <h3>Error Response (HTTP 404 Not Found):</h3>
+        <pre><code class="language-json">
+{
+    "success": false,
+    "message": "VCluster 'non-existent' not found.",
+    "data": {}
+}
+            </code></pre>
+    </section>
+
+    <section>
+        <h2>Get VCluster Details</h2>
+        <p><strong>Endpoint:</strong> <code>GET /vcluster/get/{id_or_name}</code></p>
+        <p>Retrieves detailed information about a specific vcluster.</p>
+        <h3>Path Parameters:</h3>
+        <ul>
+            <li><code>id_or_name</code> (string): The ID or name of the vcluster.</li>
+        </ul>
+        <h3>Successful Response (HTTP 200 OK):</h3>
+        <pre><code class="language-json">
+{
+    "success": true,
+    "message": "VCluster 'my-vcluster' retrieved successfully.",
+    "data": {
+        "id": "abc123def456",
+        "name": "my-vcluster",
+        "region": "vcluster",
+        "status": "Running",
+        "is_vcluster": true,
+        "parent_cluster": "https://127.0.0.1:6443",
+        "vcluster_namespace": "vcluster-my-vcluster"
+    }
+}
+            </code></pre>
+        <h3>Error Response (HTTP 404 Not Found):</h3>
+        <pre><code class="language-json">
+{
+    "success": false,
+    "message": "VCluster 'non-existent' not found.",
+    "data": {}
+}
+            </code></pre>
+    </section>
+
+    <section>
+        <h2>List VClusters</h2>
+        <p><strong>Endpoint:</strong> <code>GET /vcluster/list</code></p>
+        <p>Lists all available virtual clusters. Supports optional filtering by name.</p>
+        <h3>Query Parameters:</h3>
+        <ul>
+            <li><code>filter-name</code> (optional, string): Filters vclusters whose names contain the provided string.</li>
+        </ul>
+        <h3>Successful Response (HTTP 200 OK):</h3>
+        <pre><code class="language-json">
+{
+    "success": true,
+    "message": "Successfully listed vclusters.",
+    "data": {
+        "vclusters": [
+            {
+                "id": "abc123def456",
+                "name": "my-vcluster",
+                "region": "vcluster",
+                "status": "Running",
+                "is_vcluster": true,
+                "parent_cluster": "https://127.0.0.1:6443",
+                "vcluster_namespace": "vcluster-my-vcluster"
+            },
+            {
+                "id": "xyz789uvw012",
+                "name": "dev-vcluster",
+                "region": "vcluster",
+                "status": "Degraded",
+                "is_vcluster": true,
+                "parent_cluster": "https://127.0.0.1:6443",
+                "vcluster_namespace": "vcluster-dev-vcluster"
+            }
+        ]
+    }
+}
+            </code></pre>
+    </section>
+
+    <section>
+        <h2>Get VCluster KubeConfig</h2>
+        <p><strong>Endpoint:</strong> <code>GET /vcluster/get-config/{id_or_name}</code></p>
+        <p>Retrieves the KubeConfig for connecting to a specific vcluster.</p>
+        <h3>Path Parameters:</h3>
+        <ul>
+            <li><code>id_or_name</code> (string): The ID or name of the vcluster.</li>
+        </ul>
+        <h3>Successful Response (HTTP 200 OK):</h3>
+        <pre><code class="language-json">
+{
+    "success": true,
+    "message": "VCluster kubeconfig retrieved successfully.",
+    "data": {
+        "kubeconfig": "apiVersion: v1\nclusters:\n- cluster:\n    server: https://my-vcluster.vcluster-my-vcluster.svc\n    certificate-authority-data: REDACTED\n  name: my-vcluster\ncontexts:\n- context:\n    cluster: my-vcluster\n    user: my-vcluster-user\n  name: my-vcluster-context\ncurrent-context: my-vcluster-context\nkind: Config\npreferences: {}\nusers:\n- name: my-vcluster-user\n  user:\n    token: REDACTED\n"
+    }
+}
+            </code></pre>
+        <h3>Error Response (HTTP 404 Not Found):</h3>
+        <pre><code class="language-json">
+{
+    "success": false,
+    "message": "VCluster kubeconfig secret not found.",
+    "data": {}
+}
+            </code></pre>
+    </section>
+
+    <section>
+        <h2>VCluster Architecture</h2>
+        <p>Each vcluster consists of:</p>
+        <ul>
+            <li><strong>StatefulSet:</strong> Runs the vcluster control plane (API server, controller manager, scheduler)</li>
+            <li><strong>Service:</strong> Exposes the vcluster API server</li>
+            <li><strong>PersistentVolume:</strong> Stores the vcluster's etcd data</li>
+            <li><strong>Namespace:</strong> Isolates the vcluster resources in the host cluster</li>
+        </ul>
+        <p>The vcluster synchronizes certain resources (pods, services, etc.) from the virtual cluster to the host cluster's namespace, providing isolation while leveraging the host cluster's compute resources.</p>
+    </section>
+
+    <footer>
+        <p>&copy; 2025 NMC Server. All rights reserved.</p>
+    </footer>
+</div>
+</body>
+</html>

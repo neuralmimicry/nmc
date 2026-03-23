@@ -161,6 +161,9 @@ set(NMC_SERVER_SOURCES
         src/Core/APIRoutes.cpp
         src/Core/ConnectionHandlers.cpp
         src/Core/K8sHandlers.cpp
+        src/Core/K8sHandlers_VCluster_Advanced.cpp
+        src/Core/K8sHandlers_VCluster_Lifecycle.cpp
+        src/Core/K8sHandlers_VCluster_Monitoring.cpp
         src/Core/OIDCValidator.cpp
         src/Core/OpenShiftClient.cpp
         src/Core/VersionCheck.cpp
