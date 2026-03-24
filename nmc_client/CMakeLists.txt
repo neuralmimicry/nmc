@@ -47,6 +47,7 @@ set(NMC_CLIENT_SOURCES
         src/Commands/RootCommand.cpp
         src/Commands/SSHCommands.cpp
         src/Commands/VersionCommand.cpp
+        src/Commands/VClusterCommands.cpp
         src/Commands/VMCommands.cpp
         src/Core/CloudAPIClient.cpp
         src/Core/VersionCheck.cpp
