@@ -75,7 +75,7 @@
             <p class="metric" id="vmMetric">-- / --</p>
             <p class="label">Running / Total</p>
         </article>
-        <article class="card">
+        <article class="card card-clickable" id="traceyCard" role="button" tabindex="0" aria-label="Open Tracey insights">
             <h2>Tracey Agents</h2>
             <p class="metric" id="traceyMetric">-- / --</p>
             <p class="label">Healthy / Total</p>
@@ -150,7 +150,10 @@
         <article class="panel panel-wide">
             <div class="panel-title-row">
                 <h3>Tracey Agent Monitoring</h3>
-                <span class="panel-tag">/tracey/agents</span>
+                <div class="panel-actions">
+                    <button id="openTraceyInsightsBtn" class="panel-action-btn" type="button">Open Insights</button>
+                    <span class="panel-tag">/tracey/agents</span>
+                </div>
             </div>
             <div class="table-wrap">
                 <table>
@@ -250,6 +253,128 @@
         <p id="openshiftDetailsSubtitle" class="cluster-modal-subtitle">Loading OpenShift cluster details...</p>
         <div id="openshiftDetailsBody" class="cluster-modal-body">
             <p class="empty">Select an OpenShift cluster to view details.</p>
+        </div>
+    </div>
+</div>
+
+<div id="traceyInsightsModal" class="cluster-modal-overlay" hidden>
+    <div class="cluster-modal-shell tracey-modal-shell" role="dialog" aria-modal="true" aria-labelledby="traceyInsightsTitle">
+        <div class="cluster-modal-header">
+            <h3 id="traceyInsightsTitle">Tracey Insights</h3>
+            <button id="traceyInsightsClose" class="cluster-modal-close" type="button" aria-label="Close Tracey insights">Close</button>
+        </div>
+        <p id="traceyInsightsSubtitle" class="cluster-modal-subtitle">Interactive Tracey graphing and log analysis.</p>
+
+        <div class="tracey-controls">
+            <label class="tracey-control">
+                <span>Window</span>
+                <select id="traceyWindowSelect">
+                    <option value="900">15m</option>
+                    <option value="3600" selected>1h</option>
+                    <option value="21600">6h</option>
+                    <option value="86400">24h</option>
+                </select>
+            </label>
+            <label class="tracey-control">
+                <span>Bucket</span>
+                <select id="traceyBucketSelect">
+                    <option value="30">30s</option>
+                    <option value="60" selected>1m</option>
+                    <option value="300">5m</option>
+                    <option value="900">15m</option>
+                </select>
+            </label>
+            <button id="traceyInsightsRefresh" class="panel-action-btn" type="button">Refresh</button>
+        </div>
+
+        <div class="cluster-modal-body">
+            <div class="tracey-chart-grid">
+                <section class="detail-card">
+                    <h4>Status Timeline</h4>
+                    <svg id="traceyStatusChart" class="tracey-chart" viewBox="0 0 700 220" preserveAspectRatio="none"></svg>
+                    <div id="traceyStatusLegend" class="tracey-legend"></div>
+                </section>
+                <section class="detail-card">
+                    <h4>Log Volume Timeline</h4>
+                    <svg id="traceyLogChart" class="tracey-chart" viewBox="0 0 700 220" preserveAspectRatio="none"></svg>
+                    <div id="traceyLogLegend" class="tracey-legend"></div>
+                </section>
+            </div>
+
+            <section class="detail-card">
+                <h4>Agent Drilldown Selector</h4>
+                <div class="table-wrap">
+                    <table class="detail-table">
+                        <thead>
+                        <tr>
+                            <th>Agent</th>
+                            <th>Status</th>
+                            <th>Healthy %</th>
+                            <th>Avg Query Failures</th>
+                            <th>Error Logs</th>
+                            <th>Last Seen</th>
+                        </tr>
+                        </thead>
+                        <tbody id="traceyAnalyticsAgentRows">
+                        <tr><td colspan="6" class="empty">Loading Tracey agent analytics...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+            <section class="detail-card">
+                <div class="panel-title-row">
+                    <h4 id="traceyAgentDrilldownTitle">Agent Drilldown</h4>
+                    <span id="traceyAgentDrilldownMeta" class="panel-tag">Select an agent</span>
+                </div>
+                <div class="tracey-chart-grid">
+                    <section class="detail-card">
+                        <h4>Status Mix Timeline</h4>
+                        <svg id="traceyAgentStatusChart" class="tracey-chart" viewBox="0 0 700 220" preserveAspectRatio="none"></svg>
+                        <div id="traceyAgentStatusLegend" class="tracey-legend"></div>
+                    </section>
+                    <section class="detail-card">
+                        <h4>Agent Health Snapshot</h4>
+                        <div id="traceyAgentFacts" class="tracey-facts">
+                            <p class="empty">Select a Tracey agent from the dashboard table or the selector above.</p>
+                        </div>
+                    </section>
+                </div>
+                <div class="tracey-controls tracey-log-controls">
+                    <label class="tracey-control">
+                        <span>Log Level</span>
+                        <select id="traceyAgentLogLevel">
+                            <option value="all" selected>All</option>
+                            <option value="info">Info</option>
+                            <option value="warn">Warn</option>
+                            <option value="error">Error</option>
+                        </select>
+                    </label>
+                    <label class="tracey-control tracey-control-wide">
+                        <span>Category Filter</span>
+                        <input id="traceyAgentLogCategory" type="text" placeholder="e.g. status_poll">
+                    </label>
+                    <label class="tracey-control tracey-control-wide">
+                        <span>Search</span>
+                        <input id="traceyAgentLogSearch" type="text" placeholder="message text">
+                    </label>
+                </div>
+                <div class="table-wrap">
+                    <table class="detail-table">
+                        <thead>
+                        <tr>
+                            <th>Timestamp</th>
+                            <th>Level</th>
+                            <th>Category</th>
+                            <th>Message</th>
+                        </tr>
+                        </thead>
+                        <tbody id="traceyAgentLogRows">
+                        <tr><td colspan="4" class="empty">No agent selected.</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
         </div>
     </div>
 </div>

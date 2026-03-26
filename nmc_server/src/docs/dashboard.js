@@ -10,6 +10,8 @@
         openshiftMetric: document.getElementById("openshiftMetric"),
         vmMetric: document.getElementById("vmMetric"),
         traceyMetric: document.getElementById("traceyMetric"),
+        traceyCard: document.getElementById("traceyCard"),
+        openTraceyInsightsBtn: document.getElementById("openTraceyInsightsBtn"),
         k8sRows: document.getElementById("k8sRows"),
         vclusterRows: document.getElementById("vclusterRows"),
         openshiftRows: document.getElementById("openshiftRows"),
@@ -29,12 +31,40 @@
         openshiftDetailsModal: document.getElementById("openshiftDetailsModal"),
         openshiftDetailsClose: document.getElementById("openshiftDetailsClose"),
         openshiftDetailsSubtitle: document.getElementById("openshiftDetailsSubtitle"),
-        openshiftDetailsBody: document.getElementById("openshiftDetailsBody")
+        openshiftDetailsBody: document.getElementById("openshiftDetailsBody"),
+        traceyInsightsModal: document.getElementById("traceyInsightsModal"),
+        traceyInsightsClose: document.getElementById("traceyInsightsClose"),
+        traceyInsightsSubtitle: document.getElementById("traceyInsightsSubtitle"),
+        traceyWindowSelect: document.getElementById("traceyWindowSelect"),
+        traceyBucketSelect: document.getElementById("traceyBucketSelect"),
+        traceyInsightsRefresh: document.getElementById("traceyInsightsRefresh"),
+        traceyStatusChart: document.getElementById("traceyStatusChart"),
+        traceyStatusLegend: document.getElementById("traceyStatusLegend"),
+        traceyLogChart: document.getElementById("traceyLogChart"),
+        traceyLogLegend: document.getElementById("traceyLogLegend"),
+        traceyAnalyticsAgentRows: document.getElementById("traceyAnalyticsAgentRows"),
+        traceyAgentDrilldownTitle: document.getElementById("traceyAgentDrilldownTitle"),
+        traceyAgentDrilldownMeta: document.getElementById("traceyAgentDrilldownMeta"),
+        traceyAgentStatusChart: document.getElementById("traceyAgentStatusChart"),
+        traceyAgentStatusLegend: document.getElementById("traceyAgentStatusLegend"),
+        traceyAgentFacts: document.getElementById("traceyAgentFacts"),
+        traceyAgentLogLevel: document.getElementById("traceyAgentLogLevel"),
+        traceyAgentLogCategory: document.getElementById("traceyAgentLogCategory"),
+        traceyAgentLogSearch: document.getElementById("traceyAgentLogSearch"),
+        traceyAgentLogRows: document.getElementById("traceyAgentLogRows")
     };
 
     let authToken = loadToken();
     let clusterDetailsRequestSeq = 0;
     let openshiftDetailsRequestSeq = 0;
+    let traceyInsightsRequestSeq = 0;
+    let traceyAgentRequestSeq = 0;
+    const traceyState = {
+        analytics: null,
+        selectedAgentId: "",
+        selectedAgentAnalysis: null,
+        selectedAgentLogs: []
+    };
 
     function nowIsoTime() {
         return new Date().toLocaleTimeString();
@@ -198,7 +228,8 @@
     function updateModalBodyLock() {
         const k8sOpen = nodes.clusterDetailsModal && !nodes.clusterDetailsModal.hidden;
         const openshiftOpen = nodes.openshiftDetailsModal && !nodes.openshiftDetailsModal.hidden;
-        document.body.classList.toggle("modal-open", Boolean(k8sOpen || openshiftOpen));
+        const traceyOpen = nodes.traceyInsightsModal && !nodes.traceyInsightsModal.hidden;
+        document.body.classList.toggle("modal-open", Boolean(k8sOpen || openshiftOpen || traceyOpen));
     }
 
     function setClusterDetailsModalOpen(open) {
@@ -225,6 +256,547 @@
     function closeOpenShiftDetailsModal() {
         openshiftDetailsRequestSeq += 1;
         setOpenShiftDetailsModalOpen(false);
+    }
+
+    function setTraceyInsightsModalOpen(open) {
+        if (!nodes.traceyInsightsModal) {
+            return;
+        }
+        nodes.traceyInsightsModal.hidden = !open;
+        updateModalBodyLock();
+    }
+
+    function closeTraceyInsightsModal() {
+        traceyInsightsRequestSeq += 1;
+        traceyAgentRequestSeq += 1;
+        setTraceyInsightsModalOpen(false);
+    }
+
+    function traceyWindowSeconds() {
+        const value = Number(nodes.traceyWindowSelect ? nodes.traceyWindowSelect.value : 3600);
+        if (!Number.isFinite(value) || value <= 0) {
+            return 3600;
+        }
+        return Math.max(300, Math.min(604800, Math.round(value)));
+    }
+
+    function traceyBucketSeconds() {
+        const value = Number(nodes.traceyBucketSelect ? nodes.traceyBucketSelect.value : 60);
+        if (!Number.isFinite(value) || value <= 0) {
+            return 60;
+        }
+        return Math.max(10, Math.min(3600, Math.round(value)));
+    }
+
+    function formatAge(seconds) {
+        const value = Math.max(0, Number(seconds || 0));
+        if (value < 1) {
+            return "just now";
+        }
+        if (value < 60) {
+            return `${Math.round(value)}s ago`;
+        }
+        if (value < 3600) {
+            return `${Math.round(value / 60)}m ago`;
+        }
+        if (value < 86400) {
+            return `${Math.round(value / 3600)}h ago`;
+        }
+        return `${Math.round(value / 86400)}d ago`;
+    }
+
+    function formatEpochMs(tsMs) {
+        const value = Number(tsMs || 0);
+        if (!Number.isFinite(value) || value <= 0) {
+            return "-";
+        }
+        return new Date(value).toLocaleString();
+    }
+
+    function parseNumber(value, fallback = 0) {
+        const parsed = Number(value);
+        return Number.isFinite(parsed) ? parsed : fallback;
+    }
+
+    function toPercent(value) {
+        return `${(parseNumber(value, 0) * 100).toFixed(1)}%`;
+    }
+
+    function statusToneColor(status) {
+        const key = String(status || "").toLowerCase();
+        if (key === "healthy") {
+            return "#22c55e";
+        }
+        if (key === "degraded") {
+            return "#f59e0b";
+        }
+        if (key === "offline") {
+            return "#ef4444";
+        }
+        return "#94a3b8";
+    }
+
+    function levelBadge(level) {
+        const normalized = String(level || "info").toLowerCase();
+        if (normalized === "error") {
+            return `<span class="badge badge-bad">error</span>`;
+        }
+        if (normalized === "warn" || normalized === "warning") {
+            return `<span class="badge badge-warn">warn</span>`;
+        }
+        return `<span class="badge badge-neutral">info</span>`;
+    }
+
+    function createSvgNode(tag, attrs = {}) {
+        const node = document.createElementNS("http://www.w3.org/2000/svg", tag);
+        for (const [key, value] of Object.entries(attrs)) {
+            node.setAttribute(key, String(value));
+        }
+        return node;
+    }
+
+    function clearSvg(svg) {
+        if (!svg) {
+            return;
+        }
+        while (svg.firstChild) {
+            svg.removeChild(svg.firstChild);
+        }
+    }
+
+    function renderLegend(node, entries) {
+        if (!node) {
+            return;
+        }
+        if (!entries.length) {
+            node.innerHTML = `<span class="empty">No legend data available.</span>`;
+            return;
+        }
+        node.innerHTML = entries.map((entry) => {
+            const value = entry.value === null || entry.value === undefined ? "-" : entry.value;
+            return `<span class="tracey-legend-item"><span class="tracey-legend-swatch" style="background:${escapeHtml(entry.color)}"></span>${escapeHtml(entry.label)}: <strong>${escapeHtml(String(value))}</strong></span>`;
+        }).join("");
+    }
+
+    function renderLineChart(svg, rows, seriesDefs) {
+        if (!svg) {
+            return;
+        }
+        clearSvg(svg);
+        const width = 700;
+        const height = 220;
+        const marginLeft = 42;
+        const marginRight = 14;
+        const marginTop = 12;
+        const marginBottom = 24;
+        const usableWidth = width - marginLeft - marginRight;
+        const usableHeight = height - marginTop - marginBottom;
+        svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+
+        if (!rows.length) {
+            svg.appendChild(createSvgNode("text", {
+                x: width / 2,
+                y: height / 2,
+                "text-anchor": "middle",
+                class: "tracey-chart-empty"
+            })).textContent = "No data in selected window";
+            return;
+        }
+
+        let maxY = 0;
+        for (const row of rows) {
+            for (const series of seriesDefs) {
+                maxY = Math.max(maxY, parseNumber(row[series.key], 0));
+            }
+        }
+        maxY = Math.max(1, Math.ceil(maxY));
+
+        const axisGroup = createSvgNode("g");
+        axisGroup.appendChild(createSvgNode("line", {
+            x1: marginLeft,
+            y1: marginTop + usableHeight,
+            x2: width - marginRight,
+            y2: marginTop + usableHeight,
+            class: "tracey-chart-axis"
+        }));
+        axisGroup.appendChild(createSvgNode("line", {
+            x1: marginLeft,
+            y1: marginTop,
+            x2: marginLeft,
+            y2: marginTop + usableHeight,
+            class: "tracey-chart-axis"
+        }));
+        svg.appendChild(axisGroup);
+
+        const gridCount = 4;
+        for (let i = 1; i <= gridCount; i += 1) {
+            const y = marginTop + (usableHeight * i) / gridCount;
+            svg.appendChild(createSvgNode("line", {
+                x1: marginLeft,
+                y1: y,
+                x2: width - marginRight,
+                y2: y,
+                class: "tracey-chart-grid-line"
+            }));
+        }
+
+        const span = Math.max(1, rows.length - 1);
+        const xForIndex = (idx) => marginLeft + (usableWidth * idx) / span;
+        const yForValue = (value) => marginTop + usableHeight - (usableHeight * parseNumber(value, 0)) / maxY;
+
+        for (const series of seriesDefs) {
+            let d = "";
+            rows.forEach((row, idx) => {
+                const x = xForIndex(idx);
+                const y = yForValue(row[series.key]);
+                d += idx === 0 ? `M${x},${y}` : ` L${x},${y}`;
+            });
+            svg.appendChild(createSvgNode("path", {
+                d,
+                class: "tracey-chart-line",
+                stroke: series.color
+            }));
+
+            const lastRow = rows[rows.length - 1];
+            const lx = xForIndex(rows.length - 1);
+            const ly = yForValue(lastRow[series.key]);
+            svg.appendChild(createSvgNode("circle", {
+                cx: lx,
+                cy: ly,
+                r: 3.5,
+                fill: series.color,
+                class: "tracey-chart-dot"
+            }));
+        }
+    }
+
+    function renderTraceyAnalyticsOverview(data) {
+        if (!data) {
+            renderRows(nodes.traceyAnalyticsAgentRows, [], "No Tracey analytics data available.", 6);
+            renderLineChart(nodes.traceyStatusChart, [], []);
+            renderLineChart(nodes.traceyLogChart, [], []);
+            renderLegend(nodes.traceyStatusLegend, []);
+            renderLegend(nodes.traceyLogLegend, []);
+            return;
+        }
+
+        const timeline = Array.isArray(data.timeline) ? data.timeline : [];
+        renderLineChart(nodes.traceyStatusChart, timeline, [
+            { key: "healthy", color: "#22c55e" },
+            { key: "degraded", color: "#f59e0b" },
+            { key: "offline", color: "#ef4444" },
+            { key: "sampled_agents", color: "#94a3b8" }
+        ]);
+        const latestStatus = timeline.length ? timeline[timeline.length - 1] : {};
+        renderLegend(nodes.traceyStatusLegend, [
+            { label: "Healthy", color: "#22c55e", value: parseNumber(latestStatus.healthy, 0) },
+            { label: "Degraded", color: "#f59e0b", value: parseNumber(latestStatus.degraded, 0) },
+            { label: "Offline", color: "#ef4444", value: parseNumber(latestStatus.offline, 0) },
+            { label: "Sampled Agents", color: "#94a3b8", value: parseNumber(latestStatus.sampled_agents, 0) }
+        ]);
+
+        renderLineChart(nodes.traceyLogChart, timeline, [
+            { key: "log_info", color: "#94a3b8" },
+            { key: "log_warn", color: "#f59e0b" },
+            { key: "log_error", color: "#ef4444" }
+        ]);
+        const latestLog = timeline.length ? timeline[timeline.length - 1] : {};
+        renderLegend(nodes.traceyLogLegend, [
+            { label: "Info", color: "#94a3b8", value: parseNumber(latestLog.log_info, 0) },
+            { label: "Warn", color: "#f59e0b", value: parseNumber(latestLog.log_warn, 0) },
+            { label: "Error", color: "#ef4444", value: parseNumber(latestLog.log_error, 0) }
+        ]);
+
+        const agents = Array.isArray(data.agents) ? data.agents : [];
+        const rows = agents.map((agent) => {
+            const id = String(agent.agent_id || "unknown");
+            const status = String(agent.status || "unknown");
+            const healthyRatio = toPercent(agent.healthy_ratio);
+            const avgQueryFailures = parseNumber(agent.avg_query_failures, 0).toFixed(2);
+            const errorLogs = parseNumber(agent.log_error, 0);
+            const lastSeen = formatAge(agent.last_seen_seconds_ago);
+            const action = `<button class="cluster-link tracey-agent-link" type="button" data-tracey-agent-analysis="${escapeHtml(id)}">${escapeHtml(id)}</button>`;
+            return `<tr><td>${action}</td><td>${statusBadge(status)}</td><td>${escapeHtml(healthyRatio)}</td><td>${escapeHtml(avgQueryFailures)}</td><td>${escapeHtml(String(errorLogs))}</td><td>${escapeHtml(lastSeen)}</td></tr>`;
+        });
+        renderRows(nodes.traceyAnalyticsAgentRows, rows, "No Tracey agents available for analytics.", 6);
+    }
+
+    function renderTraceyAgentFacts(analysis) {
+        if (!nodes.traceyAgentFacts) {
+            return;
+        }
+        if (!analysis || !analysis.current || typeof analysis.current !== "object") {
+            nodes.traceyAgentFacts.innerHTML = `<p class="empty">Select a Tracey agent from the dashboard table or the selector above.</p>`;
+            return;
+        }
+        const current = analysis.current;
+        const facts = [
+            { key: "Status", value: current.status || "unknown" },
+            { key: "Cluster", value: current.cluster || "-" },
+            { key: "Host", value: current.host || "-" },
+            { key: "Version", value: current.version || "-" },
+            { key: "Link State", value: current.link_state || "-" },
+            { key: "Link Security", value: current.link_security || "-" },
+            { key: "Reachable", value: current.status_reachable ? "yes" : "no" },
+            { key: "Query Failures", value: String(parseNumber(current.query_failures, 0)) },
+            { key: "Coordinator", value: current.is_coordinator ? "yes" : "no" },
+            { key: "Score", value: String(parseNumber(current.score, 0)) },
+            { key: "Last Seen", value: formatAge(current.last_seen_seconds_ago) },
+            { key: "Last Error", value: current.last_error || "-" }
+        ];
+        nodes.traceyAgentFacts.innerHTML = facts.map((fact) => {
+            return `<div class="tracey-fact"><span>${escapeHtml(fact.key)}</span><strong>${escapeHtml(fact.value)}</strong></div>`;
+        }).join("");
+    }
+
+    function renderTraceyAgentLogs() {
+        if (!nodes.traceyAgentLogRows) {
+            return;
+        }
+        const logs = Array.isArray(traceyState.selectedAgentLogs) ? traceyState.selectedAgentLogs : [];
+        if (!logs.length) {
+            renderRows(nodes.traceyAgentLogRows, [], "No logs available for this agent and window.", 4);
+            return;
+        }
+
+        const selectedLevel = String(nodes.traceyAgentLogLevel ? nodes.traceyAgentLogLevel.value : "all").toLowerCase();
+        const categoryFilter = String(nodes.traceyAgentLogCategory ? nodes.traceyAgentLogCategory.value : "").trim().toLowerCase();
+        const searchFilter = String(nodes.traceyAgentLogSearch ? nodes.traceyAgentLogSearch.value : "").trim().toLowerCase();
+
+        const rows = [];
+        for (const log of logs) {
+            const level = String(log.level || "info").toLowerCase();
+            const category = String(log.category || "general");
+            const message = String(log.message || "");
+            const context = log.context && typeof log.context === "object" ? JSON.stringify(log.context) : "";
+
+            if (selectedLevel !== "all" && level !== selectedLevel) {
+                continue;
+            }
+            if (categoryFilter && !category.toLowerCase().includes(categoryFilter)) {
+                continue;
+            }
+            if (searchFilter) {
+                const haystack = `${message} ${context}`.toLowerCase();
+                if (!haystack.includes(searchFilter)) {
+                    continue;
+                }
+            }
+
+            const contextHtml = context ? `<div class="empty">${escapeHtml(context)}</div>` : "";
+            rows.push(`<tr><td>${escapeHtml(formatEpochMs(log.ts_ms))}</td><td>${levelBadge(level)}</td><td>${escapeHtml(category)}</td><td>${escapeHtml(message)}${contextHtml}</td></tr>`);
+        }
+        renderRows(nodes.traceyAgentLogRows, rows, "No log entries match current filters.", 4);
+    }
+
+    function renderTraceyAgentDrilldown(analysis) {
+        if (!analysis || typeof analysis !== "object") {
+            renderTraceyAgentFacts(null);
+            renderLineChart(nodes.traceyAgentStatusChart, [], []);
+            renderLegend(nodes.traceyAgentStatusLegend, []);
+            renderRows(nodes.traceyAgentLogRows, [], "No agent selected.", 4);
+            if (nodes.traceyAgentDrilldownTitle) {
+                nodes.traceyAgentDrilldownTitle.textContent = "Agent Drilldown";
+            }
+            if (nodes.traceyAgentDrilldownMeta) {
+                nodes.traceyAgentDrilldownMeta.textContent = "Select an agent";
+            }
+            return;
+        }
+
+        const current = analysis.current || {};
+        if (nodes.traceyAgentDrilldownTitle) {
+            nodes.traceyAgentDrilldownTitle.textContent = `Agent Drilldown • ${current.agent_id || "unknown"}`;
+        }
+        if (nodes.traceyAgentDrilldownMeta) {
+            nodes.traceyAgentDrilldownMeta.textContent = `Updated ${formatEpochMs(analysis.generated_epoch_ms)}`;
+            nodes.traceyAgentDrilldownMeta.style.borderColor = statusToneColor(current.status || "unknown");
+        }
+
+        const series = Array.isArray(analysis.series) ? analysis.series : [];
+        renderLineChart(nodes.traceyAgentStatusChart, series, [
+            { key: "healthy", color: "#22c55e" },
+            { key: "degraded", color: "#f59e0b" },
+            { key: "offline", color: "#ef4444" },
+            { key: "avg_query_failures", color: "#94a3b8" }
+        ]);
+        const latest = series.length ? series[series.length - 1] : {};
+        renderLegend(nodes.traceyAgentStatusLegend, [
+            { label: "Healthy", color: "#22c55e", value: parseNumber(latest.healthy, 0) },
+            { label: "Degraded", color: "#f59e0b", value: parseNumber(latest.degraded, 0) },
+            { label: "Offline", color: "#ef4444", value: parseNumber(latest.offline, 0) },
+            { label: "Avg Query Failures", color: "#94a3b8", value: parseNumber(latest.avg_query_failures, 0).toFixed(2) }
+        ]);
+        renderTraceyAgentFacts(analysis);
+        traceyState.selectedAgentLogs = Array.isArray(analysis.logs) ? analysis.logs : [];
+        renderTraceyAgentLogs();
+    }
+
+    async function fetchTraceyAnalytics() {
+        const requestSeq = ++traceyInsightsRequestSeq;
+        const path = `/tracey/analytics?window_seconds=${encodeURIComponent(String(traceyWindowSeconds()))}&bucket_seconds=${encodeURIComponent(String(traceyBucketSeconds()))}&log_limit=400`;
+        if (nodes.traceyInsightsSubtitle) {
+            nodes.traceyInsightsSubtitle.textContent = "Loading Tracey analytics...";
+        }
+        const response = await fetchJson(path);
+        if (requestSeq !== traceyInsightsRequestSeq) {
+            return;
+        }
+        if (!response.ok) {
+            const message = response.payload && typeof response.payload === "object"
+                ? String(response.payload.message || "Unable to load Tracey analytics.")
+                : "Unable to load Tracey analytics.";
+            if (nodes.traceyInsightsSubtitle) {
+                nodes.traceyInsightsSubtitle.textContent = message;
+            }
+            traceyState.analytics = null;
+            renderTraceyAnalyticsOverview(null);
+            return;
+        }
+
+        const data = responseData(response.payload) || {};
+        traceyState.analytics = data;
+        const summary = data.summary && typeof data.summary === "object" ? data.summary : {};
+        if (nodes.traceyInsightsSubtitle) {
+            nodes.traceyInsightsSubtitle.textContent = `${parseNumber(summary.agents_total, 0)} agents, ${parseNumber(summary.current_healthy, 0)} healthy, ${parseNumber(summary.current_offline, 0)} offline • window ${traceyWindowSeconds()}s`;
+        }
+        renderTraceyAnalyticsOverview(data);
+
+        const availableAgentIds = (Array.isArray(data.agents) ? data.agents : [])
+            .map((agent) => String(agent.agent_id || "").trim())
+            .filter((id) => id.length > 0);
+        if (!availableAgentIds.length) {
+            traceyState.selectedAgentId = "";
+            traceyState.selectedAgentAnalysis = null;
+            renderTraceyAgentDrilldown(null);
+            return;
+        }
+
+        if (!traceyState.selectedAgentId || !availableAgentIds.includes(traceyState.selectedAgentId)) {
+            traceyState.selectedAgentId = availableAgentIds[0];
+        }
+        await fetchTraceyAgentAnalysis(traceyState.selectedAgentId);
+    }
+
+    async function fetchTraceyAgentAnalysis(agentId) {
+        const normalizedId = String(agentId || "").trim();
+        if (!normalizedId) {
+            return;
+        }
+        traceyState.selectedAgentId = normalizedId;
+        const requestSeq = ++traceyAgentRequestSeq;
+        if (nodes.traceyAgentDrilldownMeta) {
+            nodes.traceyAgentDrilldownMeta.textContent = `Loading ${normalizedId}...`;
+        }
+        const path = `/tracey/agents/${encodeURIComponent(normalizedId)}/analysis?window_seconds=${encodeURIComponent(String(traceyWindowSeconds()))}&bucket_seconds=${encodeURIComponent(String(traceyBucketSeconds()))}&log_limit=500`;
+        const response = await fetchJson(path);
+        if (requestSeq !== traceyAgentRequestSeq) {
+            return;
+        }
+        if (!response.ok) {
+            const message = response.payload && typeof response.payload === "object"
+                ? String(response.payload.message || "Unable to load Tracey agent analysis.")
+                : "Unable to load Tracey agent analysis.";
+            traceyState.selectedAgentAnalysis = null;
+            traceyState.selectedAgentLogs = [];
+            renderTraceyAgentDrilldown(null);
+            if (nodes.traceyAgentDrilldownMeta) {
+                nodes.traceyAgentDrilldownMeta.textContent = message;
+            }
+            return;
+        }
+        const data = responseData(response.payload) || {};
+        traceyState.selectedAgentAnalysis = data;
+        renderTraceyAgentDrilldown(data);
+    }
+
+    async function openTraceyInsightsModal(preselectedAgentId = "") {
+        closeClusterDetailsModal();
+        closeOpenShiftDetailsModal();
+        if (preselectedAgentId) {
+            traceyState.selectedAgentId = String(preselectedAgentId).trim();
+        }
+        setTraceyInsightsModalOpen(true);
+        await fetchTraceyAnalytics();
+    }
+
+    function initializeTraceyInsightsUi() {
+        if (nodes.openTraceyInsightsBtn) {
+            nodes.openTraceyInsightsBtn.addEventListener("click", () => {
+                openTraceyInsightsModal();
+            });
+        }
+        if (nodes.traceyCard) {
+            nodes.traceyCard.addEventListener("click", () => {
+                openTraceyInsightsModal();
+            });
+            nodes.traceyCard.addEventListener("keydown", (event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    openTraceyInsightsModal();
+                }
+            });
+        }
+        if (nodes.traceyRows) {
+            nodes.traceyRows.addEventListener("click", (event) => {
+                const trigger = event.target.closest("button[data-tracey-agent-id]");
+                if (!trigger) {
+                    return;
+                }
+                event.preventDefault();
+                const agentId = String(trigger.getAttribute("data-tracey-agent-id") || "").trim();
+                if (agentId) {
+                    openTraceyInsightsModal(agentId);
+                }
+            });
+        }
+        if (nodes.traceyAnalyticsAgentRows) {
+            nodes.traceyAnalyticsAgentRows.addEventListener("click", (event) => {
+                const trigger = event.target.closest("button[data-tracey-agent-analysis]");
+                if (!trigger) {
+                    return;
+                }
+                event.preventDefault();
+                const agentId = String(trigger.getAttribute("data-tracey-agent-analysis") || "").trim();
+                if (agentId) {
+                    fetchTraceyAgentAnalysis(agentId);
+                }
+            });
+        }
+        if (nodes.traceyInsightsClose) {
+            nodes.traceyInsightsClose.addEventListener("click", closeTraceyInsightsModal);
+        }
+        if (nodes.traceyInsightsModal) {
+            nodes.traceyInsightsModal.addEventListener("click", (event) => {
+                if (event.target === nodes.traceyInsightsModal) {
+                    closeTraceyInsightsModal();
+                }
+            });
+        }
+        if (nodes.traceyInsightsRefresh) {
+            nodes.traceyInsightsRefresh.addEventListener("click", () => {
+                fetchTraceyAnalytics();
+            });
+        }
+        if (nodes.traceyWindowSelect) {
+            nodes.traceyWindowSelect.addEventListener("change", () => {
+                fetchTraceyAnalytics();
+            });
+        }
+        if (nodes.traceyBucketSelect) {
+            nodes.traceyBucketSelect.addEventListener("change", () => {
+                fetchTraceyAnalytics();
+            });
+        }
+        if (nodes.traceyAgentLogLevel) {
+            nodes.traceyAgentLogLevel.addEventListener("change", renderTraceyAgentLogs);
+        }
+        if (nodes.traceyAgentLogCategory) {
+            nodes.traceyAgentLogCategory.addEventListener("input", renderTraceyAgentLogs);
+        }
+        if (nodes.traceyAgentLogSearch) {
+            nodes.traceyAgentLogSearch.addEventListener("input", renderTraceyAgentLogs);
+        }
     }
 
     function detailPillsHtml(values, emptyText) {
@@ -509,6 +1081,9 @@
             if (nodes.openshiftDetailsModal && !nodes.openshiftDetailsModal.hidden) {
                 closeOpenShiftDetailsModal();
             }
+            if (nodes.traceyInsightsModal && !nodes.traceyInsightsModal.hidden) {
+                closeTraceyInsightsModal();
+            }
         });
     }
 
@@ -642,7 +1217,11 @@
             const status = agent.stale ? "stale" : (agent.status || "unknown");
             const ago = Number(agent.last_seen_seconds_ago || 0);
             const lastSeen = ago < 1 ? "just now" : `${ago}s ago`;
-            return `<tr><td>${escapeHtml(agent.agent_id || "unknown")}</td><td>${escapeHtml(agent.cluster || "-")}</td><td>${statusBadge(status)}</td><td>${escapeHtml(lastSeen)}</td><td>${escapeHtml(agent.version || "-")}</td></tr>`;
+            const agentId = String(agent.agent_id || "unknown");
+            const agentCell = agentId && agentId !== "unknown"
+                ? `<button class="cluster-link tracey-agent-link" type="button" data-tracey-agent-id="${escapeHtml(agentId)}">${escapeHtml(agentId)}</button>`
+                : escapeHtml(agentId);
+            return `<tr><td>${agentCell}</td><td>${escapeHtml(agent.cluster || "-")}</td><td>${statusBadge(status)}</td><td>${escapeHtml(lastSeen)}</td><td>${escapeHtml(agent.version || "-")}</td></tr>`;
         });
         renderRows(nodes.traceyRows, traceyRows, "No Tracey agent heartbeats received yet.", 5);
 
@@ -688,6 +1267,10 @@
             traceyTone
         );
 
+        if (nodes.traceyInsightsModal && !nodes.traceyInsightsModal.hidden) {
+            fetchTraceyAnalytics();
+        }
+
         setPill(nodes.refreshPill, "Refresh", `Updated ${nowIsoTime()}`, "rgba(216,210,202,0.45)");
     }
 
@@ -704,6 +1287,8 @@
 
     initializeSessionUi();
     initializeClusterDetailsUi();
+    initializeTraceyInsightsUi();
+    renderTraceyAgentDrilldown(null);
     refreshDashboard();
     window.setInterval(refreshDashboard, REFRESH_INTERVAL_MS);
 })();

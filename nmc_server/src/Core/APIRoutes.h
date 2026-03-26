@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <thread>
 #include <atomic>
+#include <deque>
 
 // Include data models
 #include "../Models/Bucket.h"
@@ -98,8 +99,27 @@ namespace NMC::Server {
             std::string expectedStatusAddr;
             int64_t createdEpochMs{0};
         };
+        struct TraceyStatusSample {
+            int64_t tsMs{0};
+            std::string status;
+            bool stale{false};
+            bool statusReachable{false};
+            int queryFailures{0};
+            bool coordinator{false};
+            int64_t score{0};
+            std::string source;
+        };
+        struct TraceyAgentLogEntry {
+            int64_t tsMs{0};
+            std::string level;
+            std::string category;
+            std::string message;
+            nlohmann::json context;
+        };
         std::unordered_map<std::string, TraceyAgent> traceyAgents;
         std::unordered_map<std::string, TraceyRequirement> traceyRequirements;
+        std::unordered_map<std::string, std::deque<TraceyStatusSample>> traceyAgentHistory;
+        std::unordered_map<std::string, std::deque<TraceyAgentLogEntry>> traceyAgentLogs;
         int64_t traceyStaleAfterSeconds;
         bool traceyEnforceManagedResources;
         bool traceyDiscoveryEnabled;
@@ -113,6 +133,8 @@ namespace NMC::Server {
         int64_t traceyStatusPollMs;
         int64_t traceyStatusTimeoutMs;
         int64_t traceyStatusMaxBackoffMs;
+        size_t traceyHistoryMaxSamples;
+        size_t traceyAgentLogMaxEntries;
         std::string traceyStatusBearerToken;
         std::thread traceyDiscoveryThread;
         std::atomic<bool> stopTraceyDiscovery;
@@ -191,11 +213,20 @@ namespace NMC::Server {
         void handleServerVersion(const httplib::Request& req, httplib::Response& res);
         void handleTraceyHeartbeat(const httplib::Request& req, httplib::Response& res);
         void handleListTraceyAgents(const httplib::Request& req, httplib::Response& res);
+        void handleTraceyAnalytics(const httplib::Request& req, httplib::Response& res);
+        void handleTraceyAgentAnalysis(const httplib::Request& req, httplib::Response& res);
         void handleRecruitNode(const httplib::Request& req, httplib::Response& res);
         void runTraceyDiscoveryLoop();
         void ingestTraceyDiscoveryAnnouncement(const nlohmann::json& payload, const std::string& senderAddress, int64_t receivedAtMs);
         void pollTraceyStatus(const std::string& agentId, const std::string& statusAddr, int64_t nowMs);
         void markTraceyStaleAgents(int64_t nowMs);
+        void appendTraceyStatusSampleLocked(const TraceyAgent& agent, int64_t tsMs, const std::string& source);
+        void appendTraceyAgentLogLocked(const std::string& agentId,
+                                        int64_t tsMs,
+                                        const std::string& level,
+                                        const std::string& category,
+                                        const std::string& message,
+                                        nlohmann::json context = nlohmann::json::object());
         bool extractTraceyProvisioningRequest(const nlohmann::json& payload,
                                              std::string& agentIdOut,
                                              std::string& statusAddrOut,

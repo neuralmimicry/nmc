@@ -564,6 +564,37 @@ namespace NMC::Server {
             return std::clamp(value, std::max<int64_t>(baseMs, 1000), std::max<int64_t>(maxMs, baseMs));
         }
 
+        int64_t parseQueryInt64(const httplib::Request& req,
+                                const char* key,
+                                int64_t fallback,
+                                int64_t minValue,
+                                int64_t maxValue) {
+            if (!req.has_param(key)) {
+                return fallback;
+            }
+            const std::string raw = trim(req.get_param_value(key));
+            if (raw.empty()) {
+                return fallback;
+            }
+            try {
+                int64_t value = std::stoll(raw);
+                return std::clamp(value, minValue, maxValue);
+            } catch (const std::exception&) {
+                return fallback;
+            }
+        }
+
+        std::string normalizeLogLevel(std::string level) {
+            level = toLower(trim(level));
+            if (level == "warning") {
+                return "warn";
+            }
+            if (level != "info" && level != "warn" && level != "error") {
+                return "info";
+            }
+            return level;
+        }
+
         struct ExecResult {
             int exitCode{1};
             std::string output;
@@ -1130,6 +1161,18 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                 traceyStatusPollMs,
                 3600000
         );
+        traceyHistoryMaxSamples = static_cast<size_t>(parseInt64Value(
+                envOr("NMC_TRACEY_HISTORY_MAX_SAMPLES", "NM_TRACEY_HISTORY_MAX_SAMPLES"),
+                1440,
+                60,
+                200000
+        ));
+        traceyAgentLogMaxEntries = static_cast<size_t>(parseInt64Value(
+                envOr("NMC_TRACEY_AGENT_LOG_MAX_ENTRIES", "NM_TRACEY_AGENT_LOG_MAX_ENTRIES"),
+                400,
+                50,
+                50000
+        ));
         const char* traceyStatusTokenEnv = envOr("NMC_TRACEY_STATUS_BEARER_TOKEN", "NM_TRACEY_STATUS_BEARER_TOKEN");
         traceyStatusBearerToken = traceyStatusTokenEnv ? trim(traceyStatusTokenEnv) : "";
 
@@ -1636,6 +1679,14 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
         svr.Get("/tracey/agents", [this, guard](const httplib::Request& req, httplib::Response& res) {
             if (!guard(req, res)) return;
             handleListTraceyAgents(req, res);
+        });
+        svr.Get("/tracey/analytics", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            handleTraceyAnalytics(req, res);
+        });
+        svr.Get(R"(/tracey/agents/(.*)/analysis)", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            handleTraceyAgentAnalysis(req, res);
         });
 
         // --- Node Recruitment Routes ---
@@ -3126,6 +3177,70 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
         }
     }
 
+    void APIRoutes::appendTraceyStatusSampleLocked(const TraceyAgent& agent, int64_t tsMs, const std::string& source) {
+        if (agent.agentId.empty()) {
+            return;
+        }
+        TraceyStatusSample sample;
+        sample.tsMs = tsMs > 0 ? tsMs : nowEpochMs();
+        sample.status = normalizeTraceyStatus(agent.status);
+        sample.stale = agent.stale;
+        sample.statusReachable = agent.statusReachable;
+        sample.queryFailures = std::max(0, agent.queryFailures);
+        sample.coordinator = agent.coordinator;
+        sample.score = agent.score;
+        sample.source = trim(source);
+
+        auto& history = traceyAgentHistory[agent.agentId];
+        if (!history.empty()) {
+            const auto& last = history.back();
+            if (last.tsMs == sample.tsMs &&
+                last.status == sample.status &&
+                last.stale == sample.stale &&
+                last.statusReachable == sample.statusReachable &&
+                last.queryFailures == sample.queryFailures &&
+                last.coordinator == sample.coordinator &&
+                last.score == sample.score &&
+                last.source == sample.source) {
+                return;
+            }
+        }
+
+        history.push_back(std::move(sample));
+        while (history.size() > traceyHistoryMaxSamples) {
+            history.pop_front();
+        }
+    }
+
+    void APIRoutes::appendTraceyAgentLogLocked(const std::string& agentId,
+                                               int64_t tsMs,
+                                               const std::string& level,
+                                               const std::string& category,
+                                               const std::string& message,
+                                               nlohmann::json context) {
+        if (agentId.empty()) {
+            return;
+        }
+        TraceyAgentLogEntry entry;
+        entry.tsMs = tsMs > 0 ? tsMs : nowEpochMs();
+        entry.level = normalizeLogLevel(level);
+        entry.category = trim(category).empty() ? "general" : trim(category);
+        entry.message = trim(message);
+        if (entry.message.empty()) {
+            entry.message = "Tracey event";
+        }
+        if (!context.is_object()) {
+            context = nlohmann::json::object();
+        }
+        entry.context = std::move(context);
+
+        auto& logs = traceyAgentLogs[agentId];
+        logs.push_back(std::move(entry));
+        while (logs.size() > traceyAgentLogMaxEntries) {
+            logs.pop_front();
+        }
+    }
+
     void APIRoutes::ingestTraceyDiscoveryAnnouncement(const nlohmann::json& payload,
                                                       const std::string& senderAddress,
                                                       int64_t receivedAtMs) {
@@ -3157,6 +3272,8 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
 
         std::lock_guard<std::mutex> lock(dataMutex);
         auto& agent = traceyAgents[agentId];
+        const std::string previousStatus = agent.status;
+        const std::string previousLinkState = agent.linkState;
         agent.agentId = agentId;
         agent.source = mergeTraceySource(agent.source, "discovery");
         agent.signaturePresent = signaturePresent;
@@ -3210,12 +3327,56 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
             agent.linkState = "announcement-only";
             agent.linkSecurity = deriveLinkSecurity(signaturePresent, nullptr, traceyTlsVerify);
         }
+
+        if (normalizeTraceyStatus(previousStatus) != normalizeTraceyStatus(agent.status)) {
+            appendTraceyAgentLogLocked(
+                    agent.agentId,
+                    receivedAtMs,
+                    "info",
+                    "discovery",
+                    "Discovery announcement updated agent status.",
+                    {
+                            {"previous_status", normalizeTraceyStatus(previousStatus)},
+                            {"current_status", normalizeTraceyStatus(agent.status)},
+                            {"sender", senderAddress}
+                    }
+            );
+        }
+        if (previousLinkState != agent.linkState) {
+            appendTraceyAgentLogLocked(
+                    agent.agentId,
+                    receivedAtMs,
+                    "info",
+                    "link",
+                    "Discovery announcement updated link state.",
+                    {
+                            {"previous_link_state", previousLinkState},
+                            {"current_link_state", agent.linkState},
+                            {"sender", senderAddress}
+                    }
+            );
+        }
+        if (!rawStatusAddr.empty() && !(hasEndpoint && endpointAllowed)) {
+            appendTraceyAgentLogLocked(
+                    agent.agentId,
+                    receivedAtMs,
+                    "warn",
+                    "discovery",
+                    "Discovery payload contained an invalid or disallowed status endpoint.",
+                    {
+                            {"raw_status_addr", rawStatusAddr},
+                            {"sender", senderAddress}
+                    }
+            );
+        }
+        appendTraceyStatusSampleLocked(agent, receivedAtMs, "discovery");
     }
 
     void APIRoutes::pollTraceyStatus(const std::string& agentId, const std::string& statusAddr, int64_t nowMs) {
         auto markFailure = [&](const std::string& message, const TraceyEndpoint* endpoint = nullptr) {
             std::lock_guard<std::mutex> lock(dataMutex);
             auto& agent = traceyAgents[agentId];
+            const std::string previousStatus = normalizeTraceyStatus(agent.status);
             if (agent.agentId.empty()) {
                 agent.agentId = agentId;
             }
@@ -3230,6 +3391,22 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
             agent.status = agent.queryFailures >= 3 ? "offline" : "degraded";
             agent.lastError = message;
             agent.linkSecurity = deriveLinkSecurity(agent.signaturePresent, endpoint, traceyTlsVerify);
+            const std::string currentStatus = normalizeTraceyStatus(agent.status);
+            appendTraceyAgentLogLocked(
+                    agent.agentId,
+                    nowMs,
+                    agent.queryFailures >= 3 ? "error" : "warn",
+                    "status_poll",
+                    "Failed to poll Tracey status endpoint.",
+                    {
+                            {"status_addr", agent.statusAddr},
+                            {"reason", message},
+                            {"query_failures", agent.queryFailures},
+                            {"previous_status", previousStatus},
+                            {"current_status", currentStatus}
+                    }
+            );
+            appendTraceyStatusSampleLocked(agent, nowMs, "status_poll_failure");
         };
 
         TraceyEndpoint endpoint;
@@ -3303,6 +3480,9 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
 
         std::lock_guard<std::mutex> lock(dataMutex);
         auto& agent = traceyAgents[agentId];
+        const std::string previousStatus = normalizeTraceyStatus(agent.status);
+        const int previousFailures = std::max(0, agent.queryFailures);
+        const bool previousReachable = agent.statusReachable;
         agent.agentId = agentId;
         agent.status = normalizeTraceyStatus(resolvedStatus);
         agent.statusReachable = true;
@@ -3326,6 +3506,24 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                 agent.coordinator = statusPayload["is_coordinator"].get<bool>();
             }
         }
+
+        const std::string currentStatus = normalizeTraceyStatus(agent.status);
+        if (currentStatus != previousStatus || previousFailures > 0 || !previousReachable) {
+            appendTraceyAgentLogLocked(
+                    agent.agentId,
+                    nowMs,
+                    "info",
+                    "status_poll",
+                    "Status endpoint poll succeeded.",
+                    {
+                            {"status_addr", agent.statusAddr},
+                            {"previous_status", previousStatus},
+                            {"current_status", currentStatus},
+                            {"previous_query_failures", previousFailures}
+                    }
+            );
+        }
+        appendTraceyStatusSampleLocked(agent, nowMs, "status_poll");
     }
 
     void APIRoutes::markTraceyStaleAgents(int64_t nowMs) {
@@ -3337,6 +3535,7 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
             if (lastSignalMs <= 0) {
                 continue;
             }
+            const bool wasStale = agent.stale;
             const bool staleNow = nowMs > lastSignalMs && (nowMs - lastSignalMs) > staleAfterMs;
             agent.stale = staleNow;
             if (staleNow) {
@@ -3345,6 +3544,20 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                 if (agent.lastError.empty()) {
                     agent.lastError = "Agent is stale (missed heartbeat/discovery window).";
                 }
+            }
+            if (staleNow && !wasStale) {
+                appendTraceyAgentLogLocked(
+                        agent.agentId,
+                        nowMs,
+                        "warn",
+                        "liveness",
+                        "Tracey agent became stale.",
+                        {
+                                {"stale_after_seconds", traceyStaleAfterSeconds},
+                                {"last_signal_epoch_ms", lastSignalMs}
+                        }
+                );
+                appendTraceyStatusSampleLocked(agent, nowMs, "stale_transition");
             }
         }
     }
@@ -3365,6 +3578,8 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
 
             std::lock_guard<std::mutex> lock(dataMutex);
             auto& agent = traceyAgents[agentId];
+            const std::string previousStatus = normalizeTraceyStatus(agent.status);
+            const std::string previousLinkState = agent.linkState;
             agent.agentId = agentId;
             agent.source = mergeTraceySource(agent.source, "heartbeat");
             const std::string cluster = firstStringValue(body, {"cluster", "cluster_id"});
@@ -3423,6 +3638,47 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                 agent.linkState = "heartbeat-only";
                 agent.linkSecurity = deriveLinkSecurity(agent.signaturePresent, nullptr, traceyTlsVerify);
             }
+
+            const std::string currentStatus = normalizeTraceyStatus(agent.status);
+            if (previousStatus != currentStatus) {
+                appendTraceyAgentLogLocked(
+                        agent.agentId,
+                        nowMs,
+                        "info",
+                        "heartbeat",
+                        "Heartbeat updated Tracey agent status.",
+                        {
+                                {"previous_status", previousStatus},
+                                {"current_status", currentStatus}
+                        }
+                );
+            }
+            if (previousLinkState != agent.linkState) {
+                appendTraceyAgentLogLocked(
+                        agent.agentId,
+                        nowMs,
+                        "info",
+                        "heartbeat",
+                        "Heartbeat updated Tracey link state.",
+                        {
+                                {"previous_link_state", previousLinkState},
+                                {"current_link_state", agent.linkState}
+                        }
+                );
+            }
+            if (!rawStatusAddr.empty() && !(hasEndpoint && endpointAllowed)) {
+                appendTraceyAgentLogLocked(
+                        agent.agentId,
+                        nowMs,
+                        "warn",
+                        "heartbeat",
+                        "Heartbeat provided an invalid or disallowed status endpoint.",
+                        {
+                                {"raw_status_addr", rawStatusAddr}
+                        }
+                );
+            }
+            appendTraceyStatusSampleLocked(agent, nowMs, "heartbeat");
 
             nlohmann::json payload = {
                     {"agent_id", agent.agentId},
@@ -3696,6 +3952,593 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                 }},
                 {"stale_after_seconds", traceyStaleAfterSeconds},
                 {"agents", agents}
+        };
+        sendJsonResponse(res, apiResponse);
+    }
+
+    void APIRoutes::handleTraceyAnalytics(const httplib::Request& req, httplib::Response& res) {
+        const int64_t nowMs = nowEpochMs();
+        const int64_t windowSeconds = parseQueryInt64(req, "window_seconds", 3600, 300, 604800);
+        const int64_t bucketSeconds = parseQueryInt64(req, "bucket_seconds", 60, 10, 3600);
+        const int64_t logLimit = parseQueryInt64(req, "log_limit", 200, 20, 4000);
+        const int64_t windowMs = windowSeconds * 1000;
+        const int64_t bucketMs = bucketSeconds * 1000;
+        const int64_t cutoffMs = nowMs - windowMs;
+        const int64_t alignedStartMs = (cutoffMs / bucketMs) * bucketMs;
+        const size_t bucketCount = static_cast<size_t>(((nowMs - alignedStartMs) / bucketMs) + 1);
+
+        struct BucketAgg {
+            int64_t bucketStartMs{0};
+            int sampledAgents{0};
+            int healthy{0};
+            int degraded{0};
+            int offline{0};
+            int unknown{0};
+            int stale{0};
+            int reachable{0};
+            int coordinator{0};
+            int logInfo{0};
+            int logWarn{0};
+            int logError{0};
+            int64_t queryFailureSum{0};
+            int queryFailureSamples{0};
+            int64_t scoreSum{0};
+            int scoreSamples{0};
+        };
+        std::vector<BucketAgg> buckets(bucketCount);
+        for (size_t i = 0; i < bucketCount; ++i) {
+            buckets[i].bucketStartMs = alignedStartMs + static_cast<int64_t>(i) * bucketMs;
+        }
+
+        std::vector<TraceyAgent> snapshot;
+        std::unordered_map<std::string, std::vector<TraceyStatusSample>> histories;
+        std::unordered_map<std::string, std::vector<TraceyAgentLogEntry>> logsByAgent;
+        {
+            std::lock_guard<std::mutex> lock(dataMutex);
+            snapshot.reserve(traceyAgents.size());
+            for (const auto& [id, agent] : traceyAgents) {
+                (void)id;
+                snapshot.push_back(agent);
+            }
+            for (const auto& [agentId, history] : traceyAgentHistory) {
+                std::vector<TraceyStatusSample> filtered;
+                filtered.reserve(history.size());
+                for (const auto& sample : history) {
+                    if (sample.tsMs >= cutoffMs) {
+                        filtered.push_back(sample);
+                    }
+                }
+                if (!filtered.empty()) {
+                    histories.emplace(agentId, std::move(filtered));
+                }
+            }
+            for (const auto& [agentId, logs] : traceyAgentLogs) {
+                std::vector<TraceyAgentLogEntry> filtered;
+                filtered.reserve(logs.size());
+                for (const auto& entry : logs) {
+                    if (entry.tsMs >= cutoffMs) {
+                        filtered.push_back(entry);
+                    }
+                }
+                if (!filtered.empty()) {
+                    logsByAgent.emplace(agentId, std::move(filtered));
+                }
+            }
+        }
+
+        std::sort(snapshot.begin(), snapshot.end(), [](const TraceyAgent& a, const TraceyAgent& b) {
+            return a.agentId < b.agentId;
+        });
+
+        auto bucketIndexForTs = [&](int64_t tsMs) -> int64_t {
+            if (tsMs < alignedStartMs || tsMs > nowMs) {
+                return -1;
+            }
+            const int64_t offset = tsMs - alignedStartMs;
+            const int64_t idx = offset / bucketMs;
+            if (idx < 0 || idx >= static_cast<int64_t>(bucketCount)) {
+                return -1;
+            }
+            return idx;
+        };
+
+        int currentHealthy = 0;
+        int currentDegraded = 0;
+        int currentOffline = 0;
+        int currentUnknown = 0;
+        for (const auto& agent : snapshot) {
+            const int64_t lastSignalMs = std::max(agent.lastSeenEpochMs, agent.lastAnnouncementEpochMs);
+            const bool stale = agent.stale || (lastSignalMs > 0 && nowMs > lastSignalMs &&
+                                               (nowMs - lastSignalMs) > (traceyStaleAfterSeconds * 1000));
+            const std::string status = stale ? "offline" : normalizeTraceyStatus(agent.status);
+            if (status == "healthy") {
+                currentHealthy++;
+            } else if (status == "degraded") {
+                currentDegraded++;
+            } else if (status == "offline") {
+                currentOffline++;
+            } else {
+                currentUnknown++;
+            }
+        }
+
+        struct GlobalLogView {
+            std::string agentId;
+            TraceyAgentLogEntry entry;
+        };
+        std::vector<GlobalLogView> globalLogs;
+        std::unordered_map<std::string, int> categoryCounts;
+        std::unordered_map<std::string, int> levelCounts;
+
+        for (const auto& [agentId, history] : histories) {
+            std::unordered_map<int64_t, const TraceyStatusSample*> lastByBucket;
+            for (const auto& sample : history) {
+                const int64_t bucketIdx = bucketIndexForTs(sample.tsMs);
+                if (bucketIdx < 0) {
+                    continue;
+                }
+                auto it = lastByBucket.find(bucketIdx);
+                if (it == lastByBucket.end() || it->second->tsMs <= sample.tsMs) {
+                    lastByBucket[bucketIdx] = &sample;
+                }
+            }
+            for (const auto& [bucketIdx, samplePtr] : lastByBucket) {
+                auto& bucket = buckets[static_cast<size_t>(bucketIdx)];
+                const auto& sample = *samplePtr;
+                const std::string status = normalizeTraceyStatus(sample.status);
+                bucket.sampledAgents++;
+                if (status == "healthy") {
+                    bucket.healthy++;
+                } else if (status == "degraded") {
+                    bucket.degraded++;
+                } else if (status == "offline") {
+                    bucket.offline++;
+                } else {
+                    bucket.unknown++;
+                }
+                if (sample.stale) {
+                    bucket.stale++;
+                }
+                if (sample.statusReachable) {
+                    bucket.reachable++;
+                }
+                if (sample.coordinator) {
+                    bucket.coordinator++;
+                }
+                bucket.queryFailureSum += std::max(0, sample.queryFailures);
+                bucket.queryFailureSamples++;
+                bucket.scoreSum += sample.score;
+                bucket.scoreSamples++;
+            }
+            (void)agentId;
+        }
+
+        for (const auto& [agentId, logs] : logsByAgent) {
+            for (const auto& entry : logs) {
+                const int64_t bucketIdx = bucketIndexForTs(entry.tsMs);
+                if (bucketIdx >= 0) {
+                    auto& bucket = buckets[static_cast<size_t>(bucketIdx)];
+                    const std::string level = normalizeLogLevel(entry.level);
+                    if (level == "error") {
+                        bucket.logError++;
+                    } else if (level == "warn") {
+                        bucket.logWarn++;
+                    } else {
+                        bucket.logInfo++;
+                    }
+                }
+
+                const std::string level = normalizeLogLevel(entry.level);
+                levelCounts[level] += 1;
+                categoryCounts[entry.category.empty() ? "general" : entry.category] += 1;
+                globalLogs.push_back({agentId, entry});
+            }
+        }
+
+        std::sort(globalLogs.begin(), globalLogs.end(), [](const GlobalLogView& a, const GlobalLogView& b) {
+            return a.entry.tsMs > b.entry.tsMs;
+        });
+        if (globalLogs.size() > static_cast<size_t>(logLimit)) {
+            globalLogs.resize(static_cast<size_t>(logLimit));
+        }
+
+        nlohmann::json timeline = nlohmann::json::array();
+        for (const auto& bucket : buckets) {
+            const double avgQueryFailures = bucket.queryFailureSamples > 0
+                                            ? static_cast<double>(bucket.queryFailureSum) / static_cast<double>(bucket.queryFailureSamples)
+                                            : 0.0;
+            const double avgScore = bucket.scoreSamples > 0
+                                    ? static_cast<double>(bucket.scoreSum) / static_cast<double>(bucket.scoreSamples)
+                                    : 0.0;
+            timeline.push_back({
+                    {"bucket_start_epoch_ms", bucket.bucketStartMs},
+                    {"sampled_agents", bucket.sampledAgents},
+                    {"healthy", bucket.healthy},
+                    {"degraded", bucket.degraded},
+                    {"offline", bucket.offline},
+                    {"unknown", bucket.unknown},
+                    {"stale", bucket.stale},
+                    {"reachable", bucket.reachable},
+                    {"coordinator", bucket.coordinator},
+                    {"log_info", bucket.logInfo},
+                    {"log_warn", bucket.logWarn},
+                    {"log_error", bucket.logError},
+                    {"avg_query_failures", avgQueryFailures},
+                    {"avg_score", avgScore}
+            });
+        }
+
+        nlohmann::json topCategories = nlohmann::json::array();
+        std::vector<std::pair<std::string, int>> categoryVector(categoryCounts.begin(), categoryCounts.end());
+        std::sort(categoryVector.begin(), categoryVector.end(), [](const auto& a, const auto& b) {
+            if (a.second == b.second) {
+                return a.first < b.first;
+            }
+            return a.second > b.second;
+        });
+        if (categoryVector.size() > 15) {
+            categoryVector.resize(15);
+        }
+        for (const auto& [category, count] : categoryVector) {
+            topCategories.push_back({
+                    {"category", category},
+                    {"count", count}
+            });
+        }
+
+        nlohmann::json agents = nlohmann::json::array();
+        for (const auto& agent : snapshot) {
+            const auto historyIt = histories.find(agent.agentId);
+            const auto logsIt = logsByAgent.find(agent.agentId);
+
+            int sampleCount = 0;
+            int healthySamples = 0;
+            int degradedSamples = 0;
+            int offlineSamples = 0;
+            int staleSamples = 0;
+            int64_t queryFailureSum = 0;
+            int queryFailureSamples = 0;
+            int64_t scoreSum = 0;
+            int scoreSamples = 0;
+
+            if (historyIt != histories.end()) {
+                for (const auto& sample : historyIt->second) {
+                    sampleCount++;
+                    const std::string status = normalizeTraceyStatus(sample.status);
+                    if (status == "healthy") {
+                        healthySamples++;
+                    } else if (status == "degraded") {
+                        degradedSamples++;
+                    } else if (status == "offline") {
+                        offlineSamples++;
+                    }
+                    if (sample.stale) {
+                        staleSamples++;
+                    }
+                    queryFailureSum += std::max(0, sample.queryFailures);
+                    queryFailureSamples++;
+                    scoreSum += sample.score;
+                    scoreSamples++;
+                }
+            }
+
+            int infoLogs = 0;
+            int warnLogs = 0;
+            int errorLogs = 0;
+            int64_t lastLogEpochMs = 0;
+            if (logsIt != logsByAgent.end()) {
+                for (const auto& entry : logsIt->second) {
+                    const std::string level = normalizeLogLevel(entry.level);
+                    if (level == "error") {
+                        errorLogs++;
+                    } else if (level == "warn") {
+                        warnLogs++;
+                    } else {
+                        infoLogs++;
+                    }
+                    lastLogEpochMs = std::max(lastLogEpochMs, entry.tsMs);
+                }
+            }
+
+            const int64_t lastSignalMs = std::max(agent.lastSeenEpochMs, agent.lastAnnouncementEpochMs);
+            int64_t lastSeenSecondsAgo = 0;
+            if (lastSignalMs > 0 && nowMs > lastSignalMs) {
+                lastSeenSecondsAgo = (nowMs - lastSignalMs) / 1000;
+            }
+            const bool stale = agent.stale || (lastSignalMs > 0 && nowMs > lastSignalMs &&
+                                               (nowMs - lastSignalMs) > (traceyStaleAfterSeconds * 1000));
+            const std::string currentStatus = stale ? "offline" : normalizeTraceyStatus(agent.status);
+
+            agents.push_back({
+                    {"agent_id", agent.agentId},
+                    {"status", currentStatus},
+                    {"stale", stale},
+                    {"cluster", agent.cluster},
+                    {"last_seen_seconds_ago", lastSeenSecondsAgo},
+                    {"sample_count", sampleCount},
+                    {"healthy_ratio", sampleCount > 0 ? static_cast<double>(healthySamples) / static_cast<double>(sampleCount) : 0.0},
+                    {"degraded_ratio", sampleCount > 0 ? static_cast<double>(degradedSamples) / static_cast<double>(sampleCount) : 0.0},
+                    {"offline_ratio", sampleCount > 0 ? static_cast<double>(offlineSamples) / static_cast<double>(sampleCount) : 0.0},
+                    {"stale_ratio", sampleCount > 0 ? static_cast<double>(staleSamples) / static_cast<double>(sampleCount) : 0.0},
+                    {"avg_query_failures", queryFailureSamples > 0 ? static_cast<double>(queryFailureSum) / static_cast<double>(queryFailureSamples) : 0.0},
+                    {"avg_score", scoreSamples > 0 ? static_cast<double>(scoreSum) / static_cast<double>(scoreSamples) : 0.0},
+                    {"log_info", infoLogs},
+                    {"log_warn", warnLogs},
+                    {"log_error", errorLogs},
+                    {"last_log_epoch_ms", lastLogEpochMs}
+            });
+        }
+
+        nlohmann::json recentLogs = nlohmann::json::array();
+        for (const auto& item : globalLogs) {
+            recentLogs.push_back({
+                    {"agent_id", item.agentId},
+                    {"ts_ms", item.entry.tsMs},
+                    {"level", normalizeLogLevel(item.entry.level)},
+                    {"category", item.entry.category},
+                    {"message", item.entry.message},
+                    {"context", item.entry.context.is_object() ? item.entry.context : nlohmann::json::object()}
+            });
+        }
+
+        Models::CloudResponse apiResponse;
+        apiResponse.success = true;
+        apiResponse.message = "Tracey analytics generated successfully.";
+        apiResponse.data = {
+                {"generated_epoch_ms", nowMs},
+                {"window_seconds", windowSeconds},
+                {"bucket_seconds", bucketSeconds},
+                {"bucket_count", static_cast<int>(bucketCount)},
+                {"summary", {
+                        {"agents_total", static_cast<int>(snapshot.size())},
+                        {"current_healthy", currentHealthy},
+                        {"current_degraded", currentDegraded},
+                        {"current_offline", currentOffline},
+                        {"current_unknown", currentUnknown},
+                        {"log_info", levelCounts["info"]},
+                        {"log_warn", levelCounts["warn"]},
+                        {"log_error", levelCounts["error"]}
+                }},
+                {"timeline", timeline},
+                {"top_log_categories", topCategories},
+                {"agents", agents},
+                {"recent_logs", recentLogs}
+        };
+        sendJsonResponse(res, apiResponse);
+    }
+
+    void APIRoutes::handleTraceyAgentAnalysis(const httplib::Request& req, httplib::Response& res) {
+        const std::string agentId = req.matches.size() > 1 ? trim(req.matches[1].str()) : "";
+        if (agentId.empty()) {
+            return sendErrorResponse(res, 400, "Missing required parameter: agent_id.");
+        }
+
+        const int64_t nowMs = nowEpochMs();
+        const int64_t windowSeconds = parseQueryInt64(req, "window_seconds", 3600, 300, 604800);
+        const int64_t bucketSeconds = parseQueryInt64(req, "bucket_seconds", 60, 10, 3600);
+        const int64_t logLimit = parseQueryInt64(req, "log_limit", 300, 20, 4000);
+        const int64_t cutoffMs = nowMs - (windowSeconds * 1000);
+        const int64_t bucketMs = bucketSeconds * 1000;
+        const int64_t alignedStartMs = (cutoffMs / bucketMs) * bucketMs;
+        const size_t bucketCount = static_cast<size_t>(((nowMs - alignedStartMs) / bucketMs) + 1);
+
+        TraceyAgent agent;
+        std::vector<TraceyStatusSample> history;
+        std::vector<TraceyAgentLogEntry> logs;
+        bool found = false;
+        {
+            std::lock_guard<std::mutex> lock(dataMutex);
+            auto agentIt = traceyAgents.find(agentId);
+            if (agentIt != traceyAgents.end()) {
+                found = true;
+                agent = agentIt->second;
+            }
+            auto historyIt = traceyAgentHistory.find(agentId);
+            if (historyIt != traceyAgentHistory.end()) {
+                history.reserve(historyIt->second.size());
+                for (const auto& sample : historyIt->second) {
+                    if (sample.tsMs >= cutoffMs) {
+                        history.push_back(sample);
+                    }
+                }
+            }
+            auto logsIt = traceyAgentLogs.find(agentId);
+            if (logsIt != traceyAgentLogs.end()) {
+                logs.reserve(logsIt->second.size());
+                for (const auto& entry : logsIt->second) {
+                    if (entry.tsMs >= cutoffMs) {
+                        logs.push_back(entry);
+                    }
+                }
+            }
+        }
+
+        if (!found) {
+            return sendErrorResponse(res, 404, "Tracey agent '" + agentId + "' not found.");
+        }
+
+        std::sort(history.begin(), history.end(), [](const TraceyStatusSample& a, const TraceyStatusSample& b) {
+            return a.tsMs < b.tsMs;
+        });
+        std::sort(logs.begin(), logs.end(), [](const TraceyAgentLogEntry& a, const TraceyAgentLogEntry& b) {
+            return a.tsMs > b.tsMs;
+        });
+        if (logs.size() > static_cast<size_t>(logLimit)) {
+            logs.resize(static_cast<size_t>(logLimit));
+        }
+
+        if (history.empty()) {
+            TraceyStatusSample fallback;
+            fallback.tsMs = nowMs;
+            fallback.status = normalizeTraceyStatus(agent.status);
+            fallback.stale = agent.stale;
+            fallback.statusReachable = agent.statusReachable;
+            fallback.queryFailures = std::max(0, agent.queryFailures);
+            fallback.coordinator = agent.coordinator;
+            fallback.score = agent.score;
+            fallback.source = "snapshot";
+            history.push_back(fallback);
+        }
+
+        struct AgentBucketAgg {
+            int64_t bucketStartMs{0};
+            int sampleCount{0};
+            int healthy{0};
+            int degraded{0};
+            int offline{0};
+            int unknown{0};
+            int stale{0};
+            int reachable{0};
+            int coordinator{0};
+            int64_t queryFailureSum{0};
+            int64_t scoreSum{0};
+        };
+        std::vector<AgentBucketAgg> buckets(bucketCount);
+        for (size_t i = 0; i < bucketCount; ++i) {
+            buckets[i].bucketStartMs = alignedStartMs + static_cast<int64_t>(i) * bucketMs;
+        }
+
+        auto bucketIndexForTs = [&](int64_t tsMs) -> int64_t {
+            if (tsMs < alignedStartMs || tsMs > nowMs) {
+                return -1;
+            }
+            const int64_t offset = tsMs - alignedStartMs;
+            const int64_t idx = offset / bucketMs;
+            if (idx < 0 || idx >= static_cast<int64_t>(bucketCount)) {
+                return -1;
+            }
+            return idx;
+        };
+
+        for (const auto& sample : history) {
+            const int64_t idx = bucketIndexForTs(sample.tsMs);
+            if (idx < 0) {
+                continue;
+            }
+            auto& bucket = buckets[static_cast<size_t>(idx)];
+            bucket.sampleCount++;
+            const std::string status = normalizeTraceyStatus(sample.status);
+            if (status == "healthy") {
+                bucket.healthy++;
+            } else if (status == "degraded") {
+                bucket.degraded++;
+            } else if (status == "offline") {
+                bucket.offline++;
+            } else {
+                bucket.unknown++;
+            }
+            if (sample.stale) {
+                bucket.stale++;
+            }
+            if (sample.statusReachable) {
+                bucket.reachable++;
+            }
+            if (sample.coordinator) {
+                bucket.coordinator++;
+            }
+            bucket.queryFailureSum += std::max(0, sample.queryFailures);
+            bucket.scoreSum += sample.score;
+        }
+
+        nlohmann::json transitions = nlohmann::json::array();
+        std::string previousStatus;
+        for (const auto& sample : history) {
+            const std::string status = normalizeTraceyStatus(sample.status);
+            if (previousStatus.empty()) {
+                previousStatus = status;
+                continue;
+            }
+            if (status != previousStatus) {
+                transitions.push_back({
+                        {"ts_ms", sample.tsMs},
+                        {"from_status", previousStatus},
+                        {"to_status", status},
+                        {"source", sample.source}
+                });
+                previousStatus = status;
+            }
+        }
+
+        nlohmann::json series = nlohmann::json::array();
+        for (const auto& bucket : buckets) {
+            const double avgQueryFailures = bucket.sampleCount > 0
+                                            ? static_cast<double>(bucket.queryFailureSum) / static_cast<double>(bucket.sampleCount)
+                                            : 0.0;
+            const double avgScore = bucket.sampleCount > 0
+                                    ? static_cast<double>(bucket.scoreSum) / static_cast<double>(bucket.sampleCount)
+                                    : 0.0;
+            series.push_back({
+                    {"bucket_start_epoch_ms", bucket.bucketStartMs},
+                    {"sample_count", bucket.sampleCount},
+                    {"healthy", bucket.healthy},
+                    {"degraded", bucket.degraded},
+                    {"offline", bucket.offline},
+                    {"unknown", bucket.unknown},
+                    {"stale", bucket.stale},
+                    {"reachable", bucket.reachable},
+                    {"coordinator", bucket.coordinator},
+                    {"avg_query_failures", avgQueryFailures},
+                    {"avg_score", avgScore}
+            });
+        }
+
+        nlohmann::json logRows = nlohmann::json::array();
+        for (const auto& entry : logs) {
+            logRows.push_back({
+                    {"ts_ms", entry.tsMs},
+                    {"level", normalizeLogLevel(entry.level)},
+                    {"category", entry.category},
+                    {"message", entry.message},
+                    {"context", entry.context.is_object() ? entry.context : nlohmann::json::object()}
+            });
+        }
+
+        const int64_t lastSignalMs = std::max(agent.lastSeenEpochMs, agent.lastAnnouncementEpochMs);
+        int64_t lastSeenSecondsAgo = 0;
+        if (lastSignalMs > 0 && nowMs > lastSignalMs) {
+            lastSeenSecondsAgo = (nowMs - lastSignalMs) / 1000;
+        }
+        const bool stale = agent.stale || (lastSignalMs > 0 && nowMs > lastSignalMs &&
+                                           (nowMs - lastSignalMs) > (traceyStaleAfterSeconds * 1000));
+        const std::string currentStatus = stale ? "offline" : normalizeTraceyStatus(agent.status);
+
+        Models::CloudResponse apiResponse;
+        apiResponse.success = true;
+        apiResponse.message = "Tracey agent analysis generated successfully.";
+        apiResponse.data = {
+                {"generated_epoch_ms", nowMs},
+                {"agent_id", agent.agentId},
+                {"window_seconds", windowSeconds},
+                {"bucket_seconds", bucketSeconds},
+                {"current", {
+                        {"agent_id", agent.agentId},
+                        {"cluster", agent.cluster},
+                        {"status", currentStatus},
+                        {"stale", stale},
+                        {"version", agent.version},
+                        {"host", agent.host},
+                        {"source", agent.source},
+                        {"announce_addr", agent.announceAddr},
+                        {"status_addr", agent.statusAddr},
+                        {"link_state", agent.linkState},
+                        {"link_security", agent.linkSecurity},
+                        {"query_failures", agent.queryFailures},
+                        {"status_reachable", agent.statusReachable},
+                        {"is_coordinator", agent.coordinator},
+                        {"coordinator_epoch", agent.coordinatorEpoch},
+                        {"score", agent.score},
+                        {"last_error", agent.lastError},
+                        {"last_seen_epoch_ms", agent.lastSeenEpochMs},
+                        {"last_seen_seconds_ago", lastSeenSecondsAgo},
+                        {"last_announcement_epoch_ms", agent.lastAnnouncementEpochMs},
+                        {"last_query_epoch_ms", agent.lastQueryEpochMs},
+                        {"next_query_epoch_ms", agent.nextQueryEpochMs},
+                        {"metrics", agent.metrics.is_null() ? nlohmann::json::object() : agent.metrics},
+                        {"capabilities", agent.capabilities.is_null() ? nlohmann::json::object() : agent.capabilities}
+                }},
+                {"series", series},
+                {"status_transitions", transitions},
+                {"logs", logRows}
         };
         sendJsonResponse(res, apiResponse);
     }
