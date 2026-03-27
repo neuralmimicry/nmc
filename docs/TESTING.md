@@ -18,6 +18,7 @@ Purpose:
 
 Current tests:
 - `api_route_contract_test.py`
+- `command_coverage_contract_test.py`
 - `server_safety_contract_test.py`
 
 ## 1.2 Functional CLI Tests (`tests/functional/`)
@@ -55,6 +56,7 @@ From repository root:
 
 ```bash
 python3 tests/contracts/api_route_contract_test.py
+python3 tests/contracts/command_coverage_contract_test.py
 python3 tests/contracts/server_safety_contract_test.py
 python3 tests/functional/client_cli_integration_test.py
 ```

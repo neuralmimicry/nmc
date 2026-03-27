@@ -88,6 +88,7 @@ int main(int argc, char* argv[]) {
     auto sshCmd = std::make_shared<NMC::Commands::SSHCommand>(apiClient);
     sshCmd->addSubcommand(std::make_shared<NMC::Commands::SSHCreateCommand>(apiClient));
     sshCmd->addSubcommand(std::make_shared<NMC::Commands::SSHDeleteCommand>(apiClient));
+    sshCmd->addSubcommand(std::make_shared<NMC::Commands::SSHGetCommand>(apiClient));
     sshCmd->addSubcommand(std::make_shared<NMC::Commands::SSHListCommand>(apiClient));
     parser.registerCommand(sshCmd);
 

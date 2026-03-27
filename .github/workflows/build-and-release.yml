@@ -19,7 +19,7 @@ permissions:
 
 jobs:
   contract-test:
-    name: Contract Test (Client/Server Routes)
+    name: Contract Tests (Routes + Command Coverage)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -27,6 +27,9 @@ jobs:
 
       - name: Run API route contract test
         run: python3 tests/contracts/api_route_contract_test.py
+
+      - name: Run command coverage contract test
+        run: python3 tests/contracts/command_coverage_contract_test.py
 
   safety-test:
     name: Safety Test (Server Guard/Redaction)

@@ -330,10 +330,11 @@ int RefinerDeployCommand::execute(const std::map<std::string, std::string>& pars
 
 RefinerStatusCommand::RefinerStatusCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client)
     : BaseCommand("status", "Show Refiner deployment health", std::move(client)) {
-    usage = "nmc refiner status [--namespace refiner] [--context CONTEXT]";
-    examples = "nmc refiner status --namespace refiner";
+    usage = "nmc refiner status [--namespace refiner] [--context CONTEXT] [--server]";
+    examples = "nmc refiner status --namespace refiner\nnmc refiner status --namespace refiner --server";
     addFlag(CLI::Flag("n", "namespace", "Kubernetes namespace", CLI::FlagType::String, false, "refiner"));
     addFlag(CLI::Flag("c", "context", "kubectl context", CLI::FlagType::String, false));
+    addFlag(CLI::Flag("s", "server", "Use nmc_server API route instead of local kubectl", CLI::FlagType::Bool, false));
 }
 
 int RefinerStatusCommand::execute(const std::map<std::string, std::string>& parsedFlags,
@@ -344,6 +345,7 @@ int RefinerStatusCommand::execute(const std::map<std::string, std::string>& pars
     }
     const std::string namespaceName = optionalFlag(parsedFlags, "namespace", "refiner");
     const std::string context = optionalFlag(parsedFlags, "context", "");
+    const bool useServer = parsedFlags.count("server") > 0;
 
     Models::CloudResponse response;
     if (namespaceName.empty() || hasControlChars(namespaceName) || hasControlChars(context)) {
@@ -351,6 +353,17 @@ int RefinerStatusCommand::execute(const std::map<std::string, std::string>& pars
         response.message = "Invalid namespace/context value.";
         printOutput(response, globalFlags);
         return 1;
+    }
+    if (useServer) {
+        if (!context.empty()) {
+            response.success = false;
+            response.message = "--context is only supported in local kubectl mode.";
+            printOutput(response, globalFlags);
+            return 1;
+        }
+        response = apiClient->getRefinerDeploymentStatus(namespaceName, "refiner");
+        printOutput(response, globalFlags);
+        return response.success ? 0 : 1;
     }
 
     response = statusForNamespace(namespaceName, context);
@@ -360,12 +373,13 @@ int RefinerStatusCommand::execute(const std::map<std::string, std::string>& pars
 
 RefinerScaleCommand::RefinerScaleCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client)
     : BaseCommand("scale", "Scale Refiner deployment replicas", std::move(client)) {
-    usage = "nmc refiner scale --replicas 2 [--namespace refiner] [--context CONTEXT] [--timeout 180]";
-    examples = "nmc refiner scale --replicas 4 --namespace refiner";
+    usage = "nmc refiner scale --replicas 2 [--namespace refiner] [--context CONTEXT] [--timeout 180] [--server]";
+    examples = "nmc refiner scale --replicas 4 --namespace refiner\nnmc refiner scale --replicas 2 --namespace refiner --server";
     addFlag(CLI::Flag("r", "replicas", "Replica count", CLI::FlagType::Int, true));
     addFlag(CLI::Flag("n", "namespace", "Kubernetes namespace", CLI::FlagType::String, false, "refiner"));
     addFlag(CLI::Flag("c", "context", "kubectl context", CLI::FlagType::String, false));
     addFlag(CLI::Flag("t", "timeout", "Rollout timeout in seconds", CLI::FlagType::Int, false, "180"));
+    addFlag(CLI::Flag("s", "server", "Use nmc_server API route instead of local kubectl", CLI::FlagType::Bool, false));
 }
 
 int RefinerScaleCommand::execute(const std::map<std::string, std::string>& parsedFlags,
@@ -379,6 +393,7 @@ int RefinerScaleCommand::execute(const std::map<std::string, std::string>& parse
     const std::string namespaceName = optionalFlag(parsedFlags, "namespace", "refiner");
     const std::string context = optionalFlag(parsedFlags, "context", "");
     const std::string timeoutRaw = optionalFlag(parsedFlags, "timeout", "180");
+    const bool useServer = parsedFlags.count("server") > 0;
 
     Models::CloudResponse response;
     response.success = false;
@@ -399,6 +414,16 @@ int RefinerScaleCommand::execute(const std::map<std::string, std::string>& parse
         response.message = "Invalid scale request.";
         printOutput(response, globalFlags);
         return 1;
+    }
+    if (useServer) {
+        if (!context.empty()) {
+            response.message = "--context is only supported in local kubectl mode.";
+            printOutput(response, globalFlags);
+            return 1;
+        }
+        Models::CloudResponse serverResponse = apiClient->scaleRefinerDeployment(replicas, namespaceName, "refiner");
+        printOutput(serverResponse, globalFlags);
+        return serverResponse.success ? 0 : 1;
     }
 
     auto scaleCmd = kubectlBase(context);

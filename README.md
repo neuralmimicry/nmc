@@ -18,7 +18,7 @@ It provides a modular and extensible framework for building command-line interfa
 * Continuum node recruitment flow (`node recruit`) with script/binary transfer to remote Ubuntu hosts.
 * Built-in GitHub release update checks for both client (`nmc version`) and server (`GET /server/version`).
 * Connection health probing via `GET /health` with compatibility fallbacks for older server versions.
-* CI API contract test to ensure client transport endpoints remain aligned with server route registrations.
+* CI contract tests to ensure route parity and command-level coverage (`server route -> CloudAPI -> CLI command`) remain aligned.
 * Optional bearer token authentication for the Continuum control plane.
 
 **Project Structure:**
@@ -264,6 +264,7 @@ Detailed end-to-end workflows, including CLI parsing, connection management, and
 - `docs/SECURITY.md` (ISO 27001 / SOC 2 readiness and operational controls)
 - `docs/TESTING.md`
 - `tests/contracts/api_route_contract_test.py` (client/server API route contract check)
+- `tests/contracts/command_coverage_contract_test.py` (server route -> CloudAPI -> CLI command coverage check)
 - `tests/contracts/server_safety_contract_test.py` (guard/redaction safety invariants)
 - `tests/functional/client_cli_integration_test.py` (CLI behavior vs mock server)
 
