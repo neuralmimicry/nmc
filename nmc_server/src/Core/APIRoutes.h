@@ -107,6 +107,10 @@ namespace NMC::Server {
             int queryFailures{0};
             bool coordinator{false};
             int64_t score{0};
+            int tracey_guardProbeFailures{0};
+            int tracey_guardProbeErrors{0};
+            int tracey_guardQuarantined{0};
+            int tracey_guardRemoteFaults{0};
             std::string source;
         };
         struct TraceyAgentLogEntry {
@@ -215,6 +219,8 @@ namespace NMC::Server {
         void handleListTraceyAgents(const httplib::Request& req, httplib::Response& res);
         void handleTraceyAnalytics(const httplib::Request& req, httplib::Response& res);
         void handleTraceyAgentAnalysis(const httplib::Request& req, httplib::Response& res);
+        void handleTraceyAgentControl(const httplib::Request& req, httplib::Response& res);
+        void handleTraceyAgentDeepDive(const httplib::Request& req, httplib::Response& res);
         void handleRecruitNode(const httplib::Request& req, httplib::Response& res);
         void runTraceyDiscoveryLoop();
         void ingestTraceyDiscoveryAnnouncement(const nlohmann::json& payload, const std::string& senderAddress, int64_t receivedAtMs);

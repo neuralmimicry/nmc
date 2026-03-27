@@ -1,4 +1,3 @@
-// nmc_client/src/Core/CloudAPIClient.cpp
 #include "CloudAPIClient.h"
 #include "httplib.h"
 #include <iostream>
@@ -10,16 +9,26 @@
 #include <cstdlib>
 
 namespace {
+    // Read environment variables without throwing or returning nullptrs.
     std::string getenvOrEmpty(const char* key) {
         const char* value = std::getenv(key);
         return value ? std::string(value) : std::string();
+    }
+
+    // Append positive integer query parameters while preserving existing query strings.
+    void appendQueryInt(std::string& path, const std::string& key, int value) {
+        if (value <= 0) {
+            return;
+        }
+        path += (path.find('?') == std::string::npos) ? "?" : "&";
+        path += key + "=" + std::to_string(value);
     }
 }
 
 namespace NMC::Core {
 
-    //------------------------------------------------------------------------------
-// Helper: parse "http://host:port/..." into host+port and rebuild cli
+    // Parse "http(s)://host:port/path" into host/port and rebuild a client instance.
+    // Falls back to ctor host/port when endpoint parsing fails or omits a component.
     static bool initCliFromUrl(std::unique_ptr<httplib::Client>& cli,
                                const std::string& url,
                                const std::string& fallbackHost,
@@ -56,10 +65,14 @@ namespace NMC::Core {
         return true;
     }
 
-    // Constructor: Initialises the httplib client with the server's host and port.
+    // Constructor bootstrap sequence:
+    // 1) load persisted local connections
+    // 2) create fallback client from ctor host/port
+    // 3) switch to persisted default connection endpoint when present
+    // 4) apply auth headers from resolved token source
     CloudAPIClient::CloudAPIClient(const std::string& host, int port, const std::string& filePath)
-            : host(host), port(port), configFilePath(filePath) { // Initialises configFilePath
-        loadConnections(false); // Load connections on construction
+            : host(host), port(port), configFilePath(filePath) {
+        loadConnections(false);
         cli = std::make_unique<httplib::Client>(host, port);
         cli->set_connection_timeout(5);
         cli->set_read_timeout(180);
@@ -81,7 +94,8 @@ namespace NMC::Core {
     }
 
 
-// Helper function to process the HTTP response and convert it into a CloudResponse model.
+// Convert transport outcomes into the command-facing envelope.
+// Non-JSON upstream responses are treated as failures to prevent silent corruption.
     Models::CloudResponse CloudAPIClient::processHttpResponse(httplib::Result& res, const std::string& successMessage) const {
         Models::CloudResponse apiResponse;
         if (res) {
@@ -94,10 +108,10 @@ namespace NMC::Core {
                 try {
                     apiResponse.data = nlohmann::json::parse(res->body);
                 } catch (const nlohmann::json::parse_error& e) {
-                    // If parsing fails, store the raw body and mark as unsuccessful
-                    std::cerr << "JSON Parse Error for response body: " << e.what() << std::endl;
-                    apiResponse.success = false;
-                    apiResponse.message = "Failed to parse server response: " + std::string(e.what());
+                // JSON decode failure is treated as a hard error for CLI safety.
+                std::cerr << "JSON Parse Error for response body: " << e.what() << std::endl;
+                apiResponse.success = false;
+                apiResponse.message = "Failed to parse server response: " + std::string(e.what());
                     apiResponse.data = res->body; // Store raw body for debugging
                     return apiResponse;
                 }
@@ -120,7 +134,7 @@ namespace NMC::Core {
         return apiResponse;
     }
 
-    // Overload for processHttpResponse to allow custom data payload (e.g., for local operations)
+    // Overload used by local-only operations where payload is generated client-side.
     Models::CloudResponse CloudAPIClient::processHttpResponse(httplib::Result& res, const std::string& successMessage, const nlohmann::json& dataPayload) const {
         Models::CloudResponse apiResponse;
         apiResponse.success = true; // Assume success for local data processing, errors handled by message
@@ -272,6 +286,46 @@ namespace NMC::Core {
         // }
         auto res = cli->Get(path);
         return processHttpResponse(res, "K8s locations listed.");
+    }
+
+    Models::CloudResponse CloudAPIClient::getK8sHealth() {
+        auto res = cli->Get("/k8s/healthz");
+        return processHttpResponse(res, "K8s health status retrieved.");
+    }
+
+    Models::CloudResponse CloudAPIClient::getRefinerDeploymentStatus(
+            const std::string& namespaceName,
+            const std::string& deploymentName
+    ) {
+        std::string path = "/k8s/refiner/status";
+        bool hasQuery = false;
+        if (!namespaceName.empty()) {
+            path += "?namespace=" + namespaceName;
+            hasQuery = true;
+        }
+        if (!deploymentName.empty()) {
+            path += hasQuery ? "&" : "?";
+            path += "deployment=" + deploymentName;
+        }
+        auto res = cli->Get(path);
+        return processHttpResponse(res, "Refiner deployment status retrieved.");
+    }
+
+    Models::CloudResponse CloudAPIClient::scaleRefinerDeployment(
+            int replicas,
+            const std::string& namespaceName,
+            const std::string& deploymentName
+    ) {
+        nlohmann::json requestBody;
+        requestBody["replicas"] = replicas;
+        if (!namespaceName.empty()) {
+            requestBody["namespace"] = namespaceName;
+        }
+        if (!deploymentName.empty()) {
+            requestBody["deployment"] = deploymentName;
+        }
+        auto res = cli->Post("/k8s/refiner/scale", requestBody.dump(), "application/json");
+        return processHttpResponse(res, "Refiner deployment scaling requested.");
     }
 
     Models::CloudResponse CloudAPIClient::resumeK8sCluster(const std::string& id) {
@@ -502,6 +556,16 @@ namespace NMC::Core {
     }
 
 // --- OpenShift / Continuum Operations ---
+    Models::CloudResponse CloudAPIClient::getServerHealth() {
+        auto res = cli->Get("/health");
+        return processHttpResponse(res, "Server health retrieved.");
+    }
+
+    Models::CloudResponse CloudAPIClient::getServerVersion() {
+        auto res = cli->Get("/server/version");
+        return processHttpResponse(res, "Server version metadata retrieved.");
+    }
+
     Models::CloudResponse CloudAPIClient::listOpenShiftResources() {
         auto res = cli->Get("/openshift/resources");
         return processHttpResponse(res, "OpenShift resources retrieved.");
@@ -590,6 +654,82 @@ namespace NMC::Core {
         return processHttpResponse(res, "Node recruitment request submitted.");
     }
 
+// --- Tracey Operations ---
+    Models::CloudResponse CloudAPIClient::traceyHeartbeat(const nlohmann::json& heartbeatPayload) {
+        auto res = cli->Post("/tracey/agents/heartbeat", heartbeatPayload.dump(), "application/json");
+        return processHttpResponse(res, "Tracey heartbeat submitted.");
+    }
+
+    Models::CloudResponse CloudAPIClient::listTraceyAgents() {
+        auto res = cli->Get("/tracey/agents");
+        return processHttpResponse(res, "Tracey agents listed.");
+    }
+
+    Models::CloudResponse CloudAPIClient::getTraceyAnalytics(int windowSeconds, int bucketSeconds, int logLimit) {
+        std::string path = "/tracey/analytics";
+        appendQueryInt(path, "window_seconds", windowSeconds);
+        appendQueryInt(path, "bucket_seconds", bucketSeconds);
+        appendQueryInt(path, "log_limit", logLimit);
+        auto res = cli->Get(path);
+        return processHttpResponse(res, "Tracey analytics retrieved.");
+    }
+
+    Models::CloudResponse CloudAPIClient::getTraceyAgentAnalysis(const std::string& agentId,
+                                                                 int windowSeconds,
+                                                                 int bucketSeconds,
+                                                                 int logLimit) {
+        std::string path = "/tracey/agents/" + agentId + "/analysis";
+        appendQueryInt(path, "window_seconds", windowSeconds);
+        appendQueryInt(path, "bucket_seconds", bucketSeconds);
+        appendQueryInt(path, "log_limit", logLimit);
+        auto res = cli->Get(path);
+        return processHttpResponse(res, "Tracey agent analysis retrieved.");
+    }
+
+    Models::CloudResponse CloudAPIClient::controlTraceyAgent(const std::string& agentId, const nlohmann::json& controlPayload) {
+        auto res = cli->Post("/tracey/agents/" + agentId + "/control", controlPayload.dump(), "application/json");
+        return processHttpResponse(res, "Tracey control request submitted.");
+    }
+
+    Models::CloudResponse CloudAPIClient::getTraceyAgentDeepDive(const std::string& agentId) {
+        auto res = cli->Get("/tracey/agents/" + agentId + "/deepdive");
+        return processHttpResponse(res, "Tracey deep-dive retrieved.");
+    }
+
+// --- Server-side Connection Management ---
+    Models::CloudResponse CloudAPIClient::getServerConnectionStatus() {
+        auto res = cli->Get("/connections/status");
+        return processHttpResponse(res, "Server connection status retrieved.");
+    }
+
+    Models::CloudResponse CloudAPIClient::makeServerConnection(const std::string& name,
+                                                               const std::string& endpoint,
+                                                               bool setDefault) {
+        nlohmann::json requestBody = {
+                {"name", name},
+                {"endpoint", endpoint},
+                {"setDefault", setDefault}
+        };
+        auto res = cli->Post("/connections/make", requestBody.dump(), "application/json");
+        return processHttpResponse(res, "Server connection created.");
+    }
+
+    Models::CloudResponse CloudAPIClient::dropServerConnection(const std::string& name) {
+        auto res = cli->Delete("/connections/" + name);
+        return processHttpResponse(res, "Server connection removed.");
+    }
+
+    Models::CloudResponse CloudAPIClient::listServerConnections() {
+        auto res = cli->Get("/connections");
+        return processHttpResponse(res, "Server connections listed.");
+    }
+
+    Models::CloudResponse CloudAPIClient::selectServerConnection(const std::string& name) {
+        nlohmann::json requestBody = {{"name", name}};
+        auto res = cli->Post("/connections/select", requestBody.dump(), "application/json");
+        return processHttpResponse(res, "Server connection selected.");
+    }
+
 // --- Connection Management ---
     Models::CloudResponse CloudAPIClient::getConnectionStatus() {
         if (currentConnectionName.empty()) {
@@ -661,6 +801,8 @@ namespace NMC::Core {
                 break;
             }
 
+            // Route-missing statuses are not treated as hard failure because
+            // older server builds may not expose every probe endpoint.
             if (probe->status == 404 || probe->status == 405) {
                 status = "reachable_unknown_health";
                 diagnostic = "Endpoint is reachable but health route is unavailable.";
@@ -856,12 +998,10 @@ namespace NMC::Core {
         return {true, "Token cleared for connection '" + name + "'.", nlohmann::json{{"name", name}}};
     }
 
-    // Method to check if a default connection is set
     bool CloudAPIClient::hasDefaultConnection() const {
         return !currentConnectionName.empty();
     }
 
-    // Method to get the current default connection details
     std::optional<Models::Connection> CloudAPIClient::getDefaultConnection() const {
         if (currentConnectionName.empty()) {
             return std::nullopt;
@@ -875,7 +1015,11 @@ namespace NMC::Core {
     }
 
     // --- Persistence Methods ---
-
+    // Saved schema:
+    // {
+    //   "connections": [{"name": "...", "endpoint": "...", "isActive": bool, "token": "..."}],
+    //   "default_connection": "name-or-empty"
+    // }
     void CloudAPIClient::loadConnections(bool showMessage) {
         std::ifstream configFile(configFilePath);
         if (!configFile.is_open()) {
@@ -926,7 +1070,7 @@ namespace NMC::Core {
         } catch (const std::exception&) {
             // Non-fatal: permission checks are best-effort.
         }
-        // --- SYNC JSON → VECTOR + DEFAULT NAME ---
+        // Mirror serialized state into in-memory objects.
         connections.clear();
         for (auto &j: connectionsConfig["connections"]) {
             Models::Connection c;
@@ -940,7 +1084,7 @@ namespace NMC::Core {
     }
 
     void CloudAPIClient::saveConnections(bool showMessage) {
-        // --- SYNC VECTOR + DEFAULT NAME → JSON ---
+        // Mirror in-memory connection state back to serialized config.
         nlohmann::json arr = nlohmann::json::array();
             for (auto& conn : connections) {
                 arr.push_back({
@@ -974,6 +1118,7 @@ namespace NMC::Core {
     }
 
     std::string CloudAPIClient::resolveAuthToken() const {
+        // Keep this precedence in sync with docs/ARCHITECTURE.md.
         std::string token = getenvOrEmpty("NMC_OIDC_ACCESS_TOKEN");
         if (!token.empty()) return token;
         token = getenvOrEmpty("NM_OIDC_ACCESS_TOKEN");

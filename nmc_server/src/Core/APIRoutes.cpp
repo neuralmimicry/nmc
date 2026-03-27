@@ -482,6 +482,16 @@ namespace NMC::Server {
             return endpoint.basePath + "/status";
         }
 
+        std::string buildTraceyPath(const TraceyEndpoint& endpoint, const std::string& suffix) {
+            const std::string normalizedSuffix = suffix.empty() || suffix.front() == '/'
+                                                 ? suffix
+                                                 : ("/" + suffix);
+            if (endpoint.basePath.empty()) {
+                return normalizedSuffix.empty() ? "/" : normalizedSuffix;
+            }
+            return endpoint.basePath + normalizedSuffix;
+        }
+
         std::string deriveLinkSecurity(bool signaturePresent, const TraceyEndpoint* endpoint, bool tlsVerify) {
             std::string linkSecurity;
             if (endpoint == nullptr) {
@@ -1510,6 +1520,14 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
             if (!guard(req, res)) return;
             k8sHandlers->handleK8sHealthCheck(req, res);
         });
+        svr.Get("/k8s/refiner/status", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            k8sHandlers->handleGetRefinerStatus(req, res);
+        });
+        svr.Post("/k8s/refiner/scale", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            k8sHandlers->handleScaleRefiner(req, res);
+        });
         svr.Post(R"(/k8s/resume/(.*))", [this, guard](const httplib::Request& req, httplib::Response& res) {
             if (!guard(req, res)) return;
             k8sHandlers->handleResumeK8sCluster(req, res);
@@ -1687,6 +1705,14 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
         svr.Get(R"(/tracey/agents/(.*)/analysis)", [this, guard](const httplib::Request& req, httplib::Response& res) {
             if (!guard(req, res)) return;
             handleTraceyAgentAnalysis(req, res);
+        });
+        svr.Post(R"(/tracey/agents/(.*)/control)", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            handleTraceyAgentControl(req, res);
+        });
+        svr.Get(R"(/tracey/agents/(.*)/deepdive)", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            handleTraceyAgentDeepDive(req, res);
         });
 
         // --- Node Recruitment Routes ---
@@ -3189,6 +3215,25 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
         sample.queryFailures = std::max(0, agent.queryFailures);
         sample.coordinator = agent.coordinator;
         sample.score = agent.score;
+        sample.tracey_guardProbeFailures = 0;
+        sample.tracey_guardProbeErrors = 0;
+        sample.tracey_guardQuarantined = 0;
+        sample.tracey_guardRemoteFaults = 0;
+        if (agent.metrics.is_object()) {
+            const auto statusIt = agent.metrics.find("status_snapshot");
+            if (statusIt != agent.metrics.end() && statusIt->is_object()) {
+                const auto tracey_guardIt = statusIt->find("tracey_guard");
+                if (tracey_guardIt != statusIt->end() && tracey_guardIt->is_object()) {
+                    const auto summaryIt = tracey_guardIt->find("summary");
+                    if (summaryIt != tracey_guardIt->end() && summaryIt->is_object()) {
+                        sample.tracey_guardProbeFailures = std::max(0, summaryIt->value("total_failures", 0));
+                        sample.tracey_guardProbeErrors = std::max(0, summaryIt->value("total_errors", 0) + summaryIt->value("total_timeouts", 0));
+                        sample.tracey_guardQuarantined = std::max(0, summaryIt->value("quarantined_devices", 0));
+                        sample.tracey_guardRemoteFaults = std::max(0, summaryIt->value("remote_fault_support", 0));
+                    }
+                }
+            }
+        }
         sample.source = trim(source);
 
         auto& history = traceyAgentHistory[agent.agentId];
@@ -3201,6 +3246,10 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                 last.queryFailures == sample.queryFailures &&
                 last.coordinator == sample.coordinator &&
                 last.score == sample.score &&
+                last.tracey_guardProbeFailures == sample.tracey_guardProbeFailures &&
+                last.tracey_guardProbeErrors == sample.tracey_guardProbeErrors &&
+                last.tracey_guardQuarantined == sample.tracey_guardQuarantined &&
+                last.tracey_guardRemoteFaults == sample.tracey_guardRemoteFaults &&
                 last.source == sample.source) {
                 return;
             }
@@ -3748,6 +3797,11 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
         int reachable = 0;
         int secureLinks = 0;
         int signedAnnouncements = 0;
+        int tracey_guardEnabledAgents = 0;
+        int tracey_guardQuarantinedTotal = 0;
+        int tracey_guardFailuresTotal = 0;
+        int tracey_guardErrorsTotal = 0;
+        int tracey_guardRemoteFaultsTotal = 0;
         nlohmann::json agents = nlohmann::json::array();
 
         for (const auto& agent : snapshot) {
@@ -3799,6 +3853,27 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                 signedAnnouncements++;
             }
 
+            nlohmann::json tracey_guardSummary = nlohmann::json::object();
+            if (agent.metrics.is_object()) {
+                auto statusIt = agent.metrics.find("status_snapshot");
+                if (statusIt != agent.metrics.end() && statusIt->is_object()) {
+                    auto tracey_guardIt = statusIt->find("tracey_guard");
+                    if (tracey_guardIt != statusIt->end() && tracey_guardIt->is_object()) {
+                        auto summaryIt = tracey_guardIt->find("summary");
+                        if (summaryIt != tracey_guardIt->end() && summaryIt->is_object()) {
+                            tracey_guardSummary = *summaryIt;
+                            if (summaryIt->value("enabled", false)) {
+                                tracey_guardEnabledAgents++;
+                            }
+                            tracey_guardQuarantinedTotal += std::max(0, summaryIt->value("quarantined_devices", 0));
+                            tracey_guardFailuresTotal += std::max(0, summaryIt->value("total_failures", 0));
+                            tracey_guardErrorsTotal += std::max(0, summaryIt->value("total_errors", 0) + summaryIt->value("total_timeouts", 0));
+                            tracey_guardRemoteFaultsTotal += std::max(0, summaryIt->value("remote_fault_support", 0));
+                        }
+                    }
+                }
+            }
+
             agents.push_back({
                     {"agent_id", agent.agentId},
                     {"cluster", agent.cluster},
@@ -3826,6 +3901,7 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                     {"is_coordinator", agent.coordinator},
                     {"coordinator_epoch", agent.coordinatorEpoch},
                     {"score", agent.score},
+                    {"tracey_guard", tracey_guardSummary},
                     {"stale", isStale}
             });
         }
@@ -3927,6 +4003,13 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                         {"secure_links", secureLinks},
                         {"signed_announcements", signedAnnouncements}
                 }},
+                {"tracey_guard_summary", {
+                        {"enabled_agents", tracey_guardEnabledAgents},
+                        {"quarantined_devices", tracey_guardQuarantinedTotal},
+                        {"total_failures", tracey_guardFailuresTotal},
+                        {"total_errors", tracey_guardErrorsTotal},
+                        {"remote_fault_support", tracey_guardRemoteFaultsTotal}
+                }},
                 {"tracey_policy", {
                         {"enforce_managed_resources", traceyEnforceManagedResources},
                         {"requirement_grace_seconds", traceyRequirementGraceSeconds}
@@ -3984,6 +4067,11 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
             int queryFailureSamples{0};
             int64_t scoreSum{0};
             int scoreSamples{0};
+            int64_t tracey_guardFailureSum{0};
+            int64_t tracey_guardErrorSum{0};
+            int64_t tracey_guardQuarantineSum{0};
+            int64_t tracey_guardRemoteFaultSum{0};
+            int tracey_guardSamples{0};
         };
         std::vector<BucketAgg> buckets(bucketCount);
         for (size_t i = 0; i < bucketCount; ++i) {
@@ -4046,6 +4134,10 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
         int currentDegraded = 0;
         int currentOffline = 0;
         int currentUnknown = 0;
+        int currentTraceyGuardQuarantined = 0;
+        int currentTraceyGuardFailures = 0;
+        int currentTraceyGuardErrors = 0;
+        int currentTraceyGuardRemoteFaults = 0;
         for (const auto& agent : snapshot) {
             const int64_t lastSignalMs = std::max(agent.lastSeenEpochMs, agent.lastAnnouncementEpochMs);
             const bool stale = agent.stale || (lastSignalMs > 0 && nowMs > lastSignalMs &&
@@ -4059,6 +4151,22 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                 currentOffline++;
             } else {
                 currentUnknown++;
+            }
+
+            if (agent.metrics.is_object()) {
+                auto statusIt = agent.metrics.find("status_snapshot");
+                if (statusIt != agent.metrics.end() && statusIt->is_object()) {
+                    auto tracey_guardIt = statusIt->find("tracey_guard");
+                    if (tracey_guardIt != statusIt->end() && tracey_guardIt->is_object()) {
+                        auto summaryIt = tracey_guardIt->find("summary");
+                        if (summaryIt != tracey_guardIt->end() && summaryIt->is_object()) {
+                            currentTraceyGuardQuarantined += std::max(0, summaryIt->value("quarantined_devices", 0));
+                            currentTraceyGuardFailures += std::max(0, summaryIt->value("total_failures", 0));
+                            currentTraceyGuardErrors += std::max(0, summaryIt->value("total_errors", 0) + summaryIt->value("total_timeouts", 0));
+                            currentTraceyGuardRemoteFaults += std::max(0, summaryIt->value("remote_fault_support", 0));
+                        }
+                    }
+                }
             }
         }
 
@@ -4109,6 +4217,11 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                 bucket.queryFailureSamples++;
                 bucket.scoreSum += sample.score;
                 bucket.scoreSamples++;
+                bucket.tracey_guardFailureSum += std::max(0, sample.tracey_guardProbeFailures);
+                bucket.tracey_guardErrorSum += std::max(0, sample.tracey_guardProbeErrors);
+                bucket.tracey_guardQuarantineSum += std::max(0, sample.tracey_guardQuarantined);
+                bucket.tracey_guardRemoteFaultSum += std::max(0, sample.tracey_guardRemoteFaults);
+                bucket.tracey_guardSamples++;
             }
             (void)agentId;
         }
@@ -4150,6 +4263,18 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
             const double avgScore = bucket.scoreSamples > 0
                                     ? static_cast<double>(bucket.scoreSum) / static_cast<double>(bucket.scoreSamples)
                                     : 0.0;
+            const double avgTraceyGuardFailures = bucket.tracey_guardSamples > 0
+                                               ? static_cast<double>(bucket.tracey_guardFailureSum) / static_cast<double>(bucket.tracey_guardSamples)
+                                               : 0.0;
+            const double avgTraceyGuardErrors = bucket.tracey_guardSamples > 0
+                                             ? static_cast<double>(bucket.tracey_guardErrorSum) / static_cast<double>(bucket.tracey_guardSamples)
+                                             : 0.0;
+            const double avgTraceyGuardQuarantine = bucket.tracey_guardSamples > 0
+                                                 ? static_cast<double>(bucket.tracey_guardQuarantineSum) / static_cast<double>(bucket.tracey_guardSamples)
+                                                 : 0.0;
+            const double avgTraceyGuardRemoteFaults = bucket.tracey_guardSamples > 0
+                                                   ? static_cast<double>(bucket.tracey_guardRemoteFaultSum) / static_cast<double>(bucket.tracey_guardSamples)
+                                                   : 0.0;
             timeline.push_back({
                     {"bucket_start_epoch_ms", bucket.bucketStartMs},
                     {"sampled_agents", bucket.sampledAgents},
@@ -4164,7 +4289,11 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                     {"log_warn", bucket.logWarn},
                     {"log_error", bucket.logError},
                     {"avg_query_failures", avgQueryFailures},
-                    {"avg_score", avgScore}
+                    {"avg_score", avgScore},
+                    {"avg_tracey_guard_failures", avgTraceyGuardFailures},
+                    {"avg_tracey_guard_errors", avgTraceyGuardErrors},
+                    {"avg_tracey_guard_quarantined", avgTraceyGuardQuarantine},
+                    {"avg_tracey_guard_remote_faults", avgTraceyGuardRemoteFaults}
             });
         }
 
@@ -4200,6 +4329,10 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
             int queryFailureSamples = 0;
             int64_t scoreSum = 0;
             int scoreSamples = 0;
+            int64_t tracey_guardFailureSum = 0;
+            int64_t tracey_guardErrorSum = 0;
+            int64_t tracey_guardQuarantineSum = 0;
+            int64_t tracey_guardRemoteFaultSum = 0;
 
             if (historyIt != histories.end()) {
                 for (const auto& sample : historyIt->second) {
@@ -4219,6 +4352,10 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                     queryFailureSamples++;
                     scoreSum += sample.score;
                     scoreSamples++;
+                    tracey_guardFailureSum += std::max(0, sample.tracey_guardProbeFailures);
+                    tracey_guardErrorSum += std::max(0, sample.tracey_guardProbeErrors);
+                    tracey_guardQuarantineSum += std::max(0, sample.tracey_guardQuarantined);
+                    tracey_guardRemoteFaultSum += std::max(0, sample.tracey_guardRemoteFaults);
                 }
             }
 
@@ -4262,6 +4399,10 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                     {"stale_ratio", sampleCount > 0 ? static_cast<double>(staleSamples) / static_cast<double>(sampleCount) : 0.0},
                     {"avg_query_failures", queryFailureSamples > 0 ? static_cast<double>(queryFailureSum) / static_cast<double>(queryFailureSamples) : 0.0},
                     {"avg_score", scoreSamples > 0 ? static_cast<double>(scoreSum) / static_cast<double>(scoreSamples) : 0.0},
+                    {"avg_tracey_guard_failures", sampleCount > 0 ? static_cast<double>(tracey_guardFailureSum) / static_cast<double>(sampleCount) : 0.0},
+                    {"avg_tracey_guard_errors", sampleCount > 0 ? static_cast<double>(tracey_guardErrorSum) / static_cast<double>(sampleCount) : 0.0},
+                    {"avg_tracey_guard_quarantined", sampleCount > 0 ? static_cast<double>(tracey_guardQuarantineSum) / static_cast<double>(sampleCount) : 0.0},
+                    {"avg_tracey_guard_remote_faults", sampleCount > 0 ? static_cast<double>(tracey_guardRemoteFaultSum) / static_cast<double>(sampleCount) : 0.0},
                     {"log_info", infoLogs},
                     {"log_warn", warnLogs},
                     {"log_error", errorLogs},
@@ -4295,6 +4436,10 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                         {"current_degraded", currentDegraded},
                         {"current_offline", currentOffline},
                         {"current_unknown", currentUnknown},
+                        {"current_tracey_guard_quarantined", currentTraceyGuardQuarantined},
+                        {"current_tracey_guard_failures", currentTraceyGuardFailures},
+                        {"current_tracey_guard_errors", currentTraceyGuardErrors},
+                        {"current_tracey_guard_remote_faults", currentTraceyGuardRemoteFaults},
                         {"log_info", levelCounts["info"]},
                         {"log_warn", levelCounts["warn"]},
                         {"log_error", levelCounts["error"]}
@@ -4392,6 +4537,10 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
             int coordinator{0};
             int64_t queryFailureSum{0};
             int64_t scoreSum{0};
+            int64_t tracey_guardFailureSum{0};
+            int64_t tracey_guardErrorSum{0};
+            int64_t tracey_guardQuarantineSum{0};
+            int64_t tracey_guardRemoteFaultSum{0};
         };
         std::vector<AgentBucketAgg> buckets(bucketCount);
         for (size_t i = 0; i < bucketCount; ++i) {
@@ -4438,6 +4587,10 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
             }
             bucket.queryFailureSum += std::max(0, sample.queryFailures);
             bucket.scoreSum += sample.score;
+            bucket.tracey_guardFailureSum += std::max(0, sample.tracey_guardProbeFailures);
+            bucket.tracey_guardErrorSum += std::max(0, sample.tracey_guardProbeErrors);
+            bucket.tracey_guardQuarantineSum += std::max(0, sample.tracey_guardQuarantined);
+            bucket.tracey_guardRemoteFaultSum += std::max(0, sample.tracey_guardRemoteFaults);
         }
 
         nlohmann::json transitions = nlohmann::json::array();
@@ -4467,6 +4620,18 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
             const double avgScore = bucket.sampleCount > 0
                                     ? static_cast<double>(bucket.scoreSum) / static_cast<double>(bucket.sampleCount)
                                     : 0.0;
+            const double avgTraceyGuardFailures = bucket.sampleCount > 0
+                                               ? static_cast<double>(bucket.tracey_guardFailureSum) / static_cast<double>(bucket.sampleCount)
+                                               : 0.0;
+            const double avgTraceyGuardErrors = bucket.sampleCount > 0
+                                             ? static_cast<double>(bucket.tracey_guardErrorSum) / static_cast<double>(bucket.sampleCount)
+                                             : 0.0;
+            const double avgTraceyGuardQuarantine = bucket.sampleCount > 0
+                                                 ? static_cast<double>(bucket.tracey_guardQuarantineSum) / static_cast<double>(bucket.sampleCount)
+                                                 : 0.0;
+            const double avgTraceyGuardRemoteFaults = bucket.sampleCount > 0
+                                                   ? static_cast<double>(bucket.tracey_guardRemoteFaultSum) / static_cast<double>(bucket.sampleCount)
+                                                   : 0.0;
             series.push_back({
                     {"bucket_start_epoch_ms", bucket.bucketStartMs},
                     {"sample_count", bucket.sampleCount},
@@ -4478,7 +4643,11 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                     {"reachable", bucket.reachable},
                     {"coordinator", bucket.coordinator},
                     {"avg_query_failures", avgQueryFailures},
-                    {"avg_score", avgScore}
+                    {"avg_score", avgScore},
+                    {"avg_tracey_guard_failures", avgTraceyGuardFailures},
+                    {"avg_tracey_guard_errors", avgTraceyGuardErrors},
+                    {"avg_tracey_guard_quarantined", avgTraceyGuardQuarantine},
+                    {"avg_tracey_guard_remote_faults", avgTraceyGuardRemoteFaults}
             });
         }
 
@@ -4501,6 +4670,19 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
         const bool stale = agent.stale || (lastSignalMs > 0 && nowMs > lastSignalMs &&
                                            (nowMs - lastSignalMs) > (traceyStaleAfterSeconds * 1000));
         const std::string currentStatus = stale ? "offline" : normalizeTraceyStatus(agent.status);
+        nlohmann::json tracey_guardSummary = nlohmann::json::object();
+        if (agent.metrics.is_object()) {
+            auto statusIt = agent.metrics.find("status_snapshot");
+            if (statusIt != agent.metrics.end() && statusIt->is_object()) {
+                auto tracey_guardIt = statusIt->find("tracey_guard");
+                if (tracey_guardIt != statusIt->end() && tracey_guardIt->is_object()) {
+                    auto summaryIt = tracey_guardIt->find("summary");
+                    if (summaryIt != tracey_guardIt->end() && summaryIt->is_object()) {
+                        tracey_guardSummary = *summaryIt;
+                    }
+                }
+            }
+        }
 
         Models::CloudResponse apiResponse;
         apiResponse.success = true;
@@ -4534,11 +4716,231 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                         {"last_query_epoch_ms", agent.lastQueryEpochMs},
                         {"next_query_epoch_ms", agent.nextQueryEpochMs},
                         {"metrics", agent.metrics.is_null() ? nlohmann::json::object() : agent.metrics},
-                        {"capabilities", agent.capabilities.is_null() ? nlohmann::json::object() : agent.capabilities}
+                        {"capabilities", agent.capabilities.is_null() ? nlohmann::json::object() : agent.capabilities},
+                        {"tracey_guard", tracey_guardSummary}
                 }},
                 {"series", series},
                 {"status_transitions", transitions},
                 {"logs", logRows}
+        };
+        sendJsonResponse(res, apiResponse);
+    }
+
+    void APIRoutes::handleTraceyAgentControl(const httplib::Request& req, httplib::Response& res) {
+        const std::string agentId = req.matches.size() > 1 ? trim(req.matches[1].str()) : "";
+        if (agentId.empty()) {
+            return sendErrorResponse(res, 400, "Missing required parameter: agent_id.");
+        }
+
+        nlohmann::json requestPayload = nlohmann::json::object();
+        if (!req.body.empty()) {
+            requestPayload = nlohmann::json::parse(req.body, nullptr, false);
+            if (requestPayload.is_discarded() || !requestPayload.is_object()) {
+                return sendErrorResponse(res, 400, "Invalid JSON control payload.");
+            }
+        }
+
+        std::string statusAddr;
+        {
+            std::lock_guard<std::mutex> lock(dataMutex);
+            auto it = traceyAgents.find(agentId);
+            if (it == traceyAgents.end()) {
+                return sendErrorResponse(res, 404, "Tracey agent '" + agentId + "' not found.");
+            }
+            statusAddr = trim(it->second.statusAddr);
+        }
+
+        if (statusAddr.empty()) {
+            return sendErrorResponse(res, 409, "Tracey agent has no status endpoint to control.");
+        }
+
+        TraceyEndpoint endpoint;
+        if (!parseTraceyEndpoint(statusAddr, endpoint)) {
+            return sendErrorResponse(res, 409, "Tracey status endpoint is invalid.");
+        }
+        if (!isLocalOrPrivateHost(endpoint.host, traceyAllowPublicAddr)) {
+            return sendErrorResponse(res, 403, "Tracey status endpoint is outside allowed network ranges.");
+        }
+
+        const std::string controlPath = buildTraceyPath(endpoint, "/control/tracey_guard");
+        const int timeoutSec = static_cast<int>(std::max<int64_t>(1, (traceyStatusTimeoutMs + 999) / 1000));
+        httplib::Headers headers{
+                {"Accept", "application/json"},
+                {"Content-Type", "application/json"}
+        };
+        if (!traceyStatusBearerToken.empty()) {
+            headers.emplace("Authorization", "Bearer " + traceyStatusBearerToken);
+        }
+
+        httplib::Result result;
+        if (endpoint.https) {
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+            httplib::SSLClient client(endpoint.host, endpoint.port);
+            client.enable_server_certificate_verification(traceyTlsVerify);
+            client.set_connection_timeout(timeoutSec);
+            client.set_read_timeout(timeoutSec);
+            client.set_write_timeout(timeoutSec);
+            result = client.Post(controlPath.c_str(), headers, requestPayload.dump(), "application/json");
+#else
+            return sendErrorResponse(res, 503, "HTTPS control unavailable: httplib built without OpenSSL support.");
+#endif
+        } else {
+            httplib::Client client(endpoint.host, endpoint.port);
+            client.set_connection_timeout(timeoutSec);
+            client.set_read_timeout(timeoutSec);
+            client.set_write_timeout(timeoutSec);
+            result = client.Post(controlPath.c_str(), headers, requestPayload.dump(), "application/json");
+        }
+
+        if (!result) {
+            return sendErrorResponse(res, 502, "Control request failed: " + httplib::to_string(result.error()));
+        }
+
+        nlohmann::json upstreamPayload = nlohmann::json::parse(result->body, nullptr, false);
+        if (upstreamPayload.is_discarded()) {
+            upstreamPayload = nlohmann::json::object({
+                    {"raw_body", result->body}
+            });
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(dataMutex);
+            auto& agent = traceyAgents[agentId];
+            if (!agent.metrics.is_object()) {
+                agent.metrics = nlohmann::json::object();
+            }
+            agent.metrics["tracey_guard_control_last"] = {
+                    {"requested_at_ms", nowEpochMs()},
+                    {"request", requestPayload},
+                    {"response", upstreamPayload},
+                    {"http_status", result->status}
+            };
+            appendTraceyAgentLogLocked(
+                    agentId,
+                    nowEpochMs(),
+                    (result->status >= 200 && result->status < 300) ? "info" : "warn",
+                    "tracey_guard_control",
+                    "TraceyGuard control request completed.",
+                    {
+                            {"status_addr", endpoint.normalized},
+                            {"http_status", result->status},
+                            {"control_path", controlPath}
+                    }
+            );
+        }
+
+        Models::CloudResponse apiResponse;
+        apiResponse.success = result->status >= 200 && result->status < 300;
+        apiResponse.message = apiResponse.success
+                              ? "Tracey control applied."
+                              : "Tracey control request failed upstream.";
+        apiResponse.data = {
+                {"agent_id", agentId},
+                {"status_addr", endpoint.normalized},
+                {"upstream_status", result->status},
+                {"request", requestPayload},
+                {"upstream", upstreamPayload}
+        };
+        sendJsonResponse(res, apiResponse);
+        if (!apiResponse.success) {
+            res.status = 502;
+        }
+    }
+
+    void APIRoutes::handleTraceyAgentDeepDive(const httplib::Request& req, httplib::Response& res) {
+        const std::string agentId = req.matches.size() > 1 ? trim(req.matches[1].str()) : "";
+        if (agentId.empty()) {
+            return sendErrorResponse(res, 400, "Missing required parameter: agent_id.");
+        }
+
+        std::string statusAddr;
+        {
+            std::lock_guard<std::mutex> lock(dataMutex);
+            auto it = traceyAgents.find(agentId);
+            if (it == traceyAgents.end()) {
+                return sendErrorResponse(res, 404, "Tracey agent '" + agentId + "' not found.");
+            }
+            statusAddr = trim(it->second.statusAddr);
+        }
+
+        if (statusAddr.empty()) {
+            return sendErrorResponse(res, 409, "Tracey agent has no status endpoint for deep-dive.");
+        }
+
+        TraceyEndpoint endpoint;
+        if (!parseTraceyEndpoint(statusAddr, endpoint)) {
+            return sendErrorResponse(res, 409, "Tracey status endpoint is invalid.");
+        }
+        if (!isLocalOrPrivateHost(endpoint.host, traceyAllowPublicAddr)) {
+            return sendErrorResponse(res, 403, "Tracey status endpoint is outside allowed network ranges.");
+        }
+
+        const std::string deepDivePath = buildTraceyPath(endpoint, "/tracey_guard/deepdive");
+        const int timeoutSec = static_cast<int>(std::max<int64_t>(1, (traceyStatusTimeoutMs + 999) / 1000));
+        httplib::Headers headers{{"Accept", "application/json"}};
+        if (!traceyStatusBearerToken.empty()) {
+            headers.emplace("Authorization", "Bearer " + traceyStatusBearerToken);
+        }
+
+        httplib::Result result;
+        if (endpoint.https) {
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+            httplib::SSLClient client(endpoint.host, endpoint.port);
+            client.enable_server_certificate_verification(traceyTlsVerify);
+            client.set_connection_timeout(timeoutSec);
+            client.set_read_timeout(timeoutSec);
+            client.set_write_timeout(timeoutSec);
+            result = client.Get(deepDivePath.c_str(), headers);
+#else
+            return sendErrorResponse(res, 503, "HTTPS deep-dive unavailable: httplib built without OpenSSL support.");
+#endif
+        } else {
+            httplib::Client client(endpoint.host, endpoint.port);
+            client.set_connection_timeout(timeoutSec);
+            client.set_read_timeout(timeoutSec);
+            client.set_write_timeout(timeoutSec);
+            result = client.Get(deepDivePath.c_str(), headers);
+        }
+
+        if (!result) {
+            return sendErrorResponse(res, 502, "Deep-dive request failed: " + httplib::to_string(result.error()));
+        }
+        if (result->status < 200 || result->status >= 300) {
+            return sendErrorResponse(res, 502, "Deep-dive endpoint returned HTTP " + std::to_string(result->status) + ".");
+        }
+
+        nlohmann::json upstreamPayload = nlohmann::json::parse(result->body, nullptr, false);
+        if (upstreamPayload.is_discarded()) {
+            return sendErrorResponse(res, 502, "Deep-dive endpoint returned non-JSON payload.");
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(dataMutex);
+            auto& agent = traceyAgents[agentId];
+            if (!agent.metrics.is_object()) {
+                agent.metrics = nlohmann::json::object();
+            }
+            agent.metrics["tracey_guard_deepdive_snapshot"] = upstreamPayload;
+            appendTraceyAgentLogLocked(
+                    agentId,
+                    nowEpochMs(),
+                    "info",
+                    "tracey_guard_deepdive",
+                    "Fetched Tracey deep-dive snapshot.",
+                    {
+                            {"status_addr", endpoint.normalized},
+                            {"deep_dive_path", deepDivePath}
+                    }
+            );
+        }
+
+        Models::CloudResponse apiResponse;
+        apiResponse.success = true;
+        apiResponse.message = "Tracey deep-dive fetched successfully.";
+        apiResponse.data = {
+                {"agent_id", agentId},
+                {"status_addr", endpoint.normalized},
+                {"deepdive", upstreamPayload}
         };
         sendJsonResponse(res, apiResponse);
     }

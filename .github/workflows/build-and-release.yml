@@ -18,20 +18,54 @@ permissions:
   contents: write
 
 jobs:
-  api-contract-test:
-    name: API Contract Test (Client/Server)
+  contract-test:
+    name: Contract Test (Client/Server Routes)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Run contract test
+      - name: Run API route contract test
         run: python3 tests/contracts/api_route_contract_test.py
+
+  safety-test:
+    name: Safety Test (Server Guard/Redaction)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Run server safety contract test
+        run: python3 tests/contracts/server_safety_contract_test.py
+
+  functional-test:
+    name: Functional Test (CLI Mock Integration)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install client build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential cmake
+
+      - name: Configure client build for functional tests
+        run: cmake -S nmc_client -B nmc_client/build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build client for functional tests
+        run: cmake --build nmc_client/build --config Release -- -j"$(nproc)"
+
+      - name: Run functional CLI integration test
+        run: python3 tests/functional/client_cli_integration_test.py
 
   build-client-linux:
     name: Build Client (Linux x64)
     runs-on: ubuntu-latest
-    needs: api-contract-test
+    needs:
+      - contract-test
+      - safety-test
+      - functional-test
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -75,7 +109,10 @@ jobs:
   build-client-windows:
     name: Build Client (Windows x64)
     runs-on: windows-latest
-    needs: api-contract-test
+    needs:
+      - contract-test
+      - safety-test
+      - functional-test
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -118,7 +155,10 @@ jobs:
   build-client-macos:
     name: Build Client (macOS)
     runs-on: macos-latest
-    needs: api-contract-test
+    needs:
+      - contract-test
+      - safety-test
+      - functional-test
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -157,7 +197,10 @@ jobs:
   build-server-linux:
     name: Build Server (Linux x64)
     runs-on: ubuntu-latest
-    needs: api-contract-test
+    needs:
+      - contract-test
+      - safety-test
+      - functional-test
     steps:
       - name: Checkout
         uses: actions/checkout@v6

@@ -87,6 +87,18 @@ From the `build` directory:
     ./nmc connection clear-token prod
     ```
 
+* **Inspect server health and version metadata:**
+    ```bash
+    ./nmc server health
+    ./nmc server version
+    ```
+
+* **Query server-side connection state from the API control plane:**
+    ```bash
+    ./nmc connection status --server
+    ./nmc connection list --server
+    ```
+
 * **Bucket command help:**
     ```bash
     ./nmc bucket --help
@@ -214,6 +226,16 @@ From the `build` directory:
     ./nmc version --no-check
     ```
 
+* **Tracey telemetry and control workflows:**
+    ```bash
+    ./nmc tracey agents
+    ./nmc tracey analytics --window-seconds 3600 --bucket-seconds 60
+    ./nmc tracey analysis tracey-1 --window-seconds 7200
+    ./nmc tracey control tracey-1 --action clear_quarantine --reason maintenance
+    ./nmc tracey heartbeat --agent-id tracey-1 --status healthy --metrics '{"gpu_util":0.91}'
+    ./nmc tracey deepdive tracey-1
+    ```
+
 **Extending the Application:**
 
 To add a new top-level command (e.g., `database`):
@@ -238,8 +260,12 @@ This structure provides a solid foundation for a comprehensive and maintainable 
 Detailed end-to-end workflows, including CLI parsing, connection management, and server request lifecycles, are documented in:
 
 - `docs/WORKFLOWS.md`
+- `docs/ARCHITECTURE.md`
 - `docs/SECURITY.md` (ISO 27001 / SOC 2 readiness and operational controls)
-- `tests/contracts/api_route_contract_test.py` (client/server API route contract check used in CI)
+- `docs/TESTING.md`
+- `tests/contracts/api_route_contract_test.py` (client/server API route contract check)
+- `tests/contracts/server_safety_contract_test.py` (guard/redaction safety invariants)
+- `tests/functional/client_cli_integration_test.py` (CLI behavior vs mock server)
 
 **OpenShift Integration Notes:**
 
@@ -268,7 +294,7 @@ Ensure:
 **Codebase Components:**
 - `nmc_client/src/main.cpp`: CLI entry point and command registration.
 - `nmc_client/src/CLI/`: command tree, parser, and global flag handling.
-- `nmc_client/src/Commands/`: domain commands (`bucket`, `k8s`, `vm`, `ssh`, `node`, `openshift`, `refiner`, `connection`, `version`).
+- `nmc_client/src/Commands/`: domain commands (`bucket`, `k8s`, `vcluster`, `vm`, `ssh`, `model`, `node`, `openshift`, `tracey`, `server`, `refiner`, `connection`, `version`).
 - `nmc_client/src/Core/CloudAPIClient.*`: HTTP transport, response normalisation, connection profile management, and token resolution.
 - `nmc_client/src/Models/`: request/response models used by command handlers.
 - `nmc_server/src/Core/APIRoutes.*`: route registration, auth/payload guardrails, and handler implementations.

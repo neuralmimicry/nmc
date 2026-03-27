@@ -1,32 +1,43 @@
-// nmc_client/src/Core/CloudAPIClient.h
 #ifndef NMC_CORE_CLOUD_API_CLIENT_H
 #define NMC_CORE_CLOUD_API_CLIENT_H
 
 #include <string>
 #include <vector>
 #include <map>
-#include <httplib.h> // Include httplib for client-side HTTP requests
+#include <memory>
+#include <httplib.h>
 #include "Models/Bucket.h"
 #include "Models/K8sCluster.h"
 #include "Models/SSHKey.h"
 #include "Models/VM.h"
 #include "Models/CloudResponse.h"
 #include "Models/Connection.h"
-#include <optional> // Added for std::optional
+#include <optional>
 #include <nlohmann/json.hpp>
 
-// Forward declaration for httplib
 namespace httplib {
     class Client;
 }
 
 namespace NMC::Core {
 
-// This class will now handle actual HTTP requests to the cloud API server.
+    /**
+     * HTTP transport facade used by all CLI commands.
+     *
+     * Responsibilities:
+     * - map command operations to concrete server routes
+     * - normalize HTTP responses into `Models::CloudResponse`
+     * - persist and resolve local connection profiles
+     * - apply bearer auth headers with deterministic precedence
+     */
     class CloudAPIClient {
     public:
-        // Constructor to initialize the HTTP client with server host and port.
-        // Add a constructor that also takes the config file path
+        /**
+         * Construct a client with a default fallback endpoint and local config path.
+         *
+         * If a default saved connection exists in the config, that endpoint overrides
+         * the fallback host/port for this process.
+         */
         CloudAPIClient(const std::string& host, int port, const std::string& configFilePath);
         ~CloudAPIClient();
 
@@ -46,6 +57,12 @@ namespace NMC::Core {
         Models::CloudResponse getKubeConfig(const std::string& id);
         Models::CloudResponse listK8sClusters(const std::string& filterName = "");
         Models::CloudResponse listK8sLocations(const std::string& filterSku = "");
+        Models::CloudResponse getK8sHealth();
+        Models::CloudResponse getRefinerDeploymentStatus(const std::string& namespaceName = "refiner",
+                                                         const std::string& deploymentName = "refiner");
+        Models::CloudResponse scaleRefinerDeployment(int replicas,
+                                                     const std::string& namespaceName = "refiner",
+                                                     const std::string& deploymentName = "refiner");
         Models::CloudResponse resumeK8sCluster(const std::string& id);
         Models::CloudResponse suspendK8sCluster(const std::string& id);
 
@@ -94,6 +111,8 @@ namespace NMC::Core {
         Models::CloudResponse suspendVM(const std::string& id);
 
         // OpenShift / Continuum Operations (via NeuralMimicry OpenShift portal API)
+        Models::CloudResponse getServerHealth();
+        Models::CloudResponse getServerVersion();
         Models::CloudResponse listOpenShiftResources();
         Models::CloudResponse listOpenShiftClusters();
         Models::CloudResponse getOpenShiftClusterDetails(const std::string& idOrName);
@@ -108,6 +127,24 @@ namespace NMC::Core {
         // Node Recruitment
         Models::CloudResponse recruitNode(const nlohmann::json& requestPayload);
 
+        // Tracey Operations
+        Models::CloudResponse traceyHeartbeat(const nlohmann::json& heartbeatPayload);
+        Models::CloudResponse listTraceyAgents();
+        Models::CloudResponse getTraceyAnalytics(int windowSeconds = -1, int bucketSeconds = -1, int logLimit = -1);
+        Models::CloudResponse getTraceyAgentAnalysis(const std::string& agentId,
+                                                     int windowSeconds = -1,
+                                                     int bucketSeconds = -1,
+                                                     int logLimit = -1);
+        Models::CloudResponse controlTraceyAgent(const std::string& agentId, const nlohmann::json& controlPayload);
+        Models::CloudResponse getTraceyAgentDeepDive(const std::string& agentId);
+
+        // Server-side Connection Management
+        Models::CloudResponse getServerConnectionStatus();
+        Models::CloudResponse makeServerConnection(const std::string& name, const std::string& endpoint, bool setDefault);
+        Models::CloudResponse dropServerConnection(const std::string& name);
+        Models::CloudResponse listServerConnections();
+        Models::CloudResponse selectServerConnection(const std::string& name);
+
         // Connection Management
         Models::CloudResponse getConnectionStatus();
         Models::CloudResponse makeConnection(const std::string& name, const std::string& endpoint, bool setDefault);
@@ -115,34 +152,44 @@ namespace NMC::Core {
         Models::CloudResponse dropConnection(const std::string& name);
         Models::CloudResponse listConnections();
         Models::CloudResponse selectConnection(const std::string& name);
-        Models::CloudResponse unsetDefaultConnection(); // Added new method to unset default
-        bool hasDefaultConnection() const; // Added new method to check if default connection exists
-        std::optional<Models::Connection> getDefaultConnection() const; // Added to get default connection
+        Models::CloudResponse unsetDefaultConnection();
+        bool hasDefaultConnection() const;
+        std::optional<Models::Connection> getDefaultConnection() const;
         Models::CloudResponse setConnectionToken(const std::string& name, const std::string& token);
         Models::CloudResponse clearConnectionToken(const std::string& name);
 
     private:
-        std::unique_ptr<httplib::Client> cli; // HTTP client instance
-        // Helper function to process HTTP responses into Models::CloudResponse
+        std::unique_ptr<httplib::Client> cli;
+
+        // Normalize transport results and server payloads into CLI-facing responses.
         Models::CloudResponse processHttpResponse(httplib::Result& res, const std::string& successMessage) const;
-        // Overload to allow custom data payload (e.g., for local operations)
         Models::CloudResponse processHttpResponse(httplib::Result& res, const std::string& successMessage, const nlohmann::json& dataPayload) const;
 
         std::vector<Models::Connection> connections;
-        std::string currentConnectionName; // Name of the currently active connection
-        std::string configFilePath; // Added to store the path to the config file
+        std::string currentConnectionName;
+        std::string configFilePath;
 
-        // Persistence methods
+        // Local connection profile persistence (`~/.nmc/config.json`).
         void loadConnections(bool showMessage);
         void saveConnections(bool showMessage);
+
+        /**
+         * Resolve bearer token precedence:
+         * 1) OIDC env vars
+         * 2) generic bearer env vars
+         * 3) active/default connection token
+         * 4) legacy auth env vars
+         */
         std::string resolveAuthToken() const;
+
+        // Apply default Authorization header to current client / temporary clients.
         void applyAuthHeaders();
         void applyAuthHeaders(httplib::Client& client, const std::string& token) const;
 
-        // holds the parsed JSON of all saved connections
+        // Parsed, in-memory copy of serialized connection state.
         nlohmann::json connectionsConfig;
 
-        // Host and port for the HTTP client
+        // Fallback endpoint when no default saved connection is active.
         std::string host;
         int port;
     };

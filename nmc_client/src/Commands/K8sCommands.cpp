@@ -139,6 +139,25 @@ int K8sListLocationsCommand::execute(const std::map<std::string, std::string>& p
     return response.success ? 0 : 1;
 }
 
+// --- K8sHealthCommand ---
+K8sHealthCommand::K8sHealthCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client)
+    : BaseCommand("health", "Check K8s API health endpoint", std::move(client)) {
+    usage = "nmc k8s health";
+    examples = "nmc k8s health";
+}
+
+int K8sHealthCommand::execute(const std::map<std::string, std::string>& parsedFlags,
+                              const std::vector<std::string>& parsedArgs,
+                              const CLI::GlobalFlags& globalFlags) {
+    if (!validateArguments(parsedArgs) || !validateFlags(parsedFlags)) {
+        return 1;
+    }
+
+    Models::CloudResponse response = apiClient->getK8sHealth();
+    printOutput(response, globalFlags);
+    return response.success ? 0 : 1;
+}
+
 // --- K8sResumeCommand ---
 K8sResumeCommand::K8sResumeCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client) : BaseCommand("resume", "Resumes a k8s cluster", std::move(client)) {
     usage = "nmc k8s resume ID";

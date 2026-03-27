@@ -45,7 +45,9 @@ set(NMC_CLIENT_SOURCES
         src/Commands/OpenShiftCommands.cpp
         src/Commands/RefinerCommands.cpp
         src/Commands/RootCommand.cpp
+        src/Commands/ServerCommands.cpp
         src/Commands/SSHCommands.cpp
+        src/Commands/TraceyCommands.cpp
         src/Commands/VersionCommand.cpp
         src/Commands/VClusterCommands.cpp
         src/Commands/VMCommands.cpp

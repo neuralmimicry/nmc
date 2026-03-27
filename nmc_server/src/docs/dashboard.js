@@ -38,6 +38,18 @@
         traceyWindowSelect: document.getElementById("traceyWindowSelect"),
         traceyBucketSelect: document.getElementById("traceyBucketSelect"),
         traceyInsightsRefresh: document.getElementById("traceyInsightsRefresh"),
+        traceyControlStatus: document.getElementById("traceyControlStatus"),
+        traceyControlAgent: document.getElementById("traceyControlAgent"),
+        traceyControlOverhead: document.getElementById("traceyControlOverhead"),
+        traceyControlEnabled: document.getElementById("traceyControlEnabled"),
+        traceyControlDeepDive: document.getElementById("traceyControlDeepDive"),
+        traceyControlTmr: document.getElementById("traceyControlTmr"),
+        traceyControlForceScan: document.getElementById("traceyControlForceScan"),
+        traceyControlApply: document.getElementById("traceyControlApply"),
+        traceyDeepDiveRefresh: document.getElementById("traceyDeepDiveRefresh"),
+        traceyDeepDiveChart: document.getElementById("traceyDeepDiveChart"),
+        traceyDeepDiveLegend: document.getElementById("traceyDeepDiveLegend"),
+        traceyDeepDiveFacts: document.getElementById("traceyDeepDiveFacts"),
         traceyStatusChart: document.getElementById("traceyStatusChart"),
         traceyStatusLegend: document.getElementById("traceyStatusLegend"),
         traceyLogChart: document.getElementById("traceyLogChart"),
@@ -63,7 +75,8 @@
         analytics: null,
         selectedAgentId: "",
         selectedAgentAnalysis: null,
-        selectedAgentLogs: []
+        selectedAgentLogs: [],
+        selectedDeepDive: null
     };
 
     function nowIsoTime() {
@@ -127,11 +140,17 @@
         return headers;
     }
 
-    async function fetchJson(path) {
+    async function fetchJson(path, options = {}) {
         try {
+            const headers = {
+                ...authHeaders(),
+                ...(options.headers || {})
+            };
             const response = await fetch(path, {
-                headers: authHeaders(),
-                cache: "no-store"
+                method: options.method || "GET",
+                headers,
+                cache: "no-store",
+                body: options.body
             });
             const text = await response.text();
             const payload = text ? JSON.parse(text) : {};
@@ -316,6 +335,17 @@
     function parseNumber(value, fallback = 0) {
         const parsed = Number(value);
         return Number.isFinite(parsed) ? parsed : fallback;
+    }
+
+    function parseTriState(value) {
+        const normalized = String(value || "").trim().toLowerCase();
+        if (normalized === "true") {
+            return true;
+        }
+        if (normalized === "false") {
+            return false;
+        }
+        return null;
     }
 
     function toPercent(value) {
@@ -530,6 +560,7 @@
             return;
         }
         const current = analysis.current;
+        const tracey_guard = current.tracey_guard && typeof current.tracey_guard === "object" ? current.tracey_guard : {};
         const facts = [
             { key: "Status", value: current.status || "unknown" },
             { key: "Cluster", value: current.cluster || "-" },
@@ -542,7 +573,12 @@
             { key: "Coordinator", value: current.is_coordinator ? "yes" : "no" },
             { key: "Score", value: String(parseNumber(current.score, 0)) },
             { key: "Last Seen", value: formatAge(current.last_seen_seconds_ago) },
-            { key: "Last Error", value: current.last_error || "-" }
+            { key: "Last Error", value: current.last_error || "-" },
+            { key: "Tracey Enabled", value: tracey_guard.enabled === true ? "yes" : "no" },
+            { key: "Tracey Quarantined", value: String(parseNumber(tracey_guard.quarantined_devices, 0)) },
+            { key: "Tracey Failures", value: String(parseNumber(tracey_guard.total_failures, 0)) },
+            { key: "Tracey Errors", value: String(parseNumber(tracey_guard.total_errors, 0) + parseNumber(tracey_guard.total_timeouts, 0)) },
+            { key: "Remote Fault Support", value: String(parseNumber(tracey_guard.remote_fault_support, 0)) }
         ];
         nodes.traceyAgentFacts.innerHTML = facts.map((fact) => {
             return `<div class="tracey-fact"><span>${escapeHtml(fact.key)}</span><strong>${escapeHtml(fact.value)}</strong></div>`;
@@ -618,18 +654,171 @@
             { key: "healthy", color: "#22c55e" },
             { key: "degraded", color: "#f59e0b" },
             { key: "offline", color: "#ef4444" },
-            { key: "avg_query_failures", color: "#94a3b8" }
+            { key: "avg_query_failures", color: "#94a3b8" },
+            { key: "avg_tracey_guard_failures", color: "#c2410c" }
         ]);
         const latest = series.length ? series[series.length - 1] : {};
         renderLegend(nodes.traceyAgentStatusLegend, [
             { label: "Healthy", color: "#22c55e", value: parseNumber(latest.healthy, 0) },
             { label: "Degraded", color: "#f59e0b", value: parseNumber(latest.degraded, 0) },
             { label: "Offline", color: "#ef4444", value: parseNumber(latest.offline, 0) },
-            { label: "Avg Query Failures", color: "#94a3b8", value: parseNumber(latest.avg_query_failures, 0).toFixed(2) }
+            { label: "Avg Query Failures", color: "#94a3b8", value: parseNumber(latest.avg_query_failures, 0).toFixed(2) },
+            { label: "Avg Tracey Failures", color: "#c2410c", value: parseNumber(latest.avg_tracey_guard_failures, 0).toFixed(2) }
         ]);
         renderTraceyAgentFacts(analysis);
         traceyState.selectedAgentLogs = Array.isArray(analysis.logs) ? analysis.logs : [];
         renderTraceyAgentLogs();
+    }
+
+    function syncControlAgentInput() {
+        if (!nodes.traceyControlAgent) {
+            return;
+        }
+        const selected = String(traceyState.selectedAgentId || "").trim();
+        if (selected && !nodes.traceyControlAgent.value.trim()) {
+            nodes.traceyControlAgent.value = selected;
+        }
+    }
+
+    function renderTraceyDeepDive(payload) {
+        if (!nodes.traceyDeepDiveChart || !nodes.traceyDeepDiveFacts) {
+            return;
+        }
+        const deepdive = payload && typeof payload === "object" && payload.deepdive && typeof payload.deepdive === "object"
+            ? payload.deepdive
+            : payload;
+        if (!deepdive || typeof deepdive !== "object") {
+            renderLineChart(nodes.traceyDeepDiveChart, [], []);
+            renderLegend(nodes.traceyDeepDiveLegend, []);
+            nodes.traceyDeepDiveFacts.innerHTML = `<p class="empty">No deep-dive payload available.</p>`;
+            if (nodes.traceyControlStatus) {
+                nodes.traceyControlStatus.textContent = "No deep-dive data";
+            }
+            return;
+        }
+
+        const timeline = Array.isArray(deepdive.timeline) ? deepdive.timeline : [];
+        renderLineChart(nodes.traceyDeepDiveChart, timeline, [
+            { key: "probe_fail", color: "#ef4444" },
+            { key: "probe_error", color: "#f59e0b" },
+            { key: "probe_timeout", color: "#c2410c" },
+            { key: "quarantined_devices", color: "#06b6d4" }
+        ]);
+        const latest = timeline.length ? timeline[timeline.length - 1] : {};
+        renderLegend(nodes.traceyDeepDiveLegend, [
+            { label: "Probe Fail", color: "#ef4444", value: parseNumber(latest.probe_fail, 0) },
+            { label: "Probe Error", color: "#f59e0b", value: parseNumber(latest.probe_error, 0) },
+            { label: "Probe Timeout", color: "#c2410c", value: parseNumber(latest.probe_timeout, 0) },
+            { label: "Quarantined", color: "#06b6d4", value: parseNumber(latest.quarantined_devices, 0) }
+        ]);
+
+        const summary = deepdive.summary && typeof deepdive.summary === "object" ? deepdive.summary : {};
+        const control = deepdive.control && typeof deepdive.control === "object" ? deepdive.control : {};
+        const facts = [
+            { key: "Enabled", value: summary.enabled === true ? "yes" : "no" },
+            { key: "Deep Dive", value: summary.deep_dive === true ? "yes" : "no" },
+            { key: "Total Devices", value: String(parseNumber(summary.total_devices, 0)) },
+            { key: "Quarantined", value: String(parseNumber(summary.quarantined_devices, 0)) },
+            { key: "Total Failures", value: String(parseNumber(summary.total_failures, 0)) },
+            { key: "Total Errors", value: String(parseNumber(summary.total_errors, 0)) },
+            { key: "Total Timeouts", value: String(parseNumber(summary.total_timeouts, 0)) },
+            { key: "Remote Fault Support", value: String(parseNumber(summary.remote_fault_support, 0)) },
+            { key: "Overhead %", value: parseNumber(control.overhead_budget_pct, parseNumber(summary.overhead_budget_pct, 0)).toFixed(2) }
+        ];
+        nodes.traceyDeepDiveFacts.innerHTML = facts.map((fact) => {
+            return `<div class="tracey-fact"><span>${escapeHtml(fact.key)}</span><strong>${escapeHtml(fact.value)}</strong></div>`;
+        }).join("");
+
+        if (nodes.traceyControlStatus) {
+            nodes.traceyControlStatus.textContent = `Deep-dive updated ${formatEpochMs(summary.ts_ms)}`;
+            nodes.traceyControlStatus.style.borderColor = summary.enabled ? "#22c55e" : "#f59e0b";
+        }
+    }
+
+    async function fetchTraceyDeepDive(agentId = "") {
+        const normalizedId = String(agentId || traceyState.selectedAgentId || "").trim();
+        if (!normalizedId) {
+            renderTraceyDeepDive(null);
+            return;
+        }
+        const response = await fetchJson(`/tracey/agents/${encodeURIComponent(normalizedId)}/deepdive`);
+        if (!response.ok) {
+            if (nodes.traceyControlStatus) {
+                const message = response.payload && typeof response.payload === "object"
+                    ? String(response.payload.message || "Deep-dive request failed.")
+                    : "Deep-dive request failed.";
+                nodes.traceyControlStatus.textContent = message;
+                nodes.traceyControlStatus.style.borderColor = "#ef4444";
+            }
+            renderTraceyDeepDive(null);
+            return;
+        }
+        const payload = responseData(response.payload) || {};
+        traceyState.selectedDeepDive = payload;
+        renderTraceyDeepDive(payload);
+    }
+
+    async function applyTraceyControl() {
+        const agentId = String((nodes.traceyControlAgent && nodes.traceyControlAgent.value) || traceyState.selectedAgentId || "").trim();
+        if (!agentId) {
+            if (nodes.traceyControlStatus) {
+                nodes.traceyControlStatus.textContent = "Select an agent before applying control.";
+                nodes.traceyControlStatus.style.borderColor = "#ef4444";
+            }
+            return;
+        }
+
+        const payload = {};
+        const enabled = parseTriState(nodes.traceyControlEnabled ? nodes.traceyControlEnabled.value : "unchanged");
+        const deepDive = parseTriState(nodes.traceyControlDeepDive ? nodes.traceyControlDeepDive.value : "unchanged");
+        const tmr = parseTriState(nodes.traceyControlTmr ? nodes.traceyControlTmr.value : "unchanged");
+        const forceScan = parseTriState(nodes.traceyControlForceScan ? nodes.traceyControlForceScan.value : "false");
+        const overhead = parseNumber(nodes.traceyControlOverhead ? nodes.traceyControlOverhead.value : NaN, NaN);
+
+        if (enabled !== null) {
+            payload.enabled = enabled;
+        }
+        if (deepDive !== null) {
+            payload.deep_dive = deepDive;
+        }
+        if (tmr !== null) {
+            payload.tmr_enabled = tmr;
+        }
+        if (Number.isFinite(overhead)) {
+            payload.overhead_budget_pct = Math.max(0.1, Math.min(50, overhead));
+        }
+        if (forceScan === true) {
+            payload.force_scan = true;
+        }
+
+        if (nodes.traceyControlStatus) {
+            nodes.traceyControlStatus.textContent = `Applying control to ${agentId}...`;
+            nodes.traceyControlStatus.style.borderColor = "#f59e0b";
+        }
+
+        const response = await fetchJson(`/tracey/agents/${encodeURIComponent(agentId)}/control`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+        });
+
+        if (!response.ok) {
+            const message = response.payload && typeof response.payload === "object"
+                ? String(response.payload.message || "Control update failed.")
+                : "Control update failed.";
+            if (nodes.traceyControlStatus) {
+                nodes.traceyControlStatus.textContent = message;
+                nodes.traceyControlStatus.style.borderColor = "#ef4444";
+            }
+            return;
+        }
+
+        if (nodes.traceyControlStatus) {
+            nodes.traceyControlStatus.textContent = `Control applied to ${agentId}`;
+            nodes.traceyControlStatus.style.borderColor = "#22c55e";
+        }
+        await fetchTraceyDeepDive(agentId);
+        await fetchTraceyAgentAnalysis(agentId);
     }
 
     async function fetchTraceyAnalytics() {
@@ -675,7 +864,9 @@
         if (!traceyState.selectedAgentId || !availableAgentIds.includes(traceyState.selectedAgentId)) {
             traceyState.selectedAgentId = availableAgentIds[0];
         }
+        syncControlAgentInput();
         await fetchTraceyAgentAnalysis(traceyState.selectedAgentId);
+        await fetchTraceyDeepDive(traceyState.selectedAgentId);
     }
 
     async function fetchTraceyAgentAnalysis(agentId) {
@@ -707,6 +898,9 @@
         }
         const data = responseData(response.payload) || {};
         traceyState.selectedAgentAnalysis = data;
+        if (nodes.traceyControlAgent) {
+            nodes.traceyControlAgent.value = normalizedId;
+        }
         renderTraceyAgentDrilldown(data);
     }
 
@@ -716,6 +910,7 @@
         if (preselectedAgentId) {
             traceyState.selectedAgentId = String(preselectedAgentId).trim();
         }
+        syncControlAgentInput();
         setTraceyInsightsModalOpen(true);
         await fetchTraceyAnalytics();
     }
@@ -776,6 +971,26 @@
         if (nodes.traceyInsightsRefresh) {
             nodes.traceyInsightsRefresh.addEventListener("click", () => {
                 fetchTraceyAnalytics();
+            });
+        }
+        if (nodes.traceyDeepDiveRefresh) {
+            nodes.traceyDeepDiveRefresh.addEventListener("click", () => {
+                fetchTraceyDeepDive();
+            });
+        }
+        if (nodes.traceyControlApply) {
+            nodes.traceyControlApply.addEventListener("click", () => {
+                applyTraceyControl();
+            });
+        }
+        if (nodes.traceyControlAgent) {
+            nodes.traceyControlAgent.addEventListener("change", () => {
+                const id = String(nodes.traceyControlAgent.value || "").trim();
+                if (id) {
+                    traceyState.selectedAgentId = id;
+                    fetchTraceyAgentAnalysis(id);
+                    fetchTraceyDeepDive(id);
+                }
             });
         }
         if (nodes.traceyWindowSelect) {
@@ -1211,6 +1426,7 @@
         const traceyData = responseData(traceyAgentsRes.payload) || {};
         const traceyAgents = Array.isArray(traceyData.agents) ? traceyData.agents : [];
         const traceySummary = traceyData.summary || {};
+        const tracey_guardSummary = traceyData.tracey_guard_summary || {};
         const requirementSummary = traceyData.requirement_summary || {};
         nodes.traceyMetric.textContent = `${traceySummary.healthy || 0} / ${traceySummary.total || 0}`;
         const traceyRows = traceyAgents.map((agent) => {
@@ -1256,13 +1472,15 @@
         const discoveredTracey = Number(traceySummary.discovered || 0);
         const nonCompliantResources = Number(requirementSummary.noncompliant || 0);
         const managedResources = Number(requirementSummary.total || 0);
+        const tracey_guardQuarantined = Number(tracey_guardSummary.quarantined_devices || 0);
+        const tracey_guardFailures = Number(tracey_guardSummary.total_failures || 0);
         const traceyTone = !traceyAgentsRes.ok
             ? "#ef4444"
-            : (nonCompliantResources > 0 ? "#f59e0b" : "#22c55e");
+            : (nonCompliantResources > 0 || tracey_guardQuarantined > 0 || tracey_guardFailures > 0 ? "#f59e0b" : "#22c55e");
         setCheck(
             nodes.traceyStatus,
             traceyAgentsRes.ok
-                ? `${traceyAgents.length} detected (${reachableTracey} reachable, ${discoveredTracey} discovered, ${nonCompliantResources}/${managedResources} non-compliant managed resources)`
+                ? `${traceyAgents.length} detected (${reachableTracey} reachable, ${discoveredTracey} discovered, ${nonCompliantResources}/${managedResources} non-compliant, ${tracey_guardQuarantined} quarantined, ${tracey_guardFailures} probe failures)`
                 : "Unavailable",
             traceyTone
         );
@@ -1289,6 +1507,7 @@
     initializeClusterDetailsUi();
     initializeTraceyInsightsUi();
     renderTraceyAgentDrilldown(null);
+    renderTraceyDeepDive(null);
     refreshDashboard();
     window.setInterval(refreshDashboard, REFRESH_INTERVAL_MS);
 })();

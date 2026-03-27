@@ -71,6 +71,8 @@ namespace NMC {
             void handleK8sHealthCheck(const httplib::Request& req, httplib::Response& res);
             void handleResumeK8sCluster(const httplib::Request& req, httplib::Response& res);
             void handleSuspendK8sCluster(const httplib::Request& req, httplib::Response& res);
+            void handleGetRefinerStatus(const httplib::Request& req, httplib::Response& res);
+            void handleScaleRefiner(const httplib::Request& req, httplib::Response& res);
 
             // Vcluster management handlers
             void handleCreateVCluster(const httplib::Request& req, httplib::Response& res);

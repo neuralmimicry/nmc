@@ -103,6 +103,28 @@
         <p>Bootstrap controls: <code>NMC_TRACEY_BOOTSTRAP_LOCAL_AGENT</code>, <code>NMC_TRACEY_LOCAL_AGENT_ID</code>, <code>NMC_TRACEY_LOCAL_STATUS_ADDR</code>.</p>
     </section>
 
+    <section class="endpoint-section">
+        <h2>POST /tracey/agents/{agent_id}/control</h2>
+        <p>Forwards Tracey control requests to the selected Tracey agent.</p>
+
+        <h3>Example Request</h3>
+        <pre><code class="language-bash">curl -X POST http://localhost:8080/tracey/agents/tracey-edge-01/control \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -d '{
+    "enabled": true,
+    "deep_dive": true,
+    "tmr_enabled": true,
+    "overhead_budget_pct": 2.5,
+    "force_scan": true
+  }'</code></pre>
+    </section>
+
+    <section class="endpoint-section">
+        <h2>GET /tracey/agents/{agent_id}/deepdive</h2>
+        <p>Fetches the Tracey deep-dive snapshot (probe timeline, quarantines, local/remote fault signatures) for the selected agent.</p>
+    </section>
+
     <footer>
         <p>&copy; 2026 Continuum Control Centre</p>
     </footer>

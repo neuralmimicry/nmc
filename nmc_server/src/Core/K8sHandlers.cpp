@@ -17,6 +17,15 @@
 #include <kubernetes/api/CoreV1API.h>     // For CoreV1API functions
 
 namespace {
+    std::string trimCopy(const std::string& value) {
+        const auto start = value.find_first_not_of(" \t\r\n");
+        if (start == std::string::npos) {
+            return "";
+        }
+        const auto end = value.find_last_not_of(" \t\r\n");
+        return value.substr(start, end - start + 1);
+    }
+
     std::string toLowerCopy(std::string value) {
         for (auto& ch : value) {
             ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
@@ -186,6 +195,115 @@ namespace {
         }
 
         return {hostPort, -1};
+    }
+
+    std::optional<nlohmann::json> findDeploymentByNameFromList(
+            const nlohmann::json& deploymentList,
+            const std::string& deploymentName
+    ) {
+        if (!deploymentList.is_object() || !deploymentList.contains("items") || !deploymentList["items"].is_array()) {
+            return std::nullopt;
+        }
+        for (const auto& item : deploymentList["items"]) {
+            if (!item.is_object()) {
+                continue;
+            }
+            if (!item.contains("metadata") || !item["metadata"].is_object()) {
+                continue;
+            }
+            const auto& metadata = item["metadata"];
+            if (metadata.value("name", "") == deploymentName) {
+                return item;
+            }
+        }
+        return std::nullopt;
+    }
+
+    std::optional<nlohmann::json> resolveRefinerDeployment(
+            genericClient_t* deploymentClient,
+            const std::string& namespaceName,
+            const std::string& deploymentName
+    ) {
+        if (!deploymentClient || namespaceName.empty() || deploymentName.empty()) {
+            return std::nullopt;
+        }
+        char* deploymentRaw = Generic_readNamespacedResource(
+                deploymentClient,
+                (char*)namespaceName.c_str(),
+                (char*)deploymentName.c_str()
+        );
+        char* deploymentListRaw = nullptr;
+        std::optional<nlohmann::json> deploymentJson;
+        try {
+            if (deploymentRaw) {
+                deploymentJson = nlohmann::json::parse(deploymentRaw);
+            } else {
+                deploymentListRaw = Generic_listNamespaced(deploymentClient, (char*)namespaceName.c_str());
+                if (deploymentListRaw) {
+                    const auto deploymentListJson = nlohmann::json::parse(deploymentListRaw);
+                    deploymentJson = findDeploymentByNameFromList(deploymentListJson, deploymentName);
+                    if (!deploymentJson) {
+                        deploymentJson = findRefinerDeploymentFromList(deploymentListJson);
+                    }
+                }
+            }
+        } catch (const std::exception&) {
+            deploymentJson = std::nullopt;
+        }
+        if (deploymentRaw) {
+            free(deploymentRaw);
+        }
+        if (deploymentListRaw) {
+            free(deploymentListRaw);
+        }
+        return deploymentJson;
+    }
+
+    nlohmann::json refinerDeploymentSummary(
+            const nlohmann::json& deploymentJson,
+            const std::string& fallbackNamespace,
+            const std::string& fallbackDeployment
+    ) {
+        int desiredReplicas = 0;
+        int readyReplicas = 0;
+        int availableReplicas = 0;
+        std::string namespaceName = fallbackNamespace;
+        std::string deploymentName = fallbackDeployment;
+        if (deploymentJson.contains("metadata") && deploymentJson["metadata"].is_object()) {
+            const auto& metadata = deploymentJson["metadata"];
+            namespaceName = metadata.value("namespace", namespaceName);
+            deploymentName = metadata.value("name", deploymentName);
+        }
+        if (deploymentJson.contains("spec") && deploymentJson["spec"].is_object()) {
+            desiredReplicas = deploymentJson["spec"].value("replicas", 0);
+        }
+        if (deploymentJson.contains("status") && deploymentJson["status"].is_object()) {
+            readyReplicas = deploymentJson["status"].value("readyReplicas", 0);
+            availableReplicas = deploymentJson["status"].value("availableReplicas", 0);
+        }
+
+        bool healthy = false;
+        std::string status = "Pending";
+        if (desiredReplicas <= 0) {
+            status = "Suspended";
+            healthy = true;
+        } else if (readyReplicas >= desiredReplicas && availableReplicas >= desiredReplicas) {
+            status = "Running";
+            healthy = true;
+        } else if (readyReplicas > 0 || availableReplicas > 0) {
+            status = "Degraded";
+        }
+
+        return {
+                {"observed", true},
+                {"healthy", healthy},
+                {"status", status},
+                {"namespace", namespaceName},
+                {"deployment", deploymentName},
+                {"desired_replicas", desiredReplicas},
+                {"ready_replicas", readyReplicas},
+                {"available_replicas", availableReplicas}
+        };
     }
 } // namespace
 
@@ -1322,6 +1440,144 @@ users:
                 apiResponse.success = true;
                 apiResponse.message = "K8s API server is healthy.";
                 sendJsonResponse(res, apiResponse);
+            } catch (const std::exception& e) {
+                sendErrorResponse(res, 500, "Server error: " + std::string(e.what()));
+            }
+        }
+
+        void K8sHandlers::handleGetRefinerStatus(const httplib::Request& req, httplib::Response& res) {
+            try {
+                std::string namespaceName = req.has_param("namespace") ? trimCopy(req.get_param_value("namespace")) : "refiner";
+                std::string deploymentName = req.has_param("deployment") ? trimCopy(req.get_param_value("deployment")) : "refiner";
+                if (namespaceName.empty()) {
+                    namespaceName = "refiner";
+                }
+                if (deploymentName.empty()) {
+                    deploymentName = "refiner";
+                }
+
+                genericClient_t* deploymentClient = getGenericClient("apps", "v1", "deployments");
+                if (!deploymentClient) {
+                    return sendErrorResponse(res, 500, "Failed to create deployment client.");
+                }
+                auto deploymentJson = resolveRefinerDeployment(deploymentClient, namespaceName, deploymentName);
+                genericClient_free(deploymentClient);
+                if (!deploymentJson || !deploymentJson->is_object()) {
+                    return sendErrorResponse(
+                            res,
+                            404,
+                            "Refiner deployment '" + deploymentName + "' not found in namespace '" + namespaceName + "'."
+                    );
+                }
+
+                Models::CloudResponse apiResponse;
+                apiResponse.success = true;
+                apiResponse.message = "Refiner deployment status retrieved.";
+                apiResponse.data = refinerDeploymentSummary(*deploymentJson, namespaceName, deploymentName);
+                sendJsonResponse(res, apiResponse);
+            } catch (const std::exception& e) {
+                sendErrorResponse(res, 500, "Server error: " + std::string(e.what()));
+            }
+        }
+
+        void K8sHandlers::handleScaleRefiner(const httplib::Request& req, httplib::Response& res) {
+            try {
+                auto jsonBody = nlohmann::json::parse(req.body);
+                if (!jsonBody.is_object()) {
+                    return sendErrorResponse(res, 400, "Invalid JSON body. Expected an object.");
+                }
+
+                std::string namespaceName = trimCopy(jsonBody.value("namespace", "refiner"));
+                std::string deploymentName = trimCopy(jsonBody.value("deployment", "refiner"));
+                if (namespaceName.empty()) {
+                    namespaceName = "refiner";
+                }
+                if (deploymentName.empty()) {
+                    deploymentName = "refiner";
+                }
+
+                int replicas = -1;
+                if (jsonBody.contains("replicas")) {
+                    const auto& replicasNode = jsonBody["replicas"];
+                    if (replicasNode.is_number_integer()) {
+                        replicas = replicasNode.get<int>();
+                    } else if (replicasNode.is_string()) {
+                        try {
+                            replicas = std::stoi(trimCopy(replicasNode.get<std::string>()));
+                        } catch (const std::exception&) {
+                            replicas = -1;
+                        }
+                    }
+                }
+                if (replicas < 0 || replicas > 100) {
+                    return sendErrorResponse(res, 400, "replicas must be an integer in range 0-100.");
+                }
+
+                genericClient_t* deploymentClient = getGenericClient("apps", "v1", "deployments");
+                if (!deploymentClient) {
+                    return sendErrorResponse(res, 500, "Failed to create deployment client.");
+                }
+
+                auto deploymentJson = resolveRefinerDeployment(deploymentClient, namespaceName, deploymentName);
+                if (!deploymentJson || !deploymentJson->is_object()) {
+                    genericClient_free(deploymentClient);
+                    return sendErrorResponse(
+                            res,
+                            404,
+                            "Refiner deployment '" + deploymentName + "' not found in namespace '" + namespaceName + "'."
+                    );
+                }
+
+                if (deploymentJson->contains("metadata") && (*deploymentJson)["metadata"].is_object()) {
+                    const auto& metadata = (*deploymentJson)["metadata"];
+                    namespaceName = metadata.value("namespace", namespaceName);
+                    deploymentName = metadata.value("name", deploymentName);
+                }
+
+                nlohmann::json patchBody = {
+                        {"spec", {{"replicas", replicas}}}
+                };
+                char* patchedRaw = Generic_patchNamespacedResource(
+                        deploymentClient,
+                        (char*)namespaceName.c_str(),
+                        (char*)deploymentName.c_str(),
+                        (char*)patchBody.dump().c_str(),
+                        NULL,
+                        NULL,
+                        NULL,
+                        NULL,
+                        NULL
+                );
+                genericClient_free(deploymentClient);
+
+                if (!patchedRaw) {
+                    if (apiClient && apiClient->response_code == 404) {
+                        return sendErrorResponse(
+                                res,
+                                404,
+                                "Refiner deployment '" + deploymentName + "' not found in namespace '" + namespaceName + "'."
+                        );
+                    }
+                    const int statusCode = (apiClient && apiClient->response_code >= 400) ? apiClient->response_code : 500;
+                    return sendErrorResponse(res, statusCode, "Failed to scale Refiner deployment.");
+                }
+
+                nlohmann::json patchedJson;
+                try {
+                    patchedJson = nlohmann::json::parse(patchedRaw);
+                } catch (const std::exception&) {
+                    free(patchedRaw);
+                    return sendErrorResponse(res, 500, "Failed to parse scaled deployment response.");
+                }
+                free(patchedRaw);
+
+                Models::CloudResponse apiResponse;
+                apiResponse.success = true;
+                apiResponse.message = "Refiner deployment scaled successfully.";
+                apiResponse.data = refinerDeploymentSummary(patchedJson, namespaceName, deploymentName);
+                sendJsonResponse(res, apiResponse);
+            } catch (const nlohmann::json::parse_error& e) {
+                sendErrorResponse(res, 400, "Invalid JSON body: " + std::string(e.what()));
             } catch (const std::exception& e) {
                 sendErrorResponse(res, 500, "Server error: " + std::string(e.what()));
             }

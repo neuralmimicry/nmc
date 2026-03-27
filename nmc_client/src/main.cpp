@@ -6,6 +6,8 @@
 #include "Commands/ModelCommands.h"
 #include "Commands/SSHCommands.h"
 #include "Commands/OpenShiftCommands.h"
+#include "Commands/ServerCommands.h"
+#include "Commands/TraceyCommands.h"
 #include "Commands/VMCommands.h"
 #include "Commands/VersionCommand.h"
 #include "Commands/ConnectionCommands.h"
@@ -26,6 +28,7 @@ int main(int argc, char* argv[]) {
         }
     }
 
+    // Build command graph once per process invocation.
     NMC::CLI::CLIParser parser;
 
     // Single shared API client for all commands in this process.
@@ -37,7 +40,7 @@ int main(int argc, char* argv[]) {
     // Register Root Command (mainly for help output)
     auto rootCmd = std::make_shared<NMC::Commands::RootCommand>(apiClient);
 
-    // Register top-level commands
+    // Register top-level commands and their subcommand workflows.
     auto bucketCmd = std::make_shared<NMC::Commands::BucketCommand>(apiClient);
     bucketCmd->addSubcommand(std::make_shared<NMC::Commands::BucketCreateCommand>(apiClient));
     bucketCmd->addSubcommand(std::make_shared<NMC::Commands::BucketDeleteCommand>(apiClient));
@@ -55,6 +58,7 @@ int main(int argc, char* argv[]) {
     k8sCmd->addSubcommand(std::make_shared<NMC::Commands::K8sGetConfigCommand>(apiClient));
     k8sCmd->addSubcommand(std::make_shared<NMC::Commands::K8sListCommand>(apiClient));
     k8sCmd->addSubcommand(std::make_shared<NMC::Commands::K8sListLocationsCommand>(apiClient));
+    k8sCmd->addSubcommand(std::make_shared<NMC::Commands::K8sHealthCommand>(apiClient));
     k8sCmd->addSubcommand(std::make_shared<NMC::Commands::K8sResumeCommand>(apiClient));
     k8sCmd->addSubcommand(std::make_shared<NMC::Commands::K8sSuspendCommand>(apiClient));
     parser.registerCommand(k8sCmd);
@@ -93,6 +97,20 @@ int main(int argc, char* argv[]) {
     openShiftCmd->addSubcommand(std::make_shared<NMC::Commands::OpenShiftRequestCommand>(apiClient));
     openShiftCmd->addSubcommand(std::make_shared<NMC::Commands::OpenShiftStatusCommand>(apiClient));
     parser.registerCommand(openShiftCmd);
+
+    auto serverCmd = std::make_shared<NMC::Commands::ServerCommand>(apiClient);
+    serverCmd->addSubcommand(std::make_shared<NMC::Commands::ServerHealthCommand>(apiClient));
+    serverCmd->addSubcommand(std::make_shared<NMC::Commands::ServerVersionCommand>(apiClient));
+    parser.registerCommand(serverCmd);
+
+    auto traceyCmd = std::make_shared<NMC::Commands::TraceyCommand>(apiClient);
+    traceyCmd->addSubcommand(std::make_shared<NMC::Commands::TraceyHeartbeatCommand>(apiClient));
+    traceyCmd->addSubcommand(std::make_shared<NMC::Commands::TraceyAgentsCommand>(apiClient));
+    traceyCmd->addSubcommand(std::make_shared<NMC::Commands::TraceyAnalyticsCommand>(apiClient));
+    traceyCmd->addSubcommand(std::make_shared<NMC::Commands::TraceyAnalysisCommand>(apiClient));
+    traceyCmd->addSubcommand(std::make_shared<NMC::Commands::TraceyControlCommand>(apiClient));
+    traceyCmd->addSubcommand(std::make_shared<NMC::Commands::TraceyDeepDiveCommand>(apiClient));
+    parser.registerCommand(traceyCmd);
 
     auto vmCmd = std::make_shared<NMC::Commands::VmCommand>(apiClient);
     vmCmd->addSubcommand(std::make_shared<NMC::Commands::VmCreateCommand>(apiClient));

@@ -47,6 +47,12 @@ public:
     int execute(const std::map<std::string, std::string>& parsedFlags, const std::vector<std::string>& parsedArgs, const CLI::GlobalFlags& globalFlags) override;
 };
 
+class K8sHealthCommand : public BaseCommand {
+public:
+    K8sHealthCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client);
+    int execute(const std::map<std::string, std::string>& parsedFlags, const std::vector<std::string>& parsedArgs, const CLI::GlobalFlags& globalFlags) override;
+};
+
 class K8sResumeCommand : public BaseCommand {
 public:
     K8sResumeCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client);

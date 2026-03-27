@@ -147,8 +147,7 @@ void myTerminate() {
 }
 
 int main(int argc, char* argv[]) {
-    // --- Initialize spdlog rotating file logger ---
-    // Rotates at 5 MiB, keeps 3 files
+    // Phase 1: initialize structured logging before any subsystem starts.
     auto file_sink = std::make_shared<spdlog::sinks::rotating_file_sink_mt>(
         "logs/nmc_server.log",  // log file path
         1048576 * 5,            // max file size = 5 MiB
@@ -194,9 +193,8 @@ int main(int argc, char* argv[]) {
             spdlog::warn("Release check failed: {}", releaseInfo.message);
         }
 
-        //
-        // 1) Handle '-k' or '-c' overrides, or fall back to env/default config.json
-        //
+        // Phase 2: resolve Kubernetes config source.
+        // Priority: explicit --kubeconfig > explicit --config > env vars > ~/.nmc/config.json
         std::string cfgPath;
         std::string kubeconfigPath;
         bool useConfigFile = false;
@@ -239,7 +237,7 @@ int main(int argc, char* argv[]) {
             }
         }
         spdlog::info("Starting NMC server initialization");
-        // 1. Kubernetes C Client Global Environment Setup
+        // Phase 3: initialize Kubernetes C client globals and optional health monitor.
         K8sClientConfig k8sConfig{};
         apiClient_setupGlobalEnv();
         apiClient_t* k8s = createK8sClientFromKubeconfig(k8sConfig);
@@ -256,7 +254,7 @@ int main(int argc, char* argv[]) {
 
         httplib::Server svr; // Create an HTTP server instance
 
-        // Set up API routes
+        // Phase 4: register API routes and start HTTP listener.
         NMC::Server::APIRoutes apiRoutes(svr);
 
         // Set server connection timeout in seconds (optional)
@@ -267,7 +265,7 @@ int main(int argc, char* argv[]) {
         const char* host = "0.0.0.0"; // Listen on all available network interfaces
         int port = 8080;
 
-        // --- Parse command-line arguments for port ---
+        // Optional listener override.
         std::vector<std::string> args(argv + 1, argv + argc); // Convert argv to vector for easier parsing
 
         for (size_t i = 0; i < args.size(); ++i) {
@@ -296,7 +294,7 @@ int main(int argc, char* argv[]) {
         spdlog::info("NMC Server listening on http://{}:{}", host, port);
         spdlog::info("Press Ctrl+C to stop the server");
 
-        // Start the server (blocking call)
+        // Phase 5: blocking serve loop.
         if (!svr.listen(host, port)) {
             spdlog::critical("Could not start server on {}:{}", host, port);
             if (k8s) {
@@ -307,8 +305,7 @@ int main(int argc, char* argv[]) {
             return EXIT_FAILURE;
         }
 
-        // 2. Kubernetes C Client Global Environment Teardown
-        // Must be called ONCE after all worker threads (including HTTP server threads) have finished.
+        // Phase 6: teardown global Kubernetes client resources after server shutdown.
         if (k8s) {
             apiClient_free(k8s);
         }
