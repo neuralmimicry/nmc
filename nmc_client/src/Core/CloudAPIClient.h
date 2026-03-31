@@ -110,13 +110,23 @@ namespace NMC::Core {
         Models::CloudResponse resumeVM(const std::string& id);
         Models::CloudResponse suspendVM(const std::string& id);
 
-        // OpenShift / Continuum Operations (via NeuralMimicry OpenShift portal API)
+        // OpenShift / OpenStack Continuum Operations (via provider portal APIs)
         Models::CloudResponse getServerHealth();
         Models::CloudResponse getServerVersion();
         Models::CloudResponse listOpenShiftResources();
         Models::CloudResponse listOpenShiftClusters();
         Models::CloudResponse getOpenShiftClusterDetails(const std::string& idOrName);
         Models::CloudResponse requestOpenShiftCluster(const std::string& name,
+                                                      const std::string& organization,
+                                                      int gpuCount,
+                                                      const std::string& architecture,
+                                                      const std::string& region,
+                                                      const std::string& provider,
+                                                      const std::vector<std::string>& burstTargets);
+        Models::CloudResponse listOpenStackResources();
+        Models::CloudResponse listOpenStackClusters();
+        Models::CloudResponse getOpenStackClusterDetails(const std::string& idOrName);
+        Models::CloudResponse requestOpenStackCluster(const std::string& name,
                                                       const std::string& organization,
                                                       int gpuCount,
                                                       const std::string& architecture,

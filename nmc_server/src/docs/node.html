@@ -31,7 +31,7 @@
   "tenant_id": "acme",
   "tenant_name": "Acme Manufacturing",
   "tenant_environment": "prod",
-  "capabilities": ["apps", "podman", "kubernetes"],
+  "capabilities": ["apps", "podman", "kubernetes", "openstack"],
   "ansible_playbook": "/opt/nmc/ansible/recruited-node.yml",
   "ansible_extra_vars": {
     "nmc_ops_contact": "ops@acme.example",
@@ -56,7 +56,7 @@
             <li><code>host</code> (required): target hostname or IPv4 address.</li>
             <li><code>user</code> (optional): SSH username, default <code>ubuntu</code>.</li>
             <li><code>port</code> (optional): SSH port, default <code>22</code>.</li>
-            <li><code>node_type</code> (optional): <code>bare-metal</code>, <code>app-install</code>, <code>vm</code>, <code>podman</code>, <code>kubernetes</code>.</li>
+            <li><code>node_type</code> (optional): <code>bare-metal</code>, <code>app-install</code>, <code>vm</code>, <code>podman</code>, <code>kubernetes</code>, <code>openstack</code>.</li>
             <li><code>script</code> or <code>script_path</code> (optional): recruitment script content/path on server.</li>
             <li><code>binary_path</code> (optional): binary path on server (mutually exclusive with script input).</li>
             <li><code>binary_args</code> (optional): string or string array of binary arguments.</li>
@@ -68,7 +68,7 @@
             <li><code>auto_configure</code> (optional): run post-recruitment Ansible configuration.</li>
             <li><code>ansible_become</code> / <code>become</code> (optional): enable/disable Ansible privilege escalation (default: <code>true</code>).</li>
             <li><code>tenant_id</code>, <code>tenant_name</code>, <code>tenant_environment</code> (optional): tenant metadata passed to Ansible.</li>
-            <li><code>capabilities</code> / <code>workloads</code> (optional): requested host capabilities: <code>apps</code>, <code>vm</code>, <code>podman</code>, <code>kubernetes</code>.</li>
+            <li><code>capabilities</code> / <code>workloads</code> (optional): requested host capabilities: <code>apps</code>, <code>vm</code>, <code>podman</code>, <code>kubernetes</code>, <code>openstack</code>.</li>
             <li><code>ansible_playbook</code> (optional): playbook path override. Falls back to <code>NMC_RECRUIT_ANSIBLE_PLAYBOOK</code> or <code>ansible/recruited-node.yml</code>.</li>
             <li><code>ansible_extra_vars</code> (optional): JSON object merged into Ansible <code>-e</code> vars.</li>
             <li><code>recruit_token</code> (optional): required if server sets <code>NMC_RECRUIT_TOKEN</code>.</li>
@@ -99,7 +99,7 @@
         "name": "Acme Manufacturing",
         "environment": "prod"
       },
-      "capabilities": ["apps", "podman", "kubernetes"],
+      "capabilities": ["apps", "podman", "kubernetes", "openstack"],
       "playbook": "/opt/nmc/ansible/recruited-node.yml"
     },
     "artifact": {

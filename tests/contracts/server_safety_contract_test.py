@@ -25,6 +25,7 @@ REDACTION_MINIMUM_PREFIXES = {
     "/model/upload",
     "/connections/make",
     "/openshift/clusters/request",
+    "/openstack/clusters/request",
     "/node/recruit",
 }
 

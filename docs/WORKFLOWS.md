@@ -50,9 +50,16 @@ This document describes the end-to-end workflows that the CLI and server follow,
 1. The NMC server uses `NMC_OSHIFT_API_URL` (default `http://127.0.0.1:8000`) to connect to the oshift portal API.
 2. `/openshift/resources` and `/openshift/clusters` proxy read-only queries to the portal.
 3. `/openshift/clusters/request` validates required fields and forwards provisioning requests.
-4. The portal API orchestrates provider-specific flows (ROSA, ARO, GCP, on-prem, hybrid-burst).
+4. The portal API orchestrates provider-specific flows (ROSA, ARO, GCP, OpenStack, on-prem, hybrid-burst).
 5. The CLI `openshift status` command can poll cluster status by repeatedly calling the proxy until the `--until` target or timeout.
 6. OpenShift cluster statuses are normalized to common NMC states: `Pending`, `Provisioning`, `Ready`, `Failed`, `Unknown`.
+
+**OpenStack Portal Workflow**
+1. The NMC server uses `NMC_OPENSTACK_API_URL` (default: inherits `NMC_OSHIFT_API_URL`) to connect to the OpenStack orchestration API.
+2. `/openstack/resources` and `/openstack/clusters` proxy read-only queries to the backend.
+3. `/openstack/clusters/request` validates required request fields and forwards provisioning requests.
+4. The CLI `openstack status` command polls cluster status until the requested `--until` state or timeout.
+5. OpenStack status values are normalized to common NMC states: `Pending`, `Provisioning`, `Ready`, `Failed`, `Unknown`.
 
 **Kubernetes Integration Workflow**
 1. Server startup loads K8s configuration from `--kubeconfig`, `--config`, environment, or `~/.nmc/config.json`.
@@ -76,7 +83,7 @@ This document describes the end-to-end workflows that the CLI and server follow,
    - If `sudo_password` (or `--sudo-password`/`--sudo-password-file`) is supplied, execution uses non-interactive `sudo -S -p ''`; otherwise it uses `sudo -E` or no sudo depending on configuration.
 5. If `--auto-configure`/`auto_configure=true` is enabled, recruiter hosts run `ansible-playbook` after execution:
    - Playbook path resolution order: explicit request path, `NMC_RECRUIT_ANSIBLE_PLAYBOOK`, then `ansible/recruited-node.yml`.
-   - Capability flags (`apps`, `vm`, `podman`, `kubernetes`) are merged into Ansible vars (`nmc_enable_*`) with tenant/node context.
+   - Capability flags (`apps`, `vm`, `podman`, `kubernetes`, `openstack`) are merged into Ansible vars (`nmc_enable_*`) with tenant/node context.
    - Ansible privilege escalation defaults to enabled (`ansible_become=true` / `--no-become` to disable), and when a sudo/become password is supplied it is mapped into `ansible_become_password`.
 6. When `tracey.agent_id` is supplied, the server records a managed node requirement and marks compliance as pending until Tracey reporting is observed.
 

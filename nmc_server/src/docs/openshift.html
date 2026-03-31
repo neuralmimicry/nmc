@@ -87,6 +87,7 @@
         <h2>Request OpenShift Cluster</h2>
         <p><strong>Endpoint:</strong> <code>POST /openshift/clusters/request</code></p>
         <p>Submits a provisioning request to the OpenShift portal API.</p>
+        <p><strong>Provider options:</strong> <code>on-prem</code>, <code>rosa</code>, <code>aro</code>, <code>gcp</code>, <code>hybrid-burst</code>, <code>openstack</code>.</p>
         <p><strong>Tracey policy:</strong> requests must include a <code>tracey</code> block so the cluster is tracked against its required Tracey agent.</p>
         <h3>Request Body:</h3>
         <pre><code class="language-json">

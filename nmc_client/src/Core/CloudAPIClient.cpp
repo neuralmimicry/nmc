@@ -23,6 +23,65 @@ namespace {
         path += (path.find('?') == std::string::npos) ? "?" : "&";
         path += key + "=" + std::to_string(value);
     }
+
+    // Normalize heterogeneous cluster list payload shapes to a plain array.
+    nlohmann::json extractClusterArray(const nlohmann::json& payload) {
+        if (payload.is_array()) {
+            return payload;
+        }
+        if (!payload.is_object()) {
+            return nlohmann::json::array();
+        }
+        if (payload.contains("data") && payload["data"].is_array()) {
+            return payload["data"];
+        }
+        if (payload.contains("clusters") && payload["clusters"].is_array()) {
+            return payload["clusters"];
+        }
+        if (payload.contains("data") && payload["data"].is_object() &&
+            payload["data"].contains("clusters") && payload["data"]["clusters"].is_array()) {
+            return payload["data"]["clusters"];
+        }
+        return nlohmann::json::array();
+    }
+
+    // Fallback resolver for older servers that do not expose /<provider>/details routes.
+    NMC::Models::CloudResponse resolveClusterDetailsFromList(const std::string& backendLabel,
+                                                             const std::string& idOrName,
+                                                             const NMC::Models::CloudResponse& listResponse) {
+        if (!listResponse.success) {
+            return listResponse;
+        }
+
+        const nlohmann::json clusters = extractClusterArray(listResponse.data);
+        nlohmann::json selected = nullptr;
+        for (const auto& cluster : clusters) {
+            if (!cluster.is_object()) {
+                continue;
+            }
+            const std::string name = cluster.value("name", "");
+            const std::string id = cluster.value("id", cluster.value("cluster_id", cluster.value("uuid", "")));
+            if (name == idOrName || id == idOrName) {
+                selected = cluster;
+                break;
+            }
+        }
+
+        NMC::Models::CloudResponse fallback;
+        if (selected.is_null()) {
+            fallback.success = false;
+            fallback.message = backendLabel + " cluster '" + idOrName + "' not found.";
+            fallback.data = nlohmann::json::object();
+            fallback.statusCode = 404;
+            return fallback;
+        }
+
+        fallback.success = true;
+        fallback.message = backendLabel + " cluster details retrieved.";
+        fallback.data = selected;
+        fallback.statusCode = 200;
+        return fallback;
+    }
 }
 
 namespace NMC::Core {
@@ -555,7 +614,7 @@ namespace NMC::Core {
         return processHttpResponse(res, "VM '" + id + "' suspended successfully.");
     }
 
-// --- OpenShift / Continuum Operations ---
+// --- OpenShift / OpenStack Continuum Operations ---
     Models::CloudResponse CloudAPIClient::getServerHealth() {
         auto res = cli->Get("/health");
         return processHttpResponse(res, "Server health retrieved.");
@@ -584,47 +643,7 @@ namespace NMC::Core {
         }
 
         // Backward compatibility for older servers that do not expose /openshift/details.
-        auto listRes = listOpenShiftClusters();
-        if (!listRes.success) {
-            return listRes;
-        }
-
-        nlohmann::json clusters = nlohmann::json::array();
-        if (listRes.data.is_array()) {
-            clusters = listRes.data;
-        } else if (listRes.data.is_object() && listRes.data.contains("data") && listRes.data["data"].is_array()) {
-            clusters = listRes.data["data"];
-        } else if (listRes.data.is_object() && listRes.data.contains("clusters") && listRes.data["clusters"].is_array()) {
-            clusters = listRes.data["clusters"];
-        }
-
-        nlohmann::json selected = nullptr;
-        for (const auto& cluster : clusters) {
-            if (!cluster.is_object()) {
-                continue;
-            }
-            const std::string name = cluster.value("name", "");
-            const std::string id = cluster.value("id", cluster.value("cluster_id", cluster.value("uuid", "")));
-            if (name == idOrName || id == idOrName) {
-                selected = cluster;
-                break;
-            }
-        }
-
-        Models::CloudResponse fallback;
-        if (selected.is_null()) {
-            fallback.success = false;
-            fallback.message = "OpenShift cluster '" + idOrName + "' not found.";
-            fallback.data = nlohmann::json::object();
-            fallback.statusCode = 404;
-            return fallback;
-        }
-
-        fallback.success = true;
-        fallback.message = "OpenShift cluster details retrieved.";
-        fallback.data = selected;
-        fallback.statusCode = 200;
-        return fallback;
+        return resolveClusterDetailsFromList("OpenShift", idOrName, listOpenShiftClusters());
     }
 
     Models::CloudResponse CloudAPIClient::requestOpenShiftCluster(const std::string& name,
@@ -647,6 +666,49 @@ namespace NMC::Core {
 
         auto res = cli->Post("/openshift/clusters/request", request_body.dump(), "application/json");
         return processHttpResponse(res, "OpenShift cluster request submitted.");
+    }
+
+    Models::CloudResponse CloudAPIClient::listOpenStackResources() {
+        auto res = cli->Get("/openstack/resources");
+        return processHttpResponse(res, "OpenStack resources retrieved.");
+    }
+
+    Models::CloudResponse CloudAPIClient::listOpenStackClusters() {
+        auto res = cli->Get("/openstack/clusters");
+        return processHttpResponse(res, "OpenStack clusters listed.");
+    }
+
+    Models::CloudResponse CloudAPIClient::getOpenStackClusterDetails(const std::string& idOrName) {
+        auto res = cli->Get("/openstack/details/" + idOrName);
+        auto apiResponse = processHttpResponse(res, "OpenStack cluster details retrieved.");
+        if (apiResponse.success || (res && res->status != 404)) {
+            return apiResponse;
+        }
+
+        // Backward compatibility for older servers that do not expose /openstack/details.
+        return resolveClusterDetailsFromList("OpenStack", idOrName, listOpenStackClusters());
+    }
+
+    Models::CloudResponse CloudAPIClient::requestOpenStackCluster(const std::string& name,
+                                                                  const std::string& organization,
+                                                                  int gpuCount,
+                                                                  const std::string& architecture,
+                                                                  const std::string& region,
+                                                                  const std::string& provider,
+                                                                  const std::vector<std::string>& burstTargets) {
+        nlohmann::json request_body;
+        request_body["name"] = name;
+        request_body["organization"] = organization;
+        request_body["gpu_count"] = gpuCount;
+        request_body["architecture"] = architecture;
+        request_body["region"] = region;
+        request_body["provider"] = provider;
+        if (!burstTargets.empty()) {
+            request_body["burst_targets"] = burstTargets;
+        }
+
+        auto res = cli->Post("/openstack/clusters/request", request_body.dump(), "application/json");
+        return processHttpResponse(res, "OpenStack cluster request submitted.");
     }
 
     Models::CloudResponse CloudAPIClient::recruitNode(const nlohmann::json& requestPayload) {

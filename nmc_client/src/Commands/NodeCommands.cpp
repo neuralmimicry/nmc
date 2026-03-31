@@ -101,7 +101,8 @@ bool isKnownNodeType(const std::string& nodeType) {
         "vm",
         "virtual-machine",
         "podman",
-        "kubernetes"
+        "kubernetes",
+        "openstack"
     };
     return std::find(allowed.begin(), allowed.end(), nodeType) != allowed.end();
 }
@@ -319,6 +320,11 @@ case "${NMC_NODE_TYPE:-bare-metal}" in
       apt-get install -y apt-transport-https containerd
     fi
     ;;
+  openstack)
+    if command -v apt-get >/dev/null 2>&1; then
+      apt-get install -y python3-openstackclient
+    fi
+    ;;
   vm|app-install|bare-metal)
     true
     ;;
@@ -397,6 +403,9 @@ std::string normalizeCapability(std::string capability) {
     if (capability == "virtual-machine") {
         return "vm";
     }
+    if (capability == "os") {
+        return "openstack";
+    }
     return capability;
 }
 
@@ -405,7 +414,8 @@ bool isKnownCapability(const std::string& capability) {
         "apps",
         "vm",
         "podman",
-        "kubernetes"
+        "kubernetes",
+        "openstack"
     };
     return allowed.find(capability) != allowed.end();
 }
@@ -422,6 +432,9 @@ std::vector<std::string> defaultCapabilitiesForNodeType(const std::string& nodeT
     }
     if (nodeType == "app-install") {
         return {"apps"};
+    }
+    if (nodeType == "openstack") {
+        return {"openstack"};
     }
     return {};
 }
@@ -590,7 +603,7 @@ Models::CloudResponse runDirectRecruitment(const nlohmann::json& payload) {
             return response;
         }
         if (!isKnownNodeType(nodeType)) {
-            response.message = "Invalid node type.";
+            response.message = "Invalid node type. Supported: bare-metal, app-install, vm, podman, kubernetes, openstack.";
             return response;
         }
         if (hasControlChars(nodeName) || hasControlChars(region) || hasControlChars(continuumUrl)) {
@@ -800,6 +813,7 @@ Models::CloudResponse runDirectRecruitment(const nlohmann::json& payload) {
         const bool enableVm = std::find(capabilities.begin(), capabilities.end(), "vm") != capabilities.end();
         const bool enablePodman = std::find(capabilities.begin(), capabilities.end(), "podman") != capabilities.end();
         const bool enableKubernetes = std::find(capabilities.begin(), capabilities.end(), "kubernetes") != capabilities.end();
+        const bool enableOpenStack = std::find(capabilities.begin(), capabilities.end(), "openstack") != capabilities.end();
 
         std::vector<std::string> configureArgs;
         std::string ansiblePlaybookPath;
@@ -831,6 +845,7 @@ Models::CloudResponse runDirectRecruitment(const nlohmann::json& payload) {
             mergedAnsibleVars["nmc_enable_vm"] = enableVm;
             mergedAnsibleVars["nmc_enable_podman"] = enablePodman;
             mergedAnsibleVars["nmc_enable_kubernetes"] = enableKubernetes;
+            mergedAnsibleVars["nmc_enable_openstack"] = enableOpenStack;
             mergedAnsibleVars["nmc_node_host"] = host;
             mergedAnsibleVars["nmc_node_name"] = nodeName;
             mergedAnsibleVars["nmc_node_region"] = region;
@@ -1009,7 +1024,7 @@ NodeRecruitCommand::NodeRecruitCommand(std::shared_ptr<NMC::Core::CloudAPIClient
     addFlag(CLI::Flag("H", "host", "Remote host/IP to recruit", CLI::FlagType::String, true));
     addFlag(CLI::Flag("u", "user", "SSH user", CLI::FlagType::String, false, "ubuntu"));
     addFlag(CLI::Flag("p", "port", "SSH port", CLI::FlagType::Int, false, "22"));
-    addFlag(CLI::Flag("t", "node-type", "Node type: bare-metal|app-install|vm|podman|kubernetes", CLI::FlagType::String, false, "bare-metal"));
+    addFlag(CLI::Flag("t", "node-type", "Node type: bare-metal|app-install|vm|podman|kubernetes|openstack", CLI::FlagType::String, false, "bare-metal"));
     addFlag(CLI::Flag("k", "ssh-key", "SSH private key path on recruiting host", CLI::FlagType::String, false));
     addFlag(CLI::Flag("s", "script", "Recruitment script path (local file, uploaded in API mode)", CLI::FlagType::String, false));
     addFlag(CLI::Flag("b", "binary", "Recruitment binary path (path on recruiter host; server-side in API mode)", CLI::FlagType::String, false));
@@ -1031,7 +1046,7 @@ NodeRecruitCommand::NodeRecruitCommand(std::shared_ptr<NMC::Core::CloudAPIClient
     addFlag(CLI::Flag("I", "tenant-id", "Tenant/customer identifier", CLI::FlagType::String, false));
     addFlag(CLI::Flag("m", "tenant-name", "Tenant/customer display name", CLI::FlagType::String, false));
     addFlag(CLI::Flag("e", "tenant-environment", "Tenant environment label (e.g. prod/dev)", CLI::FlagType::String, false));
-    addFlag(CLI::Flag("w", "capability", "Requested host capability (apps|vm|podman|kubernetes, repeatable)", CLI::FlagType::String, false));
+    addFlag(CLI::Flag("w", "capability", "Requested host capability (apps|vm|podman|kubernetes|openstack, repeatable)", CLI::FlagType::String, false));
     addFlag(CLI::Flag("y", "ansible-playbook", "Override Ansible playbook path for auto-configure", CLI::FlagType::String, false));
     addFlag(CLI::Flag("v", "ansible-extra-var", "Additional Ansible var key=value (repeatable)", CLI::FlagType::String, false));
     addFlag(CLI::Flag("d", "dry-run", "Print commands/payload without executing remote steps", CLI::FlagType::Bool, false));
@@ -1104,7 +1119,7 @@ int NodeRecruitCommand::execute(const std::map<std::string, std::string>& parsed
         return 1;
     }
     if (!isKnownNodeType(nodeType)) {
-        response.message = "Invalid --node-type. Supported: bare-metal, app-install, vm, podman, kubernetes.";
+        response.message = "Invalid --node-type. Supported: bare-metal, app-install, vm, podman, kubernetes, openstack.";
         printOutput(response, globalFlags);
         return 1;
     }

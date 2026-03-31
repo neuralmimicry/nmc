@@ -8,6 +8,7 @@
         k8sMetric: document.getElementById("k8sMetric"),
         vclusterMetric: document.getElementById("vclusterMetric"),
         openshiftMetric: document.getElementById("openshiftMetric"),
+        openstackMetric: document.getElementById("openstackMetric"),
         vmMetric: document.getElementById("vmMetric"),
         traceyMetric: document.getElementById("traceyMetric"),
         traceyCard: document.getElementById("traceyCard"),
@@ -15,6 +16,7 @@
         k8sRows: document.getElementById("k8sRows"),
         vclusterRows: document.getElementById("vclusterRows"),
         openshiftRows: document.getElementById("openshiftRows"),
+        openstackRows: document.getElementById("openstackRows"),
         traceyRows: document.getElementById("traceyRows"),
         traceyNetworkRows: document.getElementById("traceyNetworkRows"),
         k8sApiPill: document.getElementById("k8sApiPill"),
@@ -22,6 +24,7 @@
         refreshPill: document.getElementById("refreshPill"),
         connStatus: document.getElementById("connStatus"),
         resourceStatus: document.getElementById("resourceStatus"),
+        openstackResourceStatus: document.getElementById("openstackResourceStatus"),
         vmInventoryStatus: document.getElementById("vmInventoryStatus"),
         traceyStatus: document.getElementById("traceyStatus"),
         clusterDetailsModal: document.getElementById("clusterDetailsModal"),
@@ -1337,31 +1340,37 @@
             k8sListRes,
             vclusterListRes,
             openshiftClustersRes,
+            openstackClustersRes,
             vmListRes,
             traceyAgentsRes,
             k8sHealthRes,
             connectionRes,
-            openshiftResourcesRes
+            openshiftResourcesRes,
+            openstackResourcesRes
         ] = await Promise.all([
             fetchJson("/k8s/list"),
             fetchJson("/vcluster/list"),
             fetchJson("/openshift/clusters"),
+            fetchJson("/openstack/clusters"),
             fetchJson("/vm/list"),
             fetchJson("/tracey/agents"),
             fetchJson("/k8s/healthz"),
             fetchJson("/connections/status"),
-            fetchJson("/openshift/resources")
+            fetchJson("/openshift/resources"),
+            fetchJson("/openstack/resources")
         ]);
 
         const allResponses = [
             k8sListRes,
             vclusterListRes,
             openshiftClustersRes,
+            openstackClustersRes,
             vmListRes,
             traceyAgentsRes,
             k8sHealthRes,
             connectionRes,
-            openshiftResourcesRes
+            openshiftResourcesRes,
+            openstackResourcesRes
         ];
         updateAuthPill(allResponses);
 
@@ -1419,6 +1428,17 @@
         });
         renderRows(nodes.openshiftRows, openshiftRows, "No OpenShift clusters detected.", 3);
 
+        const openstackItems = arrayFromUnknown(openstackClustersRes.payload);
+        const openstackSummary = summarizeRunning(openstackItems);
+        nodes.openstackMetric.textContent = `${openstackSummary.running} / ${openstackSummary.total}`;
+        const openstackRows = openstackItems.map((cluster) => {
+            const name = cluster.name || cluster.id || "unknown";
+            const endpoint = cluster.endpoint || cluster.api || "-";
+            const status = cluster.status || "Unknown";
+            return `<tr><td>${escapeHtml(name)}</td><td>${escapeHtml(endpoint)}</td><td>${statusBadge(status)}</td></tr>`;
+        });
+        renderRows(nodes.openstackRows, openstackRows, "No OpenStack clusters detected.", 3);
+
         const vmItems = arrayFromUnknown(vmListRes.payload);
         const vmSummary = summarizeRunning(vmItems);
         nodes.vmMetric.textContent = `${vmSummary.running} / ${vmSummary.total}`;
@@ -1467,6 +1487,7 @@
             : "Unavailable";
         setCheck(nodes.connStatus, connectionText, connectionRes.ok ? "#22c55e" : "#ef4444");
         setCheck(nodes.resourceStatus, openshiftResourcesRes.ok ? "Reachable" : "Unavailable", openshiftResourcesRes.ok ? "#22c55e" : "#ef4444");
+        setCheck(nodes.openstackResourceStatus, openstackResourcesRes.ok ? "Reachable" : "Unavailable", openstackResourcesRes.ok ? "#22c55e" : "#ef4444");
         setCheck(nodes.vmInventoryStatus, vmListRes.ok ? `${vmItems.length} listed` : "Unavailable", vmListRes.ok ? "#22c55e" : "#ef4444");
         const reachableTracey = Number(traceySummary.reachable || 0);
         const discoveredTracey = Number(traceySummary.discovered || 0);

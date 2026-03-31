@@ -55,17 +55,18 @@ namespace NMC::Server {
 
         std::string normalizeOpenShiftStatus(const std::string& rawStatus) {
             const std::string status = toLower(rawStatus);
-            if (status == "ready" || status == "running") {
+            if (status == "ready" || status == "running" || status == "active" || status == "available") {
                 return "Ready";
             }
-            if (status == "failed" || status == "error" || status == "unhealthy") {
+            if (status == "failed" || status == "error" || status == "unhealthy" || status == "deleted" || status == "terminated") {
                 return "Failed";
             }
             if (status == "pending" || status == "accepted" || status == "queued" || status == "requested") {
                 return "Pending";
             }
             if (status == "provisioning" || status == "gitops-syncing" || status == "gitops_syncing"
-                || status == "syncing" || status == "installing" || status == "creating") {
+                || status == "syncing" || status == "installing" || status == "creating"
+                || status == "build" || status == "rebuild" || status == "spawning") {
                 return "Provisioning";
             }
             return "Unknown";
@@ -194,7 +195,7 @@ namespace NMC::Server {
             return fallback;
         }
 
-        std::string openShiftClusterIdentityKey(const nlohmann::json& cluster) {
+        std::string clusterIdentityKey(const nlohmann::json& cluster) {
             const std::string name = toLower(firstStringValue(cluster, {"name"}));
             const std::string id = toLower(firstStringValue(cluster, {"id", "cluster_id", "uuid"}));
             return name + "|" + id;
@@ -212,7 +213,7 @@ namespace NMC::Server {
                 }
                 nlohmann::json normalized = item;
                 normalizeClusterStatus(normalized);
-                const std::string key = openShiftClusterIdentityKey(normalized);
+                const std::string key = clusterIdentityKey(normalized);
                 if (!key.empty() && seenKeys.find(key) != seenKeys.end()) {
                     continue;
                 }
@@ -223,7 +224,7 @@ namespace NMC::Server {
             }
         }
 
-        std::vector<nlohmann::json> collectOpenShiftClusterObjects(const nlohmann::json& payload) {
+        std::vector<nlohmann::json> collectClusterObjects(const nlohmann::json& payload) {
             std::vector<nlohmann::json> clusters;
             std::set<std::string> seenKeys;
 
@@ -473,6 +474,87 @@ namespace NMC::Server {
             endpoint.normalized += ":" + std::to_string(endpoint.port);
             endpoint.normalized += endpoint.basePath;
             return true;
+        }
+
+        nlohmann::json findClusterByIdentifier(const std::vector<nlohmann::json>& clusters,
+                                               const std::string& identifier) {
+            const std::string needle = toLower(trim(identifier));
+            if (needle.empty()) {
+                return nullptr;
+            }
+
+            for (const auto& cluster : clusters) {
+                const std::string name = toLower(firstStringValue(cluster, {"name"}));
+                const std::string id = toLower(firstStringValue(cluster, {"id", "cluster_id", "uuid"}));
+                if ((!name.empty() && name == needle) || (!id.empty() && id == needle)) {
+                    return cluster;
+                }
+            }
+            return nullptr;
+        }
+
+        nlohmann::json buildClusterDetailsWithNetworking(const nlohmann::json& selectedCluster) {
+            std::vector<std::string> endpointCandidates;
+            std::vector<std::string> ipsInUse;
+            std::vector<int> portsInUse;
+
+            const auto captureEndpoint = [&](const std::string& value) {
+                const std::string endpoint = trim(value);
+                if (endpoint.empty()) {
+                    return;
+                }
+                addUniqueString(endpointCandidates, endpoint);
+                TraceyEndpoint parsed{};
+                if (parseTraceyEndpoint(endpoint, parsed)) {
+                    addUniqueString(ipsInUse, parsed.host);
+                    addUniqueInt(portsInUse, parsed.port);
+                }
+            };
+
+            captureEndpoint(firstStringValue(selectedCluster, {"endpoint", "api", "api_url", "url", "apiServer", "api_server"}));
+            captureEndpoint(firstStringValue(selectedCluster, {"console", "console_url", "consoleUrl"}));
+
+            if (selectedCluster.contains("networking") && selectedCluster["networking"].is_object()) {
+                const auto& networking = selectedCluster["networking"];
+                captureEndpoint(firstStringValue(networking, {"endpoint", "api", "api_url", "url", "apiServer", "api_server"}));
+                captureEndpoint(firstStringValue(networking, {"console", "console_url", "consoleUrl"}));
+
+                if (networking.contains("ips_in_use") && networking["ips_in_use"].is_array()) {
+                    for (const auto& ip : networking["ips_in_use"]) {
+                        if (ip.is_string()) {
+                            addUniqueString(ipsInUse, ip.get<std::string>());
+                        }
+                    }
+                }
+                if (networking.contains("ports_in_use") && networking["ports_in_use"].is_array()) {
+                    for (const auto& port : networking["ports_in_use"]) {
+                        if (port.is_number_integer()) {
+                            addUniqueInt(portsInUse, port.get<int>());
+                        }
+                    }
+                }
+            }
+
+            addUniqueInt(portsInUse, firstPositiveIntValue(selectedCluster, {"port", "api_port", "apiPort", "service_port"}));
+            if (selectedCluster.contains("networking") && selectedCluster["networking"].is_object()) {
+                addUniqueInt(portsInUse, firstPositiveIntValue(selectedCluster["networking"], {"port", "api_port", "apiPort", "service_port"}));
+            }
+
+            std::sort(endpointCandidates.begin(), endpointCandidates.end());
+            std::sort(ipsInUse.begin(), ipsInUse.end());
+            std::sort(portsInUse.begin(), portsInUse.end());
+
+            nlohmann::json details = selectedCluster;
+            nlohmann::json networkingPayload = nlohmann::json::object();
+            if (details.contains("networking") && details["networking"].is_object()) {
+                networkingPayload = details["networking"];
+            }
+            networkingPayload["endpoint"] = firstStringValue(details, {"endpoint", "api", "api_url", "url", "apiServer", "api_server"});
+            networkingPayload["endpoint_candidates"] = endpointCandidates;
+            networkingPayload["ips_in_use"] = ipsInUse;
+            networkingPayload["ports_in_use"] = portsInUse;
+            details["networking"] = networkingPayload;
+            return details;
         }
 
         std::string buildTraceyStatusPath(const TraceyEndpoint& endpoint) {
@@ -725,7 +807,8 @@ namespace NMC::Server {
                     "vm",
                     "virtual-machine",
                     "podman",
-                    "kubernetes"
+                    "kubernetes",
+                    "openstack"
             };
             return allowedTypes.find(nodeType) != allowedTypes.end();
         }
@@ -843,6 +926,11 @@ case "${NMC_NODE_TYPE:-bare-metal}" in
       apt-get install -y apt-transport-https containerd
     fi
     ;;
+  openstack)
+    if command -v apt-get >/dev/null 2>&1; then
+      apt-get install -y python3-openstackclient
+    fi
+    ;;
   vm|app-install|bare-metal)
     true
     ;;
@@ -913,6 +1001,9 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
             if (capability == "virtual-machine") {
                 return "vm";
             }
+            if (capability == "os") {
+                return "openstack";
+            }
             return capability;
         }
 
@@ -921,7 +1012,8 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                     "apps",
                     "vm",
                     "podman",
-                    "kubernetes"
+                    "kubernetes",
+                    "openstack"
             };
             return allowed.find(capability) != allowed.end();
         }
@@ -993,6 +1085,9 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
             }
             if (nodeType == "app-install") {
                 return {"apps"};
+            }
+            if (nodeType == "openstack") {
+                return {"openstack"};
             }
             return {};
         }
@@ -1320,6 +1415,11 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
         const char* osUrlEnv = std::getenv("NMC_OSHIFT_API_URL");
         std::string osUrl = osUrlEnv ? osUrlEnv : "http://127.0.0.1:8000";
         openShiftClient = std::make_unique<OpenShiftClient>(osUrl);
+        // OpenStack portal API base URL. Defaults to the OpenShift URL so a single
+        // multi-provider backend can satisfy both routes when desired.
+        const char* openStackUrlEnv = std::getenv("NMC_OPENSTACK_API_URL");
+        std::string openStackUrl = openStackUrlEnv ? openStackUrlEnv : osUrl;
+        openStackClient = std::make_unique<OpenStackClient>(openStackUrl);
 
         // Enable logging of all requests
         svr.set_logger([this](const httplib::Request& req, const httplib::Response& res) {
@@ -1689,6 +1789,24 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
             handleOpenShiftRequestCluster(req, res);
         });
 
+        // --- OpenStack Routes ---
+        svr.Get("/openstack/resources", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            handleOpenStackResources(req, res);
+        });
+        svr.Get("/openstack/clusters", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            handleOpenStackClusters(req, res);
+        });
+        svr.Get(R"(/openstack/details/(.*))", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            handleOpenStackClusterDetails(req, res);
+        });
+        svr.Post("/openstack/clusters/request", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            handleOpenStackRequestCluster(req, res);
+        });
+
         // --- Tracey Agent Routes ---
         svr.Post("/tracey/agents/heartbeat", [this, guard](const httplib::Request& req, httplib::Response& res) {
             if (!guard(req, res)) return;
@@ -1889,6 +2007,7 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                 "/model/upload",
                 "/connections/make",
                 "/openshift/clusters/request",
+                "/openstack/clusters/request",
                 "/node/recruit"
         };
         for (const auto& prefix : redactedPrefixes) {
@@ -2913,7 +3032,7 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
             return;
         }
 
-        const std::vector<nlohmann::json> clusters = collectOpenShiftClusterObjects(listResponse.data);
+        const std::vector<nlohmann::json> clusters = collectClusterObjects(listResponse.data);
         if (clusters.empty()) {
             Models::CloudResponse notFound;
             notFound.success = false;
@@ -2925,20 +3044,7 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
             return;
         }
 
-        const std::string needle = toLower(identifier);
-        nlohmann::json selectedCluster;
-        for (const auto& cluster : clusters) {
-            const std::string name = toLower(firstStringValue(cluster, {"name"}));
-            const std::string id = toLower(firstStringValue(cluster, {"id", "cluster_id", "uuid"}));
-            if (!name.empty() && name == needle) {
-                selectedCluster = cluster;
-                break;
-            }
-            if (!id.empty() && id == needle) {
-                selectedCluster = cluster;
-                break;
-            }
-        }
+        nlohmann::json selectedCluster = findClusterByIdentifier(clusters, identifier);
 
         if (selectedCluster.is_null()) {
             Models::CloudResponse notFound;
@@ -2952,66 +3058,7 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
         }
 
         normalizeClusterStatus(selectedCluster);
-
-        std::vector<std::string> endpointCandidates;
-        std::vector<std::string> ipsInUse;
-        std::vector<int> portsInUse;
-
-        const auto captureEndpoint = [&](const std::string& value) {
-            const std::string endpoint = trim(value);
-            if (endpoint.empty()) {
-                return;
-            }
-            addUniqueString(endpointCandidates, endpoint);
-            TraceyEndpoint parsed{};
-            if (parseTraceyEndpoint(endpoint, parsed)) {
-                addUniqueString(ipsInUse, parsed.host);
-                addUniqueInt(portsInUse, parsed.port);
-            }
-        };
-
-        captureEndpoint(firstStringValue(selectedCluster, {"endpoint", "api", "api_url", "url", "apiServer", "api_server"}));
-        captureEndpoint(firstStringValue(selectedCluster, {"console", "console_url", "consoleUrl"}));
-        if (selectedCluster.contains("networking") && selectedCluster["networking"].is_object()) {
-            const auto& networking = selectedCluster["networking"];
-            captureEndpoint(firstStringValue(networking, {"endpoint", "api", "api_url", "url", "apiServer", "api_server"}));
-            captureEndpoint(firstStringValue(networking, {"console", "console_url", "consoleUrl"}));
-
-            if (networking.contains("ips_in_use") && networking["ips_in_use"].is_array()) {
-                for (const auto& ip : networking["ips_in_use"]) {
-                    if (ip.is_string()) {
-                        addUniqueString(ipsInUse, ip.get<std::string>());
-                    }
-                }
-            }
-            if (networking.contains("ports_in_use") && networking["ports_in_use"].is_array()) {
-                for (const auto& port : networking["ports_in_use"]) {
-                    if (port.is_number_integer()) {
-                        addUniqueInt(portsInUse, port.get<int>());
-                    }
-                }
-            }
-        }
-
-        addUniqueInt(portsInUse, firstPositiveIntValue(selectedCluster, {"port", "api_port", "apiPort", "service_port"}));
-        if (selectedCluster.contains("networking") && selectedCluster["networking"].is_object()) {
-            addUniqueInt(portsInUse, firstPositiveIntValue(selectedCluster["networking"], {"port", "api_port", "apiPort", "service_port"}));
-        }
-
-        std::sort(endpointCandidates.begin(), endpointCandidates.end());
-        std::sort(ipsInUse.begin(), ipsInUse.end());
-        std::sort(portsInUse.begin(), portsInUse.end());
-
-        nlohmann::json details = selectedCluster;
-        nlohmann::json networkingPayload = nlohmann::json::object();
-        if (details.contains("networking") && details["networking"].is_object()) {
-            networkingPayload = details["networking"];
-        }
-        networkingPayload["endpoint"] = firstStringValue(details, {"endpoint", "api", "api_url", "url", "apiServer", "api_server"});
-        networkingPayload["endpoint_candidates"] = endpointCandidates;
-        networkingPayload["ips_in_use"] = ipsInUse;
-        networkingPayload["ports_in_use"] = portsInUse;
-        details["networking"] = networkingPayload;
+        nlohmann::json details = buildClusterDetailsWithNetworking(selectedCluster);
 
         Models::CloudResponse apiResponse;
         apiResponse.success = true;
@@ -3036,9 +3083,13 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
             const std::string architecture = json_body.value("architecture", "");
             const std::string region = json_body.value("region", "");
             const std::string provider = json_body.value("provider", "on-prem");
+            const std::set<std::string> allowedProviders = {"on-prem", "rosa", "aro", "gcp", "hybrid-burst", "openstack"};
 
             if (name.empty() || organization.empty() || architecture.empty() || region.empty() || gpuCount <= 0) {
                 return sendErrorResponse(res, 400, "Missing required parameters: name, organization, gpu_count, architecture, or region.");
+            }
+            if (allowedProviders.find(provider) == allowedProviders.end()) {
+                return sendErrorResponse(res, 400, "Invalid provider. Supported: on-prem, rosa, aro, gcp, hybrid-burst, openstack.");
             }
             if (provider == "hybrid-burst" && (!json_body.contains("burst_targets") || json_body["burst_targets"].empty())) {
                 return sendErrorResponse(res, 400, "burst_targets is required when provider is hybrid-burst.");
@@ -3056,6 +3107,142 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
             if (apiResponse.success && !traceyAgentId.empty()) {
                 std::lock_guard<std::mutex> lock(dataMutex);
                 upsertTraceyRequirementLocked("openshift_cluster", name, region, traceyAgentId, traceyStatusAddr, nowEpochMs());
+                if (!apiResponse.data.is_object()) {
+                    apiResponse.data = nlohmann::json::object();
+                }
+                apiResponse.data["tracey"] = {
+                        {"required", true},
+                        {"agent_id", traceyAgentId},
+                        {"status_addr", traceyStatusAddr},
+                        {"compliance_state", "pending"},
+                        {"reason", "Waiting for Tracey agent heartbeat/discovery after provisioning."}
+                };
+            }
+            sendJsonResponse(res, apiResponse);
+            res.status = apiResponse.statusCode;
+        } catch (const nlohmann::json::parse_error& e) {
+            sendErrorResponse(res, 400, "Invalid JSON body: " + std::string(e.what()));
+        } catch (const std::exception& e) {
+            sendErrorResponse(res, 500, "Server error: " + std::string(e.what()));
+        }
+    }
+
+    void APIRoutes::handleOpenStackResources(const httplib::Request& req, httplib::Response& res) {
+        (void)req;
+        Models::CloudResponse apiResponse = openStackClient->getResources();
+        sendJsonResponse(res, apiResponse);
+        res.status = apiResponse.statusCode;
+    }
+
+    void APIRoutes::handleOpenStackClusters(const httplib::Request& req, httplib::Response& res) {
+        (void)req;
+        Models::CloudResponse apiResponse = openStackClient->listClusters();
+        if (apiResponse.success) {
+            if (apiResponse.data.is_array()) {
+                for (auto& cluster : apiResponse.data) {
+                    normalizeClusterStatus(cluster);
+                }
+            } else if (apiResponse.data.is_object()) {
+                if (apiResponse.data.contains("data") && apiResponse.data["data"].is_array()) {
+                    for (auto& cluster : apiResponse.data["data"]) {
+                        normalizeClusterStatus(cluster);
+                    }
+                }
+                if (apiResponse.data.contains("clusters") && apiResponse.data["clusters"].is_array()) {
+                    for (auto& cluster : apiResponse.data["clusters"]) {
+                        normalizeClusterStatus(cluster);
+                    }
+                }
+            }
+        }
+        sendJsonResponse(res, apiResponse);
+        res.status = apiResponse.statusCode;
+    }
+
+    void APIRoutes::handleOpenStackClusterDetails(const httplib::Request& req, httplib::Response& res) {
+        const std::string identifier = req.matches.size() > 1 ? trim(req.matches[1].str()) : "";
+        if (identifier.empty()) {
+            return sendErrorResponse(res, 400, "Missing OpenStack cluster identifier.");
+        }
+
+        Models::CloudResponse listResponse = openStackClient->listClusters();
+        if (!listResponse.success) {
+            sendJsonResponse(res, listResponse);
+            res.status = listResponse.statusCode;
+            return;
+        }
+
+        const std::vector<nlohmann::json> clusters = collectClusterObjects(listResponse.data);
+        if (clusters.empty()) {
+            Models::CloudResponse notFound;
+            notFound.success = false;
+            notFound.statusCode = 404;
+            notFound.message = "OpenStack cluster '" + identifier + "' not found.";
+            notFound.data = nlohmann::json::object();
+            sendJsonResponse(res, notFound);
+            res.status = 404;
+            return;
+        }
+
+        nlohmann::json selectedCluster = findClusterByIdentifier(clusters, identifier);
+        if (selectedCluster.is_null()) {
+            Models::CloudResponse notFound;
+            notFound.success = false;
+            notFound.statusCode = 404;
+            notFound.message = "OpenStack cluster '" + identifier + "' not found.";
+            notFound.data = nlohmann::json::object();
+            sendJsonResponse(res, notFound);
+            res.status = 404;
+            return;
+        }
+
+        normalizeClusterStatus(selectedCluster);
+        const nlohmann::json details = buildClusterDetailsWithNetworking(selectedCluster);
+
+        Models::CloudResponse apiResponse;
+        apiResponse.success = true;
+        apiResponse.statusCode = 200;
+        apiResponse.message = "OpenStack cluster details retrieved.";
+        apiResponse.data = details;
+        sendJsonResponse(res, apiResponse);
+        res.status = 200;
+    }
+
+    void APIRoutes::handleOpenStackRequestCluster(const httplib::Request& req, httplib::Response& res) {
+        try {
+            auto json_body = nlohmann::json::parse(req.body);
+            std::string traceyAgentId;
+            std::string traceyStatusAddr;
+            std::string traceyReason;
+
+            const std::string name = json_body.value("name", "");
+            const std::string organization = json_body.value("organization", "");
+            const int gpuCount = json_body.value("gpu_count", 0);
+            const std::string architecture = json_body.value("architecture", "");
+            const std::string region = json_body.value("region", "");
+            const std::string provider = json_body.value("provider", "openstack");
+            const std::set<std::string> allowedProviders = {"openstack", "openstack-heat", "openstack-magnum", "hybrid-burst"};
+
+            if (name.empty() || organization.empty() || architecture.empty() || region.empty() || gpuCount <= 0) {
+                return sendErrorResponse(res, 400, "Missing required parameters: name, organization, gpu_count, architecture, or region.");
+            }
+            if (allowedProviders.find(provider) == allowedProviders.end()) {
+                return sendErrorResponse(res, 400, "Invalid provider. Supported: openstack, openstack-heat, openstack-magnum, hybrid-burst.");
+            }
+            if (provider == "hybrid-burst" && (!json_body.contains("burst_targets") || json_body["burst_targets"].empty())) {
+                return sendErrorResponse(res, 400, "burst_targets is required when provider is hybrid-burst.");
+            }
+            if (!extractTraceyProvisioningRequest(json_body, traceyAgentId, traceyStatusAddr, traceyReason)) {
+                return sendErrorResponse(res, 400, traceyReason);
+            }
+
+            Models::CloudResponse apiResponse = openStackClient->requestCluster(json_body);
+            if (apiResponse.success && apiResponse.data.is_object() && apiResponse.data.contains("cluster")) {
+                normalizeClusterStatus(apiResponse.data["cluster"]);
+            }
+            if (apiResponse.success && !traceyAgentId.empty()) {
+                std::lock_guard<std::mutex> lock(dataMutex);
+                upsertTraceyRequirementLocked("openstack_cluster", name, region, traceyAgentId, traceyStatusAddr, nowEpochMs());
                 if (!apiResponse.data.is_object()) {
                     apiResponse.data = nlohmann::json::object();
                 }
@@ -5023,7 +5210,7 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                 return sendErrorResponse(res, 400, "Invalid SSH port. Expected 1-65535.");
             }
             if (!isKnownNodeType(nodeType)) {
-                return sendErrorResponse(res, 400, "Invalid node_type. Supported: bare-metal, app-install, vm, podman, kubernetes.");
+                return sendErrorResponse(res, 400, "Invalid node_type. Supported: bare-metal, app-install, vm, podman, kubernetes, openstack.");
             }
             if (hasControlChars(nodeName) || hasControlChars(region) || hasControlChars(continuumUrl)) {
                 return sendErrorResponse(res, 400, "Invalid control characters in request values.");
@@ -5259,6 +5446,7 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
             const bool enableVm = std::find(capabilities.begin(), capabilities.end(), "vm") != capabilities.end();
             const bool enablePodman = std::find(capabilities.begin(), capabilities.end(), "podman") != capabilities.end();
             const bool enableKubernetes = std::find(capabilities.begin(), capabilities.end(), "kubernetes") != capabilities.end();
+            const bool enableOpenStack = std::find(capabilities.begin(), capabilities.end(), "openstack") != capabilities.end();
 
             std::vector<std::string> configureArgs;
             std::string ansiblePlaybookPath;
@@ -5289,6 +5477,7 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                 mergedAnsibleVars["nmc_enable_vm"] = enableVm;
                 mergedAnsibleVars["nmc_enable_podman"] = enablePodman;
                 mergedAnsibleVars["nmc_enable_kubernetes"] = enableKubernetes;
+                mergedAnsibleVars["nmc_enable_openstack"] = enableOpenStack;
                 mergedAnsibleVars["nmc_node_host"] = host;
                 mergedAnsibleVars["nmc_node_name"] = nodeName;
                 mergedAnsibleVars["nmc_node_region"] = region;

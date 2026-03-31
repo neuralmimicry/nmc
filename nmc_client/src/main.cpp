@@ -13,6 +13,7 @@
 #include "Commands/ConnectionCommands.h"
 #include "Commands/RefinerCommands.h"
 #include "Commands/NodeCommands.h"
+#include "Commands/OpenStackCommands.h"
 #include "Core/VersionCheck.h"
 #include <iostream>
 #include <memory> // For std::make_shared
@@ -98,6 +99,13 @@ int main(int argc, char* argv[]) {
     openShiftCmd->addSubcommand(std::make_shared<NMC::Commands::OpenShiftRequestCommand>(apiClient));
     openShiftCmd->addSubcommand(std::make_shared<NMC::Commands::OpenShiftStatusCommand>(apiClient));
     parser.registerCommand(openShiftCmd);
+
+    auto openStackCmd = std::make_shared<NMC::Commands::OpenStackCommand>(apiClient);
+    openStackCmd->addSubcommand(std::make_shared<NMC::Commands::OpenStackResourcesCommand>(apiClient));
+    openStackCmd->addSubcommand(std::make_shared<NMC::Commands::OpenStackClustersCommand>(apiClient));
+    openStackCmd->addSubcommand(std::make_shared<NMC::Commands::OpenStackRequestCommand>(apiClient));
+    openStackCmd->addSubcommand(std::make_shared<NMC::Commands::OpenStackStatusCommand>(apiClient));
+    parser.registerCommand(openStackCmd);
 
     auto serverCmd = std::make_shared<NMC::Commands::ServerCommand>(apiClient);
     serverCmd->addSubcommand(std::make_shared<NMC::Commands::ServerHealthCommand>(apiClient));

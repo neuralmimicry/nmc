@@ -9,6 +9,7 @@
     nmc_enable_vm: false
     nmc_enable_podman: false
     nmc_enable_kubernetes: false
+    nmc_enable_openstack: false
     nmc_tenant_id: ""
     nmc_tenant_name: ""
     nmc_tenant_environment: ""
@@ -26,6 +27,7 @@
     nmc_podman_base_dir: "/srv/continuum/podman"
     nmc_vm_base_dir: "/var/lib/continuum/vm"
     nmc_k8s_base_dir: "/srv/continuum/kubernetes"
+    nmc_openstack_base_dir: "/srv/continuum/openstack"
     nmc_k8s_channel: "v1.30"
 
   pre_tasks:
@@ -49,6 +51,7 @@
         nmc_enable_vm: "{{ (nmc_enable_vm | bool) or ('vm' in nmc_requested_capabilities) }}"
         nmc_enable_podman: "{{ (nmc_enable_podman | bool) or ('podman' in nmc_requested_capabilities) }}"
         nmc_enable_kubernetes: "{{ (nmc_enable_kubernetes | bool) or ('kubernetes' in nmc_requested_capabilities) }}"
+        nmc_enable_openstack: "{{ (nmc_enable_openstack | bool) or ('openstack' in nmc_requested_capabilities) }}"
 
     - name: Refresh apt package cache
       ansible.builtin.apt:
@@ -81,6 +84,7 @@
         - "{{ nmc_podman_base_dir }}"
         - "{{ nmc_vm_base_dir }}"
         - "{{ nmc_k8s_base_dir }}"
+        - "{{ nmc_openstack_base_dir }}"
 
     - name: Build recruitment metadata payload
       ansible.builtin.set_fact:
@@ -104,6 +108,7 @@
               vm: "{{ nmc_enable_vm | bool }}"
               podman: "{{ nmc_enable_podman | bool }}"
               kubernetes: "{{ nmc_enable_kubernetes | bool }}"
+              openstack: "{{ nmc_enable_openstack | bool }}"
           tracey:
             agent_id: "{{ nmc_tracey_agent_id }}"
             status_addr: "{{ nmc_tracey_status_addr }}"
@@ -135,6 +140,7 @@
           NMC_ENABLE_VM={{ '1' if nmc_enable_vm else '0' }}
           NMC_ENABLE_PODMAN={{ '1' if nmc_enable_podman else '0' }}
           NMC_ENABLE_KUBERNETES={{ '1' if nmc_enable_kubernetes else '0' }}
+          NMC_ENABLE_OPENSTACK={{ '1' if nmc_enable_openstack else '0' }}
           TRACEY_AGENT_ID={{ nmc_tracey_agent_id }}
           TRACEY_STATUS_ADDR={{ nmc_tracey_status_addr }}
 
@@ -298,3 +304,11 @@
         - { name: "net.bridge.bridge-nf-call-ip6tables", value: "1" }
         - { name: "net.ipv4.ip_forward", value: "1" }
       when: nmc_enable_kubernetes
+
+    - name: Install OpenStack client tooling
+      ansible.builtin.apt:
+        name:
+          - python3-openstackclient
+          - python3-keystoneclient
+        state: present
+      when: nmc_enable_openstack

@@ -19,6 +19,7 @@
 #include "../Models/VM.h"
 #include "../Models/Connection.h"
 #include "../Models/CloudResponse.h"
+#include "OpenStackClient.h"
 #include "OpenShiftClient.h"
 #include "OIDCValidator.h"
 
@@ -214,6 +215,10 @@ namespace NMC::Server {
         void handleOpenShiftClusters(const httplib::Request& req, httplib::Response& res);
         void handleOpenShiftClusterDetails(const httplib::Request& req, httplib::Response& res);
         void handleOpenShiftRequestCluster(const httplib::Request& req, httplib::Response& res);
+        void handleOpenStackResources(const httplib::Request& req, httplib::Response& res);
+        void handleOpenStackClusters(const httplib::Request& req, httplib::Response& res);
+        void handleOpenStackClusterDetails(const httplib::Request& req, httplib::Response& res);
+        void handleOpenStackRequestCluster(const httplib::Request& req, httplib::Response& res);
         void handleServerVersion(const httplib::Request& req, httplib::Response& res);
         void handleTraceyHeartbeat(const httplib::Request& req, httplib::Response& res);
         void handleListTraceyAgents(const httplib::Request& req, httplib::Response& res);
@@ -247,6 +252,7 @@ namespace NMC::Server {
 
         // Declare an instance of K8sHandlers
         std::unique_ptr<K8sHandlers> k8sHandlers;
+        std::unique_ptr<OpenStackClient> openStackClient;
         std::unique_ptr<OpenShiftClient> openShiftClient;
     };
 

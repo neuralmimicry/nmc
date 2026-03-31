@@ -1,11 +1,13 @@
 // nmc_server/src/Core/OpenShiftClient.cpp
 #include "OpenShiftClient.h"
 #include <iostream>
+#include <utility>
 
 namespace NMC::Server {
 
-    OpenShiftClient::OpenShiftClient(const std::string& baseUrl)
-            : url(parseBaseUrl(baseUrl)) {
+    OpenShiftClient::OpenShiftClient(const std::string& baseUrl, std::string label)
+            : url(parseBaseUrl(baseUrl)),
+              backendLabel(std::move(label)) {
         // httplib supports SSL clients when OpenSSL is available.
 #ifdef CPPHTTPLIB_OPENSSL_SUPPORT
         if (url.https) {
@@ -104,7 +106,7 @@ namespace NMC::Server {
             }
         } else {
             apiResponse.success = false;
-            apiResponse.message = "OpenShift API call failed: " + httplib::to_string(res.error());
+            apiResponse.message = backendLabel + " API call failed: " + httplib::to_string(res.error());
             apiResponse.data = nlohmann::json::object();
             apiResponse.statusCode = 502;
         }
@@ -121,7 +123,7 @@ namespace NMC::Server {
         if (!hasClient) {
             Models::CloudResponse apiResponse;
             apiResponse.success = false;
-            apiResponse.message = "OpenShift API client is not configured for HTTPS support.";
+            apiResponse.message = backendLabel + " API client is not configured for HTTPS support.";
             apiResponse.data = nlohmann::json::object();
             apiResponse.statusCode = 500;
             return apiResponse;
@@ -135,7 +137,7 @@ namespace NMC::Server {
         } else {
             res = httpClient->Get(buildPath("/resources"));
         }
-        return processHttpResponse(res, "OpenShift resources retrieved.");
+        return processHttpResponse(res, backendLabel + " resources retrieved.");
     }
 
     Models::CloudResponse OpenShiftClient::listClusters() {
@@ -148,7 +150,7 @@ namespace NMC::Server {
         if (!hasClient) {
             Models::CloudResponse apiResponse;
             apiResponse.success = false;
-            apiResponse.message = "OpenShift API client is not configured for HTTPS support.";
+            apiResponse.message = backendLabel + " API client is not configured for HTTPS support.";
             apiResponse.data = nlohmann::json::object();
             apiResponse.statusCode = 500;
             return apiResponse;
@@ -162,7 +164,7 @@ namespace NMC::Server {
         } else {
             res = httpClient->Get(buildPath("/clusters"));
         }
-        return processHttpResponse(res, "OpenShift clusters listed.");
+        return processHttpResponse(res, backendLabel + " clusters listed.");
     }
 
     Models::CloudResponse OpenShiftClient::requestCluster(const nlohmann::json& requestBody) {
@@ -175,7 +177,7 @@ namespace NMC::Server {
         if (!hasClient) {
             Models::CloudResponse apiResponse;
             apiResponse.success = false;
-            apiResponse.message = "OpenShift API client is not configured for HTTPS support.";
+            apiResponse.message = backendLabel + " API client is not configured for HTTPS support.";
             apiResponse.data = nlohmann::json::object();
             apiResponse.statusCode = 500;
             return apiResponse;
@@ -189,7 +191,7 @@ namespace NMC::Server {
         } else {
             res = httpClient->Post(buildPath("/clusters/request"), requestBody.dump(), "application/json");
         }
-        return processHttpResponse(res, "OpenShift cluster request submitted.");
+        return processHttpResponse(res, backendLabel + " cluster request submitted.");
     }
 
 } // namespace NMC::Server

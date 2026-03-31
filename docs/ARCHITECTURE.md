@@ -11,6 +11,7 @@ The project delivers a Continuum control-plane and operator CLI for managing:
 - SSH keys (`ssh`)
 - model registry uploads (`model`)
 - OpenShift portal orchestration (`openshift`)
+- OpenStack portal orchestration (`openstack`)
 - Tracey fleet telemetry/control (`tracey`)
 - node onboarding and post-provisioning (`node recruit`)
 
@@ -42,6 +43,7 @@ Key modules:
 - `src/Core/APIRoutes.*`: route registration, auth/body guards, resource handlers
 - `src/Core/K8sHandlers*`: Kubernetes-backed cluster/vcluster logic
 - `src/Core/OpenShiftClient.*`: portal proxy client
+- `src/Core/OpenStackClient.*`: OpenStack portal proxy facade (shared transport logic)
 - `src/Core/OIDCValidator.*`: bearer token introspection
 - `src/Models/`: API envelope and resource models
 
@@ -149,6 +151,7 @@ Implemented robustness patterns:
 - Server state for many resources is in-memory and non-persistent.
 - Full server integration tests are dependency-heavy due Kubernetes C client toolchain.
 - OpenShift behavior depends on an external portal API contract.
+- OpenStack behavior depends on an external portal API contract.
 
 ## 7. High-Confidence Operational Workflow
 

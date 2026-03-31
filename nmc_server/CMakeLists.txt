@@ -165,6 +165,7 @@ set(NMC_SERVER_SOURCES
         src/Core/K8sHandlers_VCluster_Lifecycle.cpp
         src/Core/K8sHandlers_VCluster_Monitoring.cpp
         src/Core/OIDCValidator.cpp
+        src/Core/OpenStackClient.cpp
         src/Core/OpenShiftClient.cpp
         src/Core/VersionCheck.cpp
         src/Core/Utils.cpp

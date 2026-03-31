@@ -16,6 +16,7 @@ It provides a modular and extensible framework for building command-line interfa
 * implementations for cloud operations (Bucket, K8s, Model, SSH, VM).
 * Refiner lifecycle control commands for Kubernetes (`refiner deploy/status/scale/logs/remove`).
 * Continuum node recruitment flow (`node recruit`) with script/binary transfer to remote Ubuntu hosts.
+* OpenStack portal orchestration commands (`openstack`) with cluster request/status workflows.
 * Built-in GitHub release update checks for both client (`nmc version`) and server (`GET /server/version`).
 * Connection health probing via `GET /health` with compatibility fallbacks for older server versions.
 * CI contract tests to ensure route parity and command-level coverage (`server route -> CloudAPI -> CLI command`) remain aligned.
@@ -27,7 +28,7 @@ The project is organized into logical directories:
 
 * `src/CLI/`: Core CLI parsing logic, including `Command` definitions and the `CLIParser`.
 * `src/Commands/`: Contains all the specific `nmc` commands. Each top-level command (e.g., `bucket`, `k8s`) has its own header and source file, and its subcommands are nested within.
-  OpenShift integration commands live in `OpenShiftCommands.*` and proxy to the NeuralMimicry OpenShift portal API.
+  OpenShift/OpenStack integration commands live in `OpenShiftCommands.*` and `OpenStackCommands.*` and proxy to provider portal APIs.
 * `src/Core/`: Core functionalities like `CloudAPIClient` (mocked cloud interaction) and `Utils` (utility functions).
 * `src/Models/`: Data structures representing cloud resources (e.g., `Bucket`, `K8sCluster`).
 
@@ -149,6 +150,21 @@ From the `build` directory:
     ./nmc openshift status hpc-example --watch --until Ready --interval 10 --timeout 900
     ```
 
+* **OpenStack (Continuum) resources:**
+    ```bash
+    ./nmc openstack resources
+    ```
+
+* **Request an OpenStack cluster:**
+    ```bash
+    ./nmc openstack request hpc-os --org neuralmimicry --gpu-count 8 --arch amd64 --region uk1 --provider openstack
+    ```
+
+* **Poll OpenStack cluster status until Ready:**
+    ```bash
+    ./nmc openstack status hpc-os --watch --until Ready --interval 10 --timeout 900
+    ```
+
 * **Deploy and monitor Refiner workload:**
     ```bash
     ./nmc refiner deploy --manifest /path/to/refiner-k8s.yaml --namespace refiner --timeout 300
@@ -181,7 +197,8 @@ From the `build` directory:
       --tenant-environment prod \
       --capability apps \
       --capability podman \
-      --capability kubernetes
+      --capability kubernetes \
+      --capability openstack
     ```
 
 * **Recruit and auto-configure directly from CLI host with custom playbook vars:**
@@ -273,6 +290,7 @@ Detailed end-to-end workflows, including CLI parsing, connection management, and
 The server proxies OpenShift provisioning and visibility requests to the NeuralMimicry OpenShift portal API (oshift).
 Set the OpenShift portal base URL with the `NMC_OSHIFT_API_URL` environment variable when starting `nmc_server`.
 The default is `http://127.0.0.1:8000`.
+OpenStack proxy routes follow the same contract shape and use `NMC_OPENSTACK_API_URL` (defaults to `NMC_OSHIFT_API_URL` when unset).
 Server release status is available at `GET /server/version` and includes current version, latest release tag, and update availability.
 Server health status is available at `GET /health` for lightweight connectivity checks.
 
@@ -295,7 +313,7 @@ Ensure:
 **Codebase Components:**
 - `nmc_client/src/main.cpp`: CLI entry point and command registration.
 - `nmc_client/src/CLI/`: command tree, parser, and global flag handling.
-- `nmc_client/src/Commands/`: domain commands (`bucket`, `k8s`, `vcluster`, `vm`, `ssh`, `model`, `node`, `openshift`, `tracey`, `server`, `refiner`, `connection`, `version`).
+- `nmc_client/src/Commands/`: domain commands (`bucket`, `k8s`, `vcluster`, `vm`, `ssh`, `model`, `node`, `openshift`, `openstack`, `tracey`, `server`, `refiner`, `connection`, `version`).
 - `nmc_client/src/Core/CloudAPIClient.*`: HTTP transport, response normalisation, connection profile management, and token resolution.
 - `nmc_client/src/Models/`: request/response models used by command handlers.
 - `nmc_server/src/Core/APIRoutes.*`: route registration, auth/payload guardrails, and handler implementations.

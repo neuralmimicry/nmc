@@ -1,12 +1,12 @@
-// nmc_client/src/Commands/OpenShiftCommands.cpp
-#include "OpenShiftCommands.h"
-#include <iostream>
+// nmc_client/src/Commands/OpenStackCommands.cpp
+#include "OpenStackCommands.h"
 #include <chrono>
 #include <cctype>
+#include <iostream>
+#include <nlohmann/json.hpp>
 #include <set>
 #include <sstream>
 #include <thread>
-#include <nlohmann/json.hpp>
 
 namespace NMC::Commands {
 
@@ -40,6 +40,7 @@ namespace NMC::Commands {
             return out;
         }
 
+        // Normalize backend-specific states to stable continuum status buckets.
         std::string normalizeStatus(const std::string& rawStatus) {
             const std::string status = toLower(trim(rawStatus));
             if (status == "ready" || status == "running" || status == "active" || status == "available") {
@@ -51,9 +52,9 @@ namespace NMC::Commands {
             if (status == "pending" || status == "accepted" || status == "queued" || status == "requested") {
                 return "Pending";
             }
-            if (status == "provisioning" || status == "gitops-syncing" || status == "gitops_syncing"
-                || status == "syncing" || status == "installing" || status == "creating"
-                || status == "build" || status == "rebuild" || status == "spawning") {
+            if (status == "provisioning" || status == "gitops-syncing" || status == "gitops_syncing" ||
+                status == "syncing" || status == "installing" || status == "creating" ||
+                status == "build" || status == "rebuild" || status == "spawning") {
                 return "Provisioning";
             }
             return "Unknown";
@@ -78,55 +79,51 @@ namespace NMC::Commands {
             }
             return "";
         }
+    } // namespace
+
+    OpenStackCommand::OpenStackCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client)
+            : BaseCommand("openstack", "Manage OpenStack resources via NeuralMimicry Continuum", std::move(client)) {
+        usage = "nmc openstack [command]";
+        addAlias("ostack");
     }
 
-// --- OpenShiftCommand (Parent) ---
-    OpenShiftCommand::OpenShiftCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client)
-            : BaseCommand("openshift", "Manage OpenShift resources via NeuralMimicry Continuum", std::move(client)) {
-        usage = "nmc openshift [command]";
-        addAlias("ocp");
-        addAlias("oshift");
-    }
-
-    int OpenShiftCommand::execute(const std::map<std::string, std::string>&,
+    int OpenStackCommand::execute(const std::map<std::string, std::string>&,
                                   const std::vector<std::string>&,
                                   const CLI::GlobalFlags&) {
         printHelp();
         return 0;
     }
 
-// --- OpenShiftResourcesCommand ---
-    OpenShiftResourcesCommand::OpenShiftResourcesCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client)
-            : BaseCommand("resources", "Show available OpenShift capacity", std::move(client)) {
-        usage = "nmc openshift resources";
-        examples = "nmc openshift resources";
+    OpenStackResourcesCommand::OpenStackResourcesCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client)
+            : BaseCommand("resources", "Show available OpenStack capacity", std::move(client)) {
+        usage = "nmc openstack resources";
+        examples = "nmc openstack resources";
     }
 
-    int OpenShiftResourcesCommand::execute(const std::map<std::string, std::string>& parsedFlags,
+    int OpenStackResourcesCommand::execute(const std::map<std::string, std::string>& parsedFlags,
                                            const std::vector<std::string>& parsedArgs,
                                            const CLI::GlobalFlags& globalFlags) {
         if (!validateArguments(parsedArgs) || !validateFlags(parsedFlags)) {
             return 1;
         }
-        Models::CloudResponse response = apiClient->listOpenShiftResources();
+        Models::CloudResponse response = apiClient->listOpenStackResources();
         printOutput(response, globalFlags);
         return response.success ? 0 : 1;
     }
 
-// --- OpenShiftClustersCommand ---
-    OpenShiftClustersCommand::OpenShiftClustersCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client)
-            : BaseCommand("clusters", "List OpenShift clusters", std::move(client)) {
-        usage = "nmc openshift clusters";
-        examples = "nmc openshift clusters";
+    OpenStackClustersCommand::OpenStackClustersCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client)
+            : BaseCommand("clusters", "List OpenStack clusters", std::move(client)) {
+        usage = "nmc openstack clusters";
+        examples = "nmc openstack clusters";
     }
 
-    int OpenShiftClustersCommand::execute(const std::map<std::string, std::string>& parsedFlags,
+    int OpenStackClustersCommand::execute(const std::map<std::string, std::string>& parsedFlags,
                                           const std::vector<std::string>& parsedArgs,
                                           const CLI::GlobalFlags& globalFlags) {
         if (!validateArguments(parsedArgs) || !validateFlags(parsedFlags)) {
             return 1;
         }
-        Models::CloudResponse response = apiClient->listOpenShiftClusters();
+        Models::CloudResponse response = apiClient->listOpenStackClusters();
         if (response.success && response.data.is_array()) {
             nlohmann::json normalized = nlohmann::json::array();
             for (auto& cluster : response.data) {
@@ -141,22 +138,21 @@ namespace NMC::Commands {
         return response.success ? 0 : 1;
     }
 
-// --- OpenShiftRequestCommand ---
-    OpenShiftRequestCommand::OpenShiftRequestCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client)
-            : BaseCommand("request", "Request a new OpenShift cluster", std::move(client)) {
-        usage = "nmc openshift request NAME --org ORG --gpu-count 8 --arch amd64 --region us-east-1 --provider rosa";
-        examples = "nmc openshift request hpc-example --org neuralmimicry --gpu-count 8 --arch amd64 --region us-east-1 --provider rosa";
+    OpenStackRequestCommand::OpenStackRequestCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client)
+            : BaseCommand("request", "Request a new OpenStack cluster", std::move(client)) {
+        usage = "nmc openstack request NAME --org ORG --gpu-count 8 --arch amd64 --region uk1 --provider openstack";
+        examples = "nmc openstack request hpc-example --org neuralmimicry --gpu-count 8 --arch amd64 --region uk1 --provider openstack";
         addArgument(CLI::Argument("NAME", "Cluster name", true, 0));
         addFlag(CLI::Flag("o", "org", "Organization name", CLI::FlagType::String, true));
         addFlag(CLI::Flag("g", "gpu-count", "Requested GPU count", CLI::FlagType::Int, true));
         addFlag(CLI::Flag("a", "arch", "Architecture: amd64 or arm64", CLI::FlagType::String, true));
         addFlag(CLI::Flag("r", "region", "Region or location", CLI::FlagType::String, true));
-        addFlag(CLI::Flag("p", "provider", "Provider: on-prem, rosa, aro, gcp, hybrid-burst, openstack", CLI::FlagType::String, false));
+        addFlag(CLI::Flag("p", "provider", "Provider: openstack, openstack-heat, openstack-magnum, hybrid-burst", CLI::FlagType::String, false));
         addFlag(CLI::Flag("b", "burst-targets", "Comma-separated burst targets for hybrid-burst (deprecated)", CLI::FlagType::String, false));
         addFlag(CLI::Flag("t", "burst-target", "Repeatable burst target for hybrid-burst", CLI::FlagType::String, false));
     }
 
-    int OpenShiftRequestCommand::execute(const std::map<std::string, std::string>& parsedFlags,
+    int OpenStackRequestCommand::execute(const std::map<std::string, std::string>& parsedFlags,
                                          const std::vector<std::string>& parsedArgs,
                                          const CLI::GlobalFlags& globalFlags) {
         if (!validateArguments(parsedArgs) || !validateFlags(parsedFlags)) {
@@ -168,7 +164,7 @@ namespace NMC::Commands {
         const std::string gpuCountStr = parsedFlags.count("gpu-count") ? parsedFlags.at("gpu-count") : "";
         const std::string architecture = parsedFlags.count("arch") ? parsedFlags.at("arch") : "";
         const std::string region = parsedFlags.count("region") ? parsedFlags.at("region") : "";
-        const std::string provider = parsedFlags.count("provider") ? parsedFlags.at("provider") : "on-prem";
+        const std::string provider = parsedFlags.count("provider") ? parsedFlags.at("provider") : "openstack";
         const std::string burstTargetsRaw = parsedFlags.count("burst-targets") ? parsedFlags.at("burst-targets") : "";
         const std::string burstTargetRaw = parsedFlags.count("burst-target") ? parsedFlags.at("burst-target") : "";
 
@@ -195,9 +191,14 @@ namespace NMC::Commands {
         std::vector<std::string> burstTargets = splitCommaList(burstTargetsRaw);
         const std::vector<std::string> burstTargetsExtra = splitCommaList(burstTargetRaw);
         burstTargets.insert(burstTargets.end(), burstTargetsExtra.begin(), burstTargetsExtra.end());
-        const std::set<std::string> allowedProviders = {"on-prem", "rosa", "aro", "gcp", "hybrid-burst", "openstack"};
+        const std::set<std::string> allowedProviders = {
+                "openstack",
+                "openstack-heat",
+                "openstack-magnum",
+                "hybrid-burst"
+        };
         if (!allowedProviders.count(provider)) {
-            std::cerr << "Error: provider must be one of: on-prem, rosa, aro, gcp, hybrid-burst, openstack." << std::endl;
+            std::cerr << "Error: provider must be one of: openstack, openstack-heat, openstack-magnum, hybrid-burst." << std::endl;
             printHelp();
             return 1;
         }
@@ -207,7 +208,7 @@ namespace NMC::Commands {
             return 1;
         }
 
-        Models::CloudResponse response = apiClient->requestOpenShiftCluster(
+        Models::CloudResponse response = apiClient->requestOpenStackCluster(
                 name,
                 organization,
                 gpuCount,
@@ -220,11 +221,10 @@ namespace NMC::Commands {
         return response.success ? 0 : 1;
     }
 
-// --- OpenShiftStatusCommand ---
-    OpenShiftStatusCommand::OpenShiftStatusCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client)
-            : BaseCommand("status", "Get OpenShift cluster status (optionally poll)", std::move(client)) {
-        usage = "nmc openshift status NAME [--watch] [--until Ready] [--interval 10] [--timeout 600]";
-        examples = "nmc openshift status hpc-example --watch --until Ready --interval 10 --timeout 900";
+    OpenStackStatusCommand::OpenStackStatusCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client)
+            : BaseCommand("status", "Get OpenStack cluster status (optionally poll)", std::move(client)) {
+        usage = "nmc openstack status NAME [--watch] [--until Ready] [--interval 10] [--timeout 600]";
+        examples = "nmc openstack status hpc-example --watch --until Ready --interval 10 --timeout 900";
         addArgument(CLI::Argument("NAME", "Cluster name", true, 0));
         addFlag(CLI::Flag("w", "watch", "Poll until status matches --until", CLI::FlagType::Bool, false));
         addFlag(CLI::Flag("u", "until", "Stop polling when status matches target (Pending, Provisioning, Ready, Failed, Unknown)", CLI::FlagType::String, false));
@@ -232,7 +232,7 @@ namespace NMC::Commands {
         addFlag(CLI::Flag("T", "timeout", "Polling timeout in seconds", CLI::FlagType::Int, false));
     }
 
-    int OpenShiftStatusCommand::execute(const std::map<std::string, std::string>& parsedFlags,
+    int OpenStackStatusCommand::execute(const std::map<std::string, std::string>& parsedFlags,
                                         const std::vector<std::string>& parsedArgs,
                                         const CLI::GlobalFlags& globalFlags) {
         if (!validateArguments(parsedArgs) || !validateFlags(parsedFlags)) {
@@ -289,14 +289,14 @@ namespace NMC::Commands {
         finalResponse.data = nlohmann::json::object();
 
         while (true) {
-            Models::CloudResponse response = apiClient->getOpenShiftClusterDetails(name);
+            Models::CloudResponse response = apiClient->getOpenStackClusterDetails(name);
             if (!response.success) {
                 if (!watch) {
                     printOutput(response, globalFlags);
                     return 1;
                 }
                 if (globalFlags.outputFormat.empty()) {
-                    std::cerr << "Warning: failed to fetch OpenShift details, retrying..." << std::endl;
+                    std::cerr << "Warning: failed to fetch OpenStack details, retrying..." << std::endl;
                 }
             } else {
                 nlohmann::json found = response.data;
@@ -366,3 +366,4 @@ namespace NMC::Commands {
     }
 
 } // namespace NMC::Commands
+
