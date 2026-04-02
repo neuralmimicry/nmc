@@ -59,6 +59,18 @@ To build `nmc`, you will need CMake and a C++17 compatible compiler (e.g., GCC, 
 
 After a successful build, the `nmc` executable will be located in the `build` directory.
 
+## Release workflow
+
+GitHub Actions release automation lives in `.github/workflows/build-and-release.yml`.
+
+- `VERSION` is the release version source of truth for both client and server builds.
+- official GitHub releases require a matching `vX.Y.Z` tag.
+- Unix packages can be built locally with `scripts/package-release.sh`; Windows packaging uses `scripts/package-release.ps1`.
+- manual `workflow_dispatch` runs can package artifacts from any ref.
+- publish steps only run from a `v*` tag ref, either automatically on tag push or manually from `workflow_dispatch`.
+
+The packaged artifacts include versioned client/server archives plus SHA-256 checksum files so the same naming and release expectations apply across local packaging and GitHub Releases.
+
 **Running the Application (Examples):**
 
 From the `build` directory:

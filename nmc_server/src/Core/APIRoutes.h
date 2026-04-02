@@ -121,6 +121,13 @@ namespace NMC::Server {
             std::string message;
             nlohmann::json context;
         };
+        struct RecruitCapacityAssessment {
+            bool sameHardware{false};
+            bool allowed{true};
+            std::string source;
+            std::string reason;
+            nlohmann::json details;
+        };
         std::unordered_map<std::string, TraceyAgent> traceyAgents;
         std::unordered_map<std::string, TraceyRequirement> traceyRequirements;
         std::unordered_map<std::string, std::deque<TraceyStatusSample>> traceyAgentHistory;
@@ -141,6 +148,7 @@ namespace NMC::Server {
         size_t traceyHistoryMaxSamples;
         size_t traceyAgentLogMaxEntries;
         std::string traceyStatusBearerToken;
+        std::string traceyLocalAgentId;
         std::thread traceyDiscoveryThread;
         std::atomic<bool> stopTraceyDiscovery;
 
@@ -226,6 +234,7 @@ namespace NMC::Server {
         void handleTraceyAgentAnalysis(const httplib::Request& req, httplib::Response& res);
         void handleTraceyAgentControl(const httplib::Request& req, httplib::Response& res);
         void handleTraceyAgentDeepDive(const httplib::Request& req, httplib::Response& res);
+        RecruitCapacityAssessment assessRecruitCapacity(const std::string& host);
         void handleRecruitNode(const httplib::Request& req, httplib::Response& res);
         void runTraceyDiscoveryLoop();
         void ingestTraceyDiscoveryAnnouncement(const nlohmann::json& payload, const std::string& senderAddress, int64_t receivedAtMs);

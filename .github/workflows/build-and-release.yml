@@ -13,9 +13,29 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      publish_release:
+        description: "Publish a GitHub release from the selected v* tag ref"
+        required: true
+        type: boolean
+        default: false
+      draft_release:
+        description: "Mark a manually published release as draft"
+        required: true
+        type: boolean
+        default: false
+      prerelease:
+        description: "Mark a manually published release as prerelease"
+        required: true
+        type: boolean
+        default: false
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: build-and-release-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 jobs:
   contract-test:
@@ -62,25 +82,56 @@ jobs:
       - name: Run functional CLI integration test
         run: python3 tests/functional/client_cli_integration_test.py
 
-  build-client-linux:
-    name: Build Client (Linux x64)
+  release-metadata:
+    name: Release Metadata
     runs-on: ubuntu-latest
     needs:
       - contract-test
       - safety-test
       - functional-test
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      startsWith(github.ref, 'refs/tags/v')
+    outputs:
+      artifact_version: ${{ steps.meta.outputs.artifact_version }}
+      release_tag: ${{ steps.meta.outputs.release_tag }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Compute build version
-        id: version
+      - name: Compute artifact metadata
+        id: meta
+        shell: bash
         run: |
+          set -euo pipefail
+          source_version=$(tr -d '[:space:]' < VERSION)
+          short_sha="${GITHUB_SHA::0:7}"
+          release_tag=""
+
           if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
-            echo "value=${GITHUB_REF_NAME#v}" >> "${GITHUB_OUTPUT}"
+            release_tag="${GITHUB_REF#refs/tags/}"
+            artifact_version="${release_tag#v}"
           else
-            echo "value=0.0.1-main.${GITHUB_RUN_NUMBER}" >> "${GITHUB_OUTPUT}"
+            artifact_version="${source_version}-dev.${GITHUB_RUN_NUMBER}.${short_sha}"
           fi
+
+          if [[ -n "$release_tag" && "$artifact_version" != "$source_version" ]]; then
+            echo "::error::Tag ${release_tag} does not match VERSION"
+            echo "::error::version ${source_version}"
+            exit 1
+          fi
+
+          echo "artifact_version=$artifact_version" >> "$GITHUB_OUTPUT"
+          echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
+
+  package-client-linux:
+    name: Package Client (Linux x64)
+    runs-on: ubuntu-latest
+    needs: release-metadata
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
 
       - name: Install dependencies
         run: |
@@ -88,7 +139,9 @@ jobs:
           sudo apt-get install -y --no-install-recommends build-essential cmake
 
       - name: Configure
-        run: cmake -S nmc_client -B nmc_client/build -DCMAKE_BUILD_TYPE=Release -DNMC_CLIENT_VERSION=${{ steps.version.outputs.value }}
+        run: >-
+          cmake -S nmc_client -B nmc_client/build -DCMAKE_BUILD_TYPE=Release
+          -DNMC_CLIENT_VERSION=${{ needs.release-metadata.outputs.artifact_version }}
 
       - name: Build
         run: cmake --build nmc_client/build --config Release -- -j"$(nproc)"
@@ -97,42 +150,38 @@ jobs:
         run: ./nmc_client/build/nmc version --no-check
 
       - name: Package
+        shell: bash
         run: |
-          mkdir -p dist
-          cp nmc_client/build/nmc dist/nmc-client-linux-x64
-          tar -C dist -czf nmc-client-linux-x64.tar.gz nmc-client-linux-x64
+          set -euo pipefail
+          chmod +x scripts/package-release.sh
+          ./scripts/package-release.sh \
+            --component client \
+            --version "${{ needs.release-metadata.outputs.artifact_version }}" \
+            --input ./nmc_client/build/nmc \
+            --platform linux-x86_64 \
+            --rename nmc \
+            --output-dir ./dist
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v4
         with:
-          name: nmc-client-linux-x64
-          path: nmc-client-linux-x64.tar.gz
-          retention-days: 7
+          name: nmc-client-linux-x86_64
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
 
-  build-client-windows:
-    name: Build Client (Windows x64)
+  package-client-windows:
+    name: Package Client (Windows x64)
     runs-on: windows-latest
-    needs:
-      - contract-test
-      - safety-test
-      - functional-test
+    needs: release-metadata
     steps:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Compute build version
-        id: version
-        shell: pwsh
-        run: |
-          if ("${{ github.ref }}".StartsWith("refs/tags/v")) {
-            $version = "${{ github.ref_name }}".Substring(1)
-          } else {
-            $version = "0.0.1-main.${{ github.run_number }}"
-          }
-          "value=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-
       - name: Configure
-        run: cmake -S nmc_client -B nmc_client/build -DCMAKE_BUILD_TYPE=Release -DNMC_CLIENT_VERSION=${{ steps.version.outputs.value }}
+        run: >-
+          cmake -S nmc_client -B nmc_client/build -DCMAKE_BUILD_TYPE=Release
+          -DNMC_CLIENT_VERSION=${{ needs.release-metadata.outputs.artifact_version }}
 
       - name: Build
         run: cmake --build nmc_client/build --config Release
@@ -144,39 +193,34 @@ jobs:
       - name: Package
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path dist | Out-Null
-          Copy-Item .\nmc_client\build\Release\nmc.exe .\dist\nmc-client-windows-x64.exe
-          Compress-Archive -Path .\dist\nmc-client-windows-x64.exe -DestinationPath .\nmc-client-windows-x64.zip -Force
+          .\scripts\package-release.ps1 `
+            -Component client `
+            -Version "${{ needs.release-metadata.outputs.artifact_version }}" `
+            -Input .\nmc_client\build\Release\nmc.exe `
+            -Platform windows-x86_64 `
+            -Rename nmc.exe `
+            -OutputDir .\dist
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v4
         with:
-          name: nmc-client-windows-x64
-          path: nmc-client-windows-x64.zip
-          retention-days: 7
+          name: nmc-client-windows-x86_64
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
 
-  build-client-macos:
-    name: Build Client (macOS)
+  package-client-macos:
+    name: Package Client (macOS)
     runs-on: macos-latest
-    needs:
-      - contract-test
-      - safety-test
-      - functional-test
+    needs: release-metadata
     steps:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Compute build version
-        id: version
-        run: |
-          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
-            echo "value=${GITHUB_REF_NAME#v}" >> "${GITHUB_OUTPUT}"
-          else
-            echo "value=0.0.1-main.${GITHUB_RUN_NUMBER}" >> "${GITHUB_OUTPUT}"
-          fi
-
       - name: Configure
-        run: cmake -S nmc_client -B nmc_client/build -DCMAKE_BUILD_TYPE=Release -DNMC_CLIENT_VERSION=${{ steps.version.outputs.value }}
+        run: >-
+          cmake -S nmc_client -B nmc_client/build -DCMAKE_BUILD_TYPE=Release
+          -DNMC_CLIENT_VERSION=${{ needs.release-metadata.outputs.artifact_version }}
 
       - name: Build
         run: cmake --build nmc_client/build --config Release -- -j"$(sysctl -n hw.ncpu)"
@@ -184,38 +228,45 @@ jobs:
       - name: Smoke test
         run: ./nmc_client/build/nmc version --no-check
 
-      - name: Package
+      - name: Detect platform
+        id: platform
+        shell: bash
         run: |
-          mkdir -p dist
-          cp nmc_client/build/nmc dist/nmc-client-macos
-          tar -C dist -czf nmc-client-macos.tar.gz nmc-client-macos
+          set -euo pipefail
+          arch=$(uname -m)
+          case "$arch" in
+            arm64) arch="aarch64" ;;
+          esac
+          echo "value=macos-${arch}" >> "$GITHUB_OUTPUT"
+
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x scripts/package-release.sh
+          ./scripts/package-release.sh \
+            --component client \
+            --version "${{ needs.release-metadata.outputs.artifact_version }}" \
+            --input ./nmc_client/build/nmc \
+            --platform "${{ steps.platform.outputs.value }}" \
+            --rename nmc \
+            --output-dir ./dist
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v4
         with:
           name: nmc-client-macos
-          path: nmc-client-macos.tar.gz
-          retention-days: 7
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
 
-  build-server-linux:
-    name: Build Server (Linux x64)
+  package-server-linux:
+    name: Package Server (Linux x64)
     runs-on: ubuntu-latest
-    needs:
-      - contract-test
-      - safety-test
-      - functional-test
+    needs: release-metadata
     steps:
       - name: Checkout
         uses: actions/checkout@v6
-
-      - name: Compute build version
-        id: version
-        run: |
-          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
-            echo "value=${GITHUB_REF_NAME#v}" >> "${GITHUB_OUTPUT}"
-          else
-            echo "value=0.0.1-main.${GITHUB_RUN_NUMBER}" >> "${GITHUB_OUTPUT}"
-          fi
 
       - name: Install dependencies
         run: |
@@ -226,153 +277,109 @@ jobs:
             ca-certificates curl gawk
 
       - name: Configure
-        run: cmake -S nmc_server -B nmc_server/build -DCMAKE_BUILD_TYPE=Release -DNMC_SERVER_VERSION=${{ steps.version.outputs.value }}
+        run: >-
+          cmake -S nmc_server -B nmc_server/build -DCMAKE_BUILD_TYPE=Release
+          -DNMC_SERVER_VERSION=${{ needs.release-metadata.outputs.artifact_version }}
 
       - name: Build
         run: cmake --build nmc_server/build --config Release -- -j"$(nproc)"
 
       - name: Package
+        shell: bash
         run: |
-          mkdir -p dist
-          cp nmc_server/build/nmc_server dist/nmc-server-linux-x64
-          tar -C dist -czf nmc-server-linux-x64.tar.gz nmc-server-linux-x64
+          set -euo pipefail
+          chmod +x scripts/package-release.sh
+          ./scripts/package-release.sh \
+            --component server \
+            --version "${{ needs.release-metadata.outputs.artifact_version }}" \
+            --input ./nmc_server/build/nmc_server \
+            --platform linux-x86_64 \
+            --rename nmc_server \
+            --output-dir ./dist
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v4
         with:
-          name: nmc-server-linux-x64
-          path: nmc-server-linux-x64.tar.gz
-          retention-days: 7
+          name: nmc-server-linux-x86_64
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
 
-  release-snapshot:
-    name: Publish Snapshot Release
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs:
-      - build-client-linux
-      - build-client-windows
-      - build-client-macos
-      - build-server-linux
+  publish-release:
+    name: Publish Release
     runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
+    needs:
+      - release-metadata
+      - package-client-linux
+      - package-client-windows
+      - package-client-macos
+      - package-server-linux
+    if: >-
+      startsWith(github.ref, 'refs/tags/v') ||
+      (github.event_name == 'workflow_dispatch' && inputs.publish_release)
+    permissions:
+      contents: write
 
-      - name: Download all artifacts
-        uses: actions/download-artifact@v8
+    steps:
+      - name: Validate publish target
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${{ needs.release-metadata.outputs.release_tag }}" ]]; then
+            echo "::error::Publishing requires a v* tag ref"
+            exit 1
+          fi
+
+      - name: Download packaged artifacts
+        uses: actions/download-artifact@v5
         with:
-          path: release-assets
+          path: ./release-assets
           merge-multiple: true
 
-      - name: Publish snapshot
+      - name: Create or update GitHub release
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.release-metadata.outputs.release_tag }}
+          DRAFT_RELEASE: >-
+            ${{ github.event_name == 'workflow_dispatch' && inputs.draft_release }}
+          MANUAL_PRERELEASE: >-
+            ${{ github.event_name == 'workflow_dispatch' && inputs.prerelease }}
         run: |
           set -euo pipefail
-          ASSET_CLIENT_LINUX="release-assets/nmc-client-linux-x64.tar.gz"
-          ASSET_CLIENT_WINDOWS="release-assets/nmc-client-windows-x64.zip"
-          ASSET_CLIENT_MACOS="release-assets/nmc-client-macos.tar.gz"
-          ASSET_SERVER_LINUX="release-assets/nmc-server-linux-x64.tar.gz"
-          TAG="snapshot-main"
-          TITLE="Snapshot build (main)"
+          shopt -s nullglob
 
-          for asset in "$ASSET_CLIENT_LINUX" "$ASSET_CLIENT_WINDOWS" "$ASSET_CLIENT_MACOS" "$ASSET_SERVER_LINUX"; do
-            if [[ ! -f "$asset" ]]; then
-              echo "Missing release asset: $asset" >&2
-              exit 1
-            fi
-          done
-
-          NOTES_FILE="$(mktemp)"
-          {
-            echo "Automated snapshot release from main."
-            echo
-            echo "Commit: ${GITHUB_SHA}"
-            echo "Run: https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
-          } > "$NOTES_FILE"
-
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release edit "$TAG" \
-              --title "$TITLE" \
-              --target "${GITHUB_SHA}" \
-              --prerelease \
-              --notes-file "$NOTES_FILE"
-            gh release upload "$TAG" \
-              "$ASSET_CLIENT_LINUX" \
-              "$ASSET_CLIENT_WINDOWS" \
-              "$ASSET_CLIENT_MACOS" \
-              "$ASSET_SERVER_LINUX" \
-              --clobber
-          else
-            gh release create "$TAG" \
-              "$ASSET_CLIENT_LINUX" \
-              "$ASSET_CLIENT_WINDOWS" \
-              "$ASSET_CLIENT_MACOS" \
-              "$ASSET_SERVER_LINUX" \
-              --title "$TITLE" \
-              --target "${GITHUB_SHA}" \
-              --prerelease \
-              --latest=false \
-              --notes-file "$NOTES_FILE"
+          files=(release-assets/*)
+          if [[ ${#files[@]} -eq 0 ]]; then
+            echo "::error::No packaged artifacts were downloaded"
+            exit 1
           fi
 
-  release-tag:
-    name: Publish Tagged Release
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    needs:
-      - build-client-linux
-      - build-client-windows
-      - build-client-macos
-      - build-server-linux
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Download all artifacts
-        uses: actions/download-artifact@v8
-        with:
-          path: release-assets
-          merge-multiple: true
-
-      - name: Publish tagged release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          ASSET_CLIENT_LINUX="release-assets/nmc-client-linux-x64.tar.gz"
-          ASSET_CLIENT_WINDOWS="release-assets/nmc-client-windows-x64.zip"
-          ASSET_CLIENT_MACOS="release-assets/nmc-client-macos.tar.gz"
-          ASSET_SERVER_LINUX="release-assets/nmc-server-linux-x64.tar.gz"
-          TAG="${GITHUB_REF_NAME}"
-          TITLE="NMC ${GITHUB_REF_NAME}"
-
-          for asset in "$ASSET_CLIENT_LINUX" "$ASSET_CLIENT_WINDOWS" "$ASSET_CLIENT_MACOS" "$ASSET_SERVER_LINUX"; do
-            if [[ ! -f "$asset" ]]; then
-              echo "Missing release asset: $asset" >&2
-              exit 1
-            fi
-          done
-
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release edit "$TAG" \
-              --title "$TITLE" \
-              --latest
-            gh release upload "$TAG" \
-              "$ASSET_CLIENT_LINUX" \
-              "$ASSET_CLIENT_WINDOWS" \
-              "$ASSET_CLIENT_MACOS" \
-              "$ASSET_SERVER_LINUX" \
-              --clobber
-          else
-            gh release create "$TAG" \
-              "$ASSET_CLIENT_LINUX" \
-              "$ASSET_CLIENT_WINDOWS" \
-              "$ASSET_CLIENT_MACOS" \
-              "$ASSET_SERVER_LINUX" \
-              --title "$TITLE" \
-              --latest \
-              --generate-notes \
-              --verify-tag
+          title="NMC ${RELEASE_TAG}"
+          prerelease="${MANUAL_PRERELEASE}"
+          if [[ "${GITHUB_EVENT_NAME}" != "workflow_dispatch" && "${RELEASE_TAG}" == *-* ]]; then
+            prerelease="true"
           fi
+
+          if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
+            gh release upload "${RELEASE_TAG}" "${files[@]}" --clobber
+            exit 0
+          fi
+
+          args=(
+            "${RELEASE_TAG}"
+            "${files[@]}"
+            --target "${GITHUB_SHA}"
+            --title "${title}"
+            --generate-notes
+          )
+
+          if [[ "${DRAFT_RELEASE}" == "true" ]]; then
+            args+=(--draft)
+          fi
+          if [[ "${prerelease}" == "true" ]]; then
+            args+=(--prerelease)
+          fi
+
+          gh release create "${args[@]}"

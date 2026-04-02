@@ -20,6 +20,7 @@
         <p><strong>Endpoint:</strong> <code>POST /node/recruit</code></p>
         <p><strong>Auth:</strong> Requires the same Continuum API authentication as other protected endpoints (<code>Bearer</code> token or OIDC).</p>
         <p>Transfers a script/binary over SSH (<code>scp</code>) and executes it on the remote host (<code>ssh</code>), then can run an Ansible playbook for tenant-specific host preparation.</p>
+        <p>If the requested <code>host</code> resolves to the same machine running Continuum, the server performs a same-hardware capacity admission check before execution. Requests are rejected when local Tracey telemetry or host load/memory readings show insufficient headroom.</p>
 
         <h3>Request Body:</h3>
         <pre><code class="language-json">{
@@ -124,6 +125,7 @@
             <li><strong>HTTP 400:</strong> invalid input (host/user/path/type/JSON fields).</li>
             <li><strong>HTTP 401:</strong> unauthorized request.</li>
             <li><strong>HTTP 403:</strong> invalid or missing <code>recruit_token</code> when required.</li>
+            <li><strong>HTTP 409:</strong> same-hardware recruitment rejected because Continuum does not currently have spare local capacity.</li>
             <li><strong>HTTP 500:</strong> required dependencies missing on recruiter host (for example <code>ansible-playbook</code> when <code>auto_configure=true</code>).</li>
             <li><strong>HTTP 502:</strong> SSH/SCP prepare/transfer/execute step failed.</li>
         </ul>

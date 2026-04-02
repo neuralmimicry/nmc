@@ -1,11 +1,16 @@
 # nmc_client/CMakeLists.txt
 cmake_minimum_required(VERSION 3.31.6) # Main project's required CMake version
-project(nmc CXX) # Project name is 'nmc' for the client executable
+file(STRINGS "${CMAKE_CURRENT_LIST_DIR}/../VERSION" NMC_VERSION_FILE LIMIT_COUNT 1)
+if(NOT NMC_VERSION_FILE)
+    set(NMC_VERSION_FILE "0.0.1")
+endif()
+string(STRIP "${NMC_VERSION_FILE}" NMC_VERSION_DEFAULT)
+project(nmc VERSION ${NMC_VERSION_DEFAULT} LANGUAGES CXX) # Project name is 'nmc' for the client executable
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
 set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
-set(NMC_CLIENT_VERSION "0.0.1" CACHE STRING "NMC client semantic version")
+set(NMC_CLIENT_VERSION "${PROJECT_VERSION}" CACHE STRING "NMC client semantic version")
 # Include FetchContent module for automatic dependency downloading
 include(FetchContent)
 include(GNUInstallDirs)

@@ -20,6 +20,7 @@
 #include <thread>
 #include <vector>
 #include <poll.h>
+#include <ifaddrs.h>
 #include <netdb.h>
 #include <sys/socket.h>
 #include <sys/wait.h>
@@ -94,6 +95,31 @@ namespace NMC::Server {
                     std::chrono::system_clock::now().time_since_epoch()
             ).count();
         }
+
+        constexpr double SAME_HARDWARE_MAX_LOAD_PER_CPU = 0.85;
+        constexpr double SAME_HARDWARE_MAX_MEMORY_USED_RATIO = 0.85;
+        constexpr int64_t SAME_HARDWARE_TRACEY_FRESHNESS_FLOOR_MS = 30'000;
+
+        struct LocalHostIdentity {
+            std::set<std::string> aliases;
+            std::set<std::string> addresses;
+        };
+
+        struct HostMatchResult {
+            bool sameHardware{false};
+            nlohmann::json details;
+        };
+
+        struct SystemCapacitySnapshot {
+            unsigned int cpuCores{0};
+            double load1{0.0};
+            double loadPerCpu{0.0};
+            uint64_t totalMemoryBytes{0};
+            uint64_t availableMemoryBytes{0};
+            double memoryUsedRatio{0.0};
+            bool loadAvailable{false};
+            bool memoryAvailable{false};
+        };
 
         void normalizeClusterStatus(nlohmann::json& cluster) {
             if (cluster.is_object() && cluster.contains("status") && cluster["status"].is_string()) {
@@ -389,6 +415,215 @@ namespace NMC::Server {
             }
 
             return hostResolvesToLocal(host);
+        }
+
+        std::string normalizeHostIdentity(std::string value) {
+            value = toLower(trim(value));
+            while (!value.empty() && value.back() == '.') {
+                value.pop_back();
+            }
+            return value;
+        }
+
+        std::vector<std::string> resolveHostAddresses(const std::string& host) {
+            std::vector<std::string> addresses;
+            addrinfo hints{};
+            hints.ai_family = AF_UNSPEC;
+            hints.ai_socktype = SOCK_STREAM;
+            hints.ai_flags = AI_ADDRCONFIG;
+            addrinfo* result = nullptr;
+            const int rc = ::getaddrinfo(host.c_str(), nullptr, &hints, &result);
+            if (rc != 0 || result == nullptr) {
+                return addresses;
+            }
+
+            std::set<std::string> unique;
+            char buffer[INET6_ADDRSTRLEN]{};
+            for (addrinfo* cursor = result; cursor != nullptr; cursor = cursor->ai_next) {
+                const void* source = nullptr;
+                if (cursor->ai_family == AF_INET) {
+                    source = &reinterpret_cast<const sockaddr_in*>(cursor->ai_addr)->sin_addr;
+                } else if (cursor->ai_family == AF_INET6) {
+                    source = &reinterpret_cast<const sockaddr_in6*>(cursor->ai_addr)->sin6_addr;
+                }
+                if (!source) {
+                    continue;
+                }
+                if (::inet_ntop(cursor->ai_family, source, buffer, sizeof(buffer)) != nullptr) {
+                    const std::string normalized = normalizeHostIdentity(buffer);
+                    if (!normalized.empty() && unique.insert(normalized).second) {
+                        addresses.push_back(normalized);
+                    }
+                }
+            }
+
+            ::freeaddrinfo(result);
+            return addresses;
+        }
+
+        LocalHostIdentity collectLocalHostIdentity() {
+            LocalHostIdentity identity;
+            identity.aliases.insert("localhost");
+            identity.addresses.insert("127.0.0.1");
+            identity.addresses.insert("::1");
+
+            std::array<char, 256> hostnameBuf{};
+            if (::gethostname(hostnameBuf.data(), hostnameBuf.size()) == 0) {
+                hostnameBuf.back() = '\0';
+                const std::string hostname = normalizeHostIdentity(hostnameBuf.data());
+                if (!hostname.empty()) {
+                    identity.aliases.insert(hostname);
+                    const auto dot = hostname.find('.');
+                    if (dot != std::string::npos) {
+                        identity.aliases.insert(hostname.substr(0, dot));
+                    }
+                    for (const auto& address : resolveHostAddresses(hostname)) {
+                        identity.addresses.insert(address);
+                    }
+                }
+            }
+
+            if (const char* envHostname = std::getenv("HOSTNAME")) {
+                const std::string hostname = normalizeHostIdentity(envHostname);
+                if (!hostname.empty()) {
+                    identity.aliases.insert(hostname);
+                }
+            }
+
+            ifaddrs* interfaces = nullptr;
+            if (::getifaddrs(&interfaces) == 0 && interfaces != nullptr) {
+                char buffer[INET6_ADDRSTRLEN]{};
+                for (ifaddrs* cursor = interfaces; cursor != nullptr; cursor = cursor->ifa_next) {
+                    if (!cursor->ifa_addr) {
+                        continue;
+                    }
+                    const void* source = nullptr;
+                    if (cursor->ifa_addr->sa_family == AF_INET) {
+                        source = &reinterpret_cast<const sockaddr_in*>(cursor->ifa_addr)->sin_addr;
+                    } else if (cursor->ifa_addr->sa_family == AF_INET6) {
+                        source = &reinterpret_cast<const sockaddr_in6*>(cursor->ifa_addr)->sin6_addr;
+                    }
+                    if (!source) {
+                        continue;
+                    }
+                    if (::inet_ntop(cursor->ifa_addr->sa_family, source, buffer, sizeof(buffer)) != nullptr) {
+                        const std::string address = normalizeHostIdentity(buffer);
+                        if (!address.empty()) {
+                            identity.addresses.insert(address);
+                        }
+                    }
+                }
+                ::freeifaddrs(interfaces);
+            }
+
+            return identity;
+        }
+
+        HostMatchResult classifyRecruitHost(const std::string& host, const LocalHostIdentity& identity) {
+            HostMatchResult result;
+            result.details = {
+                    {"requested_host", host},
+                    {"resolved_addresses", nlohmann::json::array()}
+            };
+
+            const std::string normalizedHost = normalizeHostIdentity(host);
+            if (normalizedHost.empty()) {
+                result.details["matched_by"] = "invalid";
+                return result;
+            }
+
+            if (identity.aliases.find(normalizedHost) != identity.aliases.end()) {
+                result.sameHardware = true;
+                result.details["matched_by"] = "hostname";
+                return result;
+            }
+
+            if (identity.addresses.find(normalizedHost) != identity.addresses.end()) {
+                result.sameHardware = true;
+                result.details["matched_by"] = "address";
+                return result;
+            }
+
+            const auto resolved = resolveHostAddresses(host);
+            for (const auto& address : resolved) {
+                result.details["resolved_addresses"].push_back(address);
+            }
+            if (!resolved.empty()) {
+                const bool allLocal = std::all_of(resolved.begin(), resolved.end(), [&](const std::string& address) {
+                    return identity.addresses.find(address) != identity.addresses.end();
+                });
+                if (allLocal) {
+                    result.sameHardware = true;
+                    result.details["matched_by"] = "dns";
+                    return result;
+                }
+            }
+
+            result.details["matched_by"] = "remote";
+            return result;
+        }
+
+        bool readProcMemInfo(uint64_t& totalBytes, uint64_t& availableBytes) {
+            std::ifstream input("/proc/meminfo");
+            if (!input.is_open()) {
+                return false;
+            }
+
+            uint64_t memTotalKb = 0;
+            uint64_t memAvailableKb = 0;
+            uint64_t memFreeKb = 0;
+            uint64_t buffersKb = 0;
+            uint64_t cachedKb = 0;
+            std::string key;
+            uint64_t value = 0;
+            std::string unit;
+            while (input >> key >> value >> unit) {
+                if (key == "MemTotal:") {
+                    memTotalKb = value;
+                } else if (key == "MemAvailable:") {
+                    memAvailableKb = value;
+                } else if (key == "MemFree:") {
+                    memFreeKb = value;
+                } else if (key == "Buffers:") {
+                    buffersKb = value;
+                } else if (key == "Cached:") {
+                    cachedKb = value;
+                }
+            }
+
+            if (memTotalKb == 0) {
+                return false;
+            }
+            if (memAvailableKb == 0) {
+                memAvailableKb = memFreeKb + buffersKb + cachedKb;
+            }
+            totalBytes = memTotalKb * 1024ULL;
+            availableBytes = memAvailableKb * 1024ULL;
+            return availableBytes <= totalBytes;
+        }
+
+        SystemCapacitySnapshot collectSystemCapacitySnapshot() {
+            SystemCapacitySnapshot snapshot;
+            snapshot.cpuCores = std::max(1u, std::thread::hardware_concurrency());
+
+            double load[3]{0.0, 0.0, 0.0};
+            if (::getloadavg(load, 1) == 1) {
+                snapshot.load1 = load[0];
+                snapshot.loadPerCpu = snapshot.load1 / static_cast<double>(snapshot.cpuCores);
+                snapshot.loadAvailable = true;
+            }
+
+            snapshot.memoryAvailable = readProcMemInfo(
+                    snapshot.totalMemoryBytes,
+                    snapshot.availableMemoryBytes
+            );
+            if (snapshot.memoryAvailable && snapshot.totalMemoryBytes > 0) {
+                snapshot.memoryUsedRatio =
+                        1.0 - (static_cast<double>(snapshot.availableMemoryBytes) /
+                               static_cast<double>(snapshot.totalMemoryBytes));
+            }
+
+            return snapshot;
         }
 
         bool parseTraceyEndpoint(const std::string& rawValue, TraceyEndpoint& endpoint) {
@@ -1287,6 +1522,7 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
         );
         const char* localAgentIdEnv = envOr("NMC_TRACEY_LOCAL_AGENT_ID", "NM_TRACEY_LOCAL_AGENT_ID");
         const std::string localTraceyAgentId = localAgentIdEnv ? trim(localAgentIdEnv) : "tracey-continuum-local";
+        traceyLocalAgentId = localTraceyAgentId;
         const char* localStatusAddrEnv = envOr("NMC_TRACEY_LOCAL_STATUS_ADDR", "NM_TRACEY_LOCAL_STATUS_ADDR");
         std::string localTraceyStatusAddr = localStatusAddrEnv ? trim(localStatusAddrEnv) : "http://127.0.0.1:48000";
         if (!localTraceyStatusAddr.empty()) {
@@ -5132,6 +5368,200 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
         sendJsonResponse(res, apiResponse);
     }
 
+    APIRoutes::RecruitCapacityAssessment APIRoutes::assessRecruitCapacity(const std::string& host) {
+        RecruitCapacityAssessment assessment;
+        assessment.details = nlohmann::json::object();
+
+        const LocalHostIdentity localIdentity = collectLocalHostIdentity();
+        const HostMatchResult hostMatch = classifyRecruitHost(host, localIdentity);
+        assessment.sameHardware = hostMatch.sameHardware;
+        assessment.details["host_match"] = hostMatch.details;
+
+        if (!assessment.sameHardware) {
+            assessment.source = "remote";
+            assessment.reason = "Recruitment targets a different host.";
+            return assessment;
+        }
+
+        assessment.source = "same_hardware";
+        assessment.reason = "Same-hardware recruitment has spare capacity.";
+        const int64_t nowMs = nowEpochMs();
+
+        TraceyAgent localAgentSnapshot;
+        bool haveLocalAgentSnapshot = false;
+        {
+            std::lock_guard<std::mutex> lock(dataMutex);
+            auto it = traceyLocalAgentId.empty() ? traceyAgents.end() : traceyAgents.find(traceyLocalAgentId);
+            if (it == traceyAgents.end()) {
+                it = std::find_if(traceyAgents.begin(), traceyAgents.end(), [](const auto& entry) {
+                    const auto& metrics = entry.second.metrics;
+                    if (!metrics.is_object()) {
+                        return false;
+                    }
+                    const auto bootstrapIt = metrics.find("bootstrap_managed");
+                    return bootstrapIt != metrics.end() && bootstrapIt->is_boolean() &&
+                           bootstrapIt->template get<bool>();
+                });
+            }
+            if (it != traceyAgents.end()) {
+                localAgentSnapshot = it->second;
+                haveLocalAgentSnapshot = true;
+            }
+        }
+
+        if (haveLocalAgentSnapshot) {
+            nlohmann::json traceyDetails = {
+                    {"agent_id", localAgentSnapshot.agentId},
+                    {"status", normalizeTraceyStatus(localAgentSnapshot.status)},
+                    {"stale", localAgentSnapshot.stale},
+                    {"status_reachable", localAgentSnapshot.statusReachable},
+                    {"last_seen_epoch_ms", localAgentSnapshot.lastSeenEpochMs},
+                    {"last_query_epoch_ms", localAgentSnapshot.lastQueryEpochMs}
+            };
+
+            if (localAgentSnapshot.metrics.is_object()) {
+                const auto statusIt = localAgentSnapshot.metrics.find("status_snapshot");
+                if (statusIt != localAgentSnapshot.metrics.end() && statusIt->is_object()) {
+                    const int64_t lastSignalMs = std::max(
+                            localAgentSnapshot.lastQueryEpochMs,
+                            localAgentSnapshot.lastSeenEpochMs
+                    );
+                    const int64_t freshnessWindowMs = std::max<int64_t>(
+                            traceyStatusPollMs * 3,
+                            SAME_HARDWARE_TRACEY_FRESHNESS_FLOOR_MS
+                    );
+                    const bool snapshotFresh = !localAgentSnapshot.stale &&
+                                               lastSignalMs > 0 &&
+                                               nowMs >= lastSignalMs &&
+                                               (nowMs - lastSignalMs) <= freshnessWindowMs;
+                    traceyDetails["status_snapshot_fresh"] = snapshotFresh;
+                    traceyDetails["status_snapshot_age_ms"] = (lastSignalMs > 0 && nowMs >= lastSignalMs)
+                                                              ? (nowMs - lastSignalMs)
+                                                              : -1;
+
+                    if (snapshotFresh) {
+                        const auto& statusSnapshot = *statusIt;
+                        const auto autoscalerIt = statusSnapshot.find("continuum_autoscaler");
+                        if (autoscalerIt != statusSnapshot.end() && autoscalerIt->is_object()) {
+                            const auto& autoscaler = *autoscalerIt;
+                            traceyDetails["continuum_autoscaler"] = autoscaler;
+
+                            std::vector<std::string> pressureSignals;
+                            const auto pressureIt = autoscaler.find("pressure_signals");
+                            if (pressureIt != autoscaler.end() && pressureIt->is_array()) {
+                                for (const auto& item : *pressureIt) {
+                                    if (item.is_string()) {
+                                        const std::string signal = trim(item.get<std::string>());
+                                        if (!signal.empty()) {
+                                            pressureSignals.push_back(signal);
+                                        }
+                                    }
+                                }
+                            }
+
+                            if (!pressureSignals.empty()) {
+                                assessment.allowed = false;
+                                assessment.source = "tracey.continuum_autoscaler";
+                                std::ostringstream reason;
+                                reason << "Local Tracey autoscaler reports pressure on this hardware";
+                                reason << " (" << pressureSignals.front();
+                                for (size_t i = 1; i < pressureSignals.size(); ++i) {
+                                    reason << ", " << pressureSignals[i];
+                                }
+                                reason << ").";
+                                assessment.reason = reason.str();
+                                assessment.details["tracey"] = traceyDetails;
+                                return assessment;
+                            }
+                        }
+
+                        const auto slurmIt = statusSnapshot.find("slurm");
+                        if (slurmIt != statusSnapshot.end() && slurmIt->is_object()) {
+                            const auto& slurm = *slurmIt;
+                            traceyDetails["slurm"] = slurm;
+                            const int nodesTotal = std::max(0, slurm.value("nodes_total", 0));
+                            const int nodesIdle = std::max(0, slurm.value("nodes_idle", 0));
+                            const int nodesAllocated = std::max(0, slurm.value("nodes_allocated", 0));
+                            const int jobsPending = std::max(0, slurm.value("jobs_pending", 0));
+                            if (nodesTotal > 0 && nodesIdle == 0 &&
+                                (jobsPending > 0 || nodesAllocated >= nodesTotal)) {
+                                assessment.allowed = false;
+                                assessment.source = "tracey.slurm";
+                                assessment.reason =
+                                        "Local Slurm snapshot reports no idle nodes for same-hardware scale-out.";
+                                assessment.details["tracey"] = traceyDetails;
+                                return assessment;
+                            }
+                        }
+                    } else {
+                        traceyDetails["note"] = "Local Tracey status snapshot is stale; using host metrics fallback.";
+                    }
+                } else {
+                    traceyDetails["note"] = "Local Tracey agent has no cached status snapshot; using host metrics fallback.";
+                }
+            } else {
+                traceyDetails["note"] = "Local Tracey agent has no metrics object; using host metrics fallback.";
+            }
+
+            assessment.details["tracey"] = traceyDetails;
+        }
+
+        const SystemCapacitySnapshot system = collectSystemCapacitySnapshot();
+        nlohmann::json systemDetails = {
+                {"cpu_cores", system.cpuCores},
+                {"load_available", system.loadAvailable},
+                {"memory_available", system.memoryAvailable}
+        };
+        if (system.loadAvailable) {
+            systemDetails["load1"] = system.load1;
+            systemDetails["load_per_cpu"] = system.loadPerCpu;
+        }
+        if (system.memoryAvailable) {
+            systemDetails["total_memory_bytes"] = system.totalMemoryBytes;
+            systemDetails["available_memory_bytes"] = system.availableMemoryBytes;
+            systemDetails["memory_used_pct"] = system.memoryUsedRatio * 100.0;
+        }
+        assessment.details["system"] = systemDetails;
+
+        if (!system.loadAvailable && !system.memoryAvailable) {
+            assessment.allowed = false;
+            assessment.source = "system";
+            assessment.reason =
+                    "Continuum could not determine local capacity for same-hardware recruitment.";
+            return assessment;
+        }
+
+        std::vector<std::string> hostPressureReasons;
+        if (system.loadAvailable && system.loadPerCpu >= SAME_HARDWARE_MAX_LOAD_PER_CPU) {
+            std::ostringstream reason;
+            reason << "load per CPU " << system.loadPerCpu
+                   << " exceeds " << SAME_HARDWARE_MAX_LOAD_PER_CPU;
+            hostPressureReasons.push_back(reason.str());
+        }
+        if (system.memoryAvailable && system.memoryUsedRatio >= SAME_HARDWARE_MAX_MEMORY_USED_RATIO) {
+            std::ostringstream reason;
+            reason << "memory used " << (system.memoryUsedRatio * 100.0)
+                   << "% exceeds " << (SAME_HARDWARE_MAX_MEMORY_USED_RATIO * 100.0) << "%";
+            hostPressureReasons.push_back(reason.str());
+        }
+        if (!hostPressureReasons.empty()) {
+            assessment.allowed = false;
+            assessment.source = "system";
+            assessment.details["system"]["pressure_reasons"] = hostPressureReasons;
+            std::ostringstream summary;
+            summary << "Local host metrics indicate insufficient spare capacity";
+            summary << " (" << hostPressureReasons.front();
+            for (size_t i = 1; i < hostPressureReasons.size(); ++i) {
+                summary << ", " << hostPressureReasons[i];
+            }
+            summary << ").";
+            assessment.reason = summary.str();
+            return assessment;
+        }
+
+        return assessment;
+    }
+
     void APIRoutes::handleRecruitNode(const httplib::Request& req, httplib::Response& res) {
         (void)req;
         try {
@@ -5245,6 +5675,28 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
             }
             if (capabilities.empty()) {
                 capabilities = defaultCapabilitiesForNodeType(nodeType);
+            }
+
+            const RecruitCapacityAssessment capacityAssessment = assessRecruitCapacity(host);
+            const nlohmann::json capacityCheck = {
+                    {"same_hardware", capacityAssessment.sameHardware},
+                    {"allowed", capacityAssessment.allowed},
+                    {"source", capacityAssessment.source},
+                    {"reason", capacityAssessment.reason},
+                    {"details", capacityAssessment.details.is_null() ? nlohmann::json::object() : capacityAssessment.details}
+            };
+            if (capacityAssessment.sameHardware && !capacityAssessment.allowed && !dryRun) {
+                Models::CloudResponse apiResponse;
+                apiResponse.success = false;
+                apiResponse.message = "Insufficient local capacity for same-hardware node recruitment.";
+                apiResponse.data = {
+                        {"target", {{"host", host}, {"port", port}, {"user", user}}},
+                        {"node", {{"name", nodeName}, {"type", nodeType}, {"region", region}}},
+                        {"capacity_check", capacityCheck}
+                };
+                sendJsonResponse(res, apiResponse);
+                res.status = 409;
+                return;
             }
 
             if (continuumAuthToken.empty() && propagateServerAuthToken && authMode == "token" && !authToken.empty()) {
@@ -5571,6 +6023,9 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                             {"execute", redactSensitive(commandToShellString(execArgs))}
                     }}
             };
+            if (capacityAssessment.sameHardware) {
+                diagnostics["capacity_check"] = capacityCheck;
+            }
             if (autoConfigure) {
                 diagnostics["commands"]["configure"] = redactSensitive(commandToShellString(configureArgs));
             }
@@ -5578,7 +6033,9 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
             if (dryRun) {
                 Models::CloudResponse apiResponse;
                 apiResponse.success = true;
-                apiResponse.message = "Node recruitment dry-run generated successfully.";
+                apiResponse.message = capacityAssessment.sameHardware && !capacityAssessment.allowed
+                                      ? "Node recruitment dry-run generated; current local capacity would reject same-hardware execution."
+                                      : "Node recruitment dry-run generated successfully.";
                 apiResponse.data = diagnostics;
                 sendJsonResponse(res, apiResponse);
                 return;
