@@ -50,6 +50,47 @@
         traceyControlForceScan: document.getElementById("traceyControlForceScan"),
         traceyControlApply: document.getElementById("traceyControlApply"),
         traceyDeepDiveRefresh: document.getElementById("traceyDeepDiveRefresh"),
+        traceyFleetMeta: document.getElementById("traceyFleetMeta"),
+        traceyFleetSummaryCards: document.getElementById("traceyFleetSummaryCards"),
+        traceyFleetZoneRows: document.getElementById("traceyFleetZoneRows"),
+        traceyFleetActionRows: document.getElementById("traceyFleetActionRows"),
+        traceyFleetAssessmentSearch: document.getElementById("traceyFleetAssessmentSearch"),
+        traceyFleetAssessmentFilter: document.getElementById("traceyFleetAssessmentFilter"),
+        traceyFleetAssessmentSort: document.getElementById("traceyFleetAssessmentSort"),
+        traceyFleetAssessmentRows: document.getElementById("traceyFleetAssessmentRows"),
+        traceyRackExplorerMeta: document.getElementById("traceyRackExplorerMeta"),
+        traceyRackCards: document.getElementById("traceyRackCards"),
+        traceyRackDetailTitle: document.getElementById("traceyRackDetailTitle"),
+        traceyRackDetailMeta: document.getElementById("traceyRackDetailMeta"),
+        traceyRackSummaryCards: document.getElementById("traceyRackSummaryCards"),
+        traceyRackGpuHeatmap: document.getElementById("traceyRackGpuHeatmap"),
+        traceyRackAssessmentSearch: document.getElementById("traceyRackAssessmentSearch"),
+        traceyRackAssessmentFilter: document.getElementById("traceyRackAssessmentFilter"),
+        traceyRackAssessmentSort: document.getElementById("traceyRackAssessmentSort"),
+        traceyRackServerRows: document.getElementById("traceyRackServerRows"),
+        traceyServerTelemetryTitle: document.getElementById("traceyServerTelemetryTitle"),
+        traceyServerTelemetryMeta: document.getElementById("traceyServerTelemetryMeta"),
+        traceyServerSummaryCards: document.getElementById("traceyServerSummaryCards"),
+        traceyServerThermals: document.getElementById("traceyServerThermals"),
+        traceyServerFans: document.getElementById("traceyServerFans"),
+        traceyServerPower: document.getElementById("traceyServerPower"),
+        traceyServerDisks: document.getElementById("traceyServerDisks"),
+        traceyServerProcesses: document.getElementById("traceyServerProcesses"),
+        traceyServerGuardFacts: document.getElementById("traceyServerGuardFacts"),
+        traceyServerAssessmentSearch: document.getElementById("traceyServerAssessmentSearch"),
+        traceyServerAssessmentFilter: document.getElementById("traceyServerAssessmentFilter"),
+        traceyServerAssessmentSort: document.getElementById("traceyServerAssessmentSort"),
+        traceyServerAssessmentFacts: document.getElementById("traceyServerAssessmentFacts"),
+        traceyServerGpuTiles: document.getElementById("traceyServerGpuTiles"),
+        traceyGpuTelemetryTitle: document.getElementById("traceyGpuTelemetryTitle"),
+        traceyGpuTelemetryMeta: document.getElementById("traceyGpuTelemetryMeta"),
+        traceyGpuSummaryCards: document.getElementById("traceyGpuSummaryCards"),
+        traceyGpuSmHeatmap: document.getElementById("traceyGpuSmHeatmap"),
+        traceyGpuProbeMix: document.getElementById("traceyGpuProbeMix"),
+        traceyGpuFaultCounters: document.getElementById("traceyGpuFaultCounters"),
+        traceyGpuExecutionRows: document.getElementById("traceyGpuExecutionRows"),
+        traceyGpuFaultRows: document.getElementById("traceyGpuFaultRows"),
+        traceyGpuActionRows: document.getElementById("traceyGpuActionRows"),
         traceyDeepDiveChart: document.getElementById("traceyDeepDiveChart"),
         traceyDeepDiveLegend: document.getElementById("traceyDeepDiveLegend"),
         traceyDeepDiveFacts: document.getElementById("traceyDeepDiveFacts"),
@@ -74,9 +115,21 @@
     let openshiftDetailsRequestSeq = 0;
     let traceyInsightsRequestSeq = 0;
     let traceyAgentRequestSeq = 0;
+    let traceyFleetRequestSeq = 0;
+    let traceyAssessmentRequestSeq = 0;
+    let traceyRackRequestSeq = 0;
+    let traceyServerRequestSeq = 0;
+    let traceyGpuRequestSeq = 0;
     const traceyState = {
         analytics: null,
+        fleet: null,
+        assessmentFleet: null,
         selectedAgentId: "",
+        selectedRack: "",
+        selectedRackDetail: null,
+        selectedServerTelemetry: null,
+        selectedGpuId: "",
+        selectedGpuTelemetry: null,
         selectedAgentAnalysis: null,
         selectedAgentLogs: [],
         selectedDeepDive: null
@@ -291,6 +344,11 @@
     function closeTraceyInsightsModal() {
         traceyInsightsRequestSeq += 1;
         traceyAgentRequestSeq += 1;
+        traceyFleetRequestSeq += 1;
+        traceyAssessmentRequestSeq += 1;
+        traceyRackRequestSeq += 1;
+        traceyServerRequestSeq += 1;
+        traceyGpuRequestSeq += 1;
         setTraceyInsightsModalOpen(false);
     }
 
@@ -338,6 +396,758 @@
     function parseNumber(value, fallback = 0) {
         const parsed = Number(value);
         return Number.isFinite(parsed) ? parsed : fallback;
+    }
+
+    function formatCount(value, fallback = "-") {
+        const parsed = Number(value);
+        if (!Number.isFinite(parsed)) {
+            return fallback;
+        }
+        return Math.round(parsed).toLocaleString();
+    }
+
+    function formatFixed(value, digits = 1, fallback = "-") {
+        const parsed = Number(value);
+        if (!Number.isFinite(parsed)) {
+            return fallback;
+        }
+        return parsed.toFixed(digits);
+    }
+
+    function formatPercentValue(value, digits = 0, fallback = "-") {
+        const parsed = Number(value);
+        if (!Number.isFinite(parsed)) {
+            return fallback;
+        }
+        return `${parsed.toFixed(digits)}%`;
+    }
+
+    function formatRatioPercent(value, digits = 1, fallback = "-") {
+        const parsed = Number(value);
+        if (!Number.isFinite(parsed)) {
+            return fallback;
+        }
+        return `${(parsed * 100).toFixed(digits)}%`;
+    }
+
+    function hasObjectContent(value) {
+        return Boolean(value) && typeof value === "object" && !Array.isArray(value) && Object.keys(value).length > 0;
+    }
+
+    function getAssessmentSnapshot(source) {
+        return source && source.continuum_assessment && typeof source.continuum_assessment === "object"
+            ? source.continuum_assessment
+            : {};
+    }
+
+    function getAssessmentSummary(source) {
+        if (source && source.continuum_assessment_summary && typeof source.continuum_assessment_summary === "object") {
+            return source.continuum_assessment_summary;
+        }
+        const snapshot = getAssessmentSnapshot(source);
+        return snapshot.summary && typeof snapshot.summary === "object"
+            ? snapshot.summary
+            : {};
+    }
+
+    function getAssessmentCommunication(source) {
+        const snapshot = getAssessmentSnapshot(source);
+        return snapshot.communication && typeof snapshot.communication === "object"
+            ? snapshot.communication
+            : {};
+    }
+
+    function toneClassForAssessment(summary, communication = {}) {
+        const risk = parseNumber(summary.compromise_risk, 0);
+        if (parseNumber(communication.auth_failures, 0) > 0 || parseNumber(communication.consecutive_failures, 0) > 0) {
+            return "tracey-tone-warn";
+        }
+        if (risk >= 0.80) {
+            return "tracey-tone-bad";
+        }
+        if (
+            risk >= 0.55 ||
+            parseNumber(summary.kev_matches, 0) > 0 ||
+            parseNumber(communication.report_failures, parseNumber(communication.reports_rejected, 0)) > 0 ||
+            parseNumber(communication.plan_fetch_failures, 0) > 0
+        ) {
+            return "tracey-tone-warn";
+        }
+        if (
+            parseNumber(summary.cve_matches, 0) > 0 ||
+            parseNumber(communication.duplicate_reports, 0) > 0 ||
+            parseNumber(communication.stale_plan_recoveries, parseNumber(communication.stale_plan_reports, 0)) > 0
+        ) {
+            return "tracey-tone-neutral";
+        }
+        return "tracey-tone-ok";
+    }
+
+    function formatAssessmentCommOps(communication) {
+        return `p ${formatCount(communication.plan_fetch_successes, "0")}/${formatCount(communication.plan_fetch_failures, "0")} • r ${formatCount(communication.report_successes, "0")}/${formatCount(communication.report_failures, "0")}`;
+    }
+
+    function formatAssessmentCommFaults(communication) {
+        return `dup ${formatCount(communication.duplicate_reports, "0")} • stale ${formatCount(communication.stale_plan_recoveries, formatCount(communication.stale_plan_reports, "0"))} • sem ${formatCount(communication.semantic_failures, "0")}`;
+    }
+
+    function formatAssessmentProgress(progress) {
+        if (!progress || typeof progress !== "object") {
+            return "plan pending";
+        }
+        const total = parseNumber(progress.slice_count, 0);
+        if (total <= 0) {
+            return "plan pending";
+        }
+        return `${formatCount(progress.completed_slice_count, "0")}/${formatCount(total, "0")} slices`;
+    }
+
+    function formatAssessmentReportOps(progress) {
+        return `acc ${formatCount(progress.reports_accepted, "0")} • rej ${formatCount(progress.reports_rejected, "0")}`;
+    }
+
+    function formatAssessmentReportFaults(progress) {
+        return `dup ${formatCount(progress.duplicate_reports, "0")} • stale ${formatCount(progress.stale_plan_reports, "0")} • sem ${formatCount(progress.semantic_faults, "0")}`;
+    }
+
+    function assessmentStatusText(summary, fallback = "unknown") {
+        const value = String(summary.status || summary.assessment_status || "").trim();
+        return value || fallback;
+    }
+
+    function assessmentActionText(summary, fallback = "-") {
+        const raw = String(summary.recommended_action || summary.recommendedAction || "").trim();
+        return raw ? formatActionLabel(raw) : fallback;
+    }
+
+    function hasAssessmentTelemetry(summary, communication = {}, progress = {}) {
+        return hasObjectContent(summary) || hasObjectContent(communication) || hasObjectContent(progress);
+    }
+
+    function formatAssessmentLastExchange(communication) {
+        const parts = [];
+        const operation = String(communication.last_operation || "").trim();
+        const disposition = String(communication.last_disposition || "").trim();
+        if (operation) {
+            parts.push(formatActionLabel(operation));
+        }
+        if (disposition) {
+            parts.push(formatActionLabel(disposition));
+        }
+        if (communication.last_http_status !== null && communication.last_http_status !== undefined) {
+            parts.push(String(communication.last_http_status));
+        }
+        return parts.length ? parts.join(" • ") : "No exchange";
+    }
+
+    function buildAssessmentMetricRows(summary, communication = {}, progress = {}) {
+        if (!hasAssessmentTelemetry(summary, communication, progress)) {
+            return [];
+        }
+
+        const riskTone = toneClassForAssessment(summary, communication);
+        const suspiciousTotal = parseNumber(summary.suspicious_processes, 0) +
+            parseNumber(summary.suspicious_services, 0) +
+            parseNumber(summary.suspicious_modules, 0);
+        const signalParts = [
+            `guard ${formatRatioPercent(summary.guard_signal, 0, "-")}`,
+            `loader ${formatRatioPercent(summary.loader_signal, 0, "-")}`,
+            `telemetry ${formatRatioPercent(summary.telemetry_signal, 0, "-")}`
+        ].join(" • ");
+        const progressValue = hasObjectContent(progress)
+            ? formatAssessmentProgress(progress)
+            : formatRatioPercent(summary.cycle_completion_pct, 0, "plan pending");
+        const progressSubtitle = parseNumber(summary.next_due_slice_ms, 0) > 0
+            ? `next ${formatEpochMs(summary.next_due_slice_ms)}`
+            : (String(summary.last_error || "").trim() || `fuzzy ${formatRatioPercent(summary.fuzzy_risk, 0, "-")} / ${formatRatioPercent(summary.fuzzy_confidence, 0, "-")}`);
+        const exchangeSubtitle = String(communication.last_error || "").trim() || [
+            parseNumber(communication.last_success_ms, 0) > 0 ? `ok ${formatEpochMs(communication.last_success_ms)}` : "",
+            parseNumber(communication.last_failure_ms, 0) > 0 ? `fail ${formatEpochMs(communication.last_failure_ms)}` : "",
+            parseNumber(communication.next_retry_ms, 0) > 0 ? `retry ${formatEpochMs(communication.next_retry_ms)}` : ""
+        ].filter(Boolean).join(" • ");
+
+        return [
+            {
+                label: "Status",
+                value: assessmentStatusText(summary),
+                subtitle: `risk ${formatRatioPercent(summary.compromise_risk, 0, "-")} • conf ${formatRatioPercent(summary.compromise_confidence, 0, "-")}`,
+                tone: riskTone,
+                group: "risk",
+                priority: 0,
+                searchText: `status ${assessmentStatusText(summary)} risk confidence compromise`
+            },
+            {
+                label: "Action",
+                value: assessmentActionText(summary),
+                subtitle: `cve ${formatCount(summary.cve_matches, "0")} • kev ${formatCount(summary.kev_matches, "0")} • cvss ${formatFixed(summary.highest_cvss, 1, "-")}`,
+                tone: riskTone,
+                group: "workflow",
+                priority: 1,
+                searchText: `action remediation cve kev cvss ${summary.recommended_action || ""}`
+            },
+            {
+                label: "Signals",
+                value: `${formatRatioPercent(summary.cve_signal, 0, "-")} / ${formatRatioPercent(summary.local_signal, 0, "-")}`,
+                subtitle: signalParts,
+                tone: "tracey-tone-neutral",
+                group: "signals",
+                priority: 2,
+                searchText: `signals cve local guard loader telemetry fuzzy`
+            },
+            {
+                label: "Inventory",
+                value: `${formatCount(summary.inventory_items, "0")} items`,
+                subtitle: `${formatCount(summary.suspicious_processes, "0")} proc • ${formatCount(summary.suspicious_services, "0")} svc • ${formatCount(summary.suspicious_modules, "0")} mod`,
+                tone: suspiciousTotal > 0 ? "tracey-tone-warn" : "tracey-tone-neutral",
+                group: "inventory",
+                priority: 3,
+                searchText: `inventory package process service module suspicious`
+            },
+            {
+                label: "Progress",
+                value: progressValue,
+                subtitle: progressSubtitle,
+                tone: hasObjectContent(progress) ? "tracey-tone-neutral" : riskTone,
+                group: "workflow",
+                priority: 4,
+                searchText: `progress cycle slice due retry fuzzy error`
+            },
+            {
+                label: "Communication",
+                value: formatAssessmentCommOps(communication),
+                subtitle: formatAssessmentCommFaults(communication),
+                tone: riskTone,
+                group: "communication",
+                priority: 5,
+                searchText: `communication plan report duplicate stale semantic auth failure`
+            },
+            {
+                label: "Last Exchange",
+                value: formatAssessmentLastExchange(communication),
+                subtitle: exchangeSubtitle || "No assessment exchange recorded.",
+                tone: parseNumber(communication.consecutive_failures, 0) > 0 ? "tracey-tone-warn" : "tracey-tone-neutral",
+                group: "communication",
+                priority: 6,
+                searchText: `exchange operation disposition http retry ${communication.last_error || ""}`
+            }
+        ];
+    }
+
+    function normalizedSearchValue(value) {
+        return String(value || "").trim().toLowerCase();
+    }
+
+    function compareText(left, right) {
+        return String(left || "").localeCompare(String(right || ""), undefined, {
+            numeric: true,
+            sensitivity: "base"
+        });
+    }
+
+    function toneSortRank(tone) {
+        if (tone === "tracey-tone-bad") {
+            return 0;
+        }
+        if (tone === "tracey-tone-warn") {
+            return 1;
+        }
+        if (tone === "tracey-tone-neutral") {
+            return 2;
+        }
+        if (tone === "tracey-tone-ok") {
+            return 3;
+        }
+        return 2;
+    }
+
+    function assessmentProgressRatio(progress = {}) {
+        const total = parseNumber(progress.slice_count, 0);
+        if (total <= 0) {
+            return -1;
+        }
+        return Math.max(0, Math.min(1, parseNumber(progress.completed_slice_count, 0) / total));
+    }
+
+    function assessmentQueueCommunicationScore(progress = {}) {
+        return parseNumber(progress.reports_rejected, 0) * 8 +
+            parseNumber(progress.semantic_faults, 0) * 6 +
+            parseNumber(progress.stale_plan_reports, 0) * 4 +
+            parseNumber(progress.duplicate_reports, 0) * 2 +
+            (String(progress.last_error || "").trim() ? 1 : 0);
+    }
+
+    function assessmentCommunicationScore(communication = {}) {
+        return parseNumber(communication.auth_failures, 0) * 12 +
+            parseNumber(communication.consecutive_failures, 0) * 10 +
+            parseNumber(communication.semantic_failures, 0) * 8 +
+            parseNumber(communication.report_failures, 0) * 6 +
+            parseNumber(communication.plan_fetch_failures, 0) * 5 +
+            parseNumber(communication.stale_plan_recoveries, 0) * 3 +
+            parseNumber(communication.duplicate_reports, 0) +
+            (String(communication.last_error || "").trim() ? 1 : 0);
+    }
+
+    function assessmentFilterMatches(mode, summary = {}, communication = {}, progress = {}) {
+        const risk = parseNumber(summary.compromise_risk, 0);
+        const kevMatches = parseNumber(summary.kev_matches, 0);
+        const hasTelemetry = hasAssessmentTelemetry(summary, communication, progress);
+        const commScore = hasObjectContent(communication)
+            ? assessmentCommunicationScore(communication)
+            : assessmentQueueCommunicationScore(progress);
+        const totalSlices = parseNumber(progress.slice_count, 0);
+        const completedSlices = parseNumber(progress.completed_slice_count, 0);
+        const hasCommError = String(communication.last_error || progress.last_error || "").trim().length > 0;
+
+        switch (mode) {
+        case "compromised":
+            return risk >= 0.80;
+        case "elevated":
+            return (risk >= 0.55 && risk < 0.80) || (risk < 0.80 && kevMatches > 0);
+        case "communication":
+            return commScore > 0 || hasCommError;
+        case "in_progress":
+            return totalSlices > 0 && completedSlices < totalSlices;
+        case "no_assessment":
+            return !hasTelemetry;
+        case "warnings":
+            return risk >= 0.55 || kevMatches > 0 || commScore > 0 || hasCommError;
+        default:
+            return true;
+        }
+    }
+
+    function assessmentQueueSearchText(agent) {
+        const progress = agent.progress && typeof agent.progress === "object" ? agent.progress : {};
+        return normalizedSearchValue([
+            agent.agent_id,
+            agent.host,
+            agent.rack,
+            agent.zone,
+            agent.assessment_status,
+            agent.recommended_action,
+            agent.status,
+            progress.last_disposition,
+            progress.last_error
+        ].join(" "));
+    }
+
+    function rackAssessmentSearchText(server) {
+        const assessmentSummary = getAssessmentSummary(server);
+        const assessmentCommunication = getAssessmentCommunication(server);
+        return normalizedSearchValue([
+            server.agent_id,
+            server.host,
+            server.status,
+            assessmentStatusText(assessmentSummary),
+            assessmentActionText(assessmentSummary),
+            assessmentSummary.cve_matches,
+            assessmentSummary.kev_matches,
+            assessmentCommunication.last_error,
+            assessmentCommunication.last_disposition
+        ].join(" "));
+    }
+
+    function filteredAndSortedAssessmentQueueAgents(agents) {
+        const search = normalizedSearchValue(nodes.traceyFleetAssessmentSearch ? nodes.traceyFleetAssessmentSearch.value : "");
+        const filter = String(nodes.traceyFleetAssessmentFilter ? nodes.traceyFleetAssessmentFilter.value : "all");
+        const sort = String(nodes.traceyFleetAssessmentSort ? nodes.traceyFleetAssessmentSort.value : "risk_desc");
+        const filtered = (Array.isArray(agents) ? agents : []).filter((agent) => {
+            if (search && !assessmentQueueSearchText(agent).includes(search)) {
+                return false;
+            }
+            return assessmentFilterMatches(filter, agent, {}, agent.progress || {});
+        });
+
+        filtered.sort((left, right) => {
+            const leftProgress = left.progress && typeof left.progress === "object" ? left.progress : {};
+            const rightProgress = right.progress && typeof right.progress === "object" ? right.progress : {};
+            const leftRisk = parseNumber(left.compromise_risk, 0);
+            const rightRisk = parseNumber(right.compromise_risk, 0);
+            const leftComm = assessmentQueueCommunicationScore(leftProgress);
+            const rightComm = assessmentQueueCommunicationScore(rightProgress);
+            const leftProgressRatio = assessmentProgressRatio(leftProgress);
+            const rightProgressRatio = assessmentProgressRatio(rightProgress);
+            const leftHost = String(left.host || left.agent_id || "");
+            const rightHost = String(right.host || right.agent_id || "");
+
+            if (sort === "host_asc") {
+                return compareText(leftHost, rightHost) || compareText(left.agent_id, right.agent_id);
+            }
+            if (sort === "progress_desc") {
+                return (rightProgressRatio - leftProgressRatio) ||
+                    (rightRisk - leftRisk) ||
+                    compareText(leftHost, rightHost);
+            }
+            if (sort === "communication_desc") {
+                return (rightComm - leftComm) ||
+                    (rightRisk - leftRisk) ||
+                    compareText(leftHost, rightHost);
+            }
+            return (rightRisk - leftRisk) ||
+                (rightComm - leftComm) ||
+                compareText(leftHost, rightHost);
+        });
+        return filtered;
+    }
+
+    function filteredAndSortedRackAssessmentServers(servers) {
+        const search = normalizedSearchValue(nodes.traceyRackAssessmentSearch ? nodes.traceyRackAssessmentSearch.value : "");
+        const filter = String(nodes.traceyRackAssessmentFilter ? nodes.traceyRackAssessmentFilter.value : "all");
+        const sort = String(nodes.traceyRackAssessmentSort ? nodes.traceyRackAssessmentSort.value : "risk_desc");
+        const filtered = (Array.isArray(servers) ? servers : []).filter((server) => {
+            const assessmentSummary = getAssessmentSummary(server);
+            const assessmentCommunication = getAssessmentCommunication(server);
+            if (search && !rackAssessmentSearchText(server).includes(search)) {
+                return false;
+            }
+            return assessmentFilterMatches(filter, assessmentSummary, assessmentCommunication, {});
+        });
+
+        filtered.sort((left, right) => {
+            const leftSummary = getAssessmentSummary(left);
+            const rightSummary = getAssessmentSummary(right);
+            const leftCommunication = getAssessmentCommunication(left);
+            const rightCommunication = getAssessmentCommunication(right);
+            const leftRisk = parseNumber(leftSummary.compromise_risk, 0);
+            const rightRisk = parseNumber(rightSummary.compromise_risk, 0);
+            const leftComm = assessmentCommunicationScore(leftCommunication);
+            const rightComm = assessmentCommunicationScore(rightCommunication);
+            const leftHost = String(left.host || left.agent_id || "");
+            const rightHost = String(right.host || right.agent_id || "");
+            const leftSeen = parseNumber(left.last_seen_seconds_ago, Number.MAX_SAFE_INTEGER);
+            const rightSeen = parseNumber(right.last_seen_seconds_ago, Number.MAX_SAFE_INTEGER);
+
+            if (sort === "host_asc") {
+                return compareText(leftHost, rightHost) || compareText(left.agent_id, right.agent_id);
+            }
+            if (sort === "last_seen_recent") {
+                return (leftSeen - rightSeen) ||
+                    (rightRisk - leftRisk) ||
+                    compareText(leftHost, rightHost);
+            }
+            if (sort === "communication_desc") {
+                return (rightComm - leftComm) ||
+                    (rightRisk - leftRisk) ||
+                    compareText(leftHost, rightHost);
+            }
+            return (rightRisk - leftRisk) ||
+                (rightComm - leftComm) ||
+                compareText(leftHost, rightHost);
+        });
+        return filtered;
+    }
+
+    function filteredAndSortedServerAssessmentMetricRows(rows) {
+        const base = (Array.isArray(rows) ? rows : []).map((row, index) => ({ ...row, _index: index }));
+        const search = normalizedSearchValue(nodes.traceyServerAssessmentSearch ? nodes.traceyServerAssessmentSearch.value : "");
+        const filter = String(nodes.traceyServerAssessmentFilter ? nodes.traceyServerAssessmentFilter.value : "all");
+        const sort = String(nodes.traceyServerAssessmentSort ? nodes.traceyServerAssessmentSort.value : "priority");
+
+        const filtered = base.filter((row) => {
+            const haystack = normalizedSearchValue([
+                row.label,
+                row.value,
+                row.subtitle,
+                row.searchText
+            ].join(" "));
+            if (search && !haystack.includes(search)) {
+                return false;
+            }
+            if (filter === "warnings") {
+                return row.tone === "tracey-tone-bad" || row.tone === "tracey-tone-warn";
+            }
+            if (filter === "communication") {
+                return row.group === "communication";
+            }
+            if (filter === "signals") {
+                return row.group === "signals";
+            }
+            if (filter === "inventory") {
+                return row.group === "inventory";
+            }
+            if (filter === "workflow") {
+                return row.group === "workflow" || row.group === "risk";
+            }
+            return true;
+        });
+
+        filtered.sort((left, right) => {
+            if (sort === "label") {
+                return compareText(left.label, right.label) || (left._index - right._index);
+            }
+            if (sort === "tone") {
+                return (toneSortRank(left.tone) - toneSortRank(right.tone)) ||
+                    ((left.priority || 0) - (right.priority || 0)) ||
+                    compareText(left.label, right.label);
+            }
+            return ((left.priority || 0) - (right.priority || 0)) ||
+                compareText(left.label, right.label) ||
+                (left._index - right._index);
+        });
+
+        return {
+            rows: filtered.map(({ _index, ...row }) => row),
+            emptyMessage: base.length > 0 && filtered.length === 0
+                ? "No assessment metrics match current filters."
+                : "No assessment snapshot loaded."
+        };
+    }
+
+    function collectAssessmentAggregate(items) {
+        const aggregate = {
+            agentCount: 0,
+            compromised: 0,
+            elevated: 0,
+            cveMatches: 0,
+            kevMatches: 0,
+            maxRisk: 0,
+            reportsRejected: 0,
+            duplicateReports: 0,
+            stalePlanRecoveries: 0,
+            semanticFailures: 0,
+            authFailures: 0,
+            consecutiveFailures: 0
+        };
+        for (const item of Array.isArray(items) ? items : []) {
+            const summary = getAssessmentSummary(item);
+            const communication = getAssessmentCommunication(item);
+            const risk = parseNumber(summary.compromise_risk, 0);
+            aggregate.agentCount += 1;
+            aggregate.cveMatches += parseNumber(summary.cve_matches, 0);
+            aggregate.kevMatches += parseNumber(summary.kev_matches, 0);
+            aggregate.maxRisk = Math.max(aggregate.maxRisk, risk);
+            if (risk >= 0.80) {
+                aggregate.compromised += 1;
+            } else if (risk >= 0.55) {
+                aggregate.elevated += 1;
+            }
+            aggregate.reportsRejected += parseNumber(communication.report_failures, 0);
+            aggregate.duplicateReports += parseNumber(communication.duplicate_reports, 0);
+            aggregate.stalePlanRecoveries += parseNumber(communication.stale_plan_recoveries, 0);
+            aggregate.semanticFailures += parseNumber(communication.semantic_failures, 0);
+            aggregate.authFailures += parseNumber(communication.auth_failures, 0);
+            aggregate.consecutiveFailures += parseNumber(communication.consecutive_failures, 0);
+        }
+        return aggregate;
+    }
+
+    function collectAssessmentQueueAggregate(items) {
+        const aggregate = {
+            agentCount: 0,
+            compromised: 0,
+            elevated: 0,
+            cveMatches: 0,
+            kevMatches: 0,
+            maxRisk: 0
+        };
+        for (const item of Array.isArray(items) ? items : []) {
+            const risk = parseNumber(item.compromise_risk, 0);
+            aggregate.agentCount += 1;
+            aggregate.cveMatches += parseNumber(item.cve_matches, 0);
+            aggregate.kevMatches += parseNumber(item.kev_matches, 0);
+            aggregate.maxRisk = Math.max(aggregate.maxRisk, risk);
+            if (risk >= 0.80) {
+                aggregate.compromised += 1;
+            } else if (risk >= 0.55) {
+                aggregate.elevated += 1;
+            }
+        }
+        return aggregate;
+    }
+
+    function formatBytes(value, fallback = "-") {
+        let parsed = Number(value);
+        if (!Number.isFinite(parsed) || parsed < 0) {
+            return fallback;
+        }
+        const units = ["B", "KB", "MB", "GB", "TB", "PB"];
+        let unitIndex = 0;
+        while (parsed >= 1024 && unitIndex < units.length - 1) {
+            parsed /= 1024;
+            unitIndex += 1;
+        }
+        const digits = parsed >= 100 || unitIndex === 0 ? 0 : 1;
+        return `${parsed.toFixed(digits)} ${units[unitIndex]}`;
+    }
+
+    function formatBytesRate(value, fallback = "-") {
+        const formatted = formatBytes(value, "");
+        return formatted ? `${formatted}/s` : fallback;
+    }
+
+    function formatPower(value, fallback = "-") {
+        const parsed = Number(value);
+        if (!Number.isFinite(parsed)) {
+            return fallback;
+        }
+        return `${parsed.toFixed(parsed >= 100 ? 0 : 1)} W`;
+    }
+
+    function formatTemperature(value, fallback = "-") {
+        const parsed = Number(value);
+        if (!Number.isFinite(parsed)) {
+            return fallback;
+        }
+        return `${parsed.toFixed(parsed >= 100 ? 0 : 1)} C`;
+    }
+
+    function formatClockMHz(value, fallback = "-") {
+        const parsed = Number(value);
+        if (!Number.isFinite(parsed)) {
+            return fallback;
+        }
+        return `${Math.round(parsed).toLocaleString()} MHz`;
+    }
+
+    function formatDurationMs(value, fallback = "-") {
+        const parsed = Number(value);
+        if (!Number.isFinite(parsed) || parsed < 0) {
+            return fallback;
+        }
+        if (parsed < 1) {
+            return `${(parsed * 1000).toFixed(0)} us`;
+        }
+        if (parsed < 1000) {
+            return `${parsed.toFixed(parsed >= 100 ? 0 : 1)} ms`;
+        }
+        return `${(parsed / 1000).toFixed(1)} s`;
+    }
+
+    function toneClassFromStatus(status) {
+        const normalized = normalizeStatus(status);
+        if (normalized === "ok") {
+            return "tracey-tone-ok";
+        }
+        if (normalized === "warn") {
+            return "tracey-tone-warn";
+        }
+        if (normalized === "bad") {
+            return "tracey-tone-bad";
+        }
+        return "tracey-tone-neutral";
+    }
+
+    function toneClassFromSeverity(severity) {
+        const value = String(severity || "").trim().toLowerCase();
+        if (["critical", "high", "error", "offline", "quarantined", "condemned", "fail", "failed"].includes(value)) {
+            return "tracey-tone-bad";
+        }
+        if (["warn", "warning", "medium", "suspect", "degraded", "timeout", "deep_test", "deep-test"].includes(value)) {
+            return "tracey-tone-warn";
+        }
+        if (["ok", "healthy", "pass", "nominal", "low"].includes(value)) {
+            return "tracey-tone-ok";
+        }
+        return "tracey-tone-neutral";
+    }
+
+    function toneClassForGpu(gpu) {
+        const guardState = String(gpu.guard_state || gpu.state || "").trim().toLowerCase();
+        if (guardState) {
+            return toneClassFromSeverity(guardState);
+        }
+        const probeFailures = parseNumber(gpu.probe_fail_count, 0) + parseNumber(gpu.probe_error_count, 0);
+        const temperature = parseNumber(gpu.temp_c, -1);
+        if (temperature >= 88) {
+            return "tracey-tone-bad";
+        }
+        if (probeFailures > 0 || temperature >= 82) {
+            return "tracey-tone-warn";
+        }
+        return "tracey-tone-ok";
+    }
+
+    function renderStatCards(node, cards, emptyMessage = "No telemetry available.") {
+        if (!node) {
+            return;
+        }
+        if (!Array.isArray(cards) || !cards.length) {
+            node.innerHTML = `<p class="empty">${escapeHtml(emptyMessage)}</p>`;
+            return;
+        }
+        node.innerHTML = cards.map((card) => {
+            const tone = card && card.tone ? ` ${card.tone}` : "";
+            const value = card && card.value !== null && card.value !== undefined && card.value !== "" ? card.value : "-";
+            const meta = card && card.meta !== null && card.meta !== undefined && card.meta !== "" ? `<small>${escapeHtml(card.meta)}</small>` : "";
+            return `<div class="tracey-stat-card${tone}"><span>${escapeHtml(card && card.label ? card.label : "-")}</span><strong>${escapeHtml(value)}</strong>${meta}</div>`;
+        }).join("");
+    }
+
+    function renderMetricList(node, rows, emptyMessage = "No metrics available.") {
+        if (!node) {
+            return;
+        }
+        if (!Array.isArray(rows) || !rows.length) {
+            node.innerHTML = `<p class="empty">${escapeHtml(emptyMessage)}</p>`;
+            return;
+        }
+        node.innerHTML = rows.map((row) => {
+            const value = row && row.value !== null && row.value !== undefined && row.value !== "" ? row.value : "-";
+            const subtitle = row && row.subtitle !== null && row.subtitle !== undefined && row.subtitle !== "" ? `<small>${escapeHtml(row.subtitle)}</small>` : "";
+            const tone = row && row.tone ? ` ${row.tone}` : "";
+            return `<div class="tracey-metric-row${tone}"><div class="tracey-metric-copy"><span>${escapeHtml(row && row.label ? row.label : "-")}</span>${subtitle}</div><strong>${escapeHtml(value)}</strong></div>`;
+        }).join("");
+    }
+
+    function renderSensorList(node, rows, emptyMessage = "No telemetry available.") {
+        if (!node) {
+            return;
+        }
+        if (!Array.isArray(rows) || !rows.length) {
+            node.innerHTML = `<p class="empty">${escapeHtml(emptyMessage)}</p>`;
+            return;
+        }
+        node.innerHTML = rows.map((row) => {
+            const value = row && row.value !== null && row.value !== undefined && row.value !== "" ? row.value : "-";
+            const subtitle = row && row.subtitle !== null && row.subtitle !== undefined && row.subtitle !== "" ? `<small>${escapeHtml(row.subtitle)}</small>` : "";
+            const tone = row && row.tone ? ` ${row.tone}` : "";
+            return `<div class="tracey-sensor-row${tone}"><div class="tracey-sensor-copy"><span>${escapeHtml(row && row.label ? row.label : "-")}</span>${subtitle}</div><strong>${escapeHtml(value)}</strong></div>`;
+        }).join("");
+    }
+
+    function formatActionLabel(action) {
+        return String(action || "-")
+            .replace(/_/g, " ")
+            .replace(/\b\w/g, (match) => match.toUpperCase());
+    }
+
+    function updateTraceyInsightsSubtitle() {
+        if (!nodes.traceyInsightsSubtitle) {
+            return;
+        }
+        const analyticsSummary = traceyState.analytics && typeof traceyState.analytics.summary === "object"
+            ? traceyState.analytics.summary
+            : {};
+        const fleetSummary = traceyState.fleet && typeof traceyState.fleet.summary === "object"
+            ? traceyState.fleet.summary
+            : {};
+        const assessmentFleetSummary = traceyState.assessmentFleet && typeof traceyState.assessmentFleet.fleet === "object"
+            ? traceyState.assessmentFleet.fleet
+            : {};
+        const agents = formatCount(
+            fleetSummary.agents_total,
+            formatCount(assessmentFleetSummary.agents_total, formatCount(analyticsSummary.agents_total, "0"))
+        );
+        const racks = formatCount(fleetSummary.racks_total, formatCount(assessmentFleetSummary.racks_total, "0"));
+        const gpus = formatCount(fleetSummary.gpu_total, formatCount(assessmentFleetSummary.gpu_total, "0"));
+        const reachable = formatCount(
+            fleetSummary.reachable,
+            formatCount(assessmentFleetSummary.reachable, formatCount(analyticsSummary.current_healthy, "0"))
+        );
+        const assessmentProgress = traceyState.assessmentFleet && traceyState.assessmentFleet.progress && typeof traceyState.assessmentFleet.progress === "object"
+            ? traceyState.assessmentFleet.progress
+            : {};
+        const selectedRack = traceyState.selectedRack ? `rack ${traceyState.selectedRack}` : "";
+        const parts = [
+            `${agents} agents`,
+            `${racks} racks`,
+            `${gpus} GPUs`,
+            `${reachable} reachable`,
+            assessmentProgress.completion_pct !== undefined ? `assess ${formatRatioPercent(assessmentProgress.completion_pct, 0)}` : "",
+            `window ${traceyWindowSeconds()}s`,
+            selectedRack
+        ].filter(Boolean);
+        nodes.traceyInsightsSubtitle.textContent = parts.join(" • ");
     }
 
     function parseTriState(value) {
@@ -564,6 +1374,7 @@
         }
         const current = analysis.current;
         const tracey_guard = current.tracey_guard && typeof current.tracey_guard === "object" ? current.tracey_guard : {};
+        const loader_threats = current.loader_threats && typeof current.loader_threats === "object" ? current.loader_threats : {};
         const facts = [
             { key: "Status", value: current.status || "unknown" },
             { key: "Cluster", value: current.cluster || "-" },
@@ -581,8 +1392,45 @@
             { key: "Tracey Quarantined", value: String(parseNumber(tracey_guard.quarantined_devices, 0)) },
             { key: "Tracey Failures", value: String(parseNumber(tracey_guard.total_failures, 0)) },
             { key: "Tracey Errors", value: String(parseNumber(tracey_guard.total_errors, 0) + parseNumber(tracey_guard.total_timeouts, 0)) },
-            { key: "Remote Fault Support", value: String(parseNumber(tracey_guard.remote_fault_support, 0)) }
+            { key: "Remote Fault Support", value: String(parseNumber(tracey_guard.remote_fault_support, 0)) },
+            { key: "Loader Threat Providers", value: String(parseNumber(loader_threats.local_provider_count, 0)) },
+            { key: "Loader Threat Artifacts", value: String(parseNumber(loader_threats.local_artifact_count, 0)) },
+            { key: "Loader Blocked Providers", value: String(parseNumber(loader_threats.blocked_provider_count, 0)) },
+            { key: "Loader Blocked Artifacts", value: String(parseNumber(loader_threats.blocked_artifact_count, 0)) },
+            { key: "Loader Threat Reporters", value: String(parseNumber(loader_threats.remote_reporters, 0)) }
         ];
+        const selectedTelemetry = traceyState.selectedServerTelemetry &&
+            String(traceyState.selectedServerTelemetry.agent_id || "").trim() === String(current.agent_id || "").trim()
+            ? traceyState.selectedServerTelemetry
+            : null;
+        if (selectedTelemetry) {
+            const assessmentSummary = getAssessmentSummary(selectedTelemetry);
+            const assessmentCommunication = getAssessmentCommunication(selectedTelemetry);
+            if (hasAssessmentTelemetry(assessmentSummary, assessmentCommunication)) {
+                facts.push(
+                    {
+                        key: "Assessment",
+                        value: `${assessmentStatusText(assessmentSummary)} ${formatRatioPercent(assessmentSummary.compromise_risk, 0, "-")}`
+                    },
+                    {
+                        key: "Assessment Action",
+                        value: assessmentActionText(assessmentSummary)
+                    },
+                    {
+                        key: "Assessment Matches",
+                        value: `${formatCount(assessmentSummary.cve_matches, "0")} cve / ${formatCount(assessmentSummary.kev_matches, "0")} kev`
+                    },
+                    {
+                        key: "Assessment Comm",
+                        value: formatAssessmentCommOps(assessmentCommunication)
+                    },
+                    {
+                        key: "Assessment Faults",
+                        value: formatAssessmentCommFaults(assessmentCommunication)
+                    }
+                );
+            }
+        }
         nodes.traceyAgentFacts.innerHTML = facts.map((fact) => {
             return `<div class="tracey-fact"><span>${escapeHtml(fact.key)}</span><strong>${escapeHtml(fact.value)}</strong></div>`;
         }).join("");
@@ -736,6 +1584,841 @@
             nodes.traceyControlStatus.textContent = `Deep-dive updated ${formatEpochMs(summary.ts_ms)}`;
             nodes.traceyControlStatus.style.borderColor = summary.enabled ? "#22c55e" : "#f59e0b";
         }
+    }
+
+    function renderTraceyFleetAssessmentRows() {
+        const assessmentData = traceyState.assessmentFleet && typeof traceyState.assessmentFleet === "object"
+            ? traceyState.assessmentFleet
+            : null;
+        const hasAssessmentData = hasObjectContent(assessmentData);
+        const agents = Array.isArray(assessmentData && assessmentData.agents) ? assessmentData.agents : [];
+        const visibleAgents = filteredAndSortedAssessmentQueueAgents(agents);
+        const rows = visibleAgents.map((agent) => {
+            const agentId = String(agent.agent_id || "unknown");
+            const host = String(agent.host || agentId);
+            const location = [agentId !== host ? agentId : "", String(agent.rack || ""), String(agent.zone || "")]
+                .filter(Boolean)
+                .join(" • ");
+            const status = String(agent.assessment_status || "unknown");
+            const progress = agent.progress && typeof agent.progress === "object" ? agent.progress : {};
+            const progressTiming = String(progress.last_error || "").trim() || [
+                parseNumber(progress.last_report_ms, 0) > 0 ? `report ${formatEpochMs(progress.last_report_ms)}` : "",
+                parseNumber(progress.last_plan_ms, 0) > 0 ? `plan ${formatEpochMs(progress.last_plan_ms)}` : ""
+            ].filter(Boolean).join(" • ");
+            const slotText = parseNumber(progress.slot_count, 0) > 0
+                ? `slot ${parseNumber(progress.slot_index, 0) + 1}/${formatCount(progress.slot_count, "0")}`
+                : "slot pending";
+            return `<tr><td><div class="tracey-cell-stack"><button class="cluster-link tracey-agent-link" type="button" data-tracey-assessment-agent="${escapeHtml(agentId)}">${escapeHtml(host)}</button>${location ? `<div class="empty">${escapeHtml(location)}</div>` : ""}</div></td><td><div class="tracey-cell-stack"><div>${statusBadge(status)}</div><div class="empty">${escapeHtml(`risk ${formatRatioPercent(agent.compromise_risk, 0, "-")} • conf ${formatRatioPercent(agent.compromise_confidence, 0, "-")}`)}</div><div class="empty">${escapeHtml(`${assessmentActionText(agent)} • cve ${formatCount(agent.cve_matches, "0")} • kev ${formatCount(agent.kev_matches, "0")}`)}</div></div></td><td><div class="tracey-cell-stack"><div>${escapeHtml(formatAssessmentReportOps(progress))}</div><div class="empty">${escapeHtml(formatAssessmentReportFaults(progress))}</div><div class="empty">${escapeHtml(`${formatActionLabel(progress.last_disposition || "pending")} • v${formatCount(progress.protocol_version, "1")}`)}</div></div></td><td><div class="tracey-cell-stack"><div>${escapeHtml(formatAssessmentProgress(progress))}</div><div class="empty">${escapeHtml(slotText)}</div><div class="empty">${escapeHtml(progressTiming || "Awaiting assessment report.")}</div></div></td></tr>`;
+        });
+        renderRows(
+            nodes.traceyFleetAssessmentRows,
+            rows,
+            hasAssessmentData
+                ? (agents.length ? "No assessments match current filters." : "No agent assessments in the current cycle.")
+                : "No assessment telemetry available.",
+            4
+        );
+    }
+
+    function findTraceyFleetAgent(agentId) {
+        const normalizedId = String(agentId || "").trim();
+        if (!normalizedId || !traceyState.fleet || !Array.isArray(traceyState.fleet.agents)) {
+            return null;
+        }
+        return traceyState.fleet.agents.find((agent) => String(agent.agent_id || "").trim() === normalizedId) || null;
+    }
+
+    function renderTraceyFleetOverview(data) {
+        const fleetData = data && typeof data === "object" ? data : null;
+        const assessmentData = traceyState.assessmentFleet && typeof traceyState.assessmentFleet === "object"
+            ? traceyState.assessmentFleet
+            : null;
+        const hasAssessmentData = hasObjectContent(assessmentData);
+        const summary = fleetData && fleetData.summary && typeof fleetData.summary === "object"
+            ? fleetData.summary
+            : (assessmentData && assessmentData.fleet && typeof assessmentData.fleet === "object" ? assessmentData.fleet : {});
+        const assessmentAgents = Array.isArray(assessmentData && assessmentData.agents) ? assessmentData.agents : [];
+        const assessmentAggregate = collectAssessmentQueueAggregate(assessmentAgents);
+        const assessmentProgress = assessmentData && assessmentData.progress && typeof assessmentData.progress === "object"
+            ? assessmentData.progress
+            : {};
+        const assessmentCommunication = assessmentData && assessmentData.communication && typeof assessmentData.communication === "object"
+            ? assessmentData.communication
+            : {};
+        const mirror = assessmentData && assessmentData.mirror && typeof assessmentData.mirror === "object"
+            ? assessmentData.mirror
+            : {};
+        const generatedEpochMs = parseNumber(
+            fleetData ? fleetData.generated_epoch_ms : 0,
+            parseNumber(assessmentData ? assessmentData.generated_epoch_ms : 0, 0)
+        );
+
+        if (nodes.traceyFleetMeta) {
+            const metaParts = [];
+            if (generatedEpochMs > 0) {
+                metaParts.push(`Updated ${formatEpochMs(generatedEpochMs)}`);
+            }
+            if (mirror.assessment_protocol_version !== null && mirror.assessment_protocol_version !== undefined) {
+                metaParts.push(`assess v${mirror.assessment_protocol_version}`);
+            }
+            if (mirror.indexed_records !== null && mirror.indexed_records !== undefined) {
+                metaParts.push(`${formatCount(mirror.indexed_records, "0")} CVEs`);
+            }
+            const indexedHead = String(mirror.indexed_head || mirror.head || "").trim();
+            if (indexedHead) {
+                metaParts.push(`head ${indexedHead.slice(0, 12)}`);
+            }
+            nodes.traceyFleetMeta.textContent = metaParts.length ? metaParts.join(" • ") : "Fleet telemetry unavailable";
+        }
+
+        const cards = [];
+        if (hasObjectContent(summary)) {
+            cards.push(
+                {
+                    label: "Healthy Agents",
+                    value: `${formatCount(summary.healthy, "0")} / ${formatCount(summary.agents_total, "0")}`,
+                    meta: `${formatCount(summary.reachable, "0")} reachable`,
+                    tone: "tracey-tone-ok"
+                },
+                {
+                    label: "Degraded",
+                    value: formatCount(summary.degraded, "0"),
+                    meta: `${formatCount(summary.offline, "0")} offline`,
+                    tone: parseNumber(summary.degraded, 0) > 0 || parseNumber(summary.offline, 0) > 0 ? "tracey-tone-warn" : "tracey-tone-neutral"
+                },
+                {
+                    label: "Racks",
+                    value: formatCount(summary.racks_total, "0"),
+                    meta: `${formatCount(summary.zones_total, "0")} zones`,
+                    tone: "tracey-tone-neutral"
+                },
+                {
+                    label: "GPU Estate",
+                    value: formatCount(summary.gpu_total, "0"),
+                    meta: formatPercentValue(summary.gpu_utilization_avg_pct, 0),
+                    tone: "tracey-tone-ok"
+                },
+                {
+                    label: "GPU Power",
+                    value: formatPower(summary.gpu_power_total_w),
+                    meta: `max ${formatTemperature(summary.gpu_temperature_max_c)}`,
+                    tone: "tracey-tone-neutral"
+                },
+                {
+                    label: "Thermals / Fans",
+                    value: `${formatCount(summary.thermal_alerts, "0")} / ${formatCount(summary.fan_alerts, "0")}`,
+                    meta: "alerts",
+                    tone: parseNumber(summary.thermal_alerts, 0) > 0 || parseNumber(summary.fan_alerts, 0) > 0 ? "tracey-tone-warn" : "tracey-tone-ok"
+                },
+                {
+                    label: "ECC",
+                    value: `${formatCount(summary.ecc_corrected_total, "0")} / ${formatCount(summary.ecc_uncorrected_total, "0")}`,
+                    meta: "corr / uncorr",
+                    tone: parseNumber(summary.ecc_uncorrected_total, 0) > 0 ? "tracey-tone-warn" : "tracey-tone-neutral"
+                },
+                {
+                    label: "Guard Isolation",
+                    value: formatCount(summary.tracey_guard_quarantined, "0"),
+                    meta: `${formatCount(summary.blocked_loader_providers, "0")} loader blocks`,
+                    tone: parseNumber(summary.tracey_guard_quarantined, 0) > 0 ? "tracey-tone-warn" : "tracey-tone-neutral"
+                },
+                {
+                    label: "Autonomy",
+                    value: formatCount(summary.autonomy_actions, "0"),
+                    meta: `risk ${formatRatioPercent(summary.autonomy_risk_max, 0)}`,
+                    tone: parseNumber(summary.autonomy_actions, 0) > 0 ? "tracey-tone-ok" : "tracey-tone-neutral"
+                }
+            );
+        }
+        if (hasAssessmentData) {
+            cards.push(
+                {
+                    label: "Assessment Cycle",
+                    value: parseNumber(assessmentProgress.expected_slices, 0) > 0
+                        ? `${formatCount(assessmentProgress.completed_slices, "0")} / ${formatCount(assessmentProgress.expected_slices, "0")}`
+                        : "plan pending",
+                    meta: `${formatRatioPercent(assessmentProgress.completion_pct, 0, "0%")} • ${formatCount(assessmentProgress.agents_completed_cycle, "0")} / ${formatCount(assessmentProgress.agents_with_progress, "0")} agents`,
+                    tone: parseNumber(assessmentCommunication.reports_rejected, 0) > 0 || parseNumber(assessmentCommunication.semantic_faults, 0) > 0
+                        ? "tracey-tone-warn"
+                        : (parseNumber(assessmentProgress.expected_slices, 0) > 0 && parseNumber(assessmentProgress.completion_pct, 0) >= 1 ? "tracey-tone-ok" : "tracey-tone-neutral")
+                },
+                {
+                    label: "Compromise Queue",
+                    value: `${formatCount(assessmentAggregate.compromised, "0")} isolate / ${formatCount(assessmentAggregate.elevated, "0")} alert`,
+                    meta: `max ${formatRatioPercent(assessmentAggregate.maxRisk, 0)} • ${formatCount(assessmentAggregate.cveMatches, "0")} cve / ${formatCount(assessmentAggregate.kevMatches, "0")} kev`,
+                    tone: assessmentAggregate.compromised > 0
+                        ? "tracey-tone-bad"
+                        : (assessmentAggregate.elevated > 0 || assessmentAggregate.kevMatches > 0 ? "tracey-tone-warn" : "tracey-tone-ok")
+                },
+                {
+                    label: "Assessment Comms",
+                    value: `${formatCount(assessmentCommunication.reports_rejected, "0")} rej / ${formatCount(assessmentCommunication.duplicate_reports, "0")} dup`,
+                    meta: `stale ${formatCount(assessmentCommunication.stale_plan_reports, "0")} • sem ${formatCount(assessmentCommunication.semantic_faults, "0")}`,
+                    tone: parseNumber(assessmentCommunication.reports_rejected, 0) > 0 || parseNumber(assessmentCommunication.semantic_faults, 0) > 0
+                        ? "tracey-tone-warn"
+                        : (parseNumber(assessmentCommunication.duplicate_reports, 0) > 0 || parseNumber(assessmentCommunication.stale_plan_reports, 0) > 0 ? "tracey-tone-neutral" : "tracey-tone-ok")
+                }
+            );
+        }
+        renderStatCards(nodes.traceyFleetSummaryCards, cards, "No fleet telemetry available.");
+
+        const zones = Array.isArray(fleetData && fleetData.zone_breakdown) ? fleetData.zone_breakdown : [];
+        const zoneRows = zones.map((zone) => {
+            const alerts = `${formatCount(zone.thermal_alerts, "0")} t / ${formatCount(zone.fan_alerts, "0")} f / ${formatCount(zone.tracey_guard_quarantined, "0")} q`;
+            return `<tr><td>${escapeHtml(String(zone.zone || "unassigned"))}</td><td>${statusBadge(zone.health || "unknown")}</td><td>${escapeHtml(`${formatCount(zone.rack_count, "0")} racks / ${formatCount(zone.agent_count, "0")} agents`)}</td><td>${escapeHtml(formatCount(zone.gpu_count, "0"))}</td><td>${escapeHtml(formatPercentValue(zone.gpu_utilization_avg_pct, 0))}</td><td>${escapeHtml(alerts)}</td></tr>`;
+        });
+        renderRows(nodes.traceyFleetZoneRows, zoneRows, "No zone telemetry available.", 6);
+
+        const actions = Array.isArray(fleetData && fleetData.recent_actions) ? fleetData.recent_actions.slice(0, 12) : [];
+        const actionRows = actions.map((action) => {
+            const rack = String(action.rack || action.zone || "-");
+            return `<tr><td>${escapeHtml(formatEpochMs(action.ts_ms))}</td><td>${escapeHtml(rack)}</td><td>${escapeHtml(formatActionLabel(action.action || action.category || "-"))}</td><td>${escapeHtml(String(action.detail || "-"))}</td></tr>`;
+        });
+        renderRows(nodes.traceyFleetActionRows, actionRows, "No autonomous actions recorded.", 4);
+
+        const heatmapByRack = new Map();
+        for (const entry of Array.isArray(fleetData && fleetData.gpu_heatmap) ? fleetData.gpu_heatmap : []) {
+            heatmapByRack.set(String(entry.rack || ""), Array.isArray(entry.cells) ? entry.cells : []);
+        }
+        const racks = Array.isArray(fleetData && fleetData.racks) ? fleetData.racks : [];
+        if (nodes.traceyRackExplorerMeta) {
+            nodes.traceyRackExplorerMeta.textContent = traceyState.selectedRack
+                ? `Selected ${traceyState.selectedRack}`
+                : (racks.length ? `${formatCount(racks.length, "0")} racks visible` : "No racks available");
+        }
+        if (nodes.traceyRackCards) {
+            if (!racks.length) {
+                nodes.traceyRackCards.innerHTML = `<p class="empty">No rack summaries available.</p>`;
+            } else {
+                nodes.traceyRackCards.innerHTML = racks.map((rack) => {
+                    const rackId = String(rack.rack || "unassigned");
+                    const previewCells = (heatmapByRack.get(rackId) || []).slice(0, 24);
+                    const preview = previewCells.length
+                        ? previewCells.map((cell) => {
+                            const gpuId = String(cell.gpu_id || cell.gpuId || "gpu");
+                            return `<span class="tracey-heat-cell ${toneClassForGpu(cell)}" title="${escapeHtml(gpuId)}"></span>`;
+                        }).join("")
+                        : `<span class="empty">No GPU tiles</span>`;
+                    const activeClass = rackId === traceyState.selectedRack ? " is-active" : "";
+                    return `<button class="tracey-rack-card ${toneClassFromStatus(rack.health)}${activeClass}" type="button" data-tracey-rack="${escapeHtml(rackId)}"><div class="tracey-rack-card-header"><strong>${escapeHtml(rackId)}</strong><span>${escapeHtml(String(rack.zone || "unassigned"))}</span></div><div class="tracey-rack-card-meta"><span>${escapeHtml(formatCount(rack.gpu_count, "0"))} GPU</span><span>${escapeHtml(formatPercentValue(rack.gpu_utilization_avg_pct, 0))} util</span><span>${escapeHtml(formatTemperature(rack.gpu_temperature_max_c))}</span><span>${escapeHtml(formatCount(rack.autonomy_actions, "0"))} act</span></div><div class="tracey-heat-preview">${preview}</div></button>`;
+                }).join("");
+            }
+        }
+        renderTraceyFleetAssessmentRows();
+        updateTraceyInsightsSubtitle();
+    }
+
+    function renderTraceyRackDetail(detail) {
+        if (!detail || typeof detail !== "object") {
+            if (nodes.traceyRackDetailTitle) {
+                nodes.traceyRackDetailTitle.textContent = "Rack Detail";
+            }
+            if (nodes.traceyRackDetailMeta) {
+                nodes.traceyRackDetailMeta.textContent = "Select a rack to inspect slot telemetry";
+            }
+            renderStatCards(nodes.traceyRackSummaryCards, [], "No rack selected.");
+            if (nodes.traceyRackGpuHeatmap) {
+                nodes.traceyRackGpuHeatmap.innerHTML = `<p class="empty">Select a rack to load its GPU slot map.</p>`;
+            }
+            renderRows(nodes.traceyRackServerRows, [], "Select a rack to inspect its servers.", 8);
+            return;
+        }
+
+        const summary = detail.summary && typeof detail.summary === "object" ? detail.summary : {};
+        const rackId = String(detail.rack || summary.rack || "unassigned");
+        const servers = Array.isArray(detail.servers) ? detail.servers : [];
+        const assessmentAggregate = collectAssessmentAggregate(servers);
+        if (nodes.traceyRackDetailTitle) {
+            nodes.traceyRackDetailTitle.textContent = `Rack Detail • ${rackId}`;
+        }
+        if (nodes.traceyRackDetailMeta) {
+            nodes.traceyRackDetailMeta.textContent = `${String(detail.zone || summary.zone || "unassigned")} • ${formatEpochMs(detail.generated_epoch_ms)}`;
+        }
+
+        renderStatCards(nodes.traceyRackSummaryCards, [
+            { label: "Health", value: String(summary.health || "unknown"), meta: `${formatCount(summary.reachable_agents, "0")} reachable`, tone: toneClassFromStatus(summary.health) },
+            { label: "Servers", value: formatCount(summary.agent_count, "0"), meta: `${formatCount((detail.servers || []).length, "0")} listed`, tone: "tracey-tone-neutral" },
+            { label: "GPUs", value: formatCount(summary.gpu_count, "0"), meta: formatPercentValue(summary.gpu_utilization_avg_pct, 0), tone: "tracey-tone-ok" },
+            { label: "Temp", value: formatTemperature(summary.gpu_temperature_max_c), meta: formatPower(summary.gpu_power_total_w), tone: "tracey-tone-neutral" },
+            { label: "Network", value: formatBytesRate(summary.net_rx_bps), meta: `tx ${formatBytesRate(summary.net_tx_bps)}`, tone: "tracey-tone-neutral" },
+            { label: "Alerts", value: `${formatCount(summary.thermal_alerts, "0")} / ${formatCount(summary.fan_alerts, "0")}`, meta: "thermal / fan", tone: parseNumber(summary.thermal_alerts, 0) > 0 || parseNumber(summary.fan_alerts, 0) > 0 ? "tracey-tone-warn" : "tracey-tone-ok" },
+            { label: "ECC", value: `${formatCount(summary.ecc_corrected_total, "0")} / ${formatCount(summary.ecc_uncorrected_total, "0")}`, meta: "corr / uncorr", tone: parseNumber(summary.ecc_uncorrected_total, 0) > 0 ? "tracey-tone-warn" : "tracey-tone-neutral" },
+            { label: "Autonomy", value: formatCount(summary.autonomy_actions, "0"), meta: `risk ${formatRatioPercent(summary.autonomy_risk_max, 0)}`, tone: parseNumber(summary.autonomy_actions, 0) > 0 ? "tracey-tone-ok" : "tracey-tone-neutral" },
+            {
+                label: "Assessment Risk",
+                value: `${formatCount(assessmentAggregate.compromised, "0")} isolate / ${formatCount(assessmentAggregate.elevated, "0")} alert`,
+                meta: `max ${formatRatioPercent(assessmentAggregate.maxRisk, 0)} • ${formatCount(assessmentAggregate.agentCount, "0")} servers`,
+                tone: assessmentAggregate.compromised > 0
+                    ? "tracey-tone-bad"
+                    : (assessmentAggregate.elevated > 0 ? "tracey-tone-warn" : "tracey-tone-ok")
+            },
+            {
+                label: "Assessment Matches",
+                value: `${formatCount(assessmentAggregate.cveMatches, "0")} / ${formatCount(assessmentAggregate.kevMatches, "0")}`,
+                meta: "cve / kev",
+                tone: assessmentAggregate.kevMatches > 0
+                    ? "tracey-tone-warn"
+                    : (assessmentAggregate.cveMatches > 0 ? "tracey-tone-neutral" : "tracey-tone-ok")
+            },
+            {
+                label: "Assessment Comm",
+                value: `${formatCount(assessmentAggregate.reportsRejected, "0")} fail / ${formatCount(assessmentAggregate.duplicateReports, "0")} dup`,
+                meta: `stale ${formatCount(assessmentAggregate.stalePlanRecoveries, "0")} • sem ${formatCount(assessmentAggregate.semanticFailures, "0")} • auth ${formatCount(assessmentAggregate.authFailures, "0")}`,
+                tone: assessmentAggregate.authFailures > 0 || assessmentAggregate.consecutiveFailures > 0 || assessmentAggregate.semanticFailures > 0 || assessmentAggregate.reportsRejected > 0
+                    ? "tracey-tone-warn"
+                    : (assessmentAggregate.duplicateReports > 0 || assessmentAggregate.stalePlanRecoveries > 0 ? "tracey-tone-neutral" : "tracey-tone-ok")
+            }
+        ], "No rack summary available.");
+
+        const heatmap = Array.isArray(detail.gpu_heatmap) ? detail.gpu_heatmap : [];
+        if (nodes.traceyRackGpuHeatmap) {
+            nodes.traceyRackGpuHeatmap.innerHTML = heatmap.length
+                ? heatmap.map((gpu) => {
+                    const gpuId = String(gpu.gpu_id || gpu.gpuId || "gpu");
+                    const slotIndex = gpu.slot_index !== null && gpu.slot_index !== undefined ? String(gpu.slot_index) : "-";
+                    const agentId = String(gpu.agent_id || "");
+                    const activeClass = gpuId === traceyState.selectedGpuId ? " is-active" : "";
+                    return `<button class="tracey-slot-card ${toneClassForGpu(gpu)}${activeClass}" type="button" data-tracey-server-id="${escapeHtml(agentId)}" data-tracey-gpu-id="${escapeHtml(gpuId)}"><div class="tracey-slot-card-header"><strong>${escapeHtml(gpuId)}</strong><span>slot ${escapeHtml(slotIndex)}</span></div><div class="tracey-slot-meta"><span><em>Host</em><strong>${escapeHtml(String(gpu.host || "-"))}</strong></span><span><em>Util</em><strong>${escapeHtml(formatPercentValue(gpu.util_pct, 0))}</strong></span><span><em>Temp</em><strong>${escapeHtml(formatTemperature(gpu.temp_c))}</strong></span><span><em>Guard</em><strong>${escapeHtml(String(gpu.guard_state || gpu.state || "-"))}</strong></span></div></button>`;
+                }).join("")
+                : `<p class="empty">No GPU slot telemetry available for this rack.</p>`;
+        }
+
+        const visibleServers = filteredAndSortedRackAssessmentServers(servers);
+        const serverRows = visibleServers.map((server) => {
+            const agentId = String(server.agent_id || "unknown");
+            const serverSummary = server.summary && typeof server.summary === "object" ? server.summary : {};
+            const assessmentSummary = getAssessmentSummary(server);
+            const assessmentCommunication = getAssessmentCommunication(server);
+            const assessmentTone = toneClassForAssessment(assessmentSummary, assessmentCommunication);
+            const assessmentCell = hasAssessmentTelemetry(assessmentSummary, assessmentCommunication)
+                ? `<div class="tracey-cell-stack ${assessmentTone}"><div>${statusBadge(assessmentStatusText(assessmentSummary))}</div><div class="empty">${escapeHtml(`risk ${formatRatioPercent(assessmentSummary.compromise_risk, 0, "-")} • cve ${formatCount(assessmentSummary.cve_matches, "0")} • kev ${formatCount(assessmentSummary.kev_matches, "0")}`)}</div><div class="empty">${escapeHtml(`${assessmentActionText(assessmentSummary)} • ${formatAssessmentCommOps(assessmentCommunication)}`)}</div></div>`
+                : `<span class="empty">No assessment</span>`;
+            const button = `<button class="cluster-link tracey-agent-link" type="button" data-tracey-server-id="${escapeHtml(agentId)}">${escapeHtml(String(server.host || agentId))}</button>`;
+            const alerts = `${formatCount(serverSummary.thermal_alerts, "0")} t / ${formatCount(serverSummary.fan_alerts, "0")} f / ${formatCount((server.tracey_guard_summary || {}).quarantined_devices, "0")} q`;
+            return `<tr><td>${button}</td><td>${statusBadge(server.status || "unknown")}</td><td>${escapeHtml(formatCount((server.gpus || []).length, "0"))}</td><td>${escapeHtml(formatPercentValue(serverSummary.gpu_utilization_avg_pct, 0))}</td><td>${escapeHtml(formatTemperature(serverSummary.gpu_temperature_max_c))}</td><td>${escapeHtml(alerts)}</td><td>${assessmentCell}</td><td>${escapeHtml(formatAge(server.last_seen_seconds_ago))}</td></tr>`;
+        });
+        renderRows(
+            nodes.traceyRackServerRows,
+            serverRows,
+            servers.length ? "No servers match current assessment filters." : "No servers reported for this rack.",
+            8
+        );
+    }
+
+    function renderTraceyServerTelemetry(data) {
+        if (!data || typeof data !== "object") {
+            if (nodes.traceyServerTelemetryTitle) {
+                nodes.traceyServerTelemetryTitle.textContent = "Server Telemetry";
+            }
+            if (nodes.traceyServerTelemetryMeta) {
+                nodes.traceyServerTelemetryMeta.textContent = "Select a server";
+            }
+            renderStatCards(nodes.traceyServerSummaryCards, [], "No server selected.");
+            renderSensorList(nodes.traceyServerThermals, [], "No server selected.");
+            renderSensorList(nodes.traceyServerFans, [], "No fan telemetry loaded.");
+            renderSensorList(nodes.traceyServerPower, [], "No power telemetry loaded.");
+            renderSensorList(nodes.traceyServerDisks, [], "No disk telemetry loaded.");
+            renderSensorList(nodes.traceyServerProcesses, [], "No process telemetry loaded.");
+            renderMetricList(nodes.traceyServerGuardFacts, [], "No TraceyGuard summary loaded.");
+            renderMetricList(nodes.traceyServerAssessmentFacts, [], "No assessment snapshot loaded.");
+            if (nodes.traceyServerGpuTiles) {
+                nodes.traceyServerGpuTiles.innerHTML = `<p class="empty">No GPU inventory available.</p>`;
+            }
+            return;
+        }
+
+        const server = data.server && typeof data.server === "object" ? data.server : {};
+        const ecc = server.ecc && typeof server.ecc === "object" ? server.ecc : {};
+        const guard = data.tracey_guard_summary && typeof data.tracey_guard_summary === "object"
+            ? data.tracey_guard_summary
+            : {};
+        const gpus = Array.isArray(data.gpus) ? data.gpus : [];
+        const assessmentSnapshot = getAssessmentSnapshot(data);
+        const assessmentSummary = getAssessmentSummary(data);
+        const assessmentCommunication = getAssessmentCommunication(data);
+        const assessmentProgress = assessmentSnapshot.progress && typeof assessmentSnapshot.progress === "object"
+            ? assessmentSnapshot.progress
+            : {};
+        const assessmentTone = toneClassForAssessment(assessmentSummary, assessmentCommunication);
+        if (nodes.traceyServerTelemetryTitle) {
+            nodes.traceyServerTelemetryTitle.textContent = `Server Telemetry • ${String(data.host || data.agent_id || "unknown")}`;
+        }
+        if (nodes.traceyServerTelemetryMeta) {
+            nodes.traceyServerTelemetryMeta.textContent = `${String(data.rack || "unassigned")} • ${String(data.zone || "unassigned")} • ${formatEpochMs(data.generated_epoch_ms)}`;
+        }
+        const summaryCards = [
+            { label: "Status", value: String(data.status || "unknown"), meta: String(data.agent_id || "-"), tone: toneClassFromStatus(data.status) },
+            { label: "CPU", value: formatPercentValue(server.cpu_usage_pct, 0), meta: "host load", tone: "tracey-tone-neutral" },
+            { label: "Memory", value: formatPercentValue(server.mem_used_pct, 0), meta: `apps ${formatPercentValue(server.mem_app_used_pct, 0)}`, tone: "tracey-tone-neutral" },
+            { label: "Swap", value: formatPercentValue(server.swap_used_pct, 0), meta: "system swap", tone: parseNumber(server.swap_used_pct, 0) >= 50 ? "tracey-tone-warn" : "tracey-tone-neutral" },
+            { label: "Network RX", value: formatBytesRate(server.net_rx_bps), meta: `tx ${formatBytesRate(server.net_tx_bps)}`, tone: "tracey-tone-neutral" },
+            { label: "GPU Util", value: formatPercentValue(server.gpu_utilization_avg_pct, 0), meta: `${formatCount(gpus.length, "0")} GPUs`, tone: "tracey-tone-ok" },
+            { label: "Max Temp", value: formatTemperature(server.gpu_temperature_max_c), meta: formatPower(server.gpu_power_total_w), tone: parseNumber(server.gpu_temperature_max_c, 0) >= 80 ? "tracey-tone-warn" : "tracey-tone-neutral" },
+            { label: "ECC", value: `${formatCount(ecc.corrected_total, "0")} / ${formatCount(ecc.uncorrected_total, "0")}`, meta: "corr / uncorr", tone: parseNumber(ecc.uncorrected_total, 0) > 0 ? "tracey-tone-warn" : "tracey-tone-neutral" },
+            { label: "Autonomy", value: formatRatioPercent(server.autonomy_risk, 0), meta: server.autonomy_action ? formatActionLabel(server.autonomy_action) : "No action", tone: parseNumber(server.autonomy_risk, 0) >= 0.5 ? "tracey-tone-warn" : "tracey-tone-ok" },
+            { label: "Guard", value: formatCount(guard.quarantined_devices, "0"), meta: `${formatCount(guard.total_failures, "0")} fail / ${formatCount(guard.total_errors, "0")} err`, tone: parseNumber(guard.quarantined_devices, 0) > 0 ? "tracey-tone-warn" : "tracey-tone-neutral" }
+        ];
+        if (hasAssessmentTelemetry(assessmentSummary, assessmentCommunication, assessmentProgress)) {
+            summaryCards.push(
+                {
+                    label: "Assessment Risk",
+                    value: formatRatioPercent(assessmentSummary.compromise_risk, 0, "-"),
+                    meta: `${assessmentStatusText(assessmentSummary)} • ${assessmentActionText(assessmentSummary)}`,
+                    tone: assessmentTone
+                },
+                {
+                    label: "Assessment Comm",
+                    value: formatAssessmentCommOps(assessmentCommunication),
+                    meta: formatAssessmentCommFaults(assessmentCommunication),
+                    tone: assessmentTone
+                }
+            );
+        }
+        renderStatCards(nodes.traceyServerSummaryCards, summaryCards, "No server telemetry available.");
+
+        renderSensorList(nodes.traceyServerThermals, (Array.isArray(server.thermal_sensors) ? server.thermal_sensors : []).map((sensor) => ({
+            label: String(sensor.label || sensor.name || "thermal"),
+            subtitle: String(sensor.sensor_type || sensor.severity || ""),
+            value: formatTemperature(sensor.temp_c),
+            tone: toneClassFromSeverity(sensor.severity)
+        })), "No thermal telemetry loaded.");
+
+        renderSensorList(nodes.traceyServerFans, (Array.isArray(server.fan_sensors) ? server.fan_sensors : []).map((sensor) => ({
+            label: String(sensor.label || sensor.name || "fan"),
+            subtitle: sensor.pwm_percent !== null && sensor.pwm_percent !== undefined ? `PWM ${formatPercentValue(sensor.pwm_percent, 0)}` : String(sensor.severity || ""),
+            value: sensor.rpm !== null && sensor.rpm !== undefined ? `${formatCount(sensor.rpm, "0")} rpm` : formatPercentValue(sensor.pwm_percent, 0),
+            tone: toneClassFromSeverity(sensor.severity)
+        })), "No fan telemetry loaded.");
+
+        renderSensorList(nodes.traceyServerPower, (Array.isArray(server.power_sensors) ? server.power_sensors : []).map((sensor) => ({
+            label: String(sensor.label || sensor.name || "power"),
+            subtitle: String(sensor.severity || ""),
+            value: formatPower(sensor.power_w),
+            tone: toneClassFromSeverity(sensor.severity)
+        })), "No power telemetry loaded.");
+
+        renderSensorList(nodes.traceyServerDisks, (Array.isArray(server.disks) ? server.disks : []).map((disk) => ({
+            label: String(disk.mount || "/"),
+            subtitle: `${formatBytes(disk.used_bytes)} / ${formatBytes(disk.total_bytes)} • r ${formatBytesRate(disk.read_bps)} • w ${formatBytesRate(disk.write_bps)}`,
+            value: formatRatioPercent(disk.used_ratio, 0),
+            tone: parseNumber(disk.used_ratio, 0) >= 0.85 ? "tracey-tone-warn" : "tracey-tone-neutral"
+        })), "No disk telemetry loaded.");
+
+        renderSensorList(nodes.traceyServerProcesses, (Array.isArray(server.processes) ? server.processes : []).map((process) => ({
+            label: String(process.name || `pid ${process.pid || "-"}`),
+            subtitle: `pid ${process.pid || "-"} • mem ${formatBytes(process.mem_bytes)} • io ${formatBytesRate(process.io_bps)}`,
+            value: formatPercentValue(process.cpu_pct, 0),
+            tone: parseNumber(process.cpu_pct, 0) >= 70 ? "tracey-tone-warn" : "tracey-tone-neutral"
+        })), "No process telemetry loaded.");
+
+        renderMetricList(nodes.traceyServerGuardFacts, [
+            { label: "Enabled", value: guard.enabled === true ? "yes" : "no", subtitle: `deep dive ${guard.deep_dive === true ? "on" : "off"}`, tone: guard.enabled === true ? "tracey-tone-ok" : "tracey-tone-neutral" },
+            { label: "Quarantined", value: formatCount(guard.quarantined_devices, "0"), subtitle: `${formatCount(guard.healthy_devices, "0")} healthy / ${formatCount(guard.suspect_devices, "0")} suspect`, tone: parseNumber(guard.quarantined_devices, 0) > 0 ? "tracey-tone-warn" : "tracey-tone-neutral" },
+            { label: "Failures", value: formatCount(guard.total_failures, "0"), subtitle: `${formatCount(guard.total_errors, "0")} errors / ${formatCount(guard.total_timeouts, "0")} timeouts`, tone: parseNumber(guard.total_failures, 0) > 0 || parseNumber(guard.total_errors, 0) > 0 || parseNumber(guard.total_timeouts, 0) > 0 ? "tracey-tone-warn" : "tracey-tone-neutral" },
+            { label: "Remote Support", value: formatCount(guard.remote_fault_support, "0"), subtitle: `${formatFixed(guard.overhead_budget_pct, 1, "-")}% budget`, tone: "tracey-tone-neutral" }
+        ], "No TraceyGuard summary loaded.");
+        const filteredAssessmentMetrics = filteredAndSortedServerAssessmentMetricRows(
+            buildAssessmentMetricRows(assessmentSummary, assessmentCommunication, assessmentProgress)
+        );
+        renderMetricList(
+            nodes.traceyServerAssessmentFacts,
+            filteredAssessmentMetrics.rows,
+            filteredAssessmentMetrics.emptyMessage
+        );
+
+        if (nodes.traceyServerGpuTiles) {
+            nodes.traceyServerGpuTiles.innerHTML = gpus.length
+                ? gpus.map((gpu) => {
+                    const gpuId = String(gpu.gpu_id || gpu.gpuId || "gpu");
+                    const activeClass = gpuId === traceyState.selectedGpuId ? " is-active" : "";
+                    return `<button class="tracey-slot-card ${toneClassForGpu(gpu)}${activeClass}" type="button" data-tracey-gpu-agent="${escapeHtml(String(data.agent_id || ""))}" data-tracey-gpu-id="${escapeHtml(gpuId)}"><div class="tracey-slot-card-header"><strong>${escapeHtml(gpuId)}</strong><span>${escapeHtml(String(gpu.name || gpu.vendor || ""))}</span></div><div class="tracey-slot-meta"><span><em>Util</em><strong>${escapeHtml(formatPercentValue(gpu.util_pct, 0))}</strong></span><span><em>Temp</em><strong>${escapeHtml(formatTemperature(gpu.temp_c))}</strong></span><span><em>Power</em><strong>${escapeHtml(formatPower(gpu.power_w))}</strong></span><span><em>Memory</em><strong>${escapeHtml(`${formatBytes(gpu.mem_used_bytes)} / ${formatBytes(gpu.mem_total_bytes)}`)}</strong></span></div></button>`;
+                }).join("")
+                : `<p class="empty">No GPU inventory available.</p>`;
+        }
+    }
+
+    function renderTraceyGpuTelemetry(data) {
+        if (!data || typeof data !== "object") {
+            if (nodes.traceyGpuTelemetryTitle) {
+                nodes.traceyGpuTelemetryTitle.textContent = "GPU Telemetry";
+            }
+            if (nodes.traceyGpuTelemetryMeta) {
+                nodes.traceyGpuTelemetryMeta.textContent = "Select a GPU";
+            }
+            renderStatCards(nodes.traceyGpuSummaryCards, [], "No GPU selected.");
+            if (nodes.traceyGpuSmHeatmap) {
+                nodes.traceyGpuSmHeatmap.innerHTML = `<p class="empty">Select a GPU to inspect per-SM probe activity.</p>`;
+            }
+            renderMetricList(nodes.traceyGpuProbeMix, [], "No GPU telemetry loaded.");
+            renderMetricList(nodes.traceyGpuFaultCounters, [], "No fault counters available.");
+            renderRows(nodes.traceyGpuExecutionRows, [], "No recent executions loaded.", 6);
+            renderRows(nodes.traceyGpuFaultRows, [], "No fault signatures loaded.", 5);
+            renderRows(nodes.traceyGpuActionRows, [], "No remediation history loaded.", 4);
+            return;
+        }
+
+        const summary = data.summary && typeof data.summary === "object" ? data.summary : {};
+        if (nodes.traceyGpuTelemetryTitle) {
+            nodes.traceyGpuTelemetryTitle.textContent = `GPU Telemetry • ${String(data.gpu_id || summary.gpu_id || "unknown")}`;
+        }
+        if (nodes.traceyGpuTelemetryMeta) {
+            nodes.traceyGpuTelemetryMeta.textContent = `${String(data.host || "-")} • ${String(data.rack || "unassigned")} • ${formatEpochMs(data.generated_epoch_ms)}`;
+        }
+
+        renderStatCards(nodes.traceyGpuSummaryCards, [
+            { label: "Guard State", value: formatActionLabel(summary.guard_state || summary.state || "unknown"), meta: String(summary.last_guard_reason || "-"), tone: toneClassForGpu(summary) },
+            { label: "Reliability", value: formatFixed(summary.reliability_score, 3, "-"), meta: `${formatCount(summary.consecutive_failures, "0")} consecutive`, tone: parseNumber(summary.reliability_score, 1) < 0.95 ? "tracey-tone-warn" : "tracey-tone-ok" },
+            { label: "Utilization", value: formatPercentValue(summary.util_pct, 0), meta: `enc ${formatPercentValue(summary.encoder_util_percent, 0)} / dec ${formatPercentValue(summary.decoder_util_percent, 0)}`, tone: "tracey-tone-ok" },
+            { label: "Thermals", value: formatTemperature(summary.temp_c), meta: formatPower(summary.power_w), tone: parseNumber(summary.temp_c, 0) >= 80 ? "tracey-tone-warn" : "tracey-tone-neutral" },
+            { label: "Memory", value: `${formatBytes(summary.mem_used_bytes)} / ${formatBytes(summary.mem_total_bytes)}`, meta: formatPercentValue(summary.mem_used_pct, 0), tone: parseNumber(summary.mem_used_pct, 0) >= 90 ? "tracey-tone-warn" : "tracey-tone-neutral" },
+            { label: "Clocks", value: formatClockMHz(summary.graphics_clock_mhz), meta: `mem ${formatClockMHz(summary.memory_clock_mhz)}`, tone: "tracey-tone-neutral" },
+            { label: "SM Coverage", value: formatCount(summary.sm_count, "0"), meta: `last probe ${formatEpochMs(summary.last_probe_ms)}`, tone: "tracey-tone-neutral" },
+            { label: "Probe Failures", value: formatCount(summary.probe_fail_count, "0"), meta: `${formatCount(summary.probe_error_count, "0")} errors`, tone: parseNumber(summary.probe_fail_count, 0) > 0 || parseNumber(summary.probe_error_count, 0) > 0 ? "tracey-tone-warn" : "tracey-tone-ok" },
+            { label: "Risk / Confidence", value: `${formatRatioPercent(summary.last_guard_risk, 0)} / ${formatRatioPercent(summary.last_guard_confidence, 0)}`, meta: `${formatCount(summary.ecc_error_count, "0")} ECC`, tone: parseNumber(summary.last_guard_risk, 0) >= 0.6 ? "tracey-tone-warn" : "tracey-tone-neutral" }
+        ], "No GPU telemetry available.");
+
+        const smHeatmap = Array.isArray(data.sm_heatmap) ? data.sm_heatmap : [];
+        if (nodes.traceyGpuSmHeatmap) {
+            nodes.traceyGpuSmHeatmap.innerHTML = smHeatmap.length
+                ? smHeatmap.map((cell) => {
+                    let tone = "tracey-tone-ok";
+                    if (parseNumber(cell.timeout_count, 0) > 0 || parseNumber(cell.fail_count, 0) > 0) {
+                        tone = "tracey-tone-bad";
+                    } else if (parseNumber(cell.error_count, 0) > 0 || parseNumber(cell.risk_max, 0) >= 0.5) {
+                        tone = "tracey-tone-warn";
+                    }
+                    const executions = formatCount(cell.executions, "0");
+                    return `<div class="tracey-sm-cell ${tone}" title="${escapeHtml(`SM ${cell.sm_id} • risk ${formatRatioPercent(cell.risk_max, 0)} • conf ${formatRatioPercent(cell.confidence_avg, 0)}`)}"><span>SM ${escapeHtml(String(cell.sm_id))}</span><strong>${escapeHtml(executions)}x</strong></div>`;
+                }).join("")
+                : `<p class="empty">No per-SM probe activity available.</p>`;
+        }
+
+        renderMetricList(nodes.traceyGpuProbeMix, (Array.isArray(data.probe_mix) ? data.probe_mix : []).map((entry) => ({
+            label: formatActionLabel(entry.probe_type || "-"),
+            subtitle: "completed executions",
+            value: formatCount(entry.count, "0"),
+            tone: "tracey-tone-neutral"
+        })), "No probe execution mix available.");
+
+        renderMetricList(nodes.traceyGpuFaultCounters, [
+            { label: "Local Faults", value: formatCount((data.recent_faults || []).length, "0"), subtitle: "recent fault signatures", tone: (data.recent_faults || []).length ? "tracey-tone-warn" : "tracey-tone-ok" },
+            { label: "Remote Faults", value: formatCount((data.remote_faults || []).length, "0"), subtitle: "corroborated by peers", tone: (data.remote_faults || []).length ? "tracey-tone-warn" : "tracey-tone-neutral" },
+            { label: "Recovery Actions", value: formatCount((data.recent_actions || []).length, "0"), subtitle: "autonomous remediations", tone: (data.recent_actions || []).length ? "tracey-tone-ok" : "tracey-tone-neutral" }
+        ], "No fault counters available.");
+
+        const executionRows = (Array.isArray(data.recent_executions) ? data.recent_executions : []).slice(0, 12).map((execution) => {
+            const context = execution.context && typeof execution.context === "object" ? execution.context : {};
+            const details = [
+                `dur ${formatDurationMs(parseNumber(execution.execution_time_ns, 0) / 1000000)}`,
+                context.mem_used_ratio !== undefined ? `mem ${formatRatioPercent(context.mem_used_ratio, 0)}` : "",
+                context.ecc_error_count !== undefined ? `ecc ${formatCount(context.ecc_error_count, "0")}` : "",
+                context.deep_dive !== undefined ? `deep ${String(context.deep_dive)}` : "",
+                context.remote_support !== undefined ? `remote ${formatCount(context.remote_support, "0")}` : ""
+            ].filter(Boolean).join(" • ");
+            return `<tr><td>${escapeHtml(formatEpochMs(execution.ts_ms))}</td><td>${escapeHtml(formatActionLabel(execution.probe_type))}</td><td>${escapeHtml(String(execution.sm_id))}</td><td>${statusBadge(execution.probe_state)}</td><td>${escapeHtml(`${formatRatioPercent(execution.risk, 0)} / ${formatRatioPercent(execution.confidence, 0)}`)}</td><td>${escapeHtml(details || "-")}</td></tr>`;
+        });
+        renderRows(nodes.traceyGpuExecutionRows, executionRows, "No recent executions loaded.", 6);
+
+        const faults = [];
+        for (const fault of Array.isArray(data.recent_faults) ? data.recent_faults : []) {
+            faults.push({ ...fault, scope: "local" });
+        }
+        for (const fault of Array.isArray(data.remote_faults) ? data.remote_faults : []) {
+            faults.push({ ...fault, scope: "remote" });
+        }
+        faults.sort((left, right) => parseNumber(right.last_seen_ms, 0) - parseNumber(left.last_seen_ms, 0));
+        const faultRows = faults.slice(0, 12).map((fault) => {
+            const scopeText = String(fault.scope || "-");
+            const seen = parseNumber(fault.first_seen_ms, 0) > 0
+                ? `${formatEpochMs(fault.first_seen_ms)} -> ${formatEpochMs(fault.last_seen_ms)}`
+                : formatEpochMs(fault.last_seen_ms);
+            return `<tr><td>${escapeHtml(scopeText)}</td><td>${escapeHtml(formatActionLabel(fault.probe_type))}</td><td>${statusBadge(fault.state || fault.severity || "unknown")}</td><td>${escapeHtml(`${formatRatioPercent(fault.risk, 0)} / ${formatRatioPercent(fault.confidence, 0)}`)}</td><td>${escapeHtml(seen)}</td></tr>`;
+        });
+        renderRows(nodes.traceyGpuFaultRows, faultRows, "No fault signatures loaded.", 5);
+
+        const actionRows = (Array.isArray(data.recent_actions) ? data.recent_actions : []).slice(0, 12).map((action) => {
+            return `<tr><td>${escapeHtml(formatEpochMs(action.ts_ms))}</td><td>${escapeHtml(formatActionLabel(action.action || action.category || "-"))}</td><td>${escapeHtml(String(action.source || action.category || "-"))}</td><td>${escapeHtml(String(action.detail || "-"))}</td></tr>`;
+        });
+        renderRows(nodes.traceyGpuActionRows, actionRows, "No remediation history loaded.", 4);
+    }
+
+    async function fetchTraceyAssessmentFleet() {
+        const requestSeq = ++traceyAssessmentRequestSeq;
+        if (!traceyState.assessmentFleet) {
+            renderRows(nodes.traceyFleetAssessmentRows, [], "Loading assessment telemetry...", 4);
+        }
+        const response = await fetchJson("/tracey/assessment/fleet");
+        if (requestSeq !== traceyAssessmentRequestSeq) {
+            return;
+        }
+        if (!response.ok) {
+            traceyState.assessmentFleet = null;
+            if (traceyState.fleet) {
+                renderTraceyFleetOverview(traceyState.fleet);
+            } else {
+                renderTraceyFleetAssessmentRows();
+                updateTraceyInsightsSubtitle();
+            }
+            return;
+        }
+
+        traceyState.assessmentFleet = responseData(response.payload) || {};
+        if (traceyState.fleet) {
+            renderTraceyFleetOverview(traceyState.fleet);
+        } else {
+            renderTraceyFleetAssessmentRows();
+            updateTraceyInsightsSubtitle();
+        }
+    }
+
+    async function fetchTraceyFleet() {
+        const requestSeq = ++traceyFleetRequestSeq;
+        if (nodes.traceyFleetMeta) {
+            nodes.traceyFleetMeta.textContent = "Loading fleet telemetry...";
+        }
+        const response = await fetchJson("/tracey/fleet");
+        if (requestSeq !== traceyFleetRequestSeq) {
+            return;
+        }
+        if (!response.ok) {
+            traceyState.fleet = null;
+            traceyState.selectedRackDetail = null;
+            traceyState.selectedServerTelemetry = null;
+            traceyState.selectedGpuTelemetry = null;
+            renderTraceyFleetOverview(null);
+            renderTraceyRackDetail(null);
+            renderTraceyServerTelemetry(null);
+            renderTraceyGpuTelemetry(null);
+            renderTraceyAgentFacts(traceyState.selectedAgentAnalysis);
+            return;
+        }
+
+        const data = responseData(response.payload) || {};
+        traceyState.fleet = data;
+        renderTraceyFleetOverview(data);
+
+        const racks = Array.isArray(data.racks) ? data.racks : [];
+        if (!racks.length) {
+            traceyState.selectedRack = "";
+            traceyState.selectedRackDetail = null;
+            traceyState.selectedServerTelemetry = null;
+            traceyState.selectedGpuTelemetry = null;
+            renderTraceyRackDetail(null);
+            renderTraceyServerTelemetry(null);
+            renderTraceyGpuTelemetry(null);
+            renderTraceyAgentFacts(traceyState.selectedAgentAnalysis);
+            return;
+        }
+
+        let desiredRack = String(traceyState.selectedRack || "").trim();
+        const fleetAgent = findTraceyFleetAgent(traceyState.selectedAgentId);
+        if (!desiredRack && fleetAgent) {
+            desiredRack = String(fleetAgent.rack || "").trim();
+        }
+        if (!desiredRack || !racks.some((rack) => String(rack.rack || "").trim() === desiredRack)) {
+            desiredRack = String(racks[0].rack || "").trim();
+        }
+        if (desiredRack) {
+            await fetchTraceyRackDetail(desiredRack);
+        }
+    }
+
+    async function fetchTraceyRackDetail(rackId, options = {}) {
+        const normalizedRack = String(rackId || "").trim();
+        if (!normalizedRack) {
+            traceyState.selectedRack = "";
+            traceyState.selectedRackDetail = null;
+            traceyState.selectedServerTelemetry = null;
+            traceyState.selectedGpuTelemetry = null;
+            renderTraceyRackDetail(null);
+            renderTraceyServerTelemetry(null);
+            renderTraceyGpuTelemetry(null);
+            renderTraceyAgentFacts(traceyState.selectedAgentAnalysis);
+            return;
+        }
+
+        traceyState.selectedRack = normalizedRack;
+        renderTraceyFleetOverview(traceyState.fleet);
+        const requestSeq = ++traceyRackRequestSeq;
+        if (nodes.traceyRackDetailMeta) {
+            nodes.traceyRackDetailMeta.textContent = `Loading ${normalizedRack}...`;
+        }
+        const response = await fetchJson(`/tracey/racks/${encodeURIComponent(normalizedRack)}`);
+        if (requestSeq !== traceyRackRequestSeq) {
+            return;
+        }
+        if (!response.ok) {
+            traceyState.selectedRackDetail = null;
+            traceyState.selectedServerTelemetry = null;
+            traceyState.selectedGpuTelemetry = null;
+            renderTraceyRackDetail(null);
+            renderTraceyServerTelemetry(null);
+            renderTraceyGpuTelemetry(null);
+            renderTraceyAgentFacts(traceyState.selectedAgentAnalysis);
+            return;
+        }
+
+        const data = responseData(response.payload) || {};
+        traceyState.selectedRackDetail = data;
+        renderTraceyRackDetail(data);
+        updateTraceyInsightsSubtitle();
+
+        if (options.skipServer === true) {
+            return;
+        }
+
+        const servers = Array.isArray(data.servers) ? data.servers : [];
+        if (!servers.length) {
+            traceyState.selectedServerTelemetry = null;
+            traceyState.selectedGpuTelemetry = null;
+            renderTraceyServerTelemetry(null);
+            renderTraceyGpuTelemetry(null);
+            renderTraceyAgentFacts(traceyState.selectedAgentAnalysis);
+            return;
+        }
+
+        let desiredAgentId = String(options.preferredAgentId || traceyState.selectedAgentId || "").trim();
+        if (!desiredAgentId || !servers.some((server) => String(server.agent_id || "").trim() === desiredAgentId)) {
+            desiredAgentId = String(servers[0].agent_id || "").trim();
+        }
+        if (desiredAgentId) {
+            await fetchTraceyServerTelemetry(desiredAgentId, { preferredGpuId: options.preferredGpuId || "" });
+        }
+    }
+
+    async function fetchTraceyServerTelemetry(agentId, options = {}) {
+        const normalizedId = String(agentId || "").trim();
+        if (!normalizedId) {
+            traceyState.selectedServerTelemetry = null;
+            traceyState.selectedGpuTelemetry = null;
+            renderTraceyServerTelemetry(null);
+            renderTraceyGpuTelemetry(null);
+            renderTraceyAgentFacts(traceyState.selectedAgentAnalysis);
+            return;
+        }
+
+        traceyState.selectedAgentId = normalizedId;
+        syncControlAgentInput();
+        if (traceyState.selectedRackDetail) {
+            renderTraceyRackDetail(traceyState.selectedRackDetail);
+        }
+        const requestSeq = ++traceyServerRequestSeq;
+        if (nodes.traceyServerTelemetryMeta) {
+            nodes.traceyServerTelemetryMeta.textContent = `Loading ${normalizedId}...`;
+        }
+        const response = await fetchJson(`/tracey/agents/${encodeURIComponent(normalizedId)}/server`);
+        if (requestSeq !== traceyServerRequestSeq) {
+            return;
+        }
+        if (!response.ok) {
+            traceyState.selectedServerTelemetry = null;
+            traceyState.selectedGpuTelemetry = null;
+            renderTraceyServerTelemetry(null);
+            renderTraceyGpuTelemetry(null);
+            renderTraceyAgentFacts(traceyState.selectedAgentAnalysis);
+            return;
+        }
+
+        const data = responseData(response.payload) || {};
+        traceyState.selectedServerTelemetry = data;
+        if (data.rack) {
+            traceyState.selectedRack = String(data.rack);
+            renderTraceyFleetOverview(traceyState.fleet);
+            if (traceyState.selectedRackDetail && String(traceyState.selectedRackDetail.rack || "") === traceyState.selectedRack) {
+                renderTraceyRackDetail(traceyState.selectedRackDetail);
+            }
+        }
+        renderTraceyServerTelemetry(data);
+        renderTraceyAgentFacts(traceyState.selectedAgentAnalysis);
+        updateTraceyInsightsSubtitle();
+
+        const gpus = Array.isArray(data.gpus) ? data.gpus : [];
+        if (!gpus.length) {
+            traceyState.selectedGpuId = "";
+            traceyState.selectedGpuTelemetry = null;
+            renderTraceyGpuTelemetry(null);
+            return;
+        }
+
+        let desiredGpuId = String(options.preferredGpuId || traceyState.selectedGpuId || "").trim();
+        if (!desiredGpuId || !gpus.some((gpu) => String(gpu.gpu_id || gpu.gpuId || "").trim() === desiredGpuId)) {
+            desiredGpuId = String(gpus[0].gpu_id || gpus[0].gpuId || "").trim();
+        }
+        if (desiredGpuId) {
+            await fetchTraceyGpuTelemetry(normalizedId, desiredGpuId);
+        }
+    }
+
+    async function fetchTraceyGpuTelemetry(agentId, gpuId) {
+        const normalizedAgentId = String(agentId || traceyState.selectedAgentId || "").trim();
+        const normalizedGpuId = String(gpuId || "").trim();
+        if (!normalizedAgentId || !normalizedGpuId) {
+            traceyState.selectedGpuId = "";
+            traceyState.selectedGpuTelemetry = null;
+            renderTraceyGpuTelemetry(null);
+            return;
+        }
+
+        traceyState.selectedGpuId = normalizedGpuId;
+        if (traceyState.selectedRackDetail) {
+            renderTraceyRackDetail(traceyState.selectedRackDetail);
+        }
+        if (traceyState.selectedServerTelemetry) {
+            renderTraceyServerTelemetry(traceyState.selectedServerTelemetry);
+        }
+        const requestSeq = ++traceyGpuRequestSeq;
+        if (nodes.traceyGpuTelemetryMeta) {
+            nodes.traceyGpuTelemetryMeta.textContent = `Loading ${normalizedGpuId}...`;
+        }
+        const response = await fetchJson(`/tracey/agents/${encodeURIComponent(normalizedAgentId)}/gpus/${encodeURIComponent(normalizedGpuId)}/telemetry`);
+        if (requestSeq !== traceyGpuRequestSeq) {
+            return;
+        }
+        if (!response.ok) {
+            traceyState.selectedGpuTelemetry = null;
+            renderTraceyGpuTelemetry(null);
+            return;
+        }
+
+        const data = responseData(response.payload) || {};
+        traceyState.selectedGpuTelemetry = data;
+        renderTraceyGpuTelemetry(data);
+    }
+
+    async function selectTraceyAgent(agentId, preferredGpuId = "") {
+        const normalizedId = String(agentId || "").trim();
+        if (!normalizedId) {
+            return;
+        }
+        traceyState.selectedAgentId = normalizedId;
+        if (preferredGpuId) {
+            traceyState.selectedGpuId = String(preferredGpuId).trim();
+        }
+        syncControlAgentInput();
+
+        const selectedFleetAgent = findTraceyFleetAgent(normalizedId);
+        await Promise.all([
+            fetchTraceyAgentAnalysis(normalizedId),
+            fetchTraceyDeepDive(normalizedId)
+        ]);
+
+        if (selectedFleetAgent && selectedFleetAgent.rack) {
+            await fetchTraceyRackDetail(selectedFleetAgent.rack, {
+                preferredAgentId: normalizedId,
+                preferredGpuId
+            });
+            return;
+        }
+
+        await fetchTraceyServerTelemetry(normalizedId, { preferredGpuId });
+    }
+
+    async function refreshTraceyInsights() {
+        await Promise.all([
+            fetchTraceyAnalytics(),
+            fetchTraceyAssessmentFleet()
+        ]);
+        await fetchTraceyFleet();
     }
 
     async function fetchTraceyDeepDive(agentId = "") {
@@ -915,10 +2598,36 @@
         }
         syncControlAgentInput();
         setTraceyInsightsModalOpen(true);
-        await fetchTraceyAnalytics();
+        await refreshTraceyInsights();
     }
 
     function initializeTraceyInsightsUi() {
+        const rerenderFleetAssessment = () => {
+            renderTraceyFleetAssessmentRows();
+        };
+        const rerenderRackAssessment = () => {
+            renderTraceyRackDetail(traceyState.selectedRackDetail);
+        };
+        const rerenderServerAssessment = () => {
+            if (traceyState.selectedServerTelemetry) {
+                const assessmentSnapshot = getAssessmentSnapshot(traceyState.selectedServerTelemetry);
+                const assessmentSummary = getAssessmentSummary(traceyState.selectedServerTelemetry);
+                const assessmentCommunication = getAssessmentCommunication(traceyState.selectedServerTelemetry);
+                const assessmentProgress = assessmentSnapshot.progress && typeof assessmentSnapshot.progress === "object"
+                    ? assessmentSnapshot.progress
+                    : {};
+                const filteredAssessmentMetrics = filteredAndSortedServerAssessmentMetricRows(
+                    buildAssessmentMetricRows(assessmentSummary, assessmentCommunication, assessmentProgress)
+                );
+                renderMetricList(
+                    nodes.traceyServerAssessmentFacts,
+                    filteredAssessmentMetrics.rows,
+                    filteredAssessmentMetrics.emptyMessage
+                );
+                return;
+            }
+            renderMetricList(nodes.traceyServerAssessmentFacts, [], "No assessment snapshot loaded.");
+        };
         if (nodes.openTraceyInsightsBtn) {
             nodes.openTraceyInsightsBtn.addEventListener("click", () => {
                 openTraceyInsightsModal();
@@ -957,7 +2666,74 @@
                 event.preventDefault();
                 const agentId = String(trigger.getAttribute("data-tracey-agent-analysis") || "").trim();
                 if (agentId) {
-                    fetchTraceyAgentAnalysis(agentId);
+                    selectTraceyAgent(agentId);
+                }
+            });
+        }
+        if (nodes.traceyFleetAssessmentRows) {
+            nodes.traceyFleetAssessmentRows.addEventListener("click", (event) => {
+                const trigger = event.target.closest("button[data-tracey-assessment-agent]");
+                if (!trigger) {
+                    return;
+                }
+                event.preventDefault();
+                const agentId = String(trigger.getAttribute("data-tracey-assessment-agent") || "").trim();
+                if (agentId) {
+                    selectTraceyAgent(agentId);
+                }
+            });
+        }
+        if (nodes.traceyRackCards) {
+            nodes.traceyRackCards.addEventListener("click", (event) => {
+                const trigger = event.target.closest("button[data-tracey-rack]");
+                if (!trigger) {
+                    return;
+                }
+                event.preventDefault();
+                const rackId = String(trigger.getAttribute("data-tracey-rack") || "").trim();
+                if (rackId) {
+                    fetchTraceyRackDetail(rackId);
+                }
+            });
+        }
+        if (nodes.traceyRackServerRows) {
+            nodes.traceyRackServerRows.addEventListener("click", (event) => {
+                const trigger = event.target.closest("button[data-tracey-server-id]");
+                if (!trigger) {
+                    return;
+                }
+                event.preventDefault();
+                const agentId = String(trigger.getAttribute("data-tracey-server-id") || "").trim();
+                if (agentId) {
+                    selectTraceyAgent(agentId);
+                }
+            });
+        }
+        if (nodes.traceyRackGpuHeatmap) {
+            nodes.traceyRackGpuHeatmap.addEventListener("click", (event) => {
+                const trigger = event.target.closest("button[data-tracey-server-id][data-tracey-gpu-id]");
+                if (!trigger) {
+                    return;
+                }
+                event.preventDefault();
+                const agentId = String(trigger.getAttribute("data-tracey-server-id") || "").trim();
+                const gpuId = String(trigger.getAttribute("data-tracey-gpu-id") || "").trim();
+                if (agentId && gpuId) {
+                    selectTraceyAgent(agentId, gpuId);
+                }
+            });
+        }
+        if (nodes.traceyServerGpuTiles) {
+            nodes.traceyServerGpuTiles.addEventListener("click", (event) => {
+                const trigger = event.target.closest("button[data-tracey-gpu-agent][data-tracey-gpu-id]");
+                if (!trigger) {
+                    return;
+                }
+                event.preventDefault();
+                const agentId = String(trigger.getAttribute("data-tracey-gpu-agent") || "").trim();
+                const gpuId = String(trigger.getAttribute("data-tracey-gpu-id") || "").trim();
+                if (agentId && gpuId) {
+                    selectTraceyAgent(agentId, gpuId);
                 }
             });
         }
@@ -973,7 +2749,7 @@
         }
         if (nodes.traceyInsightsRefresh) {
             nodes.traceyInsightsRefresh.addEventListener("click", () => {
-                fetchTraceyAnalytics();
+                refreshTraceyInsights();
             });
         }
         if (nodes.traceyDeepDiveRefresh) {
@@ -990,20 +2766,18 @@
             nodes.traceyControlAgent.addEventListener("change", () => {
                 const id = String(nodes.traceyControlAgent.value || "").trim();
                 if (id) {
-                    traceyState.selectedAgentId = id;
-                    fetchTraceyAgentAnalysis(id);
-                    fetchTraceyDeepDive(id);
+                    selectTraceyAgent(id);
                 }
             });
         }
         if (nodes.traceyWindowSelect) {
             nodes.traceyWindowSelect.addEventListener("change", () => {
-                fetchTraceyAnalytics();
+                refreshTraceyInsights();
             });
         }
         if (nodes.traceyBucketSelect) {
             nodes.traceyBucketSelect.addEventListener("change", () => {
-                fetchTraceyAnalytics();
+                refreshTraceyInsights();
             });
         }
         if (nodes.traceyAgentLogLevel) {
@@ -1014,6 +2788,33 @@
         }
         if (nodes.traceyAgentLogSearch) {
             nodes.traceyAgentLogSearch.addEventListener("input", renderTraceyAgentLogs);
+        }
+        if (nodes.traceyFleetAssessmentSearch) {
+            nodes.traceyFleetAssessmentSearch.addEventListener("input", rerenderFleetAssessment);
+        }
+        if (nodes.traceyFleetAssessmentFilter) {
+            nodes.traceyFleetAssessmentFilter.addEventListener("change", rerenderFleetAssessment);
+        }
+        if (nodes.traceyFleetAssessmentSort) {
+            nodes.traceyFleetAssessmentSort.addEventListener("change", rerenderFleetAssessment);
+        }
+        if (nodes.traceyRackAssessmentSearch) {
+            nodes.traceyRackAssessmentSearch.addEventListener("input", rerenderRackAssessment);
+        }
+        if (nodes.traceyRackAssessmentFilter) {
+            nodes.traceyRackAssessmentFilter.addEventListener("change", rerenderRackAssessment);
+        }
+        if (nodes.traceyRackAssessmentSort) {
+            nodes.traceyRackAssessmentSort.addEventListener("change", rerenderRackAssessment);
+        }
+        if (nodes.traceyServerAssessmentSearch) {
+            nodes.traceyServerAssessmentSearch.addEventListener("input", rerenderServerAssessment);
+        }
+        if (nodes.traceyServerAssessmentFilter) {
+            nodes.traceyServerAssessmentFilter.addEventListener("change", rerenderServerAssessment);
+        }
+        if (nodes.traceyServerAssessmentSort) {
+            nodes.traceyServerAssessmentSort.addEventListener("change", rerenderServerAssessment);
         }
     }
 
@@ -1447,6 +3248,7 @@
         const traceyAgents = Array.isArray(traceyData.agents) ? traceyData.agents : [];
         const traceySummary = traceyData.summary || {};
         const tracey_guardSummary = traceyData.tracey_guard_summary || {};
+        const loaderThreatSummary = traceyData.loader_threat_summary || {};
         const requirementSummary = traceyData.requirement_summary || {};
         nodes.traceyMetric.textContent = `${traceySummary.healthy || 0} / ${traceySummary.total || 0}`;
         const traceyRows = traceyAgents.map((agent) => {
@@ -1495,19 +3297,21 @@
         const managedResources = Number(requirementSummary.total || 0);
         const tracey_guardQuarantined = Number(tracey_guardSummary.quarantined_devices || 0);
         const tracey_guardFailures = Number(tracey_guardSummary.total_failures || 0);
+        const blockedLoaderProviders = Number(loaderThreatSummary.blocked_provider_count || 0);
+        const blockedLoaderArtifacts = Number(loaderThreatSummary.blocked_artifact_count || 0);
         const traceyTone = !traceyAgentsRes.ok
             ? "#ef4444"
-            : (nonCompliantResources > 0 || tracey_guardQuarantined > 0 || tracey_guardFailures > 0 ? "#f59e0b" : "#22c55e");
+            : (nonCompliantResources > 0 || tracey_guardQuarantined > 0 || tracey_guardFailures > 0 || blockedLoaderProviders > 0 || blockedLoaderArtifacts > 0 ? "#f59e0b" : "#22c55e");
         setCheck(
             nodes.traceyStatus,
             traceyAgentsRes.ok
-                ? `${traceyAgents.length} detected (${reachableTracey} reachable, ${discoveredTracey} discovered, ${nonCompliantResources}/${managedResources} non-compliant, ${tracey_guardQuarantined} quarantined, ${tracey_guardFailures} probe failures)`
+                ? `${traceyAgents.length} detected (${reachableTracey} reachable, ${discoveredTracey} discovered, ${nonCompliantResources}/${managedResources} non-compliant, ${tracey_guardQuarantined} quarantined, ${tracey_guardFailures} probe failures, ${blockedLoaderProviders} blocked providers, ${blockedLoaderArtifacts} blocked artifacts)`
                 : "Unavailable",
             traceyTone
         );
 
         if (nodes.traceyInsightsModal && !nodes.traceyInsightsModal.hidden) {
-            fetchTraceyAnalytics();
+            refreshTraceyInsights();
         }
 
         setPill(nodes.refreshPill, "Refresh", `Updated ${nowIsoTime()}`, "rgba(216,210,202,0.45)");
@@ -1527,6 +3331,10 @@
     initializeSessionUi();
     initializeClusterDetailsUi();
     initializeTraceyInsightsUi();
+    renderTraceyFleetOverview(null);
+    renderTraceyRackDetail(null);
+    renderTraceyServerTelemetry(null);
+    renderTraceyGpuTelemetry(null);
     renderTraceyAgentDrilldown(null);
     renderTraceyDeepDive(null);
     refreshDashboard();

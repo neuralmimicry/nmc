@@ -243,6 +243,92 @@ int TraceyAnalyticsCommand::execute(const std::map<std::string, std::string>& pa
     return response.success ? 0 : 1;
 }
 
+TraceyFleetCommand::TraceyFleetCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client)
+    : BaseCommand("fleet", "Fetch Tracey fleet-wide topology and telemetry view", std::move(client)) {
+    usage = "nmc tracey fleet";
+    examples = "nmc tracey fleet";
+}
+
+int TraceyFleetCommand::execute(const std::map<std::string, std::string>& parsedFlags,
+                                const std::vector<std::string>& parsedArgs,
+                                const CLI::GlobalFlags& globalFlags) {
+    if (!validateArguments(parsedArgs) || !validateFlags(parsedFlags)) {
+        return 1;
+    }
+    Models::CloudResponse response = apiClient->getTraceyFleet();
+    printOutput(response, globalFlags);
+    return response.success ? 0 : 1;
+}
+
+TraceyCveCommand::TraceyCveCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client)
+    : BaseCommand("cve", "Fetch Tracey CVE mirror status from Continuum", std::move(client)) {
+    usage = "nmc tracey cve";
+    examples = "nmc tracey cve";
+}
+
+int TraceyCveCommand::execute(const std::map<std::string, std::string>& parsedFlags,
+                              const std::vector<std::string>& parsedArgs,
+                              const CLI::GlobalFlags& globalFlags) {
+    if (!validateArguments(parsedArgs) || !validateFlags(parsedFlags)) {
+        return 1;
+    }
+    Models::CloudResponse response = apiClient->getTraceyCveStatus();
+    printOutput(response, globalFlags);
+    return response.success ? 0 : 1;
+}
+
+TraceyAssessmentCommand::TraceyAssessmentCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client)
+    : BaseCommand("assessment", "Fetch fleet-wide Tracey compromise assessment status", std::move(client)) {
+    usage = "nmc tracey assessment";
+    examples = "nmc tracey assessment";
+}
+
+int TraceyAssessmentCommand::execute(const std::map<std::string, std::string>& parsedFlags,
+                                     const std::vector<std::string>& parsedArgs,
+                                     const CLI::GlobalFlags& globalFlags) {
+    if (!validateArguments(parsedArgs) || !validateFlags(parsedFlags)) {
+        return 1;
+    }
+    Models::CloudResponse response = apiClient->getTraceyAssessmentFleet();
+    printOutput(response, globalFlags);
+    return response.success ? 0 : 1;
+}
+
+TraceyRacksCommand::TraceyRacksCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client)
+    : BaseCommand("racks", "List Tracey rack-level summaries", std::move(client)) {
+    usage = "nmc tracey racks";
+    examples = "nmc tracey racks";
+}
+
+int TraceyRacksCommand::execute(const std::map<std::string, std::string>& parsedFlags,
+                                const std::vector<std::string>& parsedArgs,
+                                const CLI::GlobalFlags& globalFlags) {
+    if (!validateArguments(parsedArgs) || !validateFlags(parsedFlags)) {
+        return 1;
+    }
+    Models::CloudResponse response = apiClient->listTraceyRacks();
+    printOutput(response, globalFlags);
+    return response.success ? 0 : 1;
+}
+
+TraceyRackCommand::TraceyRackCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client)
+    : BaseCommand("rack", "Fetch Tracey telemetry for a single rack", std::move(client)) {
+    usage = "nmc tracey rack RACK_ID";
+    examples = "nmc tracey rack R09";
+    addArgument(CLI::Argument("RACK_ID", "Rack identifier", true, 0));
+}
+
+int TraceyRackCommand::execute(const std::map<std::string, std::string>& parsedFlags,
+                               const std::vector<std::string>& parsedArgs,
+                               const CLI::GlobalFlags& globalFlags) {
+    if (!validateArguments(parsedArgs) || !validateFlags(parsedFlags)) {
+        return 1;
+    }
+    Models::CloudResponse response = apiClient->getTraceyRackDetails(parsedArgs[0]);
+    printOutput(response, globalFlags);
+    return response.success ? 0 : 1;
+}
+
 TraceyAnalysisCommand::TraceyAnalysisCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client)
     : BaseCommand("analysis", "Fetch analytics for a single Tracey agent", std::move(client)) {
     usage = "nmc tracey analysis AGENT_ID [--window-seconds 3600] [--bucket-seconds 60] [--log-limit 300]";
@@ -274,6 +360,61 @@ int TraceyAnalysisCommand::execute(const std::map<std::string, std::string>& par
     }
 
     Models::CloudResponse response = apiClient->getTraceyAgentAnalysis(agentId, windowSeconds, bucketSeconds, logLimit);
+    printOutput(response, globalFlags);
+    return response.success ? 0 : 1;
+}
+
+TraceyServerCommand::TraceyServerCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client)
+    : BaseCommand("server", "Fetch full server telemetry for a Tracey agent", std::move(client)) {
+    usage = "nmc tracey server AGENT_ID";
+    examples = "nmc tracey server tracey-1";
+    addArgument(CLI::Argument("AGENT_ID", "Tracey agent ID", true, 0));
+}
+
+int TraceyServerCommand::execute(const std::map<std::string, std::string>& parsedFlags,
+                                 const std::vector<std::string>& parsedArgs,
+                                 const CLI::GlobalFlags& globalFlags) {
+    if (!validateArguments(parsedArgs) || !validateFlags(parsedFlags)) {
+        return 1;
+    }
+    Models::CloudResponse response = apiClient->getTraceyAgentServer(parsedArgs[0]);
+    printOutput(response, globalFlags);
+    return response.success ? 0 : 1;
+}
+
+TraceyGpuCommand::TraceyGpuCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client)
+    : BaseCommand("gpu", "Fetch deep telemetry for a single GPU on a Tracey agent", std::move(client)) {
+    usage = "nmc tracey gpu AGENT_ID GPU_ID";
+    examples = "nmc tracey gpu tracey-1 nvidia:0";
+    addArgument(CLI::Argument("AGENT_ID", "Tracey agent ID", true, 0));
+    addArgument(CLI::Argument("GPU_ID", "GPU identifier", true, 1));
+}
+
+int TraceyGpuCommand::execute(const std::map<std::string, std::string>& parsedFlags,
+                              const std::vector<std::string>& parsedArgs,
+                              const CLI::GlobalFlags& globalFlags) {
+    if (!validateArguments(parsedArgs) || !validateFlags(parsedFlags)) {
+        return 1;
+    }
+    Models::CloudResponse response = apiClient->getTraceyAgentGpu(parsedArgs[0], parsedArgs[1]);
+    printOutput(response, globalFlags);
+    return response.success ? 0 : 1;
+}
+
+TraceyCompromiseCommand::TraceyCompromiseCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client)
+    : BaseCommand("compromise", "Fetch compromise assessment for a single Tracey agent", std::move(client)) {
+    usage = "nmc tracey compromise AGENT_ID";
+    examples = "nmc tracey compromise tracey-1";
+    addArgument(CLI::Argument("AGENT_ID", "Tracey agent ID", true, 0));
+}
+
+int TraceyCompromiseCommand::execute(const std::map<std::string, std::string>& parsedFlags,
+                                     const std::vector<std::string>& parsedArgs,
+                                     const CLI::GlobalFlags& globalFlags) {
+    if (!validateArguments(parsedArgs) || !validateFlags(parsedFlags)) {
+        return 1;
+    }
+    Models::CloudResponse response = apiClient->getTraceyAgentCompromise(parsedArgs[0]);
     printOutput(response, globalFlags);
     return response.success ? 0 : 1;
 }

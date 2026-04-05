@@ -22,6 +22,7 @@
 #include "OpenStackClient.h"
 #include "OpenShiftClient.h"
 #include "OIDCValidator.h"
+#include "TraceyCVEIntel.h"
 
 // Forward declaration for K8sHandlers to avoid circular includes
 
@@ -112,6 +113,11 @@ namespace NMC::Server {
             int tracey_guardProbeErrors{0};
             int tracey_guardQuarantined{0};
             int tracey_guardRemoteFaults{0};
+            int loaderThreatLocalProviders{0};
+            int loaderThreatLocalArtifacts{0};
+            int loaderThreatBlockedProviders{0};
+            int loaderThreatBlockedArtifacts{0};
+            int loaderThreatRemoteReporters{0};
             std::string source;
         };
         struct TraceyAgentLogEntry {
@@ -151,6 +157,7 @@ namespace NMC::Server {
         std::string traceyLocalAgentId;
         std::thread traceyDiscoveryThread;
         std::atomic<bool> stopTraceyDiscovery;
+        TraceyCVEIntel traceyCveIntel;
 
         std::mutex dataMutex; // Mutex to protect access to data in a multi-threaded environment
 
@@ -231,9 +238,20 @@ namespace NMC::Server {
         void handleTraceyHeartbeat(const httplib::Request& req, httplib::Response& res);
         void handleListTraceyAgents(const httplib::Request& req, httplib::Response& res);
         void handleTraceyAnalytics(const httplib::Request& req, httplib::Response& res);
+        void handleTraceyFleet(const httplib::Request& req, httplib::Response& res);
+        void handleListTraceyRacks(const httplib::Request& req, httplib::Response& res);
+        void handleTraceyRackDetails(const httplib::Request& req, httplib::Response& res);
         void handleTraceyAgentAnalysis(const httplib::Request& req, httplib::Response& res);
+        void handleTraceyAgentServer(const httplib::Request& req, httplib::Response& res);
+        void handleTraceyAgentGpu(const httplib::Request& req, httplib::Response& res);
+        void handleTraceyCveStatus(const httplib::Request& req, httplib::Response& res);
+        void handleTraceyAssessmentFleet(const httplib::Request& req, httplib::Response& res);
+        void handleTraceyAssessmentPlan(const httplib::Request& req, httplib::Response& res);
+        void handleTraceyAssessmentReport(const httplib::Request& req, httplib::Response& res);
+        void handleTraceyAgentCompromise(const httplib::Request& req, httplib::Response& res);
         void handleTraceyAgentControl(const httplib::Request& req, httplib::Response& res);
         void handleTraceyAgentDeepDive(const httplib::Request& req, httplib::Response& res);
+        nlohmann::json buildTraceyContinuumAgentView(const TraceyAgent& agent, int64_t nowMs) const;
         RecruitCapacityAssessment assessRecruitCapacity(const std::string& host);
         void handleRecruitNode(const httplib::Request& req, httplib::Response& res);
         void runTraceyDiscoveryLoop();

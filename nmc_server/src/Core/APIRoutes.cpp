@@ -15,6 +15,7 @@
 #include <sstream>
 #include <iostream>
 #include <algorithm> // For std::remove_if, std::find_if
+#include <map>
 #include <set>       // For unique locations/types
 #include <chrono>
 #include <thread>
@@ -146,9 +147,11 @@ namespace NMC::Server {
             }
         }
 
-        std::string firstStringValue(const nlohmann::json& objectNode, std::initializer_list<const char*> keys) {
+        std::string firstStringValue(const nlohmann::json& objectNode,
+                                     std::initializer_list<const char*> keys,
+                                     const std::string& fallback = "") {
             if (!objectNode.is_object()) {
-                return "";
+                return fallback;
             }
             for (const char* key : keys) {
                 const auto it = objectNode.find(key);
@@ -160,7 +163,7 @@ namespace NMC::Server {
                     return value;
                 }
             }
-            return "";
+            return fallback;
         }
 
         int firstPositiveIntValue(const nlohmann::json& objectNode, std::initializer_list<const char*> keys) {
@@ -219,6 +222,709 @@ namespace NMC::Server {
                 }
             }
             return fallback;
+        }
+
+        const nlohmann::json* firstValue(const nlohmann::json& objectNode,
+                                         std::initializer_list<const char*> keys) {
+            if (!objectNode.is_object()) {
+                return nullptr;
+            }
+            for (const char* key : keys) {
+                const auto it = objectNode.find(key);
+                if (it != objectNode.end() && !it->is_null()) {
+                    return &(*it);
+                }
+            }
+            return nullptr;
+        }
+
+        const nlohmann::json* firstObjectValue(const nlohmann::json& objectNode,
+                                               std::initializer_list<const char*> keys) {
+            const auto* value = firstValue(objectNode, keys);
+            return value != nullptr && value->is_object() ? value : nullptr;
+        }
+
+        const nlohmann::json* firstArrayValue(const nlohmann::json& objectNode,
+                                              std::initializer_list<const char*> keys) {
+            const auto* value = firstValue(objectNode, keys);
+            return value != nullptr && value->is_array() ? value : nullptr;
+        }
+
+        double jsonDoubleValue(const nlohmann::json& node, double fallback) {
+            if (node.is_number_float()) {
+                return node.get<double>();
+            }
+            if (node.is_number_integer()) {
+                return static_cast<double>(node.get<int64_t>());
+            }
+            if (node.is_number_unsigned()) {
+                return static_cast<double>(node.get<uint64_t>());
+            }
+            if (node.is_string()) {
+                const std::string value = trim(node.get<std::string>());
+                if (value.empty()) {
+                    return fallback;
+                }
+                try {
+                    return std::stod(value);
+                } catch (const std::exception&) {
+                    return fallback;
+                }
+            }
+            if (node.is_boolean()) {
+                return node.get<bool>() ? 1.0 : 0.0;
+            }
+            return fallback;
+        }
+
+        bool jsonBoolValue(const nlohmann::json& node, bool fallback) {
+            if (node.is_boolean()) {
+                return node.get<bool>();
+            }
+            if (node.is_number_integer()) {
+                return node.get<int64_t>() != 0;
+            }
+            if (node.is_number_unsigned()) {
+                return node.get<uint64_t>() != 0;
+            }
+            if (node.is_string()) {
+                const std::string value = toLower(trim(node.get<std::string>()));
+                if (value == "true" || value == "yes" || value == "1" || value == "on") {
+                    return true;
+                }
+                if (value == "false" || value == "no" || value == "0" || value == "off") {
+                    return false;
+                }
+            }
+            return fallback;
+        }
+
+        double firstDoubleValue(const nlohmann::json& objectNode,
+                                std::initializer_list<const char*> keys,
+                                double fallback) {
+            const auto* value = firstValue(objectNode, keys);
+            return value != nullptr ? jsonDoubleValue(*value, fallback) : fallback;
+        }
+
+        nlohmann::json extractTraceyLoaderThreatSummary(const nlohmann::json& statusSnapshot) {
+            if (!statusSnapshot.is_object()) {
+                return nlohmann::json::object();
+            }
+
+            const nlohmann::json* loaderThreatNode = firstObjectValue(
+                    statusSnapshot,
+                    {"loader_threats", "loaderThreats", "loader_security", "loaderSecurity"}
+            );
+            if (loaderThreatNode == nullptr) {
+                const auto loaderIt = statusSnapshot.find("loader");
+                if (loaderIt != statusSnapshot.end() && loaderIt->is_object()) {
+                    loaderThreatNode = firstObjectValue(
+                            *loaderIt,
+                            {"threats", "security", "loader_threats", "loaderThreats"}
+                    );
+                }
+            }
+            if (loaderThreatNode == nullptr) {
+                return nlohmann::json::object();
+            }
+
+            const nlohmann::json* summaryNode = firstObjectValue(
+                    *loaderThreatNode,
+                    {"summary", "totals", "counts"}
+            );
+            const nlohmann::json& source = summaryNode != nullptr ? *summaryNode : *loaderThreatNode;
+
+            const auto readInt = [&](std::initializer_list<const char*> keys) -> int64_t {
+                return std::max<int64_t>(0, firstInt64Value(source, keys, 0));
+            };
+            const auto readDouble = [&](std::initializer_list<const char*> keys) -> double {
+                const auto* value = firstValue(source, keys);
+                return value != nullptr ? std::max(0.0, jsonDoubleValue(*value, 0.0)) : 0.0;
+            };
+
+            return {
+                    {"local_provider_count", readInt({"local_provider_count", "localProviderCount", "providers", "provider_count"})},
+                    {"local_artifact_count", readInt({"local_artifact_count", "localArtifactCount", "artifacts", "artifact_count"})},
+                    {"remote_provider_count", readInt({"remote_provider_count", "remoteProviderCount"})},
+                    {"remote_artifact_count", readInt({"remote_artifact_count", "remoteArtifactCount"})},
+                    {"remote_reporters", readInt({"remote_reporters", "remoteReporters", "reporters"})},
+                    {"blocked_provider_count", readInt({"blocked_provider_count", "blockedProviderCount", "blocked_providers", "recommended_provider_blocks"})},
+                    {"blocked_artifact_count", readInt({"blocked_artifact_count", "blockedArtifactCount", "blocked_artifacts", "recommended_artifact_blocks"})},
+                    {"highest_provider_risk", readDouble({"highest_provider_risk", "highestProviderRisk", "provider_risk"})},
+                    {"highest_artifact_risk", readDouble({"highest_artifact_risk", "highestArtifactRisk", "artifact_risk"})}
+            };
+        }
+
+        const nlohmann::json* extractTraceyStatusSnapshotNode(const nlohmann::json& metricsNode) {
+            return firstObjectValue(metricsNode, {"status_snapshot", "statusSnapshot"});
+        }
+
+        const nlohmann::json* extractContinuumTelemetryNode(const nlohmann::json& metricsNode) {
+            const auto* statusSnapshot = extractTraceyStatusSnapshotNode(metricsNode);
+            if (statusSnapshot == nullptr) {
+                return nullptr;
+            }
+            return firstObjectValue(*statusSnapshot, {"continuum_telemetry", "continuumTelemetry", "continuum"});
+        }
+
+        const nlohmann::json* extractTraceyGuardNode(const nlohmann::json& metricsNode) {
+            const auto* statusSnapshot = extractTraceyStatusSnapshotNode(metricsNode);
+            if (statusSnapshot == nullptr) {
+                return nullptr;
+            }
+            return firstObjectValue(*statusSnapshot, {"tracey_guard", "traceyGuard"});
+        }
+
+        const nlohmann::json* extractTraceyGuardSummaryNode(const nlohmann::json& metricsNode) {
+            const auto* traceyGuard = extractTraceyGuardNode(metricsNode);
+            if (traceyGuard == nullptr) {
+                return nullptr;
+            }
+            return firstObjectValue(*traceyGuard, {"summary"});
+        }
+
+        const nlohmann::json* extractContinuumAssessmentNode(const nlohmann::json& metricsNode) {
+            const auto* statusSnapshot = extractTraceyStatusSnapshotNode(metricsNode);
+            if (statusSnapshot == nullptr) {
+                return nullptr;
+            }
+            return firstObjectValue(
+                    *statusSnapshot,
+                    {"continuum_assessment", "continuumAssessment", "compromise_assessment", "compromiseAssessment"}
+            );
+        }
+
+        const nlohmann::json* extractContinuumAssessmentSummaryNode(const nlohmann::json& metricsNode) {
+            const auto* assessment = extractContinuumAssessmentNode(metricsNode);
+            if (assessment == nullptr) {
+                return nullptr;
+            }
+            const auto* summary = firstObjectValue(*assessment, {"summary"});
+            return summary != nullptr ? summary : assessment;
+        }
+
+        std::string defaultTopologyLabel(const std::string& value, const std::string& fallback) {
+            const std::string cleaned = trim(value);
+            return cleaned.empty() ? fallback : cleaned;
+        }
+
+        int traceyStatusSeverityRank(const std::string& status) {
+            const std::string normalized = normalizeTraceyStatus(status);
+            if (normalized == "offline") {
+                return 3;
+            }
+            if (normalized == "degraded") {
+                return 2;
+            }
+            if (normalized == "unknown") {
+                return 1;
+            }
+            return 0;
+        }
+
+        std::string rollupTraceyStatusCounts(int healthy, int degraded, int offline, int unknown) {
+            if (offline > 0) {
+                return "offline";
+            }
+            if (degraded > 0) {
+                return "degraded";
+            }
+            if (healthy > 0 && unknown == 0) {
+                return "healthy";
+            }
+            if (healthy > 0) {
+                return "degraded";
+            }
+            return "unknown";
+        }
+
+        void sortGpuTiles(nlohmann::json& gpus) {
+            if (!gpus.is_array()) {
+                return;
+            }
+            std::sort(gpus.begin(), gpus.end(), [](const nlohmann::json& left, const nlohmann::json& right) {
+                const int64_t leftSlot = firstInt64Value(left, {"slot_index", "slotIndex"}, 1'000'000);
+                const int64_t rightSlot = firstInt64Value(right, {"slot_index", "slotIndex"}, 1'000'000);
+                if (leftSlot != rightSlot) {
+                    return leftSlot < rightSlot;
+                }
+                const std::string leftId = firstStringValue(left, {"gpu_id", "gpuId"});
+                const std::string rightId = firstStringValue(right, {"gpu_id", "gpuId"});
+                return leftId < rightId;
+            });
+        }
+
+        void sortActionsByTime(nlohmann::json& actions) {
+            if (!actions.is_array()) {
+                return;
+            }
+            std::sort(actions.begin(), actions.end(), [](const nlohmann::json& left, const nlohmann::json& right) {
+                return firstInt64Value(left, {"ts_ms", "tsMs"}, 0) > firstInt64Value(right, {"ts_ms", "tsMs"}, 0);
+            });
+        }
+
+        nlohmann::json limitedJsonArray(nlohmann::json values, std::size_t limit) {
+            if (!values.is_array()) {
+                return nlohmann::json::array();
+            }
+            if (values.size() > limit) {
+                values.erase(values.begin() + static_cast<nlohmann::json::difference_type>(limit), values.end());
+            }
+            return values;
+        }
+
+        struct TraceyEffectiveStatus {
+            std::string status;
+            bool stale{false};
+            int64_t lastSignalMs{0};
+            int64_t ageSeconds{0};
+        };
+
+        TraceyEffectiveStatus buildTraceyEffectiveStatus(const std::string& rawStatus,
+                                                        bool staleFlag,
+                                                        int64_t lastSeenEpochMs,
+                                                        int64_t lastAnnouncementEpochMs,
+                                                        int64_t nowMs,
+                                                        int64_t staleAfterSeconds) {
+            TraceyEffectiveStatus view;
+            view.lastSignalMs = std::max(lastSeenEpochMs, lastAnnouncementEpochMs);
+            if (view.lastSignalMs > 0 && nowMs > view.lastSignalMs) {
+                view.ageSeconds = (nowMs - view.lastSignalMs) / 1000;
+            }
+            view.stale = staleFlag || view.ageSeconds > staleAfterSeconds;
+            view.status = view.stale ? "offline" : normalizeTraceyStatus(rawStatus);
+            return view;
+        }
+
+        nlohmann::json buildTraceyFleetViewFromAgents(const std::vector<nlohmann::json>& agentViews,
+                                                      int64_t nowMs) {
+            struct RackAgg {
+                std::string rack;
+                std::string zone;
+                int agentCount{0};
+                int healthy{0};
+                int degraded{0};
+                int offline{0};
+                int unknown{0};
+                int reachable{0};
+                int gpuCount{0};
+                int traceyGuardQuarantined{0};
+                int blockedLoaderProviders{0};
+                int blockedLoaderArtifacts{0};
+                int thermalAlerts{0};
+                int fanAlerts{0};
+                int autonomyActions{0};
+                double gpuUtilSum{0.0};
+                int gpuUtilCount{0};
+                double gpuPowerTotal{0.0};
+                double netRxBps{0.0};
+                double netTxBps{0.0};
+                double autonomyRiskMax{0.0};
+                bool hasAutonomyRisk{false};
+                double gpuTempMax{0.0};
+                bool hasGpuTempMax{false};
+                uint64_t eccCorrectedTotal{0};
+                uint64_t eccUncorrectedTotal{0};
+                nlohmann::json heatCells{nlohmann::json::array()};
+            };
+
+            struct ZoneAgg {
+                std::string zone;
+                int agentCount{0};
+                int healthy{0};
+                int degraded{0};
+                int offline{0};
+                int unknown{0};
+                int reachable{0};
+                int gpuCount{0};
+                int rackCount{0};
+                int thermalAlerts{0};
+                int fanAlerts{0};
+                int autonomyActions{0};
+                int traceyGuardQuarantined{0};
+                double gpuUtilSum{0.0};
+                int gpuUtilCount{0};
+                double gpuPowerTotal{0.0};
+                double gpuTempMax{0.0};
+                bool hasGpuTempMax{false};
+                std::set<std::string> racks;
+            };
+
+            int healthy = 0;
+            int degraded = 0;
+            int offline = 0;
+            int unknown = 0;
+            int reachable = 0;
+            int gpuCount = 0;
+            int thermalAlerts = 0;
+            int fanAlerts = 0;
+            int traceyGuardQuarantined = 0;
+            int blockedLoaderProviders = 0;
+            int blockedLoaderArtifacts = 0;
+            int autonomyActionCount = 0;
+            int agentsWithCves = 0;
+            int agentsWithKev = 0;
+            int elevatedAgents = 0;
+            int compromisedAgents = 0;
+            int totalCveMatches = 0;
+            int totalKevMatches = 0;
+            double gpuUtilSum = 0.0;
+            int gpuUtilCount = 0;
+            double gpuPowerTotal = 0.0;
+            double autonomyRiskMax = 0.0;
+            bool hasAutonomyRisk = false;
+            double highestCompromiseRisk = 0.0;
+            bool hasCompromiseRisk = false;
+            double gpuTempMax = 0.0;
+            bool hasGpuTempMax = false;
+            uint64_t eccCorrectedTotal = 0;
+            uint64_t eccUncorrectedTotal = 0;
+
+            std::map<std::string, RackAgg> rackAggs;
+            std::map<std::string, ZoneAgg> zoneAggs;
+            nlohmann::json recentActions = nlohmann::json::array();
+            nlohmann::json agents = nlohmann::json::array();
+
+            for (const auto& agentView : agentViews) {
+                const std::string status = normalizeTraceyStatus(firstStringValue(agentView, {"status"}));
+                if (status == "healthy") {
+                    healthy++;
+                } else if (status == "degraded") {
+                    degraded++;
+                } else if (status == "offline") {
+                    offline++;
+                } else {
+                    unknown++;
+                }
+                if (agentView.value("status_reachable", false)) {
+                    reachable++;
+                }
+
+                const nlohmann::json summary = firstObjectValue(agentView, {"summary"}) != nullptr
+                                               ? *firstObjectValue(agentView, {"summary"})
+                                               : nlohmann::json::object();
+                const nlohmann::json traceyGuardSummary = firstObjectValue(agentView, {"tracey_guard_summary"}) != nullptr
+                                                          ? *firstObjectValue(agentView, {"tracey_guard_summary"})
+                                                          : nlohmann::json::object();
+                const nlohmann::json loaderThreats = firstObjectValue(agentView, {"loader_threats"}) != nullptr
+                                                     ? *firstObjectValue(agentView, {"loader_threats"})
+                                                     : nlohmann::json::object();
+                const nlohmann::json assessmentSummary = firstObjectValue(agentView, {"continuum_assessment_summary"}) != nullptr
+                                                         ? *firstObjectValue(agentView, {"continuum_assessment_summary"})
+                                                         : nlohmann::json::object();
+                const auto* gpus = firstArrayValue(agentView, {"gpus"});
+                const auto* actions = firstArrayValue(agentView, {"recent_actions"});
+
+                const std::string rack = defaultTopologyLabel(firstStringValue(agentView, {"rack"}), "unassigned");
+                const std::string zone = defaultTopologyLabel(firstStringValue(agentView, {"zone"}), "unassigned");
+                auto& rackAgg = rackAggs[rack];
+                if (rackAgg.rack.empty()) {
+                    rackAgg.rack = rack;
+                    rackAgg.zone = zone;
+                }
+                auto& zoneAgg = zoneAggs[zone];
+                if (zoneAgg.zone.empty()) {
+                    zoneAgg.zone = zone;
+                }
+
+                rackAgg.agentCount++;
+                zoneAgg.agentCount++;
+                zoneAgg.racks.insert(rack);
+                if (agentView.value("status_reachable", false)) {
+                    rackAgg.reachable++;
+                    zoneAgg.reachable++;
+                }
+
+                if (status == "healthy") {
+                    rackAgg.healthy++;
+                    zoneAgg.healthy++;
+                } else if (status == "degraded") {
+                    rackAgg.degraded++;
+                    zoneAgg.degraded++;
+                } else if (status == "offline") {
+                    rackAgg.offline++;
+                    zoneAgg.offline++;
+                } else {
+                    rackAgg.unknown++;
+                    zoneAgg.unknown++;
+                }
+
+                const int agentGpuCount = std::max(0, static_cast<int>(firstInt64Value(summary, {"gpu_count"}, 0)));
+                rackAgg.gpuCount += agentGpuCount;
+                zoneAgg.gpuCount += agentGpuCount;
+                gpuCount += agentGpuCount;
+
+                const int agentThermalAlerts = std::max(0, static_cast<int>(firstInt64Value(summary, {"thermal_alerts"}, 0)));
+                const int agentFanAlerts = std::max(0, static_cast<int>(firstInt64Value(summary, {"fan_alerts"}, 0)));
+                rackAgg.thermalAlerts += agentThermalAlerts;
+                rackAgg.fanAlerts += agentFanAlerts;
+                zoneAgg.thermalAlerts += agentThermalAlerts;
+                zoneAgg.fanAlerts += agentFanAlerts;
+                thermalAlerts += agentThermalAlerts;
+                fanAlerts += agentFanAlerts;
+
+                const int agentQuarantined = std::max(0, static_cast<int>(firstInt64Value(
+                        traceyGuardSummary,
+                        {"quarantined_devices", "quarantinedDevices"},
+                        0
+                )));
+                rackAgg.traceyGuardQuarantined += agentQuarantined;
+                zoneAgg.traceyGuardQuarantined += agentQuarantined;
+                traceyGuardQuarantined += agentQuarantined;
+
+                const int agentBlockedProviders = std::max(0, static_cast<int>(firstInt64Value(
+                        loaderThreats,
+                        {"blocked_provider_count", "blockedProviderCount"},
+                        0
+                )));
+                const int agentBlockedArtifacts = std::max(0, static_cast<int>(firstInt64Value(
+                        loaderThreats,
+                        {"blocked_artifact_count", "blockedArtifactCount"},
+                        0
+                )));
+                rackAgg.blockedLoaderProviders += agentBlockedProviders;
+                rackAgg.blockedLoaderArtifacts += agentBlockedArtifacts;
+                blockedLoaderProviders += agentBlockedProviders;
+                blockedLoaderArtifacts += agentBlockedArtifacts;
+
+                const double agentUtil = firstDoubleValue(summary, {"gpu_utilization_avg_pct"}, -1.0);
+                if (agentUtil >= 0.0) {
+                    rackAgg.gpuUtilSum += agentUtil * std::max(1, agentGpuCount);
+                    rackAgg.gpuUtilCount += std::max(1, agentGpuCount);
+                    zoneAgg.gpuUtilSum += agentUtil * std::max(1, agentGpuCount);
+                    zoneAgg.gpuUtilCount += std::max(1, agentGpuCount);
+                    gpuUtilSum += agentUtil * std::max(1, agentGpuCount);
+                    gpuUtilCount += std::max(1, agentGpuCount);
+                }
+
+                const double agentPower = firstDoubleValue(summary, {"gpu_power_total_w"}, 0.0);
+                if (agentPower > 0.0) {
+                    rackAgg.gpuPowerTotal += agentPower;
+                    zoneAgg.gpuPowerTotal += agentPower;
+                    gpuPowerTotal += agentPower;
+                }
+
+                const double agentNetRx = firstDoubleValue(summary, {"net_rx_bps"}, 0.0);
+                const double agentNetTx = firstDoubleValue(summary, {"net_tx_bps"}, 0.0);
+                if (agentNetRx > 0.0) {
+                    rackAgg.netRxBps += agentNetRx;
+                }
+                if (agentNetTx > 0.0) {
+                    rackAgg.netTxBps += agentNetTx;
+                }
+
+                const double agentTempMax = firstDoubleValue(summary, {"gpu_temperature_max_c"}, -1.0);
+                if (agentTempMax >= 0.0) {
+                    rackAgg.gpuTempMax = rackAgg.hasGpuTempMax ? std::max(rackAgg.gpuTempMax, agentTempMax) : agentTempMax;
+                    rackAgg.hasGpuTempMax = true;
+                    zoneAgg.gpuTempMax = zoneAgg.hasGpuTempMax ? std::max(zoneAgg.gpuTempMax, agentTempMax) : agentTempMax;
+                    zoneAgg.hasGpuTempMax = true;
+                    gpuTempMax = hasGpuTempMax ? std::max(gpuTempMax, agentTempMax) : agentTempMax;
+                    hasGpuTempMax = true;
+                }
+
+                const double agentAutonomyRisk = firstDoubleValue(summary, {"autonomy_risk"}, -1.0);
+                if (agentAutonomyRisk >= 0.0) {
+                    rackAgg.autonomyRiskMax = rackAgg.hasAutonomyRisk ? std::max(rackAgg.autonomyRiskMax, agentAutonomyRisk) : agentAutonomyRisk;
+                    rackAgg.hasAutonomyRisk = true;
+                    autonomyRiskMax = hasAutonomyRisk ? std::max(autonomyRiskMax, agentAutonomyRisk) : agentAutonomyRisk;
+                    hasAutonomyRisk = true;
+                }
+
+                const int agentCveMatches = std::max(0, static_cast<int>(firstInt64Value(
+                        assessmentSummary,
+                        {"cve_matches", "cveMatches"},
+                        0
+                )));
+                const int agentKevMatches = std::max(0, static_cast<int>(firstInt64Value(
+                        assessmentSummary,
+                        {"kev_matches", "kevMatches"},
+                        0
+                )));
+                const double agentCompromiseRisk = firstDoubleValue(
+                        assessmentSummary,
+                        {"compromise_risk", "compromiseRisk"},
+                        -1.0
+                );
+                if (agentCveMatches > 0) {
+                    agentsWithCves++;
+                }
+                if (agentKevMatches > 0) {
+                    agentsWithKev++;
+                }
+                totalCveMatches += agentCveMatches;
+                totalKevMatches += agentKevMatches;
+                if (agentCompromiseRisk >= 0.80) {
+                    compromisedAgents++;
+                } else if (agentCompromiseRisk >= 0.55) {
+                    elevatedAgents++;
+                }
+                if (agentCompromiseRisk >= 0.0) {
+                    highestCompromiseRisk = hasCompromiseRisk
+                                            ? std::max(highestCompromiseRisk, agentCompromiseRisk)
+                                            : agentCompromiseRisk;
+                    hasCompromiseRisk = true;
+                }
+
+                const auto* serverNode = firstObjectValue(agentView, {"server"});
+                const auto* ecc = serverNode != nullptr ? firstObjectValue(*serverNode, {"ecc"}) : nullptr;
+                if (ecc != nullptr) {
+                    const auto corrected = static_cast<uint64_t>(std::max<int64_t>(0, firstInt64Value(*ecc, {"corrected_total", "correctedTotal"}, 0)));
+                    const auto uncorrected = static_cast<uint64_t>(std::max<int64_t>(0, firstInt64Value(*ecc, {"uncorrected_total", "uncorrectedTotal"}, 0)));
+                    rackAgg.eccCorrectedTotal += corrected;
+                    rackAgg.eccUncorrectedTotal += uncorrected;
+                    eccCorrectedTotal += corrected;
+                    eccUncorrectedTotal += uncorrected;
+                }
+
+                if (actions != nullptr) {
+                    for (const auto& action : *actions) {
+                        nlohmann::json enriched = action.is_object() ? action : nlohmann::json::object();
+                        enriched["agent_id"] = firstStringValue(agentView, {"agent_id"});
+                        enriched["host"] = firstStringValue(agentView, {"host"});
+                        enriched["rack"] = rack;
+                        enriched["zone"] = zone;
+                        recentActions.push_back(enriched);
+                        const std::string category = toLower(firstStringValue(enriched, {"category"}));
+                        if (category == "autonomy" || category == "automation") {
+                            rackAgg.autonomyActions++;
+                            zoneAgg.autonomyActions++;
+                            autonomyActionCount++;
+                        }
+                    }
+                }
+
+                if (gpus != nullptr) {
+                    for (const auto& gpu : *gpus) {
+                        if (!gpu.is_object()) {
+                            continue;
+                        }
+                        nlohmann::json cell = gpu;
+                        cell["agent_id"] = firstStringValue(agentView, {"agent_id"});
+                        cell["host"] = firstStringValue(agentView, {"host"});
+                        cell["rack"] = rack;
+                        cell["zone"] = zone;
+                        cell["status"] = status;
+                        rackAgg.heatCells.push_back(cell);
+                    }
+                }
+
+                agents.push_back({
+                        {"agent_id", firstStringValue(agentView, {"agent_id"})},
+                        {"cluster", firstStringValue(agentView, {"cluster"})},
+                        {"status", status},
+                        {"host", firstStringValue(agentView, {"host"})},
+                        {"rack", rack},
+                        {"zone", zone},
+                        {"gpu_count", agentGpuCount},
+                        {"gpu_utilization_avg_pct", agentUtil >= 0.0 ? agentUtil : 0.0},
+                        {"gpu_temperature_max_c", agentTempMax >= 0.0 ? agentTempMax : 0.0},
+                        {"autonomy_risk", agentAutonomyRisk >= 0.0 ? agentAutonomyRisk : 0.0},
+                        {"compromise_risk", agentCompromiseRisk >= 0.0 ? agentCompromiseRisk : 0.0},
+                        {"cve_matches", agentCveMatches},
+                        {"kev_matches", agentKevMatches},
+                        {"assessment_status", firstStringValue(assessmentSummary, {"status"}, "unknown")},
+                        {"assessment_action", firstStringValue(assessmentSummary, {"recommended_action", "recommendedAction"})},
+                        {"recent_action_count", std::max(0, static_cast<int>(firstInt64Value(summary, {"recent_action_count"}, 0)))},
+                        {"last_seen_seconds_ago", std::max<int64_t>(0, firstInt64Value(agentView, {"last_seen_seconds_ago"}, 0))}
+                });
+            }
+
+            sortActionsByTime(recentActions);
+            recentActions = limitedJsonArray(recentActions, 64);
+
+            nlohmann::json zoneBreakdown = nlohmann::json::array();
+            for (const auto& [zoneKey, agg] : zoneAggs) {
+                (void)zoneKey;
+                zoneBreakdown.push_back({
+                        {"zone", agg.zone},
+                        {"health", rollupTraceyStatusCounts(agg.healthy, agg.degraded, agg.offline, agg.unknown)},
+                        {"agent_count", agg.agentCount},
+                        {"rack_count", static_cast<int>(agg.racks.size())},
+                        {"gpu_count", agg.gpuCount},
+                        {"reachable_agents", agg.reachable},
+                        {"gpu_utilization_avg_pct", agg.gpuUtilCount > 0 ? agg.gpuUtilSum / static_cast<double>(agg.gpuUtilCount) : 0.0},
+                        {"gpu_temperature_max_c", agg.hasGpuTempMax ? agg.gpuTempMax : 0.0},
+                        {"gpu_power_total_w", agg.gpuPowerTotal},
+                        {"thermal_alerts", agg.thermalAlerts},
+                        {"fan_alerts", agg.fanAlerts},
+                        {"tracey_guard_quarantined", agg.traceyGuardQuarantined},
+                        {"autonomy_actions", agg.autonomyActions}
+                });
+            }
+
+            nlohmann::json racks = nlohmann::json::array();
+            nlohmann::json gpuHeatmap = nlohmann::json::array();
+            for (auto& [rackKey, agg] : rackAggs) {
+                (void)rackKey;
+                sortGpuTiles(agg.heatCells);
+                racks.push_back({
+                        {"rack", agg.rack},
+                        {"zone", agg.zone},
+                        {"health", rollupTraceyStatusCounts(agg.healthy, agg.degraded, agg.offline, agg.unknown)},
+                        {"agent_count", agg.agentCount},
+                        {"reachable_agents", agg.reachable},
+                        {"gpu_count", agg.gpuCount},
+                        {"gpu_utilization_avg_pct", agg.gpuUtilCount > 0 ? agg.gpuUtilSum / static_cast<double>(agg.gpuUtilCount) : 0.0},
+                        {"gpu_temperature_max_c", agg.hasGpuTempMax ? agg.gpuTempMax : 0.0},
+                        {"gpu_power_total_w", agg.gpuPowerTotal},
+                        {"net_rx_bps", agg.netRxBps},
+                        {"net_tx_bps", agg.netTxBps},
+                        {"thermal_alerts", agg.thermalAlerts},
+                        {"fan_alerts", agg.fanAlerts},
+                        {"ecc_corrected_total", agg.eccCorrectedTotal},
+                        {"ecc_uncorrected_total", agg.eccUncorrectedTotal},
+                        {"tracey_guard_quarantined", agg.traceyGuardQuarantined},
+                        {"blocked_loader_providers", agg.blockedLoaderProviders},
+                        {"blocked_loader_artifacts", agg.blockedLoaderArtifacts},
+                        {"autonomy_actions", agg.autonomyActions},
+                        {"autonomy_risk_max", agg.hasAutonomyRisk ? agg.autonomyRiskMax : 0.0}
+                });
+                gpuHeatmap.push_back({
+                        {"rack", agg.rack},
+                        {"zone", agg.zone},
+                        {"cells", agg.heatCells}
+                });
+            }
+
+            return {
+                    {"generated_epoch_ms", nowMs},
+                    {"summary", {
+                            {"agents_total", static_cast<int>(agentViews.size())},
+                            {"healthy", healthy},
+                            {"degraded", degraded},
+                            {"offline", offline},
+                            {"unknown", unknown},
+                            {"reachable", reachable},
+                            {"racks_total", static_cast<int>(rackAggs.size())},
+                            {"zones_total", static_cast<int>(zoneAggs.size())},
+                            {"gpu_total", gpuCount},
+                            {"gpu_utilization_avg_pct", gpuUtilCount > 0 ? gpuUtilSum / static_cast<double>(gpuUtilCount) : 0.0},
+                            {"gpu_temperature_max_c", hasGpuTempMax ? gpuTempMax : 0.0},
+                            {"gpu_power_total_w", gpuPowerTotal},
+                            {"thermal_alerts", thermalAlerts},
+                            {"fan_alerts", fanAlerts},
+                            {"ecc_corrected_total", eccCorrectedTotal},
+                            {"ecc_uncorrected_total", eccUncorrectedTotal},
+                            {"tracey_guard_quarantined", traceyGuardQuarantined},
+                            {"blocked_loader_providers", blockedLoaderProviders},
+                            {"blocked_loader_artifacts", blockedLoaderArtifacts},
+                            {"autonomy_actions", autonomyActionCount},
+                            {"autonomy_risk_max", hasAutonomyRisk ? autonomyRiskMax : 0.0},
+                            {"agents_with_cves", agentsWithCves},
+                            {"agents_with_kev", agentsWithKev},
+                            {"elevated_agents", elevatedAgents},
+                            {"compromised_agents", compromisedAgents},
+                            {"cve_matches", totalCveMatches},
+                            {"kev_matches", totalKevMatches},
+                            {"compromise_risk_max", hasCompromiseRisk ? highestCompromiseRisk : 0.0}
+                    }},
+                    {"zone_breakdown", zoneBreakdown},
+                    {"racks", racks},
+                    {"gpu_heatmap", gpuHeatmap},
+                    {"recent_actions", recentActions},
+                    {"agents", agents}
+            };
         }
 
         std::string clusterIdentityKey(const nlohmann::json& cluster) {
@@ -2056,9 +2762,49 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
             if (!guard(req, res)) return;
             handleTraceyAnalytics(req, res);
         });
+        svr.Get("/tracey/fleet", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            handleTraceyFleet(req, res);
+        });
+        svr.Get("/tracey/cve/status", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            handleTraceyCveStatus(req, res);
+        });
+        svr.Get("/tracey/assessment/fleet", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            handleTraceyAssessmentFleet(req, res);
+        });
+        svr.Get("/tracey/racks", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            handleListTraceyRacks(req, res);
+        });
+        svr.Get(R"(/tracey/racks/([^/]+))", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            handleTraceyRackDetails(req, res);
+        });
         svr.Get(R"(/tracey/agents/(.*)/analysis)", [this, guard](const httplib::Request& req, httplib::Response& res) {
             if (!guard(req, res)) return;
             handleTraceyAgentAnalysis(req, res);
+        });
+        svr.Get(R"(/tracey/agents/([^/]+)/server)", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            handleTraceyAgentServer(req, res);
+        });
+        svr.Get(R"(/tracey/agents/([^/]+)/gpus/([^/]+)/telemetry)", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            handleTraceyAgentGpu(req, res);
+        });
+        svr.Get(R"(/tracey/agents/(.*)/assessment/plan)", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            handleTraceyAssessmentPlan(req, res);
+        });
+        svr.Post(R"(/tracey/agents/(.*)/assessment/report)", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            handleTraceyAssessmentReport(req, res);
+        });
+        svr.Get(R"(/tracey/agents/(.*)/compromise)", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            handleTraceyAgentCompromise(req, res);
         });
         svr.Post(R"(/tracey/agents/(.*)/control)", [this, guard](const httplib::Request& req, httplib::Response& res) {
             if (!guard(req, res)) return;
@@ -2083,6 +2829,8 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                 std::cerr << "[WARN] Failed to start Tracey discovery thread: " << e.what() << std::endl;
             }
         }
+
+        traceyCveIntel.start();
     }
 
     // Explicit definition of the destructor for APIRoutes
@@ -2093,6 +2841,7 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
     // is defined.
     APIRoutes::~APIRoutes() {
         stopTraceyDiscovery.store(true);
+        traceyCveIntel.stop();
         if (traceyDiscoveryThread.joinable()) {
             traceyDiscoveryThread.join();
         }
@@ -3642,6 +4391,11 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
         sample.tracey_guardProbeErrors = 0;
         sample.tracey_guardQuarantined = 0;
         sample.tracey_guardRemoteFaults = 0;
+        sample.loaderThreatLocalProviders = 0;
+        sample.loaderThreatLocalArtifacts = 0;
+        sample.loaderThreatBlockedProviders = 0;
+        sample.loaderThreatBlockedArtifacts = 0;
+        sample.loaderThreatRemoteReporters = 0;
         if (agent.metrics.is_object()) {
             const auto statusIt = agent.metrics.find("status_snapshot");
             if (statusIt != agent.metrics.end() && statusIt->is_object()) {
@@ -3654,6 +4408,14 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                         sample.tracey_guardQuarantined = std::max(0, summaryIt->value("quarantined_devices", 0));
                         sample.tracey_guardRemoteFaults = std::max(0, summaryIt->value("remote_fault_support", 0));
                     }
+                }
+                const auto loaderThreatSummary = extractTraceyLoaderThreatSummary(*statusIt);
+                if (loaderThreatSummary.is_object()) {
+                    sample.loaderThreatLocalProviders = std::max(0, loaderThreatSummary.value("local_provider_count", 0));
+                    sample.loaderThreatLocalArtifacts = std::max(0, loaderThreatSummary.value("local_artifact_count", 0));
+                    sample.loaderThreatBlockedProviders = std::max(0, loaderThreatSummary.value("blocked_provider_count", 0));
+                    sample.loaderThreatBlockedArtifacts = std::max(0, loaderThreatSummary.value("blocked_artifact_count", 0));
+                    sample.loaderThreatRemoteReporters = std::max(0, loaderThreatSummary.value("remote_reporters", 0));
                 }
             }
         }
@@ -3673,6 +4435,11 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                 last.tracey_guardProbeErrors == sample.tracey_guardProbeErrors &&
                 last.tracey_guardQuarantined == sample.tracey_guardQuarantined &&
                 last.tracey_guardRemoteFaults == sample.tracey_guardRemoteFaults &&
+                last.loaderThreatLocalProviders == sample.loaderThreatLocalProviders &&
+                last.loaderThreatLocalArtifacts == sample.loaderThreatLocalArtifacts &&
+                last.loaderThreatBlockedProviders == sample.loaderThreatBlockedProviders &&
+                last.loaderThreatBlockedArtifacts == sample.loaderThreatBlockedArtifacts &&
+                last.loaderThreatRemoteReporters == sample.loaderThreatRemoteReporters &&
                 last.source == sample.source) {
                 return;
             }
@@ -4181,6 +4948,180 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
         }
     }
 
+    nlohmann::json APIRoutes::buildTraceyContinuumAgentView(const TraceyAgent& agent, int64_t nowMs) const {
+        const TraceyEffectiveStatus effective = buildTraceyEffectiveStatus(
+                agent.status,
+                agent.stale,
+                agent.lastSeenEpochMs,
+                agent.lastAnnouncementEpochMs,
+                nowMs,
+                traceyStaleAfterSeconds
+        );
+
+        const nlohmann::json emptyObject = nlohmann::json::object();
+        const auto* continuum = extractContinuumTelemetryNode(agent.metrics);
+        const auto* identity = continuum != nullptr ? firstObjectValue(*continuum, {"identity"}) : nullptr;
+        const auto* serverNode = continuum != nullptr ? firstObjectValue(*continuum, {"server"}) : nullptr;
+        const auto* gpuArray = continuum != nullptr ? firstArrayValue(*continuum, {"gpus"}) : nullptr;
+        const auto* recentActionsArray = continuum != nullptr ? firstArrayValue(*continuum, {"recent_actions", "recentActions"}) : nullptr;
+        const auto* traceyGuard = extractTraceyGuardNode(agent.metrics);
+        const auto* traceyGuardSummary = extractTraceyGuardSummaryNode(agent.metrics);
+        const auto* traceyGuardGpuHealth = traceyGuard != nullptr ? firstArrayValue(*traceyGuard, {"gpu_health", "gpuHealth"}) : nullptr;
+        const auto* traceyGuardRecentExecutions = traceyGuard != nullptr ? firstArrayValue(*traceyGuard, {"recent_executions", "recentExecutions"}) : nullptr;
+        const auto* traceyGuardRecentFaults = traceyGuard != nullptr ? firstArrayValue(*traceyGuard, {"recent_faults", "recentFaults"}) : nullptr;
+        const auto* traceyGuardRemoteFaults = traceyGuard != nullptr ? firstArrayValue(*traceyGuard, {"remote_faults", "remoteFaults"}) : nullptr;
+        const auto* statusSnapshot = extractTraceyStatusSnapshotNode(agent.metrics);
+        const auto* continuumAssessment = extractContinuumAssessmentNode(agent.metrics);
+        const auto* continuumAssessmentSummary = extractContinuumAssessmentSummaryNode(agent.metrics);
+        const nlohmann::json loaderThreats = statusSnapshot != nullptr
+                                             ? extractTraceyLoaderThreatSummary(*statusSnapshot)
+                                             : nlohmann::json::object();
+
+        const nlohmann::json& identityNode = identity != nullptr ? *identity : emptyObject;
+        const nlohmann::json& server = serverNode != nullptr ? *serverNode : emptyObject;
+
+        nlohmann::json gpus = gpuArray != nullptr ? *gpuArray : nlohmann::json::array();
+        if (traceyGuardGpuHealth != nullptr && gpus.is_array()) {
+            std::unordered_map<std::string, nlohmann::json> guardByGpu;
+            for (const auto& entry : *traceyGuardGpuHealth) {
+                if (!entry.is_object()) {
+                    continue;
+                }
+                const std::string gpuId = firstStringValue(entry, {"gpu_id", "gpuId"});
+                if (!gpuId.empty()) {
+                    guardByGpu[gpuId] = entry;
+                }
+            }
+            for (auto& gpu : gpus) {
+                if (!gpu.is_object()) {
+                    continue;
+                }
+                const std::string gpuId = firstStringValue(gpu, {"gpu_id", "gpuId"});
+                const auto guardIt = guardByGpu.find(gpuId);
+                if (guardIt == guardByGpu.end()) {
+                    continue;
+                }
+                const auto& guardGpu = guardIt->second;
+                gpu["probe_pass_count"] = std::max<int64_t>(0, firstInt64Value(
+                        gpu,
+                        {"probe_pass_count", "probePassCount"},
+                        std::max<int64_t>(0, firstInt64Value(guardGpu, {"probe_pass_count", "probePassCount"}, 0))
+                ));
+                gpu["probe_fail_count"] = std::max<int64_t>(0, firstInt64Value(
+                        gpu,
+                        {"probe_fail_count", "probeFailCount"},
+                        std::max<int64_t>(0, firstInt64Value(guardGpu, {"probe_fail_count", "probeFailCount"}, 0))
+                ));
+                gpu["probe_error_count"] = std::max<int64_t>(0, firstInt64Value(
+                        gpu,
+                        {"probe_error_count", "probeErrorCount"},
+                        std::max<int64_t>(0, firstInt64Value(guardGpu, {"probe_error_count", "probeErrorCount"}, 0))
+                ));
+                gpu["sm_count"] = std::max<int64_t>(0, firstInt64Value(
+                        gpu,
+                        {"sm_count", "smCount"},
+                        std::max<int64_t>(0, firstInt64Value(guardGpu, {"sm_count", "smCount"}, 0))
+                ));
+                gpu["last_probe_ms"] = std::max<int64_t>(0, firstInt64Value(
+                        gpu,
+                        {"last_probe_ms", "lastProbeMs"},
+                        std::max<int64_t>(0, firstInt64Value(guardGpu, {"last_probe_ms", "lastProbeMs"}, 0))
+                ));
+                gpu["last_guard_risk"] = std::max(0.0, firstDoubleValue(
+                        gpu,
+                        {"last_guard_risk", "lastGuardRisk"},
+                        std::max(0.0, firstDoubleValue(guardGpu, {"last_risk", "lastRisk"}, 0.0))
+                ));
+                gpu["last_guard_confidence"] = std::max(0.0, firstDoubleValue(
+                        gpu,
+                        {"last_guard_confidence", "lastGuardConfidence"},
+                        std::max(0.0, firstDoubleValue(guardGpu, {"last_confidence", "lastConfidence"}, 0.0))
+                ));
+            }
+        }
+        sortGpuTiles(gpus);
+
+        nlohmann::json recentActions = recentActionsArray != nullptr ? *recentActionsArray : nlohmann::json::array();
+        sortActionsByTime(recentActions);
+
+        const auto* eccNode = firstObjectValue(server, {"ecc"});
+        const std::string derivedHost = firstStringValue(identityNode, {"host"});
+        const std::string rack = defaultTopologyLabel(firstStringValue(identityNode, {"rack"}), "unassigned");
+        const std::string zone = defaultTopologyLabel(firstStringValue(identityNode, {"zone"}), "unassigned");
+        const int gpuCount = gpus.is_array() ? static_cast<int>(gpus.size()) : 0;
+        const double autonomyRisk = firstDoubleValue(server, {"autonomy_risk", "autonomyRisk"}, -1.0);
+
+        return {
+                {"agent_id", agent.agentId},
+                {"cluster", agent.cluster},
+                {"status", effective.status},
+                {"stale", effective.stale},
+                {"status_reachable", agent.statusReachable},
+                {"version", agent.version},
+                {"host", !derivedHost.empty() ? derivedHost : agent.host},
+                {"source", agent.source},
+                {"announce_addr", agent.announceAddr},
+                {"status_addr", agent.statusAddr},
+                {"link_state", agent.linkState},
+                {"link_security", agent.linkSecurity},
+                {"query_failures", std::max(0, agent.queryFailures)},
+                {"score", agent.score},
+                {"last_error", agent.lastError},
+                {"last_seen_epoch_ms", agent.lastSeenEpochMs},
+                {"last_seen_seconds_ago", effective.ageSeconds},
+                {"last_announcement_epoch_ms", agent.lastAnnouncementEpochMs},
+                {"last_query_epoch_ms", agent.lastQueryEpochMs},
+                {"next_query_epoch_ms", agent.nextQueryEpochMs},
+                {"rack", rack},
+                {"zone", zone},
+                {"row", firstStringValue(identityNode, {"row"})},
+                {"site", firstStringValue(identityNode, {"site"})},
+                {"building", firstStringValue(identityNode, {"building"})},
+                {"room", firstStringValue(identityNode, {"room"})},
+                {"network", firstStringValue(identityNode, {"network"})},
+                {"physical", firstStringValue(identityNode, {"physical"})},
+                {"telemetry_ts_ms", continuum != nullptr ? std::max<int64_t>(0, firstInt64Value(*continuum, {"ts_ms", "tsMs"}, 0)) : 0},
+                {"tracey_guard_ts_ms", traceyGuardSummary != nullptr ? std::max<int64_t>(0, firstInt64Value(*traceyGuardSummary, {"ts_ms", "tsMs"}, 0)) : 0},
+                {"identity", identity != nullptr ? *identity : nlohmann::json::object()},
+                {"server", serverNode != nullptr ? *serverNode : nlohmann::json::object()},
+                {"gpus", gpus},
+                {"recent_actions", recentActions},
+                {"tracey_guard", traceyGuard != nullptr ? *traceyGuard : nlohmann::json::object()},
+                {"tracey_guard_summary", traceyGuardSummary != nullptr ? *traceyGuardSummary : nlohmann::json::object()},
+                {"recent_executions", traceyGuardRecentExecutions != nullptr ? *traceyGuardRecentExecutions : nlohmann::json::array()},
+                {"recent_faults", traceyGuardRecentFaults != nullptr ? *traceyGuardRecentFaults : nlohmann::json::array()},
+                {"remote_faults", traceyGuardRemoteFaults != nullptr ? *traceyGuardRemoteFaults : nlohmann::json::array()},
+                {"continuum_assessment", continuumAssessment != nullptr ? *continuumAssessment : nlohmann::json::object()},
+                {"continuum_assessment_summary", continuumAssessmentSummary != nullptr ? *continuumAssessmentSummary : nlohmann::json::object()},
+                {"loader_threats", loaderThreats},
+                {"summary", {
+                        {"cpu_usage_pct", firstDoubleValue(server, {"cpu_usage_pct", "cpuUsagePct"}, 0.0)},
+                        {"mem_used_pct", firstDoubleValue(server, {"mem_used_pct", "memUsedPct"}, 0.0)},
+                        {"mem_app_used_pct", firstDoubleValue(server, {"mem_app_used_pct", "memAppUsedPct"}, 0.0)},
+                        {"swap_used_pct", firstDoubleValue(server, {"swap_used_pct", "swapUsedPct"}, 0.0)},
+                        {"net_rx_bps", firstDoubleValue(server, {"net_rx_bps", "netRxBps"}, 0.0)},
+                        {"net_tx_bps", firstDoubleValue(server, {"net_tx_bps", "netTxBps"}, 0.0)},
+                        {"gpu_count", gpuCount},
+                        {"gpu_utilization_avg_pct", firstDoubleValue(server, {"gpu_utilization_avg_pct", "gpuUtilizationAvgPct"}, 0.0)},
+                        {"gpu_temperature_max_c", firstDoubleValue(server, {"gpu_temperature_max_c", "gpuTemperatureMaxC"}, 0.0)},
+                        {"gpu_power_total_w", firstDoubleValue(server, {"gpu_power_total_w", "gpuPowerTotalW"}, 0.0)},
+                        {"thermal_alerts", std::max<int64_t>(0, firstInt64Value(server, {"thermal_alerts", "thermalAlerts"}, 0))},
+                        {"fan_alerts", std::max<int64_t>(0, firstInt64Value(server, {"fan_alerts", "fanAlerts"}, 0))},
+                        {"recent_action_count", std::max<int64_t>(0, firstInt64Value(server, {"recent_action_count", "recentActionCount"}, static_cast<int64_t>(recentActions.size())))},
+                        {"autonomy_risk", autonomyRisk >= 0.0 ? autonomyRisk : 0.0},
+                        {"autonomy_action", firstStringValue(server, {"autonomy_action", "autonomyAction"})},
+                        {"ecc_corrected_total", eccNode != nullptr ? std::max<int64_t>(0, firstInt64Value(*eccNode, {"corrected_total", "correctedTotal"}, 0)) : 0},
+                        {"ecc_uncorrected_total", eccNode != nullptr ? std::max<int64_t>(0, firstInt64Value(*eccNode, {"uncorrected_total", "uncorrectedTotal"}, 0)) : 0},
+                        {"compromise_risk", continuumAssessmentSummary != nullptr ? std::max(0.0, firstDoubleValue(*continuumAssessmentSummary, {"compromise_risk", "compromiseRisk"}, 0.0)) : 0.0},
+                        {"compromise_confidence", continuumAssessmentSummary != nullptr ? std::max(0.0, firstDoubleValue(*continuumAssessmentSummary, {"compromise_confidence", "compromiseConfidence"}, 0.0)) : 0.0},
+                        {"cve_matches", continuumAssessmentSummary != nullptr ? std::max<int64_t>(0, firstInt64Value(*continuumAssessmentSummary, {"cve_matches", "cveMatches"}, 0)) : 0},
+                        {"kev_matches", continuumAssessmentSummary != nullptr ? std::max<int64_t>(0, firstInt64Value(*continuumAssessmentSummary, {"kev_matches", "kevMatches"}, 0)) : 0},
+                        {"assessment_status", continuumAssessmentSummary != nullptr ? firstStringValue(*continuumAssessmentSummary, {"status"}, "unknown") : "unknown"},
+                        {"assessment_action", continuumAssessmentSummary != nullptr ? firstStringValue(*continuumAssessmentSummary, {"recommended_action", "recommendedAction"}) : ""}
+                }}
+        };
+    }
+
     void APIRoutes::handleListTraceyAgents(const httplib::Request& req, httplib::Response& res) {
         (void)req;
         const int64_t nowMs = nowEpochMs();
@@ -4225,6 +5166,17 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
         int tracey_guardFailuresTotal = 0;
         int tracey_guardErrorsTotal = 0;
         int tracey_guardRemoteFaultsTotal = 0;
+        int loaderThreatProvidersTotal = 0;
+        int loaderThreatArtifactsTotal = 0;
+        int loaderThreatBlockedProvidersTotal = 0;
+        int loaderThreatBlockedArtifactsTotal = 0;
+        int loaderThreatRemoteReportersTotal = 0;
+        int assessmentAgentsWithMatches = 0;
+        int assessmentAgentsWithKev = 0;
+        int assessmentCompromisedAgents = 0;
+        int assessmentElevatedAgents = 0;
+        int assessmentCveMatchesTotal = 0;
+        int assessmentKevMatchesTotal = 0;
         nlohmann::json agents = nlohmann::json::array();
 
         for (const auto& agent : snapshot) {
@@ -4277,6 +5229,8 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
             }
 
             nlohmann::json tracey_guardSummary = nlohmann::json::object();
+            nlohmann::json loaderThreatSummary = nlohmann::json::object();
+            nlohmann::json continuumAssessmentSummary = nlohmann::json::object();
             if (agent.metrics.is_object()) {
                 auto statusIt = agent.metrics.find("status_snapshot");
                 if (statusIt != agent.metrics.end() && statusIt->is_object()) {
@@ -4293,6 +5247,40 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                             tracey_guardErrorsTotal += std::max(0, summaryIt->value("total_errors", 0) + summaryIt->value("total_timeouts", 0));
                             tracey_guardRemoteFaultsTotal += std::max(0, summaryIt->value("remote_fault_support", 0));
                         }
+                    }
+                    loaderThreatSummary = extractTraceyLoaderThreatSummary(*statusIt);
+                    if (loaderThreatSummary.is_object()) {
+                        loaderThreatProvidersTotal += std::max(0, loaderThreatSummary.value("local_provider_count", 0));
+                        loaderThreatArtifactsTotal += std::max(0, loaderThreatSummary.value("local_artifact_count", 0));
+                        loaderThreatBlockedProvidersTotal += std::max(0, loaderThreatSummary.value("blocked_provider_count", 0));
+                        loaderThreatBlockedArtifactsTotal += std::max(0, loaderThreatSummary.value("blocked_artifact_count", 0));
+                        loaderThreatRemoteReportersTotal += std::max(0, loaderThreatSummary.value("remote_reporters", 0));
+                    }
+                    auto assessmentIt = statusIt->find("continuum_assessment");
+                    if (assessmentIt == statusIt->end()) {
+                        assessmentIt = statusIt->find("continuumAssessment");
+                    }
+                    if (assessmentIt != statusIt->end() && assessmentIt->is_object()) {
+                        auto summaryIt = assessmentIt->find("summary");
+                        continuumAssessmentSummary = summaryIt != assessmentIt->end() && summaryIt->is_object()
+                                                     ? *summaryIt
+                                                     : *assessmentIt;
+                        const int cveMatches = std::max(0, continuumAssessmentSummary.value("cve_matches", continuumAssessmentSummary.value("cveMatches", 0)));
+                        const int kevMatches = std::max(0, continuumAssessmentSummary.value("kev_matches", continuumAssessmentSummary.value("kevMatches", 0)));
+                        const double compromiseRisk = std::max(0.0, continuumAssessmentSummary.value("compromise_risk", continuumAssessmentSummary.value("compromiseRisk", 0.0)));
+                        if (cveMatches > 0) {
+                            assessmentAgentsWithMatches++;
+                        }
+                        if (kevMatches > 0) {
+                            assessmentAgentsWithKev++;
+                        }
+                        if (compromiseRisk >= 0.80) {
+                            assessmentCompromisedAgents++;
+                        } else if (compromiseRisk >= 0.55) {
+                            assessmentElevatedAgents++;
+                        }
+                        assessmentCveMatchesTotal += cveMatches;
+                        assessmentKevMatchesTotal += kevMatches;
                     }
                 }
             }
@@ -4324,7 +5312,9 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                     {"is_coordinator", agent.coordinator},
                     {"coordinator_epoch", agent.coordinatorEpoch},
                     {"score", agent.score},
+                    {"continuum_assessment", continuumAssessmentSummary},
                     {"tracey_guard", tracey_guardSummary},
+                    {"loader_threats", loaderThreatSummary},
                     {"stale", isStale}
             });
         }
@@ -4433,6 +5423,21 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                         {"total_errors", tracey_guardErrorsTotal},
                         {"remote_fault_support", tracey_guardRemoteFaultsTotal}
                 }},
+                {"loader_threat_summary", {
+                        {"local_provider_count", loaderThreatProvidersTotal},
+                        {"local_artifact_count", loaderThreatArtifactsTotal},
+                        {"blocked_provider_count", loaderThreatBlockedProvidersTotal},
+                        {"blocked_artifact_count", loaderThreatBlockedArtifactsTotal},
+                        {"remote_reporters", loaderThreatRemoteReportersTotal}
+                }},
+                {"continuum_assessment_summary", {
+                        {"agents_with_matches", assessmentAgentsWithMatches},
+                        {"agents_with_kev", assessmentAgentsWithKev},
+                        {"elevated_agents", assessmentElevatedAgents},
+                        {"compromised_agents", assessmentCompromisedAgents},
+                        {"cve_matches", assessmentCveMatchesTotal},
+                        {"kev_matches", assessmentKevMatchesTotal}
+                }},
                 {"tracey_policy", {
                         {"enforce_managed_resources", traceyEnforceManagedResources},
                         {"requirement_grace_seconds", traceyRequirementGraceSeconds}
@@ -4495,6 +5500,12 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
             int64_t tracey_guardQuarantineSum{0};
             int64_t tracey_guardRemoteFaultSum{0};
             int tracey_guardSamples{0};
+            int64_t loaderThreatProviderSum{0};
+            int64_t loaderThreatArtifactSum{0};
+            int64_t loaderThreatBlockedProviderSum{0};
+            int64_t loaderThreatBlockedArtifactSum{0};
+            int64_t loaderThreatRemoteReporterSum{0};
+            int loaderThreatSamples{0};
         };
         std::vector<BucketAgg> buckets(bucketCount);
         for (size_t i = 0; i < bucketCount; ++i) {
@@ -4561,6 +5572,11 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
         int currentTraceyGuardFailures = 0;
         int currentTraceyGuardErrors = 0;
         int currentTraceyGuardRemoteFaults = 0;
+        int currentLoaderThreatProviders = 0;
+        int currentLoaderThreatArtifacts = 0;
+        int currentLoaderThreatBlockedProviders = 0;
+        int currentLoaderThreatBlockedArtifacts = 0;
+        int currentLoaderThreatRemoteReporters = 0;
         for (const auto& agent : snapshot) {
             const int64_t lastSignalMs = std::max(agent.lastSeenEpochMs, agent.lastAnnouncementEpochMs);
             const bool stale = agent.stale || (lastSignalMs > 0 && nowMs > lastSignalMs &&
@@ -4588,6 +5604,14 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                             currentTraceyGuardErrors += std::max(0, summaryIt->value("total_errors", 0) + summaryIt->value("total_timeouts", 0));
                             currentTraceyGuardRemoteFaults += std::max(0, summaryIt->value("remote_fault_support", 0));
                         }
+                    }
+                    const auto loaderThreatSummary = extractTraceyLoaderThreatSummary(*statusIt);
+                    if (loaderThreatSummary.is_object()) {
+                        currentLoaderThreatProviders += std::max(0, loaderThreatSummary.value("local_provider_count", 0));
+                        currentLoaderThreatArtifacts += std::max(0, loaderThreatSummary.value("local_artifact_count", 0));
+                        currentLoaderThreatBlockedProviders += std::max(0, loaderThreatSummary.value("blocked_provider_count", 0));
+                        currentLoaderThreatBlockedArtifacts += std::max(0, loaderThreatSummary.value("blocked_artifact_count", 0));
+                        currentLoaderThreatRemoteReporters += std::max(0, loaderThreatSummary.value("remote_reporters", 0));
                     }
                 }
             }
@@ -4645,6 +5669,12 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                 bucket.tracey_guardQuarantineSum += std::max(0, sample.tracey_guardQuarantined);
                 bucket.tracey_guardRemoteFaultSum += std::max(0, sample.tracey_guardRemoteFaults);
                 bucket.tracey_guardSamples++;
+                bucket.loaderThreatProviderSum += std::max(0, sample.loaderThreatLocalProviders);
+                bucket.loaderThreatArtifactSum += std::max(0, sample.loaderThreatLocalArtifacts);
+                bucket.loaderThreatBlockedProviderSum += std::max(0, sample.loaderThreatBlockedProviders);
+                bucket.loaderThreatBlockedArtifactSum += std::max(0, sample.loaderThreatBlockedArtifacts);
+                bucket.loaderThreatRemoteReporterSum += std::max(0, sample.loaderThreatRemoteReporters);
+                bucket.loaderThreatSamples++;
             }
             (void)agentId;
         }
@@ -4698,6 +5728,21 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
             const double avgTraceyGuardRemoteFaults = bucket.tracey_guardSamples > 0
                                                    ? static_cast<double>(bucket.tracey_guardRemoteFaultSum) / static_cast<double>(bucket.tracey_guardSamples)
                                                    : 0.0;
+            const double avgLoaderThreatProviders = bucket.loaderThreatSamples > 0
+                                                   ? static_cast<double>(bucket.loaderThreatProviderSum) / static_cast<double>(bucket.loaderThreatSamples)
+                                                   : 0.0;
+            const double avgLoaderThreatArtifacts = bucket.loaderThreatSamples > 0
+                                                   ? static_cast<double>(bucket.loaderThreatArtifactSum) / static_cast<double>(bucket.loaderThreatSamples)
+                                                   : 0.0;
+            const double avgLoaderThreatBlockedProviders = bucket.loaderThreatSamples > 0
+                                                           ? static_cast<double>(bucket.loaderThreatBlockedProviderSum) / static_cast<double>(bucket.loaderThreatSamples)
+                                                           : 0.0;
+            const double avgLoaderThreatBlockedArtifacts = bucket.loaderThreatSamples > 0
+                                                           ? static_cast<double>(bucket.loaderThreatBlockedArtifactSum) / static_cast<double>(bucket.loaderThreatSamples)
+                                                           : 0.0;
+            const double avgLoaderThreatRemoteReporters = bucket.loaderThreatSamples > 0
+                                                          ? static_cast<double>(bucket.loaderThreatRemoteReporterSum) / static_cast<double>(bucket.loaderThreatSamples)
+                                                          : 0.0;
             timeline.push_back({
                     {"bucket_start_epoch_ms", bucket.bucketStartMs},
                     {"sampled_agents", bucket.sampledAgents},
@@ -4716,7 +5761,12 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                     {"avg_tracey_guard_failures", avgTraceyGuardFailures},
                     {"avg_tracey_guard_errors", avgTraceyGuardErrors},
                     {"avg_tracey_guard_quarantined", avgTraceyGuardQuarantine},
-                    {"avg_tracey_guard_remote_faults", avgTraceyGuardRemoteFaults}
+                    {"avg_tracey_guard_remote_faults", avgTraceyGuardRemoteFaults},
+                    {"avg_loader_threat_providers", avgLoaderThreatProviders},
+                    {"avg_loader_threat_artifacts", avgLoaderThreatArtifacts},
+                    {"avg_loader_threat_blocked_providers", avgLoaderThreatBlockedProviders},
+                    {"avg_loader_threat_blocked_artifacts", avgLoaderThreatBlockedArtifacts},
+                    {"avg_loader_threat_remote_reporters", avgLoaderThreatRemoteReporters}
             });
         }
 
@@ -4756,6 +5806,11 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
             int64_t tracey_guardErrorSum = 0;
             int64_t tracey_guardQuarantineSum = 0;
             int64_t tracey_guardRemoteFaultSum = 0;
+            int64_t loaderThreatProviderSum = 0;
+            int64_t loaderThreatArtifactSum = 0;
+            int64_t loaderThreatBlockedProviderSum = 0;
+            int64_t loaderThreatBlockedArtifactSum = 0;
+            int64_t loaderThreatRemoteReporterSum = 0;
 
             if (historyIt != histories.end()) {
                 for (const auto& sample : historyIt->second) {
@@ -4779,6 +5834,11 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                     tracey_guardErrorSum += std::max(0, sample.tracey_guardProbeErrors);
                     tracey_guardQuarantineSum += std::max(0, sample.tracey_guardQuarantined);
                     tracey_guardRemoteFaultSum += std::max(0, sample.tracey_guardRemoteFaults);
+                    loaderThreatProviderSum += std::max(0, sample.loaderThreatLocalProviders);
+                    loaderThreatArtifactSum += std::max(0, sample.loaderThreatLocalArtifacts);
+                    loaderThreatBlockedProviderSum += std::max(0, sample.loaderThreatBlockedProviders);
+                    loaderThreatBlockedArtifactSum += std::max(0, sample.loaderThreatBlockedArtifacts);
+                    loaderThreatRemoteReporterSum += std::max(0, sample.loaderThreatRemoteReporters);
                 }
             }
 
@@ -4826,6 +5886,11 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                     {"avg_tracey_guard_errors", sampleCount > 0 ? static_cast<double>(tracey_guardErrorSum) / static_cast<double>(sampleCount) : 0.0},
                     {"avg_tracey_guard_quarantined", sampleCount > 0 ? static_cast<double>(tracey_guardQuarantineSum) / static_cast<double>(sampleCount) : 0.0},
                     {"avg_tracey_guard_remote_faults", sampleCount > 0 ? static_cast<double>(tracey_guardRemoteFaultSum) / static_cast<double>(sampleCount) : 0.0},
+                    {"avg_loader_threat_providers", sampleCount > 0 ? static_cast<double>(loaderThreatProviderSum) / static_cast<double>(sampleCount) : 0.0},
+                    {"avg_loader_threat_artifacts", sampleCount > 0 ? static_cast<double>(loaderThreatArtifactSum) / static_cast<double>(sampleCount) : 0.0},
+                    {"avg_loader_threat_blocked_providers", sampleCount > 0 ? static_cast<double>(loaderThreatBlockedProviderSum) / static_cast<double>(sampleCount) : 0.0},
+                    {"avg_loader_threat_blocked_artifacts", sampleCount > 0 ? static_cast<double>(loaderThreatBlockedArtifactSum) / static_cast<double>(sampleCount) : 0.0},
+                    {"avg_loader_threat_remote_reporters", sampleCount > 0 ? static_cast<double>(loaderThreatRemoteReporterSum) / static_cast<double>(sampleCount) : 0.0},
                     {"log_info", infoLogs},
                     {"log_warn", warnLogs},
                     {"log_error", errorLogs},
@@ -4863,6 +5928,11 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                         {"current_tracey_guard_failures", currentTraceyGuardFailures},
                         {"current_tracey_guard_errors", currentTraceyGuardErrors},
                         {"current_tracey_guard_remote_faults", currentTraceyGuardRemoteFaults},
+                        {"current_loader_threat_providers", currentLoaderThreatProviders},
+                        {"current_loader_threat_artifacts", currentLoaderThreatArtifacts},
+                        {"current_loader_threat_blocked_providers", currentLoaderThreatBlockedProviders},
+                        {"current_loader_threat_blocked_artifacts", currentLoaderThreatBlockedArtifacts},
+                        {"current_loader_threat_remote_reporters", currentLoaderThreatRemoteReporters},
                         {"log_info", levelCounts["info"]},
                         {"log_warn", levelCounts["warn"]},
                         {"log_error", levelCounts["error"]}
@@ -4871,6 +5941,602 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                 {"top_log_categories", topCategories},
                 {"agents", agents},
                 {"recent_logs", recentLogs}
+        };
+        sendJsonResponse(res, apiResponse);
+    }
+
+    void APIRoutes::handleTraceyFleet(const httplib::Request& req, httplib::Response& res) {
+        (void)req;
+        const int64_t nowMs = nowEpochMs();
+        markTraceyStaleAgents(nowMs);
+
+        std::vector<TraceyAgent> snapshot;
+        {
+            std::lock_guard<std::mutex> lock(dataMutex);
+            snapshot.reserve(traceyAgents.size());
+            for (const auto& [id, agent] : traceyAgents) {
+                (void)id;
+                snapshot.push_back(agent);
+            }
+        }
+
+        std::sort(snapshot.begin(), snapshot.end(), [](const TraceyAgent& left, const TraceyAgent& right) {
+            return left.agentId < right.agentId;
+        });
+
+        std::vector<nlohmann::json> agentViews;
+        agentViews.reserve(snapshot.size());
+        for (const auto& agent : snapshot) {
+            agentViews.push_back(buildTraceyContinuumAgentView(agent, nowMs));
+        }
+
+        Models::CloudResponse apiResponse;
+        apiResponse.success = true;
+        apiResponse.message = "Tracey fleet view generated successfully.";
+        apiResponse.data = buildTraceyFleetViewFromAgents(agentViews, nowMs);
+        sendJsonResponse(res, apiResponse);
+    }
+
+    void APIRoutes::handleTraceyCveStatus(const httplib::Request& req, httplib::Response& res) {
+        (void)req;
+
+        Models::CloudResponse apiResponse;
+        apiResponse.success = true;
+        apiResponse.message = "Tracey CVE mirror status generated successfully.";
+        apiResponse.data = traceyCveIntel.mirrorStatus();
+        sendJsonResponse(res, apiResponse);
+    }
+
+    void APIRoutes::handleTraceyAssessmentFleet(const httplib::Request& req, httplib::Response& res) {
+        (void)req;
+        const int64_t nowMs = nowEpochMs();
+        markTraceyStaleAgents(nowMs);
+
+        std::vector<TraceyAgent> snapshot;
+        {
+            std::lock_guard<std::mutex> lock(dataMutex);
+            snapshot.reserve(traceyAgents.size());
+            for (const auto& [id, agent] : traceyAgents) {
+                (void)id;
+                snapshot.push_back(agent);
+            }
+        }
+
+        std::sort(snapshot.begin(), snapshot.end(), [](const TraceyAgent& left, const TraceyAgent& right) {
+            return left.agentId < right.agentId;
+        });
+
+        std::vector<nlohmann::json> agentViews;
+        agentViews.reserve(snapshot.size());
+        for (const auto& agent : snapshot) {
+            agentViews.push_back(buildTraceyContinuumAgentView(agent, nowMs));
+        }
+
+        const nlohmann::json fleet = buildTraceyFleetViewFromAgents(agentViews, nowMs);
+        nlohmann::json agentRows = nlohmann::json::array();
+        int64_t expectedSlices = 0;
+        int64_t completedSlices = 0;
+        int agentsWithProgress = 0;
+        int agentsCompletedCycle = 0;
+        int64_t rejectedReports = 0;
+        int64_t duplicateReports = 0;
+        int64_t stalePlanReports = 0;
+        int64_t semanticFaults = 0;
+
+        for (const auto& view : agentViews) {
+            const std::string agentId = firstStringValue(view, {"agent_id"});
+            const nlohmann::json summary = view.value("continuum_assessment_summary", nlohmann::json::object());
+            const nlohmann::json progress = traceyCveIntel.agentProgress(agentId);
+            const int64_t sliceCount = std::max<int64_t>(0, firstInt64Value(progress, {"slice_count"}, 0));
+            const int64_t completed = std::max<int64_t>(0, firstInt64Value(progress, {"completed_slice_count"}, 0));
+            if (sliceCount > 0) {
+                expectedSlices += sliceCount;
+                completedSlices += std::min(sliceCount, completed);
+                agentsWithProgress++;
+                if (completed >= sliceCount) {
+                    agentsCompletedCycle++;
+                }
+            }
+            rejectedReports += std::max<int64_t>(0, firstInt64Value(progress, {"reports_rejected"}, 0));
+            duplicateReports += std::max<int64_t>(0, firstInt64Value(progress, {"duplicate_reports"}, 0));
+            stalePlanReports += std::max<int64_t>(0, firstInt64Value(progress, {"stale_plan_reports"}, 0));
+            semanticFaults += std::max<int64_t>(0, firstInt64Value(progress, {"semantic_faults"}, 0));
+
+            agentRows.push_back({
+                    {"agent_id", agentId},
+                    {"status", firstStringValue(view, {"status"})},
+                    {"host", firstStringValue(view, {"host"})},
+                    {"rack", firstStringValue(view, {"rack"})},
+                    {"zone", firstStringValue(view, {"zone"})},
+                    {"compromise_risk", std::max(0.0, firstDoubleValue(summary, {"compromise_risk", "compromiseRisk"}, 0.0))},
+                    {"compromise_confidence", std::max(0.0, firstDoubleValue(summary, {"compromise_confidence", "compromiseConfidence"}, 0.0))},
+                    {"cve_matches", std::max<int64_t>(0, firstInt64Value(summary, {"cve_matches", "cveMatches"}, 0))},
+                    {"kev_matches", std::max<int64_t>(0, firstInt64Value(summary, {"kev_matches", "kevMatches"}, 0))},
+                    {"recommended_action", firstStringValue(summary, {"recommended_action", "recommendedAction"})},
+                    {"assessment_status", firstStringValue(summary, {"status"}, "unknown")},
+                    {"progress", progress}
+            });
+        }
+
+        std::sort(agentRows.begin(), agentRows.end(), [](const nlohmann::json& left, const nlohmann::json& right) {
+            const double leftRisk = left.value("compromise_risk", 0.0);
+            const double rightRisk = right.value("compromise_risk", 0.0);
+            if (leftRisk == rightRisk) {
+                return left.value("agent_id", "") < right.value("agent_id", "");
+            }
+            return leftRisk > rightRisk;
+        });
+
+        Models::CloudResponse apiResponse;
+        apiResponse.success = true;
+        apiResponse.message = "Tracey fleet compromise assessment generated successfully.";
+        apiResponse.data = {
+                {"generated_epoch_ms", nowMs},
+                {"mirror", traceyCveIntel.mirrorStatus()},
+                {"fleet", fleet.value("summary", nlohmann::json::object())},
+                {"progress", {
+                        {"expected_slices", expectedSlices},
+                        {"completed_slices", completedSlices},
+                        {"completion_pct", expectedSlices > 0 ? static_cast<double>(completedSlices) / static_cast<double>(expectedSlices) : 0.0},
+                        {"agents_with_progress", agentsWithProgress},
+                        {"agents_completed_cycle", agentsCompletedCycle}
+                }},
+                {"communication", {
+                        {"reports_rejected", rejectedReports},
+                        {"duplicate_reports", duplicateReports},
+                        {"stale_plan_reports", stalePlanReports},
+                        {"semantic_faults", semanticFaults}
+                }},
+                {"agents", agentRows}
+        };
+        sendJsonResponse(res, apiResponse);
+    }
+
+    void APIRoutes::handleTraceyAssessmentPlan(const httplib::Request& req, httplib::Response& res) {
+        const std::string agentId = req.matches.size() > 1 ? trim(req.matches[1].str()) : "";
+        if (agentId.empty()) {
+            return sendErrorResponse(res, 400, "Missing required parameter: agent_id.");
+        }
+
+        const int64_t nowMs = nowEpochMs();
+        markTraceyStaleAgents(nowMs);
+        std::vector<std::string> orderedAgentIds;
+        {
+            std::lock_guard<std::mutex> lock(dataMutex);
+            orderedAgentIds.reserve(traceyAgents.size() + 1);
+            for (const auto& [id, agent] : traceyAgents) {
+                (void)agent;
+                orderedAgentIds.push_back(id);
+            }
+        }
+
+        Models::CloudResponse apiResponse;
+        apiResponse.success = true;
+        apiResponse.message = "Tracey assessment plan generated successfully.";
+        apiResponse.data = traceyCveIntel.buildAgentPlan(agentId, orderedAgentIds, nowMs);
+        sendJsonResponse(res, apiResponse);
+    }
+
+    void APIRoutes::handleTraceyAssessmentReport(const httplib::Request& req, httplib::Response& res) {
+        const std::string agentId = req.matches.size() > 1 ? trim(req.matches[1].str()) : "";
+        if (agentId.empty()) {
+            return sendErrorResponse(res, 400, "Missing required parameter: agent_id.");
+        }
+
+        nlohmann::json payload = nlohmann::json::object();
+        if (!req.body.empty()) {
+            payload = nlohmann::json::parse(req.body, nullptr, false);
+            if (payload.is_discarded() || !payload.is_object()) {
+                return sendErrorResponse(res, 400, "Invalid assessment report payload.");
+            }
+        }
+
+        const int64_t nowMs = nowEpochMs();
+        markTraceyStaleAgents(nowMs);
+        std::vector<std::string> orderedAgentIds;
+        {
+            std::lock_guard<std::mutex> lock(dataMutex);
+            orderedAgentIds.reserve(traceyAgents.size() + 1);
+            for (const auto& [id, agent] : traceyAgents) {
+                (void)agent;
+                orderedAgentIds.push_back(id);
+            }
+        }
+
+        Models::CloudResponse apiResponse;
+        apiResponse.success = true;
+        apiResponse.message = "Tracey assessment report processed successfully.";
+        apiResponse.data = traceyCveIntel.ingestAssessmentReport(agentId, payload, orderedAgentIds, nowMs);
+        sendJsonResponse(res, apiResponse);
+    }
+
+    void APIRoutes::handleTraceyAgentCompromise(const httplib::Request& req, httplib::Response& res) {
+        const std::string agentId = req.matches.size() > 1 ? trim(req.matches[1].str()) : "";
+        if (agentId.empty()) {
+            return sendErrorResponse(res, 400, "Missing required parameter: agent_id.");
+        }
+
+        TraceyAgent agent;
+        bool found = false;
+        std::vector<std::string> orderedAgentIds;
+        const int64_t nowMs = nowEpochMs();
+        {
+            std::lock_guard<std::mutex> lock(dataMutex);
+            orderedAgentIds.reserve(traceyAgents.size() + 1);
+            for (const auto& [id, current] : traceyAgents) {
+                orderedAgentIds.push_back(id);
+                if (id == agentId) {
+                    agent = current;
+                    found = true;
+                }
+            }
+        }
+
+        if (!found) {
+            return sendErrorResponse(res, 404, "Tracey agent '" + agentId + "' not found.");
+        }
+
+        const nlohmann::json view = buildTraceyContinuumAgentView(agent, nowMs);
+        Models::CloudResponse apiResponse;
+        apiResponse.success = true;
+        apiResponse.message = "Tracey agent compromise view generated successfully.";
+        apiResponse.data = {
+                {"generated_epoch_ms", nowMs},
+                {"agent_id", agentId},
+                {"plan", traceyCveIntel.buildAgentPlan(agentId, orderedAgentIds, nowMs)},
+                {"progress", traceyCveIntel.agentProgress(agentId)},
+                {"mirror", traceyCveIntel.mirrorStatus()},
+                {"current", {
+                        {"agent_id", firstStringValue(view, {"agent_id"})},
+                        {"status", firstStringValue(view, {"status"})},
+                        {"host", firstStringValue(view, {"host"})},
+                        {"rack", firstStringValue(view, {"rack"})},
+                        {"zone", firstStringValue(view, {"zone"})},
+                        {"last_seen_seconds_ago", std::max<int64_t>(0, firstInt64Value(view, {"last_seen_seconds_ago"}, 0))}
+                }},
+                {"continuum_assessment", view.value("continuum_assessment", nlohmann::json::object())},
+                {"continuum_assessment_summary", view.value("continuum_assessment_summary", nlohmann::json::object())},
+                {"tracey_guard_summary", view.value("tracey_guard_summary", nlohmann::json::object())},
+                {"loader_threats", view.value("loader_threats", nlohmann::json::object())}
+        };
+        sendJsonResponse(res, apiResponse);
+    }
+
+    void APIRoutes::handleListTraceyRacks(const httplib::Request& req, httplib::Response& res) {
+        (void)req;
+        const int64_t nowMs = nowEpochMs();
+        markTraceyStaleAgents(nowMs);
+
+        std::vector<TraceyAgent> snapshot;
+        {
+            std::lock_guard<std::mutex> lock(dataMutex);
+            snapshot.reserve(traceyAgents.size());
+            for (const auto& [id, agent] : traceyAgents) {
+                (void)id;
+                snapshot.push_back(agent);
+            }
+        }
+
+        std::sort(snapshot.begin(), snapshot.end(), [](const TraceyAgent& left, const TraceyAgent& right) {
+            return left.agentId < right.agentId;
+        });
+
+        std::vector<nlohmann::json> agentViews;
+        agentViews.reserve(snapshot.size());
+        for (const auto& agent : snapshot) {
+            agentViews.push_back(buildTraceyContinuumAgentView(agent, nowMs));
+        }
+
+        const nlohmann::json fleet = buildTraceyFleetViewFromAgents(agentViews, nowMs);
+        Models::CloudResponse apiResponse;
+        apiResponse.success = true;
+        apiResponse.message = "Tracey rack summaries generated successfully.";
+        apiResponse.data = {
+                {"generated_epoch_ms", nowMs},
+                {"summary", fleet.value("summary", nlohmann::json::object())},
+                {"zone_breakdown", fleet.value("zone_breakdown", nlohmann::json::array())},
+                {"racks", fleet.value("racks", nlohmann::json::array())}
+        };
+        sendJsonResponse(res, apiResponse);
+    }
+
+    void APIRoutes::handleTraceyRackDetails(const httplib::Request& req, httplib::Response& res) {
+        const std::string rackId = req.matches.size() > 1 ? trim(req.matches[1].str()) : "";
+        if (rackId.empty()) {
+            return sendErrorResponse(res, 400, "Missing required parameter: rack.");
+        }
+
+        const int64_t nowMs = nowEpochMs();
+        markTraceyStaleAgents(nowMs);
+
+        std::vector<TraceyAgent> snapshot;
+        {
+            std::lock_guard<std::mutex> lock(dataMutex);
+            snapshot.reserve(traceyAgents.size());
+            for (const auto& [id, agent] : traceyAgents) {
+                (void)id;
+                snapshot.push_back(agent);
+            }
+        }
+
+        std::vector<nlohmann::json> filtered;
+        filtered.reserve(snapshot.size());
+        const std::string wantedRack = toLower(rackId);
+        for (const auto& agent : snapshot) {
+            const nlohmann::json view = buildTraceyContinuumAgentView(agent, nowMs);
+            if (toLower(firstStringValue(view, {"rack"})) == wantedRack) {
+                filtered.push_back(view);
+            }
+        }
+
+        if (filtered.empty()) {
+            return sendErrorResponse(res, 404, "Tracey rack '" + rackId + "' not found.");
+        }
+
+        const nlohmann::json fleet = buildTraceyFleetViewFromAgents(filtered, nowMs);
+        const nlohmann::json rackSummary = fleet.contains("racks") && fleet["racks"].is_array() && !fleet["racks"].empty()
+                                           ? fleet["racks"].front()
+                                           : nlohmann::json::object();
+        const nlohmann::json rackHeatmap = fleet.contains("gpu_heatmap") && fleet["gpu_heatmap"].is_array() && !fleet["gpu_heatmap"].empty()
+                                           ? fleet["gpu_heatmap"].front()
+                                           : nlohmann::json::object();
+
+        std::sort(filtered.begin(), filtered.end(), [](const nlohmann::json& left, const nlohmann::json& right) {
+            const std::string leftHost = firstStringValue(left, {"host"});
+            const std::string rightHost = firstStringValue(right, {"host"});
+            if (leftHost == rightHost) {
+                return firstStringValue(left, {"agent_id"}) < firstStringValue(right, {"agent_id"});
+            }
+            return leftHost < rightHost;
+        });
+
+        nlohmann::json servers = nlohmann::json::array();
+        for (const auto& view : filtered) {
+            servers.push_back({
+                    {"agent_id", firstStringValue(view, {"agent_id"})},
+                    {"cluster", firstStringValue(view, {"cluster"})},
+                    {"status", firstStringValue(view, {"status"})},
+                    {"host", firstStringValue(view, {"host"})},
+                    {"version", firstStringValue(view, {"version"})},
+                    {"last_seen_seconds_ago", std::max<int64_t>(0, firstInt64Value(view, {"last_seen_seconds_ago"}, 0))},
+                    {"query_failures", std::max<int64_t>(0, firstInt64Value(view, {"query_failures"}, 0))},
+                    {"summary", view.value("summary", nlohmann::json::object())},
+                    {"gpus", view.value("gpus", nlohmann::json::array())},
+                    {"recent_actions", limitedJsonArray(view.value("recent_actions", nlohmann::json::array()), 12)},
+                    {"continuum_assessment", view.value("continuum_assessment", nlohmann::json::object())},
+                    {"continuum_assessment_summary", view.value("continuum_assessment_summary", nlohmann::json::object())},
+                    {"tracey_guard_summary", view.value("tracey_guard_summary", nlohmann::json::object())},
+                    {"loader_threats", view.value("loader_threats", nlohmann::json::object())}
+            });
+        }
+
+        Models::CloudResponse apiResponse;
+        apiResponse.success = true;
+        apiResponse.message = "Tracey rack detail generated successfully.";
+        apiResponse.data = {
+                {"generated_epoch_ms", nowMs},
+                {"rack", firstStringValue(rackSummary, {"rack"})},
+                {"zone", firstStringValue(rackSummary, {"zone"})},
+                {"summary", rackSummary},
+                {"servers", servers},
+                {"gpu_heatmap", rackHeatmap.value("cells", nlohmann::json::array())},
+                {"recent_actions", fleet.value("recent_actions", nlohmann::json::array())}
+        };
+        sendJsonResponse(res, apiResponse);
+    }
+
+    void APIRoutes::handleTraceyAgentServer(const httplib::Request& req, httplib::Response& res) {
+        const std::string agentId = req.matches.size() > 1 ? trim(req.matches[1].str()) : "";
+        if (agentId.empty()) {
+            return sendErrorResponse(res, 400, "Missing required parameter: agent_id.");
+        }
+
+        TraceyAgent agent;
+        bool found = false;
+        {
+            std::lock_guard<std::mutex> lock(dataMutex);
+            const auto it = traceyAgents.find(agentId);
+            if (it != traceyAgents.end()) {
+                agent = it->second;
+                found = true;
+            }
+        }
+
+        if (!found) {
+            return sendErrorResponse(res, 404, "Tracey agent '" + agentId + "' not found.");
+        }
+
+        const int64_t nowMs = nowEpochMs();
+        const nlohmann::json view = buildTraceyContinuumAgentView(agent, nowMs);
+
+        Models::CloudResponse apiResponse;
+        apiResponse.success = true;
+        apiResponse.message = "Tracey server telemetry generated successfully.";
+        apiResponse.data = {
+                {"generated_epoch_ms", nowMs},
+                {"agent_id", firstStringValue(view, {"agent_id"})},
+                {"status", firstStringValue(view, {"status"})},
+                {"host", firstStringValue(view, {"host"})},
+                {"rack", firstStringValue(view, {"rack"})},
+                {"zone", firstStringValue(view, {"zone"})},
+                {"identity", view.value("identity", nlohmann::json::object())},
+                {"summary", view.value("summary", nlohmann::json::object())},
+                {"server", view.value("server", nlohmann::json::object())},
+                {"gpus", view.value("gpus", nlohmann::json::array())},
+                {"recent_actions", view.value("recent_actions", nlohmann::json::array())},
+                {"recent_executions", limitedJsonArray(view.value("recent_executions", nlohmann::json::array()), 32)},
+                {"recent_faults", view.value("recent_faults", nlohmann::json::array())},
+                {"remote_faults", view.value("remote_faults", nlohmann::json::array())},
+                {"continuum_assessment", view.value("continuum_assessment", nlohmann::json::object())},
+                {"continuum_assessment_summary", view.value("continuum_assessment_summary", nlohmann::json::object())},
+                {"tracey_guard_summary", view.value("tracey_guard_summary", nlohmann::json::object())},
+                {"loader_threats", view.value("loader_threats", nlohmann::json::object())}
+        };
+        sendJsonResponse(res, apiResponse);
+    }
+
+    void APIRoutes::handleTraceyAgentGpu(const httplib::Request& req, httplib::Response& res) {
+        const std::string agentId = req.matches.size() > 1 ? trim(req.matches[1].str()) : "";
+        const std::string gpuId = req.matches.size() > 2 ? trim(req.matches[2].str()) : "";
+        if (agentId.empty() || gpuId.empty()) {
+            return sendErrorResponse(res, 400, "Missing required parameter: agent_id or gpu_id.");
+        }
+
+        TraceyAgent agent;
+        bool found = false;
+        {
+            std::lock_guard<std::mutex> lock(dataMutex);
+            const auto it = traceyAgents.find(agentId);
+            if (it != traceyAgents.end()) {
+                agent = it->second;
+                found = true;
+            }
+        }
+
+        if (!found) {
+            return sendErrorResponse(res, 404, "Tracey agent '" + agentId + "' not found.");
+        }
+
+        const int64_t nowMs = nowEpochMs();
+        const nlohmann::json view = buildTraceyContinuumAgentView(agent, nowMs);
+        const nlohmann::json gpus = view.value("gpus", nlohmann::json::array());
+        nlohmann::json gpuDetail = nlohmann::json::object();
+        for (const auto& gpu : gpus) {
+            const std::string candidate = firstStringValue(gpu, {"gpu_id", "gpuId"});
+            if (candidate == gpuId || toLower(candidate) == toLower(gpuId)) {
+                gpuDetail = gpu;
+                break;
+            }
+        }
+
+        if (!gpuDetail.is_object() || gpuDetail.empty()) {
+            return sendErrorResponse(res, 404, "GPU '" + gpuId + "' not found for Tracey agent '" + agentId + "'.");
+        }
+
+        struct SmAgg {
+            int executions{0};
+            int failCount{0};
+            int errorCount{0};
+            int timeoutCount{0};
+            double riskMax{0.0};
+            double confidenceSum{0.0};
+            int confidenceCount{0};
+            int64_t lastTsMs{0};
+        };
+
+        std::map<int64_t, SmAgg> smAggs;
+        std::map<std::string, int> probeMixCounts;
+        nlohmann::json recentExecutions = nlohmann::json::array();
+        for (const auto& execution : view.value("recent_executions", nlohmann::json::array())) {
+            if (!execution.is_object()) {
+                continue;
+            }
+            const std::string executionGpuId = firstStringValue(execution, {"gpu_id", "gpuId"});
+            if (executionGpuId != gpuId && toLower(executionGpuId) != toLower(gpuId)) {
+                continue;
+            }
+            recentExecutions.push_back(execution);
+            const int64_t smId = firstInt64Value(execution, {"sm_id", "smId"}, -1);
+            if (smId >= 0) {
+                auto& agg = smAggs[smId];
+                agg.executions++;
+                const std::string probeState = toLower(firstStringValue(execution, {"probe_state", "probeState"}));
+                if (probeState == "fail") {
+                    agg.failCount++;
+                } else if (probeState == "error") {
+                    agg.errorCount++;
+                } else if (probeState == "timeout") {
+                    agg.timeoutCount++;
+                }
+                agg.riskMax = std::max(agg.riskMax, std::max(0.0, firstDoubleValue(execution, {"risk"}, 0.0)));
+                agg.confidenceSum += std::max(0.0, firstDoubleValue(execution, {"confidence"}, 0.0));
+                agg.confidenceCount++;
+                agg.lastTsMs = std::max<int64_t>(agg.lastTsMs, firstInt64Value(execution, {"ts_ms", "tsMs"}, 0));
+            }
+            const std::string probeType = firstStringValue(execution, {"probe_type", "probeType"});
+            if (!probeType.empty()) {
+                probeMixCounts[probeType] += 1;
+            }
+        }
+        sortActionsByTime(recentExecutions);
+        recentExecutions = limitedJsonArray(recentExecutions, 48);
+
+        int64_t smCount = std::max<int64_t>(0, firstInt64Value(gpuDetail, {"sm_count", "smCount"}, 0));
+        if (smCount <= 0 && !smAggs.empty()) {
+            smCount = smAggs.rbegin()->first + 1;
+        }
+        nlohmann::json smHeatmap = nlohmann::json::array();
+        for (int64_t smId = 0; smId < smCount; ++smId) {
+            const auto it = smAggs.find(smId);
+            const SmAgg agg = it != smAggs.end() ? it->second : SmAgg{};
+            smHeatmap.push_back({
+                    {"sm_id", smId},
+                    {"executions", agg.executions},
+                    {"fail_count", agg.failCount},
+                    {"error_count", agg.errorCount},
+                    {"timeout_count", agg.timeoutCount},
+                    {"risk_max", agg.riskMax},
+                    {"confidence_avg", agg.confidenceCount > 0 ? agg.confidenceSum / static_cast<double>(agg.confidenceCount) : 0.0},
+                    {"last_ts_ms", agg.lastTsMs}
+            });
+        }
+
+        nlohmann::json probeMix = nlohmann::json::array();
+        std::vector<std::pair<std::string, int>> probeMixVector(probeMixCounts.begin(), probeMixCounts.end());
+        std::sort(probeMixVector.begin(), probeMixVector.end(), [](const auto& left, const auto& right) {
+            if (left.second == right.second) {
+                return left.first < right.first;
+            }
+            return left.second > right.second;
+        });
+        for (const auto& [probeType, count] : probeMixVector) {
+            probeMix.push_back({{"probe_type", probeType}, {"count", count}});
+        }
+
+        nlohmann::json recentFaults = nlohmann::json::array();
+        for (const auto& fault : view.value("recent_faults", nlohmann::json::array())) {
+            const std::string faultGpuId = firstStringValue(fault, {"gpu_id", "gpuId"});
+            if (faultGpuId == gpuId || toLower(faultGpuId) == toLower(gpuId)) {
+                recentFaults.push_back(fault);
+            }
+        }
+
+        nlohmann::json remoteFaults = nlohmann::json::array();
+        for (const auto& fault : view.value("remote_faults", nlohmann::json::array())) {
+            const std::string faultGpuId = firstStringValue(fault, {"gpu_id", "gpuId"});
+            if (faultGpuId == gpuId || toLower(faultGpuId) == toLower(gpuId)) {
+                remoteFaults.push_back(fault);
+            }
+        }
+
+        nlohmann::json recentActions = nlohmann::json::array();
+        for (const auto& action : view.value("recent_actions", nlohmann::json::array())) {
+            const std::string actionGpuId = firstStringValue(action, {"gpu_id", "gpuId"});
+            if (actionGpuId == gpuId || toLower(actionGpuId) == toLower(gpuId)) {
+                recentActions.push_back(action);
+            }
+        }
+        sortActionsByTime(recentActions);
+
+        Models::CloudResponse apiResponse;
+        apiResponse.success = true;
+        apiResponse.message = "Tracey GPU telemetry generated successfully.";
+        apiResponse.data = {
+                {"generated_epoch_ms", nowMs},
+                {"agent_id", firstStringValue(view, {"agent_id"})},
+                {"gpu_id", firstStringValue(gpuDetail, {"gpu_id", "gpuId"})},
+                {"host", firstStringValue(view, {"host"})},
+                {"rack", firstStringValue(view, {"rack"})},
+                {"zone", firstStringValue(view, {"zone"})},
+                {"identity", view.value("identity", nlohmann::json::object())},
+                {"server_summary", view.value("summary", nlohmann::json::object())},
+                {"summary", gpuDetail},
+                {"sm_heatmap", smHeatmap},
+                {"probe_mix", probeMix},
+                {"recent_executions", recentExecutions},
+                {"recent_faults", recentFaults},
+                {"remote_faults", remoteFaults},
+                {"recent_actions", recentActions}
         };
         sendJsonResponse(res, apiResponse);
     }
@@ -4964,6 +6630,11 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
             int64_t tracey_guardErrorSum{0};
             int64_t tracey_guardQuarantineSum{0};
             int64_t tracey_guardRemoteFaultSum{0};
+            int64_t loaderThreatProviderSum{0};
+            int64_t loaderThreatArtifactSum{0};
+            int64_t loaderThreatBlockedProviderSum{0};
+            int64_t loaderThreatBlockedArtifactSum{0};
+            int64_t loaderThreatRemoteReporterSum{0};
         };
         std::vector<AgentBucketAgg> buckets(bucketCount);
         for (size_t i = 0; i < bucketCount; ++i) {
@@ -5014,6 +6685,11 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
             bucket.tracey_guardErrorSum += std::max(0, sample.tracey_guardProbeErrors);
             bucket.tracey_guardQuarantineSum += std::max(0, sample.tracey_guardQuarantined);
             bucket.tracey_guardRemoteFaultSum += std::max(0, sample.tracey_guardRemoteFaults);
+            bucket.loaderThreatProviderSum += std::max(0, sample.loaderThreatLocalProviders);
+            bucket.loaderThreatArtifactSum += std::max(0, sample.loaderThreatLocalArtifacts);
+            bucket.loaderThreatBlockedProviderSum += std::max(0, sample.loaderThreatBlockedProviders);
+            bucket.loaderThreatBlockedArtifactSum += std::max(0, sample.loaderThreatBlockedArtifacts);
+            bucket.loaderThreatRemoteReporterSum += std::max(0, sample.loaderThreatRemoteReporters);
         }
 
         nlohmann::json transitions = nlohmann::json::array();
@@ -5055,6 +6731,21 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
             const double avgTraceyGuardRemoteFaults = bucket.sampleCount > 0
                                                    ? static_cast<double>(bucket.tracey_guardRemoteFaultSum) / static_cast<double>(bucket.sampleCount)
                                                    : 0.0;
+            const double avgLoaderThreatProviders = bucket.sampleCount > 0
+                                                   ? static_cast<double>(bucket.loaderThreatProviderSum) / static_cast<double>(bucket.sampleCount)
+                                                   : 0.0;
+            const double avgLoaderThreatArtifacts = bucket.sampleCount > 0
+                                                   ? static_cast<double>(bucket.loaderThreatArtifactSum) / static_cast<double>(bucket.sampleCount)
+                                                   : 0.0;
+            const double avgLoaderThreatBlockedProviders = bucket.sampleCount > 0
+                                                           ? static_cast<double>(bucket.loaderThreatBlockedProviderSum) / static_cast<double>(bucket.sampleCount)
+                                                           : 0.0;
+            const double avgLoaderThreatBlockedArtifacts = bucket.sampleCount > 0
+                                                           ? static_cast<double>(bucket.loaderThreatBlockedArtifactSum) / static_cast<double>(bucket.sampleCount)
+                                                           : 0.0;
+            const double avgLoaderThreatRemoteReporters = bucket.sampleCount > 0
+                                                          ? static_cast<double>(bucket.loaderThreatRemoteReporterSum) / static_cast<double>(bucket.sampleCount)
+                                                          : 0.0;
             series.push_back({
                     {"bucket_start_epoch_ms", bucket.bucketStartMs},
                     {"sample_count", bucket.sampleCount},
@@ -5070,7 +6761,12 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                     {"avg_tracey_guard_failures", avgTraceyGuardFailures},
                     {"avg_tracey_guard_errors", avgTraceyGuardErrors},
                     {"avg_tracey_guard_quarantined", avgTraceyGuardQuarantine},
-                    {"avg_tracey_guard_remote_faults", avgTraceyGuardRemoteFaults}
+                    {"avg_tracey_guard_remote_faults", avgTraceyGuardRemoteFaults},
+                    {"avg_loader_threat_providers", avgLoaderThreatProviders},
+                    {"avg_loader_threat_artifacts", avgLoaderThreatArtifacts},
+                    {"avg_loader_threat_blocked_providers", avgLoaderThreatBlockedProviders},
+                    {"avg_loader_threat_blocked_artifacts", avgLoaderThreatBlockedArtifacts},
+                    {"avg_loader_threat_remote_reporters", avgLoaderThreatRemoteReporters}
             });
         }
 
@@ -5094,6 +6790,7 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                                            (nowMs - lastSignalMs) > (traceyStaleAfterSeconds * 1000));
         const std::string currentStatus = stale ? "offline" : normalizeTraceyStatus(agent.status);
         nlohmann::json tracey_guardSummary = nlohmann::json::object();
+        nlohmann::json loaderThreatSummary = nlohmann::json::object();
         if (agent.metrics.is_object()) {
             auto statusIt = agent.metrics.find("status_snapshot");
             if (statusIt != agent.metrics.end() && statusIt->is_object()) {
@@ -5104,6 +6801,7 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                         tracey_guardSummary = *summaryIt;
                     }
                 }
+                loaderThreatSummary = extractTraceyLoaderThreatSummary(*statusIt);
             }
         }
 
@@ -5140,7 +6838,8 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                         {"next_query_epoch_ms", agent.nextQueryEpochMs},
                         {"metrics", agent.metrics.is_null() ? nlohmann::json::object() : agent.metrics},
                         {"capabilities", agent.capabilities.is_null() ? nlohmann::json::object() : agent.capabilities},
-                        {"tracey_guard", tracey_guardSummary}
+                        {"tracey_guard", tracey_guardSummary},
+                        {"loader_threats", loaderThreatSummary}
                 }},
                 {"series", series},
                 {"status_transitions", transitions},

@@ -116,7 +116,15 @@ int main(int argc, char* argv[]) {
     traceyCmd->addSubcommand(std::make_shared<NMC::Commands::TraceyHeartbeatCommand>(apiClient));
     traceyCmd->addSubcommand(std::make_shared<NMC::Commands::TraceyAgentsCommand>(apiClient));
     traceyCmd->addSubcommand(std::make_shared<NMC::Commands::TraceyAnalyticsCommand>(apiClient));
+    traceyCmd->addSubcommand(std::make_shared<NMC::Commands::TraceyFleetCommand>(apiClient));
+    traceyCmd->addSubcommand(std::make_shared<NMC::Commands::TraceyCveCommand>(apiClient));
+    traceyCmd->addSubcommand(std::make_shared<NMC::Commands::TraceyAssessmentCommand>(apiClient));
+    traceyCmd->addSubcommand(std::make_shared<NMC::Commands::TraceyRacksCommand>(apiClient));
+    traceyCmd->addSubcommand(std::make_shared<NMC::Commands::TraceyRackCommand>(apiClient));
     traceyCmd->addSubcommand(std::make_shared<NMC::Commands::TraceyAnalysisCommand>(apiClient));
+    traceyCmd->addSubcommand(std::make_shared<NMC::Commands::TraceyServerCommand>(apiClient));
+    traceyCmd->addSubcommand(std::make_shared<NMC::Commands::TraceyGpuCommand>(apiClient));
+    traceyCmd->addSubcommand(std::make_shared<NMC::Commands::TraceyCompromiseCommand>(apiClient));
     traceyCmd->addSubcommand(std::make_shared<NMC::Commands::TraceyControlCommand>(apiClient));
     traceyCmd->addSubcommand(std::make_shared<NMC::Commands::TraceyDeepDiveCommand>(apiClient));
     parser.registerCommand(traceyCmd);

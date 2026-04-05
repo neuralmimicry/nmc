@@ -736,6 +736,31 @@ namespace NMC::Core {
         return processHttpResponse(res, "Tracey analytics retrieved.");
     }
 
+    Models::CloudResponse CloudAPIClient::getTraceyFleet() {
+        auto res = cli->Get("/tracey/fleet");
+        return processHttpResponse(res, "Tracey fleet view retrieved.");
+    }
+
+    Models::CloudResponse CloudAPIClient::getTraceyCveStatus() {
+        auto res = cli->Get("/tracey/cve/status");
+        return processHttpResponse(res, "Tracey CVE mirror status retrieved.");
+    }
+
+    Models::CloudResponse CloudAPIClient::getTraceyAssessmentFleet() {
+        auto res = cli->Get("/tracey/assessment/fleet");
+        return processHttpResponse(res, "Tracey fleet compromise assessment retrieved.");
+    }
+
+    Models::CloudResponse CloudAPIClient::listTraceyRacks() {
+        auto res = cli->Get("/tracey/racks");
+        return processHttpResponse(res, "Tracey racks listed.");
+    }
+
+    Models::CloudResponse CloudAPIClient::getTraceyRackDetails(const std::string& rackId) {
+        auto res = cli->Get("/tracey/racks/" + rackId);
+        return processHttpResponse(res, "Tracey rack details retrieved.");
+    }
+
     Models::CloudResponse CloudAPIClient::getTraceyAgentAnalysis(const std::string& agentId,
                                                                  int windowSeconds,
                                                                  int bucketSeconds,
@@ -746,6 +771,21 @@ namespace NMC::Core {
         appendQueryInt(path, "log_limit", logLimit);
         auto res = cli->Get(path);
         return processHttpResponse(res, "Tracey agent analysis retrieved.");
+    }
+
+    Models::CloudResponse CloudAPIClient::getTraceyAgentServer(const std::string& agentId) {
+        auto res = cli->Get("/tracey/agents/" + agentId + "/server");
+        return processHttpResponse(res, "Tracey server telemetry retrieved.");
+    }
+
+    Models::CloudResponse CloudAPIClient::getTraceyAgentGpu(const std::string& agentId, const std::string& gpuId) {
+        auto res = cli->Get("/tracey/agents/" + agentId + "/gpus/" + gpuId + "/telemetry");
+        return processHttpResponse(res, "Tracey GPU telemetry retrieved.");
+    }
+
+    Models::CloudResponse CloudAPIClient::getTraceyAgentCompromise(const std::string& agentId) {
+        auto res = cli->Get("/tracey/agents/" + agentId + "/compromise");
+        return processHttpResponse(res, "Tracey compromise assessment retrieved.");
     }
 
     Models::CloudResponse CloudAPIClient::controlTraceyAgent(const std::string& agentId, const nlohmann::json& controlPayload) {

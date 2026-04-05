@@ -288,10 +288,10 @@
 <div id="traceyInsightsModal" class="cluster-modal-overlay" hidden>
     <div class="cluster-modal-shell tracey-modal-shell" role="dialog" aria-modal="true" aria-labelledby="traceyInsightsTitle">
         <div class="cluster-modal-header">
-            <h3 id="traceyInsightsTitle">Tracey Insights</h3>
+            <h3 id="traceyInsightsTitle">Tracey Continuum Console</h3>
             <button id="traceyInsightsClose" class="cluster-modal-close" type="button" aria-label="Close Tracey insights">Close</button>
         </div>
-        <p id="traceyInsightsSubtitle" class="cluster-modal-subtitle">Interactive Tracey graphing and log analysis.</p>
+        <p id="traceyInsightsSubtitle" class="cluster-modal-subtitle">Fleet, rack, server, and GPU telemetry with TraceyGuard analytics.</p>
 
         <div class="tracey-controls">
             <label class="tracey-control">
@@ -368,6 +368,338 @@
         </section>
 
         <div class="cluster-modal-body">
+            <section class="detail-card">
+                <div class="panel-title-row">
+                    <h4>Fleet Operations</h4>
+                    <span id="traceyFleetMeta" class="panel-tag">Loading fleet telemetry</span>
+                </div>
+                <div id="traceyFleetSummaryCards" class="tracey-stat-grid">
+                    <p class="empty">Loading fleet telemetry...</p>
+                </div>
+                <div class="tracey-operator-grid">
+                    <section class="detail-card">
+                        <h4>Zone Breakdown</h4>
+                        <div class="table-wrap">
+                            <table class="detail-table">
+                                <thead>
+                                <tr>
+                                    <th>Zone</th>
+                                    <th>Health</th>
+                                    <th>Racks</th>
+                                    <th>GPUs</th>
+                                    <th>Util</th>
+                                    <th>Alerts</th>
+                                </tr>
+                                </thead>
+                                <tbody id="traceyFleetZoneRows">
+                                <tr><td colspan="6" class="empty">Loading zone telemetry...</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </section>
+                    <section class="detail-card">
+                        <h4>Autonomous Actions</h4>
+                        <div class="table-wrap">
+                            <table class="detail-table">
+                                <thead>
+                                <tr>
+                                    <th>Time</th>
+                                    <th>Rack</th>
+                                    <th>Action</th>
+                                    <th>Detail</th>
+                                </tr>
+                                </thead>
+                                <tbody id="traceyFleetActionRows">
+                                <tr><td colspan="4" class="empty">Loading autonomous action log...</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </section>
+                </div>
+                <section class="detail-card">
+                    <h4>Assessment Queue</h4>
+                    <div class="tracey-controls tracey-section-controls">
+                        <label class="tracey-control tracey-control-wide">
+                            <span>Search</span>
+                            <input id="traceyFleetAssessmentSearch" type="text" placeholder="agent, rack, action">
+                        </label>
+                        <label class="tracey-control">
+                            <span>Filter</span>
+                            <select id="traceyFleetAssessmentFilter">
+                                <option value="all" selected>All</option>
+                                <option value="compromised">Compromised</option>
+                                <option value="elevated">Elevated</option>
+                                <option value="communication">Comm Faults</option>
+                                <option value="in_progress">In Progress</option>
+                            </select>
+                        </label>
+                        <label class="tracey-control">
+                            <span>Sort</span>
+                            <select id="traceyFleetAssessmentSort">
+                                <option value="risk_desc" selected>Highest Risk</option>
+                                <option value="progress_desc">Most Progress</option>
+                                <option value="communication_desc">Comm Faults</option>
+                                <option value="host_asc">Host A-Z</option>
+                            </select>
+                        </label>
+                    </div>
+                    <div class="table-wrap">
+                        <table class="detail-table">
+                            <thead>
+                            <tr>
+                                <th>Agent</th>
+                                <th>Risk</th>
+                                <th>Communication</th>
+                                <th>Progress</th>
+                            </tr>
+                            </thead>
+                            <tbody id="traceyFleetAssessmentRows">
+                            <tr><td colspan="4" class="empty">Loading assessment telemetry...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </section>
+            </section>
+
+            <section class="detail-card">
+                <div class="panel-title-row">
+                    <h4>Rack Explorer</h4>
+                    <span id="traceyRackExplorerMeta" class="panel-tag">Select a rack</span>
+                </div>
+                <div id="traceyRackCards" class="tracey-rack-grid">
+                    <p class="empty">Loading rack summaries...</p>
+                </div>
+            </section>
+
+            <section class="detail-card">
+                <div class="panel-title-row">
+                    <h4 id="traceyRackDetailTitle">Rack Detail</h4>
+                    <span id="traceyRackDetailMeta" class="panel-tag">Select a rack to inspect slot telemetry</span>
+                </div>
+                <div id="traceyRackSummaryCards" class="tracey-stat-grid tracey-stat-grid-compact">
+                    <p class="empty">No rack selected.</p>
+                </div>
+                <div id="traceyRackGpuHeatmap" class="tracey-slot-grid">
+                    <p class="empty">Select a rack to load its GPU slot map.</p>
+                </div>
+                <div class="tracey-controls tracey-section-controls">
+                    <label class="tracey-control tracey-control-wide">
+                        <span>Search</span>
+                        <input id="traceyRackAssessmentSearch" type="text" placeholder="server, agent, action">
+                    </label>
+                    <label class="tracey-control">
+                        <span>Filter</span>
+                        <select id="traceyRackAssessmentFilter">
+                            <option value="all" selected>All</option>
+                            <option value="compromised">Compromised</option>
+                            <option value="elevated">Elevated</option>
+                            <option value="communication">Comm Faults</option>
+                            <option value="no_assessment">No Snapshot</option>
+                        </select>
+                    </label>
+                    <label class="tracey-control">
+                        <span>Sort</span>
+                        <select id="traceyRackAssessmentSort">
+                            <option value="risk_desc" selected>Highest Risk</option>
+                            <option value="last_seen_recent">Most Recent</option>
+                            <option value="communication_desc">Comm Faults</option>
+                            <option value="host_asc">Host A-Z</option>
+                        </select>
+                    </label>
+                </div>
+                <div class="table-wrap">
+                    <table class="detail-table">
+                        <thead>
+                        <tr>
+                            <th>Server</th>
+                            <th>Status</th>
+                            <th>GPUs</th>
+                            <th>Util</th>
+                            <th>Temp</th>
+                            <th>Alerts</th>
+                            <th>Assessment</th>
+                            <th>Last Seen</th>
+                        </tr>
+                        </thead>
+                        <tbody id="traceyRackServerRows">
+                        <tr><td colspan="8" class="empty">Select a rack to inspect its servers.</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+            <section class="detail-card">
+                <div class="panel-title-row">
+                    <h4 id="traceyServerTelemetryTitle">Server Telemetry</h4>
+                    <span id="traceyServerTelemetryMeta" class="panel-tag">Select a server</span>
+                </div>
+                <div id="traceyServerSummaryCards" class="tracey-stat-grid tracey-stat-grid-compact">
+                    <p class="empty">No server selected.</p>
+                </div>
+                <div class="tracey-detail-grid">
+                    <section class="detail-card">
+                        <h4>Thermals</h4>
+                        <div id="traceyServerThermals" class="tracey-sensor-list">
+                            <p class="empty">No server selected.</p>
+                        </div>
+                    </section>
+                    <section class="detail-card">
+                        <h4>Fans</h4>
+                        <div id="traceyServerFans" class="tracey-sensor-list">
+                            <p class="empty">No fan telemetry loaded.</p>
+                        </div>
+                    </section>
+                    <section class="detail-card">
+                        <h4>Power</h4>
+                        <div id="traceyServerPower" class="tracey-sensor-list">
+                            <p class="empty">No power telemetry loaded.</p>
+                        </div>
+                    </section>
+                    <section class="detail-card">
+                        <h4>Storage</h4>
+                        <div id="traceyServerDisks" class="tracey-sensor-list">
+                            <p class="empty">No disk telemetry loaded.</p>
+                        </div>
+                    </section>
+                    <section class="detail-card">
+                        <h4>Processes</h4>
+                        <div id="traceyServerProcesses" class="tracey-sensor-list">
+                            <p class="empty">No process telemetry loaded.</p>
+                        </div>
+                    </section>
+                    <section class="detail-card">
+                        <h4>Tracey Guard</h4>
+                        <div id="traceyServerGuardFacts" class="tracey-metric-list">
+                            <p class="empty">No TraceyGuard summary loaded.</p>
+                        </div>
+                    </section>
+                    <section class="detail-card">
+                        <h4>Assessment</h4>
+                        <div class="tracey-controls tracey-section-controls">
+                            <label class="tracey-control tracey-control-wide">
+                                <span>Search</span>
+                                <input id="traceyServerAssessmentSearch" type="text" placeholder="metric, signal, error">
+                            </label>
+                            <label class="tracey-control">
+                                <span>Filter</span>
+                                <select id="traceyServerAssessmentFilter">
+                                    <option value="all" selected>All</option>
+                                    <option value="warnings">Warnings</option>
+                                    <option value="communication">Communication</option>
+                                    <option value="signals">Signals</option>
+                                    <option value="inventory">Inventory</option>
+                                    <option value="workflow">Workflow</option>
+                                </select>
+                            </label>
+                            <label class="tracey-control">
+                                <span>Sort</span>
+                                <select id="traceyServerAssessmentSort">
+                                    <option value="priority" selected>Priority</option>
+                                    <option value="tone">Severity</option>
+                                    <option value="label">Label A-Z</option>
+                                </select>
+                            </label>
+                        </div>
+                        <div id="traceyServerAssessmentFacts" class="tracey-metric-list">
+                            <p class="empty">No assessment snapshot loaded.</p>
+                        </div>
+                    </section>
+                </div>
+                <section class="detail-card">
+                    <h4>GPU Inventory</h4>
+                    <div id="traceyServerGpuTiles" class="tracey-slot-grid">
+                        <p class="empty">No GPU inventory available.</p>
+                    </div>
+                </section>
+            </section>
+
+            <section class="detail-card">
+                <div class="panel-title-row">
+                    <h4 id="traceyGpuTelemetryTitle">GPU Telemetry</h4>
+                    <span id="traceyGpuTelemetryMeta" class="panel-tag">Select a GPU</span>
+                </div>
+                <div id="traceyGpuSummaryCards" class="tracey-stat-grid tracey-stat-grid-compact">
+                    <p class="empty">No GPU selected.</p>
+                </div>
+                <div class="tracey-operator-grid">
+                    <section class="detail-card">
+                        <h4>Streaming Multiprocessors</h4>
+                        <div id="traceyGpuSmHeatmap" class="tracey-sm-grid">
+                            <p class="empty">Select a GPU to inspect per-SM probe activity.</p>
+                        </div>
+                    </section>
+                    <section class="detail-card">
+                        <h4>Probe Mix</h4>
+                        <div id="traceyGpuProbeMix" class="tracey-metric-list">
+                            <p class="empty">No GPU telemetry loaded.</p>
+                        </div>
+                        <h4>Error Counters</h4>
+                        <div id="traceyGpuFaultCounters" class="tracey-metric-list">
+                            <p class="empty">No fault counters available.</p>
+                        </div>
+                    </section>
+                </div>
+                <div class="tracey-detail-grid">
+                    <section class="detail-card">
+                        <h4>Recent Executions</h4>
+                        <div class="table-wrap">
+                            <table class="detail-table">
+                                <thead>
+                                <tr>
+                                    <th>Time</th>
+                                    <th>Probe</th>
+                                    <th>SM</th>
+                                    <th>State</th>
+                                    <th>Risk</th>
+                                    <th>Context</th>
+                                </tr>
+                                </thead>
+                                <tbody id="traceyGpuExecutionRows">
+                                <tr><td colspan="6" class="empty">No recent executions loaded.</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </section>
+                    <section class="detail-card">
+                        <h4>Fault Signatures</h4>
+                        <div class="table-wrap">
+                            <table class="detail-table">
+                                <thead>
+                                <tr>
+                                    <th>Scope</th>
+                                    <th>Probe</th>
+                                    <th>State</th>
+                                    <th>Risk</th>
+                                    <th>Seen</th>
+                                </tr>
+                                </thead>
+                                <tbody id="traceyGpuFaultRows">
+                                <tr><td colspan="5" class="empty">No fault signatures loaded.</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </section>
+                    <section class="detail-card">
+                        <h4>Recovery Actions</h4>
+                        <div class="table-wrap">
+                            <table class="detail-table">
+                                <thead>
+                                <tr>
+                                    <th>Time</th>
+                                    <th>Action</th>
+                                    <th>Source</th>
+                                    <th>Detail</th>
+                                </tr>
+                                </thead>
+                                <tbody id="traceyGpuActionRows">
+                                <tr><td colspan="4" class="empty">No remediation history loaded.</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </section>
+                </div>
+            </section>
+
             <div class="tracey-chart-grid">
                 <section class="detail-card">
                     <h4>Status Timeline</h4>

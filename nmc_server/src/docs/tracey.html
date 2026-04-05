@@ -11,7 +11,7 @@
 <div class="container">
     <header>
         <h1>Tracey Agent API Documentation</h1>
-        <p class="tagline">Heartbeat ingestion and agent status reporting for Continuum monitoring.</p>
+        <p class="tagline">Fleet, rack, server, and GPU telemetry for the Continuum self-healing control plane.</p>
         <a href="index.html" class="back-link">&larr; Back to Continuum Dashboard</a>
     </header>
 
@@ -104,6 +104,91 @@
     </section>
 
     <section class="endpoint-section">
+        <h2>GET /tracey/fleet</h2>
+        <p>Builds the fleet-wide Continuum operator view from cached Tracey status snapshots.</p>
+        <ul>
+            <li><code>summary</code> - agent, rack, zone, GPU, ECC, thermal, autonomy, and TraceyGuard rollups.</li>
+            <li><code>zone_breakdown</code> - per-zone health and alert summaries.</li>
+            <li><code>racks</code> - rack summaries used by the rack explorer.</li>
+            <li><code>gpu_heatmap</code> - rack-grouped GPU tiles for fleet heatmap previews.</li>
+            <li><code>recent_actions</code> - bounded autonomous action log across the fleet.</li>
+        </ul>
+    </section>
+
+    <section class="endpoint-section">
+        <h2>GET /tracey/cve/status</h2>
+        <p>Reports Continuum's server-side CVE mirror and index state used for distributed Tracey compromise assessment.</p>
+        <ul>
+            <li><code>repo_url</code>, <code>head</code>, <code>indexed_head</code></li>
+            <li><code>indexed_records</code> - simplified searchable CVE corpus size</li>
+            <li><code>assessment_protocol_version</code> - active Continuum/Tracey assessment wire contract</li>
+            <li><code>assessment_cycle_ms</code>, <code>default_slice_count</code>, <code>max_matches_per_report</code></li>
+            <li><code>last_success_ms</code>, <code>last_success_age_ms</code>, <code>last_error</code></li>
+        </ul>
+    </section>
+
+    <section class="endpoint-section">
+        <h2>GET /tracey/assessment/fleet</h2>
+        <p>Returns fleet-wide compromise assessment progress and risk ordering across all Tracey agents.</p>
+        <ul>
+            <li><code>mirror</code> - CVE mirror state used by the assessment cycle</li>
+            <li><code>progress</code> - expected/completed slices and cycle completion percentage</li>
+            <li><code>communication</code> - fleet-wide rejected, duplicate, stale-plan, and semantic-fault totals</li>
+            <li><code>agents</code> - risk-ranked agent rows with compromise score, CVE counts, KEV counts, and per-agent slice progress</li>
+        </ul>
+    </section>
+
+    <section class="endpoint-section">
+        <h2>GET /tracey/racks</h2>
+        <p>Returns rack summaries and zone breakdowns without the full per-agent analytics payload.</p>
+    </section>
+
+    <section class="endpoint-section">
+        <h2>GET /tracey/racks/{rack}</h2>
+        <p>Loads rack-level drilldown data including:</p>
+        <ul>
+            <li>rack summary rollups</li>
+            <li>GPU slot heatmap cells</li>
+            <li>server list for the rack</li>
+            <li>recent actions scoped to the rack</li>
+        </ul>
+    </section>
+
+    <section class="endpoint-section">
+        <h2>GET /tracey/agents/{agent_id}/server</h2>
+        <p>Returns full server telemetry for one Tracey agent.</p>
+        <ul>
+            <li><code>server.thermal_sensors</code>, <code>fan_sensors</code>, <code>power_sensors</code></li>
+            <li><code>server.disks</code> and <code>server.processes</code></li>
+            <li><code>gpus</code> enriched with TraceyGuard health overlays</li>
+            <li><code>recent_actions</code>, <code>recent_executions</code>, local and remote faults</li>
+        </ul>
+    </section>
+
+    <section class="endpoint-section">
+        <h2>GET /tracey/agents/{agent_id}/gpus/{gpu_id}/telemetry</h2>
+        <p>Returns deep GPU telemetry for one GPU on one Tracey agent.</p>
+        <ul>
+            <li><code>summary</code> - clocks, power, thermals, memory, ECC, guard state, reliability</li>
+            <li><code>sm_heatmap</code> - per-SM execution/fault aggregation built from TraceyGuard probe history</li>
+            <li><code>probe_mix</code> - execution volume by probe type</li>
+            <li><code>recent_executions</code> - bounded probe execution history with runtime context</li>
+            <li><code>recent_faults</code>, <code>remote_faults</code>, <code>recent_actions</code></li>
+        </ul>
+    </section>
+
+    <section class="endpoint-section">
+        <h2>GET /tracey/agents/{agent_id}/compromise</h2>
+        <p>Returns the per-agent compromise assessment view, including server-generated slice plan and the latest Tracey-local fuzzy risk summary.</p>
+        <ul>
+            <li><code>plan</code> - current slot timing, stable coordination token, late-joiner assignment mode, slice cadence, and completion state</li>
+            <li><code>progress</code> - last submitted slice, inventory digest, request/disposition audit fields, and CVE match rollups</li>
+            <li><code>continuum_assessment</code> - Tracey-local compromise snapshot with signals, recent matches, and recommended action</li>
+            <li><code>tracey_guard_summary</code>, <code>loader_threats</code> - supporting local evidence feeds</li>
+        </ul>
+    </section>
+
+    <section class="endpoint-section">
         <h2>POST /tracey/agents/{agent_id}/control</h2>
         <p>Forwards Tracey control requests to the selected Tracey agent.</p>
 
@@ -123,6 +208,19 @@
     <section class="endpoint-section">
         <h2>GET /tracey/agents/{agent_id}/deepdive</h2>
         <p>Fetches the Tracey deep-dive snapshot (probe timeline, quarantines, local/remote fault signatures) for the selected agent.</p>
+    </section>
+
+    <section class="endpoint-section">
+        <h2>CLI Coverage</h2>
+        <p>The `nmc` client exposes matching operator commands:</p>
+        <pre><code class="language-bash">nmc tracey fleet
+nmc tracey cve
+nmc tracey assessment
+nmc tracey racks
+nmc tracey rack RACK_ID
+nmc tracey compromise AGENT_ID
+nmc tracey server AGENT_ID
+nmc tracey gpu AGENT_ID GPU_ID</code></pre>
     </section>
 
     <footer>

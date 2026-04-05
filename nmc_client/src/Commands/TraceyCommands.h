@@ -41,10 +41,74 @@ public:
                 const CLI::GlobalFlags& globalFlags) override;
 };
 
+class TraceyFleetCommand : public BaseCommand {
+public:
+    TraceyFleetCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client);
+    int execute(const std::map<std::string, std::string>& parsedFlags,
+                const std::vector<std::string>& parsedArgs,
+                const CLI::GlobalFlags& globalFlags) override;
+};
+
+class TraceyCveCommand : public BaseCommand {
+public:
+    TraceyCveCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client);
+    int execute(const std::map<std::string, std::string>& parsedFlags,
+                const std::vector<std::string>& parsedArgs,
+                const CLI::GlobalFlags& globalFlags) override;
+};
+
+class TraceyAssessmentCommand : public BaseCommand {
+public:
+    TraceyAssessmentCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client);
+    int execute(const std::map<std::string, std::string>& parsedFlags,
+                const std::vector<std::string>& parsedArgs,
+                const CLI::GlobalFlags& globalFlags) override;
+};
+
+class TraceyRacksCommand : public BaseCommand {
+public:
+    TraceyRacksCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client);
+    int execute(const std::map<std::string, std::string>& parsedFlags,
+                const std::vector<std::string>& parsedArgs,
+                const CLI::GlobalFlags& globalFlags) override;
+};
+
+class TraceyRackCommand : public BaseCommand {
+public:
+    TraceyRackCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client);
+    int execute(const std::map<std::string, std::string>& parsedFlags,
+                const std::vector<std::string>& parsedArgs,
+                const CLI::GlobalFlags& globalFlags) override;
+};
+
 // Per-agent analytics query.
 class TraceyAnalysisCommand : public BaseCommand {
 public:
     TraceyAnalysisCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client);
+    int execute(const std::map<std::string, std::string>& parsedFlags,
+                const std::vector<std::string>& parsedArgs,
+                const CLI::GlobalFlags& globalFlags) override;
+};
+
+class TraceyServerCommand : public BaseCommand {
+public:
+    TraceyServerCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client);
+    int execute(const std::map<std::string, std::string>& parsedFlags,
+                const std::vector<std::string>& parsedArgs,
+                const CLI::GlobalFlags& globalFlags) override;
+};
+
+class TraceyGpuCommand : public BaseCommand {
+public:
+    TraceyGpuCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client);
+    int execute(const std::map<std::string, std::string>& parsedFlags,
+                const std::vector<std::string>& parsedArgs,
+                const CLI::GlobalFlags& globalFlags) override;
+};
+
+class TraceyCompromiseCommand : public BaseCommand {
+public:
+    TraceyCompromiseCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client);
     int execute(const std::map<std::string, std::string>& parsedFlags,
                 const std::vector<std::string>& parsedArgs,
                 const CLI::GlobalFlags& globalFlags) override;
