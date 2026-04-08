@@ -1010,6 +1010,7 @@
         - name: Ensure tracey-sidecar service is enabled and started
           ansible.builtin.systemd:
             name: tracey-sidecar.service
+            daemon_reload: true
             enabled: true
             state: started
 
@@ -1045,6 +1046,7 @@
     - name: Ensure nmc-server service is enabled and started
       ansible.builtin.systemd:
         name: nmc-server.service
+        daemon_reload: true
         enabled: true
         state: started
 
@@ -1095,6 +1097,7 @@
         - name: Enable and start nmc-update timer
           ansible.builtin.systemd:
             name: nmc-update.timer
+            daemon_reload: true
             enabled: true
             state: started
 
