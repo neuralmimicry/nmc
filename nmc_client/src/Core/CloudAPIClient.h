@@ -142,8 +142,11 @@ namespace NMC::Core {
         Models::CloudResponse listTraceyAgents();
         Models::CloudResponse getTraceyAnalytics(int windowSeconds = -1, int bucketSeconds = -1, int logLimit = -1);
         Models::CloudResponse getTraceyFleet();
+        Models::CloudResponse getTraceyAdaptive(const std::string& policy = "");
         Models::CloudResponse getTraceyCveStatus();
         Models::CloudResponse getTraceyAssessmentFleet();
+        Models::CloudResponse getTraceyAssessmentPlan(const std::string& agentId);
+        Models::CloudResponse submitTraceyAssessmentReport(const std::string& agentId, const nlohmann::json& reportPayload);
         Models::CloudResponse listTraceyRacks();
         Models::CloudResponse getTraceyRackDetails(const std::string& rackId);
         Models::CloudResponse getTraceyAgentAnalysis(const std::string& agentId,

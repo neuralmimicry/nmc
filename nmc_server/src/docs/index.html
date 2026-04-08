@@ -85,6 +85,11 @@
             <p class="metric" id="traceyMetric">-- / --</p>
             <p class="label">Healthy / Total</p>
         </article>
+        <article class="card card-clickable" id="traceyAdaptiveCard" role="button" tabindex="0" aria-label="Open adaptive loop insights">
+            <h2>Adaptive Loop</h2>
+            <p class="metric" id="traceyAdaptiveMetric">--</p>
+            <p class="label" id="traceyAdaptiveLabel">Plan / Ramp / Optimize / Repeat</p>
+        </article>
     </section>
 
     <section class="grid">
@@ -196,6 +201,80 @@
                     <tr><td colspan="5" class="empty">Waiting for Tracey agents...</td></tr>
                     </tbody>
                 </table>
+            </div>
+        </article>
+
+        <article class="panel panel-wide">
+            <div class="panel-title-row">
+                <h3>Adaptive Operating Loop</h3>
+                <div class="panel-actions">
+                    <label class="panel-select" for="traceyAdaptivePolicySelect">
+                        <span>Policy</span>
+                        <select id="traceyAdaptivePolicySelect">
+                            <option value="balanced" selected>Balanced</option>
+                            <option value="throughput">Throughput</option>
+                            <option value="risk">Risk</option>
+                            <option value="energy">Energy</option>
+                        </select>
+                    </label>
+                    <button id="openTraceyAdaptiveBtn" class="panel-action-btn" type="button">Open Tracey Console</button>
+                    <span class="panel-tag">/tracey/adaptive</span>
+                </div>
+            </div>
+            <div id="traceyAdaptiveSummaryCards" class="tracey-stat-grid tracey-stat-grid-compact">
+                <p class="empty">Loading adaptive loop...</p>
+            </div>
+            <div class="tracey-operator-grid">
+                <section class="detail-card">
+                    <h4>Closed-Loop Phases</h4>
+                    <div id="traceyAdaptivePhaseList" class="tracey-metric-list">
+                        <p class="empty">Loading adaptive phases...</p>
+                    </div>
+                </section>
+                <section class="detail-card">
+                    <h4>Priority Actions</h4>
+                    <div id="traceyAdaptiveRecommendationList" class="tracey-metric-list">
+                        <p class="empty">Loading adaptive actions...</p>
+                    </div>
+                </section>
+            </div>
+            <div class="tracey-operator-grid">
+                <section class="detail-card">
+                    <h4>Host Placement Candidates</h4>
+                    <div class="table-wrap">
+                        <table class="detail-table">
+                            <thead>
+                            <tr>
+                                <th>Host</th>
+                                <th>Lane</th>
+                                <th>Score</th>
+                                <th>Reason</th>
+                            </tr>
+                            </thead>
+                            <tbody id="traceyAdaptivePlacementRows">
+                            <tr><td colspan="4" class="empty">Loading placement candidates...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </section>
+                <section class="detail-card">
+                    <h4>GPU Placement Candidates</h4>
+                    <div class="table-wrap">
+                        <table class="detail-table">
+                            <thead>
+                            <tr>
+                                <th>GPU</th>
+                                <th>Host</th>
+                                <th>Score</th>
+                                <th>Signal</th>
+                            </tr>
+                            </thead>
+                            <tbody id="traceyAdaptiveGpuRows">
+                            <tr><td colspan="4" class="empty">Loading GPU candidates...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </section>
             </div>
         </article>
 

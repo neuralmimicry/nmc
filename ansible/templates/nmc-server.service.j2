@@ -3,7 +3,6 @@ Description=NMC Server
 {% if nmc_tracey_sidecar_enabled %}
 After=network-online.target tracey-sidecar.service
 Wants=network-online.target tracey-sidecar.service
-Requires=tracey-sidecar.service
 {% else %}
 After=network-online.target
 Wants=network-online.target

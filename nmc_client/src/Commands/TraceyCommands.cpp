@@ -1,11 +1,22 @@
 #include "TraceyCommands.h"
 
 #include <iostream>
+#include <cctype>
 #include <nlohmann/json.hpp>
 
 namespace NMC::Commands {
 
 namespace {
+
+std::string normalizeAdaptivePolicyValue(std::string value) {
+    for (auto& ch : value) {
+        ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    }
+    if (value == "balanced" || value == "throughput" || value == "risk" || value == "energy") {
+        return value;
+    }
+    return "";
+}
 
 // Parse optional integer flag that must be positive when provided.
 bool parseOptionalPositiveInt(const std::map<std::string, std::string>& parsedFlags,
@@ -70,6 +81,22 @@ bool parseJsonFlag(const std::map<std::string, std::string>& parsedFlags,
         return false;
     }
     return true;
+}
+
+bool parseAdaptivePolicyFlag(const std::map<std::string, std::string>& parsedFlags,
+                             std::string& valueOut,
+                             std::string& errorOut) {
+    valueOut.clear();
+    const auto it = parsedFlags.find("policy");
+    if (it == parsedFlags.end() || it->second.empty()) {
+        return true;
+    }
+    valueOut = normalizeAdaptivePolicyValue(it->second);
+    if (!valueOut.empty()) {
+        return true;
+    }
+    errorOut = "--policy must be one of: balanced, throughput, risk, energy.";
+    return false;
 }
 
 } // namespace
@@ -260,6 +287,33 @@ int TraceyFleetCommand::execute(const std::map<std::string, std::string>& parsed
     return response.success ? 0 : 1;
 }
 
+TraceyAdaptiveCommand::TraceyAdaptiveCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client)
+    : BaseCommand("adaptive", "Fetch the integrated plan/ramp/optimize/repeat Tracey loop", std::move(client)) {
+    usage = "nmc tracey adaptive [--policy balanced|throughput|risk|energy]";
+    examples = "nmc tracey adaptive --policy risk";
+    addFlag(CLI::Flag("p", "policy", "Placement policy: balanced, throughput, risk, energy", CLI::FlagType::String, false));
+}
+
+int TraceyAdaptiveCommand::execute(const std::map<std::string, std::string>& parsedFlags,
+                                   const std::vector<std::string>& parsedArgs,
+                                   const CLI::GlobalFlags& globalFlags) {
+    if (!validateArguments(parsedArgs) || !validateFlags(parsedFlags)) {
+        return 1;
+    }
+
+    std::string policy;
+    std::string parseError;
+    if (!parseAdaptivePolicyFlag(parsedFlags, policy, parseError)) {
+        Models::CloudResponse response{false, parseError, nlohmann::json::object(), 400};
+        printOutput(response, globalFlags);
+        return 1;
+    }
+
+    Models::CloudResponse response = apiClient->getTraceyAdaptive(policy);
+    printOutput(response, globalFlags);
+    return response.success ? 0 : 1;
+}
+
 TraceyCveCommand::TraceyCveCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client)
     : BaseCommand("cve", "Fetch Tracey CVE mirror status from Continuum", std::move(client)) {
     usage = "nmc tracey cve";
@@ -290,6 +344,55 @@ int TraceyAssessmentCommand::execute(const std::map<std::string, std::string>& p
         return 1;
     }
     Models::CloudResponse response = apiClient->getTraceyAssessmentFleet();
+    printOutput(response, globalFlags);
+    return response.success ? 0 : 1;
+}
+
+TraceyAssessmentPlanCommand::TraceyAssessmentPlanCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client)
+    : BaseCommand("assessment-plan", "Fetch the server-generated Tracey assessment plan for one agent", std::move(client)) {
+    usage = "nmc tracey assessment-plan AGENT_ID";
+    examples = "nmc tracey assessment-plan tracey-1";
+    addArgument(CLI::Argument("AGENT_ID", "Tracey agent ID", true, 0));
+}
+
+int TraceyAssessmentPlanCommand::execute(const std::map<std::string, std::string>& parsedFlags,
+                                         const std::vector<std::string>& parsedArgs,
+                                         const CLI::GlobalFlags& globalFlags) {
+    if (!validateArguments(parsedArgs) || !validateFlags(parsedFlags)) {
+        return 1;
+    }
+    Models::CloudResponse response = apiClient->getTraceyAssessmentPlan(parsedArgs[0]);
+    printOutput(response, globalFlags);
+    return response.success ? 0 : 1;
+}
+
+TraceyAssessmentReportCommand::TraceyAssessmentReportCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client)
+    : BaseCommand("assessment-report", "Submit a Tracey assessment report payload for one agent", std::move(client)) {
+    usage = "nmc tracey assessment-report AGENT_ID --payload JSON";
+    examples = R"(nmc tracey assessment-report tracey-1 --payload '{"slice_id":0,"result":"ok"}')";
+    addArgument(CLI::Argument("AGENT_ID", "Tracey agent ID", true, 0));
+    addFlag(CLI::Flag("p", "payload", "Assessment report JSON payload (object)", CLI::FlagType::String, true));
+}
+
+int TraceyAssessmentReportCommand::execute(const std::map<std::string, std::string>& parsedFlags,
+                                           const std::vector<std::string>& parsedArgs,
+                                           const CLI::GlobalFlags& globalFlags) {
+    if (!validateArguments(parsedArgs) || !validateFlags(parsedFlags)) {
+        return 1;
+    }
+
+    std::string parseError;
+    nlohmann::json payload;
+    if (!parseJsonFlag(parsedFlags, "payload", payload, parseError, true)) {
+        if (parseError.empty()) {
+            parseError = "Tracey assessment report requires --payload JSON object.";
+        }
+        Models::CloudResponse response{false, parseError, nlohmann::json::object(), 400};
+        printOutput(response, globalFlags);
+        return 1;
+    }
+
+    Models::CloudResponse response = apiClient->submitTraceyAssessmentReport(parsedArgs[0], payload);
     printOutput(response, globalFlags);
     return response.success ? 0 : 1;
 }

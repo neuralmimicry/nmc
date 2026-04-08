@@ -24,6 +24,15 @@ namespace {
         path += key + "=" + std::to_string(value);
     }
 
+    // Append string query parameters while preserving existing query strings.
+    void appendQueryString(std::string& path, const std::string& key, const std::string& value) {
+        if (value.empty()) {
+            return;
+        }
+        path += (path.find('?') == std::string::npos) ? "?" : "&";
+        path += key + "=" + value;
+    }
+
     // Normalize heterogeneous cluster list payload shapes to a plain array.
     nlohmann::json extractClusterArray(const nlohmann::json& payload) {
         if (payload.is_array()) {
@@ -741,6 +750,13 @@ namespace NMC::Core {
         return processHttpResponse(res, "Tracey fleet view retrieved.");
     }
 
+    Models::CloudResponse CloudAPIClient::getTraceyAdaptive(const std::string& policy) {
+        std::string path = "/tracey/adaptive";
+        appendQueryString(path, "policy", policy);
+        auto res = cli->Get(path);
+        return processHttpResponse(res, "Tracey adaptive loop retrieved.");
+    }
+
     Models::CloudResponse CloudAPIClient::getTraceyCveStatus() {
         auto res = cli->Get("/tracey/cve/status");
         return processHttpResponse(res, "Tracey CVE mirror status retrieved.");
@@ -749,6 +765,21 @@ namespace NMC::Core {
     Models::CloudResponse CloudAPIClient::getTraceyAssessmentFleet() {
         auto res = cli->Get("/tracey/assessment/fleet");
         return processHttpResponse(res, "Tracey fleet compromise assessment retrieved.");
+    }
+
+    Models::CloudResponse CloudAPIClient::getTraceyAssessmentPlan(const std::string& agentId) {
+        auto res = cli->Get("/tracey/agents/" + agentId + "/assessment/plan");
+        return processHttpResponse(res, "Tracey assessment plan retrieved.");
+    }
+
+    Models::CloudResponse CloudAPIClient::submitTraceyAssessmentReport(const std::string& agentId,
+                                                                       const nlohmann::json& reportPayload) {
+        auto res = cli->Post(
+                "/tracey/agents/" + agentId + "/assessment/report",
+                reportPayload.dump(),
+                "application/json"
+        );
+        return processHttpResponse(res, "Tracey assessment report submitted.");
     }
 
     Models::CloudResponse CloudAPIClient::listTraceyRacks() {

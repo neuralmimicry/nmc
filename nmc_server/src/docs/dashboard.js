@@ -1,6 +1,7 @@
 (function () {
     const REFRESH_INTERVAL_MS = 15000;
     const TOKEN_STORAGE_KEY = "nmc_dashboard_token";
+    const TRACEY_ADAPTIVE_POLICY_KEY = "nmc_tracey_adaptive_policy";
 
     const nodes = {
         sessionLabel: document.getElementById("sessionLabel"),
@@ -11,14 +12,24 @@
         openstackMetric: document.getElementById("openstackMetric"),
         vmMetric: document.getElementById("vmMetric"),
         traceyMetric: document.getElementById("traceyMetric"),
+        traceyAdaptiveMetric: document.getElementById("traceyAdaptiveMetric"),
+        traceyAdaptiveLabel: document.getElementById("traceyAdaptiveLabel"),
         traceyCard: document.getElementById("traceyCard"),
+        traceyAdaptiveCard: document.getElementById("traceyAdaptiveCard"),
+        traceyAdaptivePolicySelect: document.getElementById("traceyAdaptivePolicySelect"),
         openTraceyInsightsBtn: document.getElementById("openTraceyInsightsBtn"),
+        openTraceyAdaptiveBtn: document.getElementById("openTraceyAdaptiveBtn"),
         k8sRows: document.getElementById("k8sRows"),
         vclusterRows: document.getElementById("vclusterRows"),
         openshiftRows: document.getElementById("openshiftRows"),
         openstackRows: document.getElementById("openstackRows"),
         traceyRows: document.getElementById("traceyRows"),
         traceyNetworkRows: document.getElementById("traceyNetworkRows"),
+        traceyAdaptiveSummaryCards: document.getElementById("traceyAdaptiveSummaryCards"),
+        traceyAdaptivePhaseList: document.getElementById("traceyAdaptivePhaseList"),
+        traceyAdaptiveRecommendationList: document.getElementById("traceyAdaptiveRecommendationList"),
+        traceyAdaptivePlacementRows: document.getElementById("traceyAdaptivePlacementRows"),
+        traceyAdaptiveGpuRows: document.getElementById("traceyAdaptiveGpuRows"),
         k8sApiPill: document.getElementById("k8sApiPill"),
         authPill: document.getElementById("authPill"),
         refreshPill: document.getElementById("refreshPill"),
@@ -117,6 +128,7 @@
     let traceyAgentRequestSeq = 0;
     let traceyFleetRequestSeq = 0;
     let traceyAssessmentRequestSeq = 0;
+    let traceyAdaptiveRequestSeq = 0;
     let traceyRackRequestSeq = 0;
     let traceyServerRequestSeq = 0;
     let traceyGpuRequestSeq = 0;
@@ -124,6 +136,8 @@
         analytics: null,
         fleet: null,
         assessmentFleet: null,
+        adaptivePolicy: loadTraceyAdaptivePolicy(),
+        adaptive: null,
         selectedAgentId: "",
         selectedRack: "",
         selectedRackDetail: null,
@@ -155,6 +169,42 @@
             return urlToken;
         }
         return (localStorage.getItem(TOKEN_STORAGE_KEY) || "").trim();
+    }
+
+    function normalizeTraceyAdaptivePolicy(value) {
+        const normalized = String(value || "").trim().toLowerCase();
+        if (["throughput", "risk", "energy"].includes(normalized)) {
+            return normalized;
+        }
+        return "balanced";
+    }
+
+    function loadTraceyAdaptivePolicy() {
+        return normalizeTraceyAdaptivePolicy(localStorage.getItem(TRACEY_ADAPTIVE_POLICY_KEY) || "");
+    }
+
+    function saveTraceyAdaptivePolicy(value) {
+        const normalized = normalizeTraceyAdaptivePolicy(value);
+        localStorage.setItem(TRACEY_ADAPTIVE_POLICY_KEY, normalized);
+        traceyState.adaptivePolicy = normalized;
+        if (nodes.traceyAdaptivePolicySelect && nodes.traceyAdaptivePolicySelect.value !== normalized) {
+            nodes.traceyAdaptivePolicySelect.value = normalized;
+        }
+        return normalized;
+    }
+
+    function traceyAdaptivePolicyLabel(summary) {
+        const policy = normalizeTraceyAdaptivePolicy(summary && summary.policy ? summary.policy : traceyState.adaptivePolicy);
+        const label = String(summary && summary.policy_label ? summary.policy_label : formatActionLabel(policy)).trim();
+        return label || "Balanced";
+    }
+
+    function buildTraceyAdaptivePath(policy = traceyState.adaptivePolicy) {
+        const normalized = normalizeTraceyAdaptivePolicy(policy);
+        if (normalized === "balanced") {
+            return "/tracey/adaptive";
+        }
+        return `/tracey/adaptive?policy=${encodeURIComponent(normalized)}`;
     }
 
     function saveToken(token) {
@@ -1111,6 +1161,216 @@
             .replace(/\b\w/g, (match) => match.toUpperCase());
     }
 
+    function toneClassForAdaptiveStatus(status) {
+        const value = String(status || "").trim().toLowerCase();
+        if (["ready", "open", "steady", "learning"].includes(value)) {
+            return "tracey-tone-ok";
+        }
+        if (["balanced", "watch", "manual", "standby", "local_only"].includes(value)) {
+            return "tracey-tone-neutral";
+        }
+        if (["active", "degraded", "tight", "ramping"].includes(value)) {
+            return "tracey-tone-warn";
+        }
+        if (["constrained", "avoid", "stale"].includes(value)) {
+            return "tracey-tone-bad";
+        }
+        return "tracey-tone-neutral";
+    }
+
+    function renderTraceyAdaptiveOverview(data) {
+        const adaptiveData = data && typeof data === "object" ? data : null;
+        const summary = adaptiveData && adaptiveData.summary && typeof adaptiveData.summary === "object"
+            ? adaptiveData.summary
+            : {};
+        const plan = adaptiveData && adaptiveData.plan && typeof adaptiveData.plan === "object"
+            ? adaptiveData.plan
+            : {};
+        const ramp = adaptiveData && adaptiveData.ramp && typeof adaptiveData.ramp === "object"
+            ? adaptiveData.ramp
+            : {};
+        const optimize = adaptiveData && adaptiveData.optimize && typeof adaptiveData.optimize === "object"
+            ? adaptiveData.optimize
+            : {};
+        const repeat = adaptiveData && adaptiveData.repeat && typeof adaptiveData.repeat === "object"
+            ? adaptiveData.repeat
+            : {};
+        const recommendations = Array.isArray(adaptiveData && adaptiveData.recommendations)
+            ? adaptiveData.recommendations
+            : [];
+        const placementCandidates = Array.isArray(adaptiveData && adaptiveData.placement_candidates)
+            ? adaptiveData.placement_candidates
+            : [];
+        const gpuCandidates = Array.isArray(adaptiveData && adaptiveData.gpu_candidates)
+            ? adaptiveData.gpu_candidates
+            : [];
+
+        const mode = String(summary.mode || "unknown");
+        const policy = normalizeTraceyAdaptivePolicy(summary.policy || traceyState.adaptivePolicy);
+        const policyLabel = traceyAdaptivePolicyLabel(summary);
+        const nextAction = String(
+            summary.next_action ||
+            (recommendations[0] && recommendations[0].action) ||
+            ""
+        ).trim();
+
+        if (nodes.traceyAdaptivePolicySelect && nodes.traceyAdaptivePolicySelect.value !== policy) {
+            nodes.traceyAdaptivePolicySelect.value = policy;
+        }
+
+        if (nodes.traceyAdaptiveMetric) {
+            nodes.traceyAdaptiveMetric.textContent = hasObjectContent(summary)
+                ? formatActionLabel(mode)
+                : "--";
+        }
+        if (nodes.traceyAdaptiveLabel) {
+            nodes.traceyAdaptiveLabel.textContent = hasObjectContent(summary)
+                ? `${policyLabel} policy • overall ${formatRatioPercent(summary.overall_score, 0, "-")} • place ${formatRatioPercent(summary.placement_score, 0, "-")}`
+                : "Plan / Ramp / Optimize / Repeat";
+        }
+
+        const cards = hasObjectContent(summary)
+            ? [
+                {
+                    label: "Loop Mode",
+                    value: formatActionLabel(mode),
+                    meta: nextAction ? `${policyLabel} policy • next ${formatActionLabel(nextAction)}` : `${policyLabel} policy • always-on loop`,
+                    tone: toneClassForAdaptiveStatus(mode)
+                },
+                {
+                    label: "Overall / Readiness",
+                    value: `${formatRatioPercent(summary.overall_score, 0, "-")} / ${formatRatioPercent(summary.readiness_score, 0, "-")}`,
+                    meta: `placement ${formatRatioPercent(summary.placement_score, 0, "-")}`,
+                    tone: toneClassForAdaptiveStatus(mode)
+                },
+                {
+                    label: "Ramp Pressure",
+                    value: `${formatCount(summary.pressured_agents, "0")} agents`,
+                    meta: `req ${formatCount(summary.requested_remote_nodes, "0")} / active ${formatCount(summary.active_remote_nodes, "0")}`,
+                    tone: parseNumber(summary.pressured_agents, 0) > 0 ? "tracey-tone-warn" : "tracey-tone-neutral"
+                },
+                {
+                    label: "Placement Targets",
+                    value: `${formatCount(summary.preferred_hosts, "0")} / ${formatCount(summary.preferred_gpus, "0")}`,
+                    meta: `${policyLabel.toLowerCase()} policy • hosts / gpus preferred`,
+                    tone: parseNumber(summary.preferred_hosts, 0) > 0 || parseNumber(summary.preferred_gpus, 0) > 0
+                        ? "tracey-tone-ok"
+                        : "tracey-tone-neutral"
+                },
+                {
+                    label: "Risk Queue",
+                    value: `${formatCount(summary.compromised_agents, "0")} / ${formatCount(summary.elevated_agents, "0")}`,
+                    meta: `${formatCount(summary.cve_matches, "0")} cve • ${formatCount(summary.kev_matches, "0")} kev`,
+                    tone: parseNumber(summary.compromised_agents, 0) > 0
+                        ? "tracey-tone-bad"
+                        : (parseNumber(summary.elevated_agents, 0) > 0 || parseNumber(summary.kev_matches, 0) > 0
+                            ? "tracey-tone-warn"
+                            : "tracey-tone-ok")
+                },
+                {
+                    label: "Feedback Loop",
+                    value: `${formatCount(summary.recent_action_count, "0")} actions`,
+                    meta: `${formatCount(summary.stale_agents, "0")} stale • ${formatPercentValue(summary.gpu_headroom_pct, 0, "-")} headroom`,
+                    tone: parseNumber(summary.stale_agents, 0) > 0 ? "tracey-tone-warn" : "tracey-tone-neutral"
+                }
+            ]
+            : [];
+        renderStatCards(nodes.traceyAdaptiveSummaryCards, cards, "No adaptive loop telemetry available.");
+
+        const phaseRows = [
+            {
+                label: `Plan • ${formatActionLabel(plan.status || "unknown")}`,
+                value: formatRatioPercent(plan.score, 0, "-"),
+                subtitle: String(plan.headline || "No planning state."),
+                tone: toneClassForAdaptiveStatus(plan.status)
+            },
+            {
+                label: `Ramp • ${formatActionLabel(ramp.status || "unknown")}`,
+                value: formatRatioPercent(ramp.score, 0, "-"),
+                subtitle: String(ramp.headline || "No ramp signal."),
+                tone: toneClassForAdaptiveStatus(ramp.status)
+            },
+            {
+                label: `Optimize • ${formatActionLabel(optimize.status || "unknown")}`,
+                value: formatRatioPercent(optimize.score, 0, "-"),
+                subtitle: String(optimize.headline || "No placement signal."),
+                tone: toneClassForAdaptiveStatus(optimize.status)
+            },
+            {
+                label: `Repeat • ${formatActionLabel(repeat.status || "unknown")}`,
+                value: formatRatioPercent(repeat.score, 0, "-"),
+                subtitle: String(repeat.headline || "No feedback state."),
+                tone: toneClassForAdaptiveStatus(repeat.status)
+            }
+        ];
+        renderMetricList(
+            nodes.traceyAdaptivePhaseList,
+            hasObjectContent(summary) ? phaseRows : [],
+            "No adaptive phases available."
+        );
+
+        const recommendationRows = recommendations.slice(0, 6).map((item) => {
+            const stage = formatActionLabel(item.stage || "repeat");
+            const action = formatActionLabel(item.action || "Hold Steady");
+            const priority = formatActionLabel(item.priority || "low");
+            const target = [item.host, item.rack, item.zone].filter(Boolean).join(" • ");
+            let tone = "tracey-tone-neutral";
+            if (String(item.priority || "").trim().toLowerCase() === "critical") {
+                tone = "tracey-tone-bad";
+            } else if (String(item.priority || "").trim().toLowerCase() === "high") {
+                tone = "tracey-tone-warn";
+            } else if (String(item.priority || "").trim().toLowerCase() === "medium") {
+                tone = "tracey-tone-neutral";
+            } else {
+                tone = "tracey-tone-ok";
+            }
+            return {
+                label: `${stage} • ${action}`,
+                value: priority,
+                subtitle: [target, String(item.reason || "").trim()].filter(Boolean).join(" • "),
+                tone
+            };
+        });
+        renderMetricList(
+            nodes.traceyAdaptiveRecommendationList,
+            recommendationRows,
+            "No adaptive actions recommended."
+        );
+
+        if (nodes.traceyAdaptivePlacementRows) {
+            const placementRows = placementCandidates.slice(0, 8).map((candidate) => {
+                const host = String(candidate.host || candidate.agent_id || "unknown");
+                const lane = formatActionLabel(candidate.lane || "watch");
+                const score = formatRatioPercent(candidate.placement_score, 0, "-");
+                const reason = String(candidate.reason || "-");
+                const hostMeta = [candidate.rack, candidate.zone].filter(Boolean).join(" • ");
+                return `<tr><td><div class="tracey-cell-stack"><div>${escapeHtml(host)}</div>${hostMeta ? `<div class="empty">${escapeHtml(hostMeta)}</div>` : ""}</div></td><td>${statusBadge(candidate.lane || "watch")}</td><td>${escapeHtml(score)}</td><td>${escapeHtml(reason)}</td></tr>`;
+            });
+            renderRows(
+                nodes.traceyAdaptivePlacementRows,
+                placementRows,
+                hasObjectContent(summary) ? "No hosts are currently placement-ready." : "No adaptive loop telemetry available.",
+                4
+            );
+        }
+
+        if (nodes.traceyAdaptiveGpuRows) {
+            const gpuRows = gpuCandidates.slice(0, 12).map((candidate) => {
+                const gpuId = String(candidate.gpu_id || "gpu");
+                const host = String(candidate.host || candidate.agent_id || "-");
+                const score = formatRatioPercent(candidate.placement_score, 0, "-");
+                const signal = String(candidate.reason || "-");
+                return `<tr><td>${escapeHtml(gpuId)}</td><td>${escapeHtml(host)}</td><td>${escapeHtml(score)}</td><td>${escapeHtml(signal)}</td></tr>`;
+            });
+            renderRows(
+                nodes.traceyAdaptiveGpuRows,
+                gpuRows,
+                hasObjectContent(summary) ? "No GPUs are currently placement-ready." : "No adaptive loop telemetry available.",
+                4
+            );
+        }
+    }
+
     function updateTraceyInsightsSubtitle() {
         if (!nodes.traceyInsightsSubtitle) {
             return;
@@ -1123,6 +1383,9 @@
             : {};
         const assessmentFleetSummary = traceyState.assessmentFleet && typeof traceyState.assessmentFleet.fleet === "object"
             ? traceyState.assessmentFleet.fleet
+            : {};
+        const adaptiveSummary = traceyState.adaptive && typeof traceyState.adaptive.summary === "object"
+            ? traceyState.adaptive.summary
             : {};
         const agents = formatCount(
             fleetSummary.agents_total,
@@ -1144,6 +1407,7 @@
             `${gpus} GPUs`,
             `${reachable} reachable`,
             assessmentProgress.completion_pct !== undefined ? `assess ${formatRatioPercent(assessmentProgress.completion_pct, 0)}` : "",
+            hasObjectContent(adaptiveSummary) ? `loop ${formatActionLabel(adaptiveSummary.mode || "balanced")} • ${traceyAdaptivePolicyLabel(adaptiveSummary)} policy` : "",
             `window ${traceyWindowSeconds()}s`,
             selectedRack
         ].filter(Boolean);
@@ -1633,10 +1897,16 @@
         const assessmentData = traceyState.assessmentFleet && typeof traceyState.assessmentFleet === "object"
             ? traceyState.assessmentFleet
             : null;
+        const adaptiveData = traceyState.adaptive && typeof traceyState.adaptive === "object"
+            ? traceyState.adaptive
+            : null;
         const hasAssessmentData = hasObjectContent(assessmentData);
         const summary = fleetData && fleetData.summary && typeof fleetData.summary === "object"
             ? fleetData.summary
             : (assessmentData && assessmentData.fleet && typeof assessmentData.fleet === "object" ? assessmentData.fleet : {});
+        const adaptiveSummary = adaptiveData && adaptiveData.summary && typeof adaptiveData.summary === "object"
+            ? adaptiveData.summary
+            : {};
         const assessmentAgents = Array.isArray(assessmentData && assessmentData.agents) ? assessmentData.agents : [];
         const assessmentAggregate = collectAssessmentQueueAggregate(assessmentAgents);
         const assessmentProgress = assessmentData && assessmentData.progress && typeof assessmentData.progress === "object"
@@ -1672,6 +1942,29 @@
         }
 
         const cards = [];
+        if (hasObjectContent(adaptiveSummary)) {
+            const adaptivePolicyLabelText = traceyAdaptivePolicyLabel(adaptiveSummary);
+            cards.push(
+                {
+                    label: "Adaptive Loop",
+                    value: formatActionLabel(adaptiveSummary.mode || "balanced"),
+                    meta: `${adaptivePolicyLabelText} policy • ${formatRatioPercent(adaptiveSummary.overall_score, 0, "-")} overall • ${formatRatioPercent(adaptiveSummary.placement_score, 0, "-")} place`,
+                    tone: toneClassForAdaptiveStatus(adaptiveSummary.mode)
+                },
+                {
+                    label: "Remote Ramp",
+                    value: `${formatCount(adaptiveSummary.requested_remote_nodes, "0")} / ${formatCount(adaptiveSummary.active_remote_nodes, "0")}`,
+                    meta: `${formatCount(adaptiveSummary.pressured_agents, "0")} pressured agents`,
+                    tone: parseNumber(adaptiveSummary.pressured_agents, 0) > 0 ? "tracey-tone-warn" : "tracey-tone-neutral"
+                },
+                {
+                    label: "Placement Loop",
+                    value: `${formatCount(adaptiveSummary.preferred_hosts, "0")} / ${formatCount(adaptiveSummary.preferred_gpus, "0")}`,
+                    meta: `${adaptivePolicyLabelText.toLowerCase()} policy • ${formatCount(adaptiveSummary.placement_candidate_count, "0")} host • ${formatCount(adaptiveSummary.gpu_candidate_count, "0")} gpu candidates`,
+                    tone: parseNumber(adaptiveSummary.constrained_agents, 0) > 0 ? "tracey-tone-warn" : "tracey-tone-ok"
+                }
+            );
+        }
         if (hasObjectContent(summary)) {
             cards.push(
                 {
@@ -2171,6 +2464,32 @@
         }
     }
 
+    async function fetchTraceyAdaptive() {
+        const requestSeq = ++traceyAdaptiveRequestSeq;
+        const response = await fetchJson(buildTraceyAdaptivePath());
+        if (requestSeq !== traceyAdaptiveRequestSeq) {
+            return;
+        }
+        if (!response.ok) {
+            traceyState.adaptive = null;
+            renderTraceyAdaptiveOverview(null);
+            if (traceyState.fleet) {
+                renderTraceyFleetOverview(traceyState.fleet);
+            } else {
+                updateTraceyInsightsSubtitle();
+            }
+            return;
+        }
+
+        traceyState.adaptive = responseData(response.payload) || {};
+        renderTraceyAdaptiveOverview(traceyState.adaptive);
+        if (traceyState.fleet) {
+            renderTraceyFleetOverview(traceyState.fleet);
+        } else {
+            updateTraceyInsightsSubtitle();
+        }
+    }
+
     async function fetchTraceyFleet() {
         const requestSeq = ++traceyFleetRequestSeq;
         if (nodes.traceyFleetMeta) {
@@ -2416,7 +2735,8 @@
     async function refreshTraceyInsights() {
         await Promise.all([
             fetchTraceyAnalytics(),
-            fetchTraceyAssessmentFleet()
+            fetchTraceyAssessmentFleet(),
+            fetchTraceyAdaptive()
         ]);
         await fetchTraceyFleet();
     }
@@ -2633,6 +2953,11 @@
                 openTraceyInsightsModal();
             });
         }
+        if (nodes.openTraceyAdaptiveBtn) {
+            nodes.openTraceyAdaptiveBtn.addEventListener("click", () => {
+                openTraceyInsightsModal();
+            });
+        }
         if (nodes.traceyCard) {
             nodes.traceyCard.addEventListener("click", () => {
                 openTraceyInsightsModal();
@@ -2642,6 +2967,24 @@
                     event.preventDefault();
                     openTraceyInsightsModal();
                 }
+            });
+        }
+        if (nodes.traceyAdaptiveCard) {
+            nodes.traceyAdaptiveCard.addEventListener("click", () => {
+                openTraceyInsightsModal();
+            });
+            nodes.traceyAdaptiveCard.addEventListener("keydown", (event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    openTraceyInsightsModal();
+                }
+            });
+        }
+        if (nodes.traceyAdaptivePolicySelect) {
+            nodes.traceyAdaptivePolicySelect.value = normalizeTraceyAdaptivePolicy(traceyState.adaptivePolicy);
+            nodes.traceyAdaptivePolicySelect.addEventListener("change", () => {
+                saveTraceyAdaptivePolicy(nodes.traceyAdaptivePolicySelect.value);
+                fetchTraceyAdaptive();
             });
         }
         if (nodes.traceyRows) {
@@ -3144,6 +3487,7 @@
             openstackClustersRes,
             vmListRes,
             traceyAgentsRes,
+            traceyAdaptiveRes,
             k8sHealthRes,
             connectionRes,
             openshiftResourcesRes,
@@ -3155,6 +3499,7 @@
             fetchJson("/openstack/clusters"),
             fetchJson("/vm/list"),
             fetchJson("/tracey/agents"),
+            fetchJson(buildTraceyAdaptivePath()),
             fetchJson("/k8s/healthz"),
             fetchJson("/connections/status"),
             fetchJson("/openshift/resources"),
@@ -3168,6 +3513,7 @@
             openstackClustersRes,
             vmListRes,
             traceyAgentsRes,
+            traceyAdaptiveRes,
             k8sHealthRes,
             connectionRes,
             openshiftResourcesRes,
@@ -3279,6 +3625,10 @@
         });
         renderRows(nodes.traceyNetworkRows, traceyNetworkRows, "No discovered Tracey nodes yet.", 7);
 
+        const adaptiveData = traceyAdaptiveRes.ok ? (responseData(traceyAdaptiveRes.payload) || {}) : null;
+        traceyState.adaptive = adaptiveData;
+        renderTraceyAdaptiveOverview(adaptiveData);
+
         const k8sHealthy = k8sHealthRes.ok;
         setPill(nodes.k8sApiPill, "K8s API", k8sHealthy ? "Healthy" : "Unavailable", k8sHealthy ? "rgba(34,197,94,0.8)" : "rgba(239,68,68,0.8)");
 
@@ -3331,6 +3681,7 @@
     initializeSessionUi();
     initializeClusterDetailsUi();
     initializeTraceyInsightsUi();
+    renderTraceyAdaptiveOverview(null);
     renderTraceyFleetOverview(null);
     renderTraceyRackDetail(null);
     renderTraceyServerTelemetry(null);

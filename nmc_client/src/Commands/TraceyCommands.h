@@ -49,6 +49,14 @@ public:
                 const CLI::GlobalFlags& globalFlags) override;
 };
 
+class TraceyAdaptiveCommand : public BaseCommand {
+public:
+    TraceyAdaptiveCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client);
+    int execute(const std::map<std::string, std::string>& parsedFlags,
+                const std::vector<std::string>& parsedArgs,
+                const CLI::GlobalFlags& globalFlags) override;
+};
+
 class TraceyCveCommand : public BaseCommand {
 public:
     TraceyCveCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client);
@@ -60,6 +68,22 @@ public:
 class TraceyAssessmentCommand : public BaseCommand {
 public:
     TraceyAssessmentCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client);
+    int execute(const std::map<std::string, std::string>& parsedFlags,
+                const std::vector<std::string>& parsedArgs,
+                const CLI::GlobalFlags& globalFlags) override;
+};
+
+class TraceyAssessmentPlanCommand : public BaseCommand {
+public:
+    TraceyAssessmentPlanCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client);
+    int execute(const std::map<std::string, std::string>& parsedFlags,
+                const std::vector<std::string>& parsedArgs,
+                const CLI::GlobalFlags& globalFlags) override;
+};
+
+class TraceyAssessmentReportCommand : public BaseCommand {
+public:
+    TraceyAssessmentReportCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client);
     int execute(const std::map<std::string, std::string>& parsedFlags,
                 const std::vector<std::string>& parsedArgs,
                 const CLI::GlobalFlags& globalFlags) override;

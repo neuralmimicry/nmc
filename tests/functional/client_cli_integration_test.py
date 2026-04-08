@@ -147,6 +147,10 @@ class MockServer:
             self._send_json(handler, 200, {"route": "tracey_analytics", "path": handler.path})
             return
 
+        if handler.command == "GET" and path_only == "/tracey/adaptive":
+            self._send_json(handler, 200, {"route": "tracey_adaptive", "path": handler.path})
+            return
+
         if handler.command == "GET" and analysis_match:
             self._send_json(
                 handler,
@@ -309,6 +313,33 @@ def test_agent_analysis_query_serialization(server: MockServer, home_dir: pathli
     )
 
 
+def test_adaptive_query_serialization(server: MockServer, home_dir: pathlib.Path) -> None:
+    server.clear_records()
+    result = run_nmc(["tracey", "adaptive"], home_dir)
+    assert_success(result, "tracey adaptive")
+
+    records = server.records()
+    assert_true(len(records) == 1, f"tracey adaptive expected 1 request, got {len(records)}")
+    req = records[0]
+    assert_true(req.method == "GET", f"tracey adaptive expected GET, got {req.method}")
+    assert_true(req.path == "/tracey/adaptive", f"tracey adaptive wrong path: {req.path}")
+
+
+def test_adaptive_policy_query_serialization(server: MockServer, home_dir: pathlib.Path) -> None:
+    server.clear_records()
+    result = run_nmc(["tracey", "adaptive", "--policy", "risk"], home_dir)
+    assert_success(result, "tracey adaptive --policy risk")
+
+    records = server.records()
+    assert_true(len(records) == 1, f"tracey adaptive --policy risk expected 1 request, got {len(records)}")
+    req = records[0]
+    assert_true(req.method == "GET", f"tracey adaptive --policy risk expected GET, got {req.method}")
+    assert_true(
+        req.path == "/tracey/adaptive?policy=risk",
+        f"tracey adaptive --policy risk wrong path: {req.path}",
+    )
+
+
 def test_control_payload_serialization(server: MockServer, home_dir: pathlib.Path) -> None:
     server.clear_records()
     result = run_nmc(
@@ -400,6 +431,17 @@ def test_invalid_flag_fails_before_network(server: MockServer, home_dir: pathlib
     assert_true(len(server.records()) == 0, "invalid window flag should not perform network calls")
 
 
+def test_invalid_adaptive_policy_fails_before_network(server: MockServer, home_dir: pathlib.Path) -> None:
+    server.clear_records()
+    result = run_nmc(["tracey", "adaptive", "--policy", "turbo"], home_dir)
+    assert_failure(result, "tracey adaptive invalid-policy")
+    assert_true(
+        "--policy must be one of: balanced, throughput, risk, energy." in result.stderr,
+        f"expected adaptive policy validation error, got stderr:\n{result.stderr}",
+    )
+    assert_true(len(server.records()) == 0, "invalid adaptive policy should not perform network calls")
+
+
 def test_malformed_upstream_response_fails_predictably(server: MockServer, home_dir: pathlib.Path) -> None:
     server.clear_records()
     result = run_nmc(["tracey", "deepdive", "broken"], home_dir)
@@ -435,10 +477,13 @@ def main() -> int:
 
             test_analytics_query_serialization(server, home_dir)
             test_agent_analysis_query_serialization(server, home_dir)
+            test_adaptive_query_serialization(server, home_dir)
+            test_adaptive_policy_query_serialization(server, home_dir)
             test_control_payload_serialization(server, home_dir)
             test_heartbeat_payload_serialization(server, home_dir)
             test_invalid_json_fails_before_network(server, home_dir)
             test_invalid_flag_fails_before_network(server, home_dir)
+            test_invalid_adaptive_policy_fails_before_network(server, home_dir)
             test_malformed_upstream_response_fails_predictably(server, home_dir)
     except AssertionError as exc:
         print(f"[functional-test] FAILED: {exc}", file=sys.stderr)

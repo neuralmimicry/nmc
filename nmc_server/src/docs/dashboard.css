@@ -364,6 +364,34 @@ h1 {
     flex-wrap: wrap;
 }
 
+.panel-select {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.42rem;
+    padding: 0.2rem 0.45rem;
+    border-radius: 999px;
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    background: rgba(13, 20, 28, 0.52);
+    color: var(--muted);
+    font-size: 0.7rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.panel-select select {
+    border: 0;
+    background: transparent;
+    color: #ffffff;
+    font-size: 0.76rem;
+    font-family: var(--font-mono);
+    padding: 0;
+    text-transform: none;
+}
+
+.panel-select select:focus {
+    outline: none;
+}
+
 .panel-action-btn {
     border: 1px solid rgba(255, 255, 255, 0.32);
     border-radius: 999px;

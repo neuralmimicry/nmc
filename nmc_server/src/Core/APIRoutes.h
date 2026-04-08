@@ -239,6 +239,7 @@ namespace NMC::Server {
         void handleListTraceyAgents(const httplib::Request& req, httplib::Response& res);
         void handleTraceyAnalytics(const httplib::Request& req, httplib::Response& res);
         void handleTraceyFleet(const httplib::Request& req, httplib::Response& res);
+        void handleTraceyAdaptive(const httplib::Request& req, httplib::Response& res);
         void handleListTraceyRacks(const httplib::Request& req, httplib::Response& res);
         void handleTraceyRackDetails(const httplib::Request& req, httplib::Response& res);
         void handleTraceyAgentAnalysis(const httplib::Request& req, httplib::Response& res);

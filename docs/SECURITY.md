@@ -1,122 +1,194 @@
-# Security, ISO 27001, and SOC 2 Readiness
+# Security Notes
 
-This document describes security controls implemented in the NMC client/server codebase and the operational practices required to satisfy ISO 27001 and SOC 2 expectations. It is not a certification report, but a mapping of controls to code and deployment behaviours.
+This document describes the security controls that are implemented in the current codebase and the operational controls still required outside the repository.
 
-## Scope
-- **In scope**: `nmc_client`, `nmc_server`, and the OpenShift proxy integration to the NeuralMimicry OpenShift portal (oshift).
-- **Out of scope**: Cloud provider infrastructure, CI/CD systems, and third-party hosted services unless explicitly integrated.
+## 1. Scope
 
-## Implemented Technical Controls
+In scope:
+- `nmc_client`
+- `nmc_server`
+- built-in docs served by `nmc_server`
+- deployment automation in `deploy.sh` and `ansible/`
 
-### Access Control (ISO 27001 A.5/A.8, SOC 2 CC6)
-- **Optional API authentication** on the server via bearer token or `X-NMC-Token` header.
-- Controlled by `NMC_AUTH_TOKEN` environment variable.
-- If unset, the server runs in unauthenticated mode for dev/test environments.
-- **OIDC bearer token validation** is available when `NMC_AUTH_MODE=oidc`, using RFC 7662 introspection.
+Out of scope:
+- reverse proxies and TLS termination layers
+- external OpenShift and OpenStack portal services
+- CI/CD platforms and secret stores
+- organization-level access review, monitoring, and incident response processes
 
-### Request Identity & Auditability (ISO 27001 A.5/A.8, SOC 2 CC7)
-- **Request IDs** are added to responses as `X-Request-ID`.
-- IDs are logged for traceability across services.
+## 2. Implemented Technical Controls
 
-### Input Limits & Error Handling (ISO 27001 A.8, SOC 2 CC7)
-- **Payload size limit** enforced by `NMC_MAX_BODY_BYTES` (default 1 MiB).
-- Consistent JSON error responses and status codes for all handlers.
-- `/node/recruit` validates SSH targets, paths, capability values, tenant metadata, and `ansible_extra_vars` keys to reduce command injection and malformed automation payloads.
-- `GET /health` exposes a minimal unauthenticated liveness response (`status`, `service`) with no sensitive payload data.
+### 2.1 Authentication and authorization
 
-### Log Hygiene (ISO 27001 A.8, SOC 2 CC7)
-- Request bodies are **redacted** for sensitive endpoints:
-  - `/ssh/create`
-  - `/vm/create`
-  - `/model/upload`
-  - `/connections/make`
-  - `/openshift/clusters/request`
-  - `/node/recruit`
-- Body logging is **truncated** to `NMC_LOG_BODY_BYTES` (default 2048).
-- `/node/recruit` command diagnostics redact sensitive runtime values (for example `continuum_auth_token` and `sudo_password`) before returning logs/output.
+Server auth modes:
+- `NMC_AUTH_MODE=token`: shared secret validation using `Authorization: Bearer <token>` or `X-NMC-Token`
+- `NMC_AUTH_MODE=oidc`: bearer token introspection via `OIDCValidator`
+- `NMC_AUTH_MODE=off`: explicit no-auth mode
 
-### Secrets Handling (ISO 27001 A.8, SOC 2 CC6)
-- Client connection config file permissions are hardened to `0600` on save.
-- Warnings are emitted if config file permissions are overly permissive.
-- Optional bearer tokens stored per connection are persisted in `~/.nmc/config.json`.
+Additional details:
+- OIDC mode fails closed when validation is not configured correctly.
+- `/health` remains intentionally unauthenticated for liveness probing.
+- docs routes are public when docs are enabled.
 
-### Common Interface Enforcement
-- OpenShift cluster statuses are **normalized** to common NMC states:
-  - `Pending`, `Provisioning`, `Ready`, `Failed`, `Unknown`
-- Provider-specific status mappings are hidden behind the NMC interface.
+### 2.2 Request identity and request sizing
 
-## Operational Controls Required for Compliance
-These items must be enforced outside code to meet ISO 27001 and SOC 2 expectations:
+- guarded routes receive `X-Request-ID`
+- caller-supplied `X-Request-ID` values are preserved
+- `NMC_MAX_BODY_BYTES` limits request-body size
+- `NMC_LOG_BODY_BYTES` limits how much non-sensitive body content is written to logs
 
-### Encryption In Transit (ISO 27001 A.8, SOC 2 CC6)
-- Terminate TLS with a reverse proxy (or deploy HTTPS server) for:
-  - `nmc_server`
-  - oshift portal API
-- Ensure modern TLS configurations and certificate rotation.
+### 2.3 Sensitive body redaction
 
-### Identity & Access Management (ISO 27001 A.5, SOC 2 CC6)
-- Rotate `NMC_AUTH_TOKEN` regularly and store it in a secrets manager.
-- Restrict access to server networks using firewall rules or Kubernetes NetworkPolicies.
+Request bodies are intentionally not logged for these endpoint prefixes:
+- `/ssh/create`
+- `/vm/create`
+- `/model/upload`
+- `/connections/make`
+- `/openshift/clusters/request`
+- `/openstack/clusters/request`
+- `/node/recruit`
 
-### Change Management & SDLC (ISO 27001 A.8, SOC 2 CC8)
-- Require code reviews and CI validation for all changes.
-- Maintain a release log and approval records.
+### 2.4 Secret handling
 
-### Vulnerability Management (ISO 27001 A.8, SOC 2 CC7)
-- Track dependencies with SCA tooling and update regularly.
-- Pin dependency versions in CMake and document upgrade cadence.
+Client-side:
+- connection profiles are stored in `~/.nmc/config.json`
+- file permissions are reset to owner read/write only on save
+- warnings are emitted when the file is readable by group or others
+- per-connection tokens can be stored locally and are used in token resolution precedence
 
-### Incident Response (ISO 27001 A.5, SOC 2 CC7)
-- Maintain an incident response plan with on-call escalation.
-- Ensure log retention and secure archival.
+Server-side:
+- shared auth secrets and OIDC credentials are read from environment variables
+- recruitment diagnostics redact sensitive runtime values before being returned
 
-### Backup & Recovery (ISO 27001 A.8, SOC 2 CC7)
-- Back up configuration and state directories (`~/.nmc`, logs, GitOps configs).
-- Test restoration procedures regularly.
+### 2.5 Input validation and execution boundaries
 
-### Monitoring & Alerting (ISO 27001 A.8, SOC 2 CC7)
-- Forward logs to a central SIEM or logging stack.
-- Alert on authentication failures and error rate spikes.
+`node recruit` validates:
+- host, user, port, node type
+- tenant identifiers and environment labels
+- script, binary, SSH key, and password-file paths
+- Ansible extra-var keys
+- binary args and other user-controlled strings for control characters
 
-### Refiner Command Hardening (Operational)
-- The `nmc refiner` command family executes `kubectl` locally; enforce RBAC least privilege for the kubeconfig used by operators.
-- Prefer dedicated service accounts/namespaces for Refiner (`refiner`) and avoid broad cluster-admin credentials.
-- Log `kubectl` execution outputs in CI/CD or jump-host audit trails for deployment traceability.
+`tracey` CLI commands validate:
+- JSON flags before a network call is attempted
+- positive integer analytics-window flags
+- required agent identifiers
 
-## Configuration Reference
+`refiner` commands validate:
+- manifest paths
+- namespace/context strings
+- rollout timeout and tail values
 
-### Environment Variables (Server)
-- `NMC_AUTH_MODE`: `token` (default), `oidc`, or `off`.
-- `NMC_AUTH_TOKEN`: Require bearer token authentication when `NMC_AUTH_MODE=token` (if unset, auth is disabled).
-- `NMC_MAX_BODY_BYTES`: Maximum request body size in bytes (default 1048576).
-- `NMC_LOG_BODY_BYTES`: Maximum logged body size before truncation (default 2048).
-- `NMC_OSHIFT_API_URL`: Base URL for the OpenShift portal API.
-- `NMC_DOCS_ENABLED`: Enable/disable built-in documentation routes (default true).
-- `NMC_OIDC_INTROSPECTION_URL`: RFC 7662 introspection endpoint (required for `oidc` mode).
-- `NMC_OIDC_CLIENT_ID`: OIDC client ID (optional but recommended).
-- `NMC_OIDC_CLIENT_SECRET`: OIDC client secret (optional but recommended).
-- `NMC_OIDC_ISSUER`: Expected `iss` claim (optional but recommended).
-- `NMC_OIDC_AUDIENCE`: Expected `aud` claim (single or comma-separated list).
-- `NMC_OIDC_ALLOWED_AUDIENCES`: Comma-separated list of acceptable audiences (optional).
-- `NMC_OIDC_REQUIRED_SCOPE`: Comma-separated scopes that must be present (optional).
-- `NMC_RECRUIT_TOKEN`: Optional secondary secret required by `/node/recruit` for node onboarding authorisation.
-- `NMC_RECRUIT_ANSIBLE_PLAYBOOK`: Optional default Ansible playbook path used when `/node/recruit` is called with `auto_configure=true` and no explicit `ansible_playbook`.
-- `NMC_RELEASE_CHECK_URL`: Optional override for the GitHub releases endpoint used by version update checks.
-- Compatibility aliases: `NM_AUTH_MODE`, `NM_AUTH_TOKEN`, and `NM_OIDC_*` are also honored for cross-project SSO setups.
+### 2.6 Tracey network safety
 
-### Environment Variables (Client)
-- `NMC_OIDC_ACCESS_TOKEN`: Preferred bearer token for OIDC-protected endpoints.
-- `NMC_BEARER_TOKEN`: Alternate bearer token variable (fallback).
-- `NMC_AUTH_TOKEN`: Legacy bearer token variable (last-resort fallback).
-- `NMC_SUDO_PASSWORD`: Optional password used by `node recruit` for remote `sudo -S` and Ansible become.
-- `NMC_BECOME_PASSWORD`: Alias for `NMC_SUDO_PASSWORD`.
+The server applies extra controls around Tracey status and control-plane communication:
+- optional managed-resource enforcement via `NMC_TRACEY_ENFORCE_MANAGED_RESOURCES`
+- stale-agent windows via `NMC_TRACEY_STALE_SECONDS`
+- requirement grace windows via `NMC_TRACEY_REQUIREMENT_GRACE_SECONDS`
+- optional discovery disable via `NMC_TRACEY_DISCOVERY_ENABLED`
+- local/private address enforcement unless `NMC_TRACEY_ALLOW_PUBLIC_ADDR=true`
+- optional TLS verification control via `NMC_TRACEY_TLS_VERIFY`
+- optional signature requirement via `NMC_TRACEY_REQUIRE_SIGNATURE`
+- optional dedicated bearer token for Tracey status polling via `NMC_TRACEY_STATUS_BEARER_TOKEN`
 
-### Files
-- Client connection config: `~/.nmc/config.json` (permissions hardened to `0600`).
+### 2.7 Local command execution safety
 
-## Recommendations (Next Steps)
-1. Enable TLS termination for all deployments.
-2. Integrate centralized audit logging with retention policies.
-3. If required, extend OIDC validation to offline JWT verification or SSO-specific policies.
-4. Implement persistent storage for server-side objects with access controls.
-5. Add automated dependency scanning and security testing in CI.
+- `refiner` shells out through quoted command arguments rather than interpolating raw command strings.
+- `node recruit --direct` validates local paths and generated arguments before executing SSH/SCP.
+- `--dry-run` is available for node recruitment to inspect generated commands before execution.
+
+## 3. Public Surfaces
+
+Public by design:
+- `GET /health`
+- built-in docs routes when `NMC_DOCS_ENABLED=true`
+
+Protected by the shared guard unless auth is disabled:
+- `/server/version`
+- resource CRUD routes
+- provider portal routes
+- Tracey routes
+- `/node/recruit`
+
+## 4. Operational Controls Required Outside The Repo
+
+These controls are still required in deployment:
+- TLS termination for `nmc_server` and any proxied upstreams
+- secret storage and rotation for shared tokens and OIDC credentials
+- network segmentation and firewall policy
+- centralized log collection and retention
+- dependency scanning and patch management
+- incident response procedures and evidence collection
+- backup and restore testing for any persisted deployment state
+
+## 5. Configuration Reference
+
+### 5.1 Server auth and HTTP behavior
+
+- `NMC_AUTH_MODE`: `token`, `oidc`, or `off`
+- `NMC_AUTH_TOKEN`: shared secret for token mode
+- `NMC_DOCS_ENABLED`: enable/disable built-in docs routes
+- `NMC_MAX_BODY_BYTES`: request body size cap
+- `NMC_LOG_BODY_BYTES`: max logged body length before truncation
+- `NMC_RELEASE_CHECK_URL`: override release-check endpoint
+- Compatibility aliases: `NM_AUTH_MODE`, `NM_AUTH_TOKEN`, and `NM_OIDC_*`
+
+### 5.2 OIDC validation
+
+- `NMC_OIDC_INTROSPECTION_URL`
+- `NMC_OIDC_CLIENT_ID`
+- `NMC_OIDC_CLIENT_SECRET`
+- `NMC_OIDC_ISSUER`
+- `NMC_OIDC_AUDIENCE`
+- `NMC_OIDC_ALLOWED_AUDIENCES`
+- `NMC_OIDC_AUDIENCES`
+- `NMC_OIDC_REQUIRED_SCOPE`
+- `NMC_OIDC_REQUIRED_SCOPES`
+
+### 5.3 Kubernetes and provider integrations
+
+- `KUBECONFIG` or `NMC_KUBECONFIG`
+- `NMC_K8S_API_URL`
+- `NMC_OSHIFT_API_URL`
+- `NMC_OPENSTACK_API_URL`
+
+### 5.4 Tracey behavior
+
+- `NMC_TRACEY_STALE_SECONDS`
+- `NMC_TRACEY_ENFORCE_MANAGED_RESOURCES`
+- `NMC_TRACEY_DISCOVERY_ENABLED`
+- `NMC_TRACEY_ALLOW_PUBLIC_ADDR`
+- `NMC_TRACEY_TLS_VERIFY`
+- `NMC_TRACEY_REQUIRE_SIGNATURE`
+- `NMC_TRACEY_REQUIREMENT_GRACE_SECONDS`
+- `NMC_TRACEY_DISCOVERY_BIND_ADDR`
+- `NMC_TRACEY_DISCOVERY_PORT`
+- `NMC_TRACEY_DISCOVERY_MAX_AGE_MS`
+- `NMC_TRACEY_STATUS_POLL_MS`
+- `NMC_TRACEY_STATUS_TIMEOUT_MS`
+- `NMC_TRACEY_STATUS_MAX_BACKOFF_MS`
+- `NMC_TRACEY_HISTORY_MAX_SAMPLES`
+- `NMC_TRACEY_AGENT_LOG_MAX_ENTRIES`
+- `NMC_TRACEY_STATUS_BEARER_TOKEN`
+- `NMC_TRACEY_BOOTSTRAP_LOCAL_AGENT`
+- `NMC_TRACEY_LOCAL_AGENT_ID`
+- `NMC_TRACEY_LOCAL_STATUS_ADDR`
+- `NMC_TRACEY_CVE_ROOT`
+- Compatibility aliases: `NM_TRACEY_*`
+
+### 5.5 Recruitment and automation
+
+- `NMC_RECRUIT_TOKEN`
+- `NMC_RECRUIT_ANSIBLE_PLAYBOOK`
+- `NMC_SUDO_PASSWORD`
+- `NMC_BECOME_PASSWORD`
+
+### 5.6 Client token resolution
+
+- `NMC_OIDC_ACCESS_TOKEN`
+- `NM_OIDC_ACCESS_TOKEN`
+- `NMC_BEARER_TOKEN`
+- `NM_BEARER_TOKEN`
+- active connection token in `~/.nmc/config.json`
+- `NMC_AUTH_TOKEN`
+- `NM_AUTH_TOKEN`

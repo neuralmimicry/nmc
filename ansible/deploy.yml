@@ -68,6 +68,7 @@
     nmc_tracey_discovery_shared_key: "{{ nmc_auth_token if (nmc_auth_token | length > 0) else 'tracey-dev-key-change-me' }}"
     nmc_tracey_config_path: "/etc/tracey/tracey-continuum-local.json"
     nmc_tracey_state_dir: "/var/lib/tracey"
+    nmc_tracey_cve_root: "/var/lib/nmc/tracey_cve"
 
     nmc_base_packages:
       - build-essential
@@ -173,6 +174,19 @@
     - name: Set repository dir fact
       ansible.builtin.set_fact:
         nmc_repo_dir: "{{ nmc_install_dir }}"
+
+    - name: Ensure NMC CVE mirror state directories exist
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: directory
+        owner: "{{ nmc_run_user }}"
+        group: "{{ nmc_run_group }}"
+        mode: "{{ item.mode }}"
+      loop:
+        - path: "{{ nmc_tracey_cve_root | dirname }}"
+          mode: "0755"
+        - path: "{{ nmc_tracey_cve_root }}"
+          mode: "0750"
 
     - name: Clone/update repository when repo URL is provided
       when: nmc_repo_url | length > 0

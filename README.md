@@ -1,339 +1,189 @@
-# NMC CLI Application (NeuralMimicry Continuum)
+# NeuralMimicry Continuum (NMC)
 
 [![Build and Release](https://github.com/neuralmimicry/nmc/actions/workflows/build-and-release.yml/badge.svg)](https://github.com/neuralmimicry/nmc/actions/workflows/build-and-release.yml)
 
-This is a C++ CLI application named `nmc` (NeuralMimicry Continuum).
-It provides a modular and extensible framework for building command-line interfaces, with a focus on best practices for structure, security (conceptual), robustness, resilience, and ease of adding/amending/removing commands.
-
-**Current Features:**
-
-* Command-line argument parsing.
-* Support for nested subcommands.
-* Support for flags (short and long, with and without values).
-* Positional arguments.
-* Generated help messages for root, top-level, and subcommands.
-* Placeholder for interaction with a cloud API (`CloudAPIClient`).
-* implementations for cloud operations (Bucket, K8s, Model, SSH, VM).
-* Refiner lifecycle control commands for Kubernetes (`refiner deploy/status/scale/logs/remove`).
-* Continuum node recruitment flow (`node recruit`) with script/binary transfer to remote Ubuntu hosts.
-* OpenStack portal orchestration commands (`openstack`) with cluster request/status workflows.
-* Built-in GitHub release update checks for both client (`nmc version`) and server (`GET /server/version`).
-* Connection health probing via `GET /health` with compatibility fallbacks for older server versions.
-* CI contract tests to ensure route parity and command-level coverage (`server route -> CloudAPI -> CLI command`) remain aligned.
-* Optional bearer token authentication for the Continuum control plane.
-
-**Project Structure:**
-
-The project is organized into logical directories:
-
-* `src/CLI/`: Core CLI parsing logic, including `Command` definitions and the `CLIParser`.
-* `src/Commands/`: Contains all the specific `nmc` commands. Each top-level command (e.g., `bucket`, `k8s`) has its own header and source file, and its subcommands are nested within.
-  OpenShift/OpenStack integration commands live in `OpenShiftCommands.*` and `OpenStackCommands.*` and proxy to provider portal APIs.
-* `src/Core/`: Core functionalities like `CloudAPIClient` (mocked cloud interaction) and `Utils` (utility functions).
-* `src/Models/`: Data structures representing cloud resources (e.g., `Bucket`, `K8sCluster`).
-
-**Building the Application:**
-
-To build `nmc`, you will need CMake and a C++17 compatible compiler (e.g., GCC, Clang).
-
-1.  **Navigate to the `nmc` root directory:**
-    ```bash
-    cd nmc
-    ```
-
-2.  **Create a build directory and navigate into it:**
-    ```bash
-    mkdir build
-    cd build
-    ```
-
-3.  **Run CMake to configure the project:**
-    ```bash
-    cmake ..
-    ```
-
-4.  **Build the application:**
-    ```bash
-    cmake --build .
-    ```
-
-After a successful build, the `nmc` executable will be located in the `build` directory.
-
-## Release workflow
-
-GitHub Actions release automation lives in `.github/workflows/build-and-release.yml`.
-
-- `VERSION` is the release version source of truth for both client and server builds.
-- official GitHub releases require a matching `vX.Y.Z` tag.
-- Unix packages can be built locally with `scripts/package-release.sh`; Windows packaging uses `scripts/package-release.ps1`.
-- manual `workflow_dispatch` runs can package artifacts from any ref.
-- publish steps only run from a `v*` tag ref, either automatically on tag push or manually from `workflow_dispatch`.
-
-The packaged artifacts include versioned client/server archives plus SHA-256 checksum files so the same naming and release expectations apply across local packaging and GitHub Releases.
-
-**Running the Application (Examples):**
-
-From the `build` directory:
-
-* **Root help:**
-    ```bash
-    ./nmc --help
-    ./nmc
-    ```
-
-`nmc connection status`: Reports the active connection, probe path, HTTP status, and diagnostic state (`healthy`, `reachable_auth_required`, `reachable_unknown_health`, `unhealthy`).
-
-`nmc connection make <NAME> <URL> [--default] [--token <token>]`: Creates a connection profile and can set it as default immediately.
-
-`nmc connection drop <NAME>`: Removes a connection profile. If it was active, no default connection remains.
-
-`nmc connection list`: Lists configured connections and active/default state.
-
-`nmc connection select <NAME>`: Sets an existing connection as the active default.
-
-`nmc connection unset-default`: Clears the default connection and reverts to built-in host/port.
-
-* **Set a bearer token for a connection:**
-    ```bash
-    ./nmc connection make prod https://continuum.example --token "$OIDC_ACCESS_TOKEN" --default
-    ./nmc connection set-token prod --token "$OIDC_ACCESS_TOKEN"
-    ./nmc connection clear-token prod
-    ```
-
-* **Inspect server health and version metadata:**
-    ```bash
-    ./nmc server health
-    ./nmc server version
-    ```
-
-* **Query server-side connection state from the API control plane:**
-    ```bash
-    ./nmc connection status --server
-    ./nmc connection list --server
-    ```
-
-* **Bucket command help:**
-    ```bash
-    ./nmc bucket --help
-    ```
-
-* **Create a bucket (mocked):**
-    ```bash
-    ./nmc bucket create my-new-bucket --location eu-central --type standard
-    ```
-
-* **List buckets (mocked) with JSON output:**
-    ```bash
-    ./nmc bucket list -x json
-    ```
-
-* **Get K8s cluster details (mocked):**
-    ```bash
-    ./nmc k8s get my-k8s-cluster-id
-    ```
-
-* **Create a VM (mocked):**
-    ```bash
-    ./nmc vm create dev-vm --sku nmx-h100-80 --region us-east --os-image ubuntu-22.04 --public-key-id sshkey-123 --init-script "#!/bin/bash echo Hello"
-    ```
-
-* **OpenShift (Continuum) resources:**
-    ```bash
-    ./nmc openshift resources
-    ```
-
-* **List OpenShift clusters:**
-    ```bash
-    ./nmc openshift clusters
-    ```
-
-* **Request an OpenShift cluster (ROSA example):**
-    ```bash
-    ./nmc openshift request hpc-example --org neuralmimicry --gpu-count 8 --arch amd64 --region us-east-1 --provider rosa
-    ```
-
-* **Request with burst targets (repeatable flag):**
-    ```bash
-    ./nmc openshift request hpc-burst --org neuralmimicry --gpu-count 16 --arch amd64 --region us-east-1 --provider hybrid-burst --burst-target aro --burst-target gcp
-    ```
-
-* **Poll OpenShift cluster status until Ready:**
-    ```bash
-    ./nmc openshift status hpc-example --watch --until Ready --interval 10 --timeout 900
-    ```
-
-* **OpenStack (Continuum) resources:**
-    ```bash
-    ./nmc openstack resources
-    ```
-
-* **Request an OpenStack cluster:**
-    ```bash
-    ./nmc openstack request hpc-os --org neuralmimicry --gpu-count 8 --arch amd64 --region uk1 --provider openstack
-    ```
-
-* **Poll OpenStack cluster status until Ready:**
-    ```bash
-    ./nmc openstack status hpc-os --watch --until Ready --interval 10 --timeout 900
-    ```
-
-* **Deploy and monitor Refiner workload:**
-    ```bash
-    ./nmc refiner deploy --manifest /path/to/refiner-k8s.yaml --namespace refiner --timeout 300
-    ./nmc refiner status --namespace refiner
-    ./nmc refiner scale --namespace refiner --replicas 3
-    ./nmc refiner logs --namespace refiner --tail 300
-    ./nmc refiner remove --namespace refiner --delete-storage
-    ```
-
-* **Recruit a remote Ubuntu node through Continuum server (sample host `192.168.1.60`):**
-    ```bash
-    ./nmc node recruit --host 192.168.1.60 --user ubuntu --script /home/me/recruit-node.sh --ssh-key /home/me/.ssh/id_ed25519
-    ```
-
-* **Recruit directly from the CLI host (no server-side SSH execution):**
-    ```bash
-    ./nmc node recruit --host 192.168.1.60 --user ubuntu --binary /home/me/bin/continuum-agent --binary-arg --join --binary-arg token-123 --direct
-    ```
-
-* **Recruit and auto-configure for tenant workloads (API mode):**
-    ```bash
-    ./nmc node recruit \
-      --host 192.168.1.60 \
-      --user ubuntu \
-      --ssh-key /home/me/.ssh/id_ed25519 \
-      --node-type kubernetes \
-      --auto-configure \
-      --tenant-id acme \
-      --tenant-name "Acme Manufacturing" \
-      --tenant-environment prod \
-      --capability apps \
-      --capability podman \
-      --capability kubernetes \
-      --capability openstack
-    ```
-
-* **Recruit and auto-configure directly from CLI host with custom playbook vars:**
-    ```bash
-    ./nmc node recruit \
-      --host 192.168.1.60 \
-      --user ubuntu \
-      --direct \
-      --auto-configure \
-      --ansible-playbook /home/me/nmc/ansible/recruited-node.yml \
-      --ansible-extra-var nmc_ops_contact=ops@acme.example \
-      --ansible-extra-var nmc_backup_window=02:00-03:00
-    ```
-
-* **Use non-interactive sudo/become password with file input:**
-    ```bash
-    ./nmc node recruit \
-      --host 192.168.1.60 \
-      --user pbisaacs \
-      --ssh-key /home/me/.ssh/id_ed25519 \
-      --sudo-password-file /home/me/.nmc/sudo.pass \
-      --auto-configure
-    ```
-
-* **Disable Ansible privilege escalation for auto-configure when not required:**
-    ```bash
-    ./nmc node recruit --host 192.168.1.60 --auto-configure --no-become
-    ```
-
-* **Dry-run the generated commands before execution:**
-    ```bash
-    ./nmc node recruit --host 192.168.1.60 --node-type kubernetes --dry-run --direct
-    ```
-
-* **Display version:**
-    ```bash
-    ./nmc version
-    ```
-
-* **Display version without remote release check (offline-safe):**
-    ```bash
-    ./nmc version --no-check
-    ```
-
-* **Tracey telemetry and control workflows:**
-    ```bash
-    ./nmc tracey agents
-    ./nmc tracey analytics --window-seconds 3600 --bucket-seconds 60
-    ./nmc tracey analysis tracey-1 --window-seconds 7200
-    ./nmc tracey control tracey-1 --action clear_quarantine --reason maintenance
-    ./nmc tracey heartbeat --agent-id tracey-1 --status healthy --metrics '{"gpu_util":0.91}'
-    ./nmc tracey deepdive tracey-1
-    ```
-
-**Extending the Application:**
-
-To add a new top-level command (e.g., `database`):
-
-1.  Create `src/Commands/DatabaseCommands.h` and `src/Commands/DatabaseCommands.cpp`.
-2.  Define a `DatabaseCommand` class inheriting from `NMC::Commands::BaseCommand`.
-3.  Implement its `execute` method (or leave it to just print help if it has subcommands).
-4.  Add subcommands (e.g., `DatabaseCreateCommand`, `DatabaseListCommand`) as needed, following the `BucketCommands` pattern.
-5.  In `src/main.cpp`, create an instance of `DatabaseCommand` and register it with the `CLIParser`:
-    ```cpp
-    auto dbCmd = std::make_shared<NMC::Commands::DatabaseCommand>();
-    dbCmd->addSubcommand(std::make_shared<NMC::Commands::DatabaseCreateCommand>());
-    // ... add other subcommands
-    parser.registerCommand(dbCmd);
-    ```
-6.  If the new command interacts with a new type of cloud resource, you might need to add a new model in `src/Models/` and extend `CloudAPIClient` with corresponding API calls.
-
-This structure provides a solid foundation for a comprehensive and maintainable C++ CLI application.
-
-**Workflows and Behaviour Notes:**
-
-Detailed end-to-end workflows, including CLI parsing, connection management, and server request lifecycles, are documented in:
-
-- `docs/WORKFLOWS.md`
-- `docs/ARCHITECTURE.md`
-- `docs/SECURITY.md` (ISO 27001 / SOC 2 readiness and operational controls)
-- `docs/TESTING.md`
-- `tests/contracts/api_route_contract_test.py` (client/server API route contract check)
-- `tests/contracts/command_coverage_contract_test.py` (server route -> CloudAPI -> CLI command coverage check)
-- `tests/contracts/server_safety_contract_test.py` (guard/redaction safety invariants)
-- `tests/functional/client_cli_integration_test.py` (CLI behavior vs mock server)
-
-**OpenShift Integration Notes:**
-
-The server proxies OpenShift provisioning and visibility requests to the NeuralMimicry OpenShift portal API (oshift).
-Set the OpenShift portal base URL with the `NMC_OSHIFT_API_URL` environment variable when starting `nmc_server`.
-The default is `http://127.0.0.1:8000`.
-OpenStack proxy routes follow the same contract shape and use `NMC_OPENSTACK_API_URL` (defaults to `NMC_OSHIFT_API_URL` when unset).
-Server release status is available at `GET /server/version` and includes current version, latest release tag, and update availability.
-Server health status is available at `GET /health` for lightweight connectivity checks.
-
-**Refiner Command Notes:**
-
-The `refiner` command group executes `kubectl` locally from the `nmc` client process to manage the Refiner deployment lifecycle.
-Ensure:
-- `kubectl` is installed on the host running `nmc`.
-- the current kubeconfig/context has permissions for `deployments`, `services`, `pods`, and optional `persistentvolumeclaims`.
-
-**Authentication notes:**
-- The server supports `NMC_AUTH_MODE=token` (shared secret) and `NMC_AUTH_MODE=oidc` (bearer token introspection).
-- The CLI sends bearer tokens when provided. It checks `NMC_OIDC_ACCESS_TOKEN`, `NMC_BEARER_TOKEN`, the active connection token, then `NMC_AUTH_TOKEN`.
-- Connection tokens are stored in `~/.nmc/config.json` with hardened permissions.
-- For OIDC audiences, use `NMC_OIDC_AUDIENCE` (single or comma-separated) or `NMC_OIDC_ALLOWED_AUDIENCES` to allow multiple client IDs (e.g., SPA + server).
-- Compatibility aliases: `NM_AUTH_MODE`, `NM_AUTH_TOKEN`, and `NM_OIDC_*` are also accepted for shared SSO configuration across NeuralMimicry services.
-- Optional hardening for node onboarding: set `NMC_RECRUIT_TOKEN` on the server, then supply `--recruit-token` (or `recruit_token`) when calling `node recruit`.
-- Optional playbook override for post-recruit configuration: set `NMC_RECRUIT_ANSIBLE_PLAYBOOK` on recruiter hosts to define the default auto-configure playbook.
-- Optional non-interactive privilege escalation for recruitment: set `NMC_SUDO_PASSWORD` (or alias `NMC_BECOME_PASSWORD`) on the CLI host when using `node recruit`.
-**Codebase Components:**
-- `nmc_client/src/main.cpp`: CLI entry point and command registration.
-- `nmc_client/src/CLI/`: command tree, parser, and global flag handling.
-- `nmc_client/src/Commands/`: domain commands (`bucket`, `k8s`, `vcluster`, `vm`, `ssh`, `model`, `node`, `openshift`, `openstack`, `tracey`, `server`, `refiner`, `connection`, `version`).
-- `nmc_client/src/Core/CloudAPIClient.*`: HTTP transport, response normalisation, connection profile management, and token resolution.
-- `nmc_client/src/Models/`: request/response models used by command handlers.
-- `nmc_server/src/Core/APIRoutes.*`: route registration, auth/payload guardrails, and handler implementations.
-- `nmc_server/src/Core/K8sHandlers.*`: Kubernetes integration and cluster-oriented handlers.
-- `nmc_server/src/docs/`: built-in API documentation pages served by `nmc_server` when docs are enabled.
-
-**Engineering Principles in This Repository:**
-- Modular command structure with a clear separation between parsing, command orchestration, and transport.
-- Shared JSON response envelope (`success`, `message`, `data`) across client and server.
-- Defensive request validation for security-sensitive flows (for example `node recruit` and token-bearing endpoints).
-- Deterministic connection behaviour with persisted profiles and explicit health probe diagnostics.
+NeuralMimicry Continuum ships two C++ binaries:
+- `nmc`: the operator CLI
+- `nmc_server`: the HTTP control plane and built-in operator docs host
+
+Together they provide connection management, Kubernetes and virtual-cluster operations, portal orchestration for OpenShift and OpenStack, Tracey fleet telemetry/control plus the adaptive plan/ramp/optimize/repeat loop, Refiner deployment workflows, and Continuum node recruitment.
+
+## Feature Inventory
+
+| Area | Surface | Notes |
+|---|---|---|
+| Connectivity | `connection`, `server`, `version` | Local connection profiles live in `~/.nmc/config.json`; selected commands also support a server-side connection registry via `--server`. |
+| Core resources | `bucket`, `ssh`, `vm`, `model` | CRUD-style resource endpoints exposed through the CLI and HTTP API. Several of these server-side resources are currently in-memory and non-persistent. |
+| Kubernetes | `k8s` | Cluster create/get/get-config/list/list-locations/health/resume/suspend over the server API and Kubernetes client integration. |
+| Virtual clusters | `vcluster` | Create/delete/get/get-config/list plus pause/resume/backup/restore/upgrade/config-get/config-update/metrics/health/resources. Advanced create configuration exists on the server API via a `config` JSON payload; the CLI create command currently exposes `name` and optional `namespace`. |
+| Provider portals | `openshift`, `openstack` | Capacity listing, cluster listing, cluster request, and polling status workflows against external portal APIs. |
+| Tracey | `tracey` | Heartbeat ingestion, fleet inventory, analytics, the adaptive plan/ramp/optimize/repeat loop, operator-selectable placement policies, CVE status, compromise assessment, per-agent assessment plan/report flows, rack views, agent telemetry, control, and deep-dive diagnostics. |
+| Node onboarding | `node recruit` | API mode through `POST /node/recruit` or direct SSH/SCP execution from the CLI host, with optional post-recruit Ansible auto-configuration. |
+| Refiner | `refiner` | Local `kubectl` deploy/status/scale/logs/remove workflows; `status` and `scale` can also use the server API via `--server`. |
+| Deployment | `deploy.sh`, `ansible/deploy.yml` | Ubuntu/systemd deployment automation with optional Kubernetes bootstrap, GPU tooling, auto-update timer, and local Tracey sidecar setup. |
+| Documentation | `docs/`, `nmc_server/src/docs/` | Markdown project docs plus built-in web docs served by `nmc_server` when `NMC_DOCS_ENABLED=true`. |
+| Quality gates | `tests/contracts/`, `tests/functional/` | Static client/server contract checks, route safety checks, dedicated adaptive-loop contract checks, and CLI functional tests against a mock HTTP server. |
+
+## Repository Layout
+
+- `nmc_client/`: CLI parser, commands, transport client, and models.
+- `nmc_server/`: HTTP routes, Kubernetes handlers, portal clients, Tracey support, and built-in docs.
+- `docs/`: architecture, workflow, security, testing, and compliance notes.
+- `ansible/`: deployment playbooks, templates, and recruited-node automation.
+- `tests/`: contract and functional tests.
+- `deploy.sh`: local Ubuntu/systemd deployment bootstrap script.
+- `scripts/package-release.sh` and `scripts/package-release.ps1`: packaging helpers.
+- `VERSION`: shared client/server release version source of truth.
+
+## Building
+
+### CLI (`nmc`)
+
+```bash
+cmake -S nmc_client -B nmc_client/build
+cmake --build nmc_client/build -j4
+```
+
+### Server (`nmc_server`)
+
+The server build pulls several dependencies with CMake `FetchContent` and also expects system packages such as OpenSSL, `spdlog`, `libwebsockets`, autotools, and standard build tooling.
+
+```bash
+cmake -S nmc_server -B nmc_server/build
+cmake --build nmc_server/build -j4
+```
+
+If you want the host prepared end-to-end, prefer `deploy.sh` or the [Ansible deployment guide](./ansible/README.md).
+
+## Running
+
+### CLI basics
+
+```bash
+./nmc_client/build/nmc --help
+./nmc_client/build/nmc --version
+./nmc_client/build/nmc -x json connection list
+./nmc_client/build/nmc -x yaml tracey fleet
+```
+
+Global output formats currently implemented are:
+- default human-readable output
+- `json`
+- `yaml`
+
+### Connection and server checks
+
+```bash
+./nmc_client/build/nmc connection make local http://127.0.0.1:8080 --default
+./nmc_client/build/nmc connection status
+./nmc_client/build/nmc server health
+./nmc_client/build/nmc server version
+```
+
+### Kubernetes and vcluster workflows
+
+```bash
+./nmc_client/build/nmc k8s list
+./nmc_client/build/nmc k8s health
+./nmc_client/build/nmc vcluster create demo --namespace vcluster-demo
+./nmc_client/build/nmc vcluster health demo
+./nmc_client/build/nmc vcluster config-get demo
+./nmc_client/build/nmc vcluster upgrade demo --version 0.20.0
+```
+
+### Provider portal workflows
+
+```bash
+./nmc_client/build/nmc openshift resources
+./nmc_client/build/nmc openshift request hpc-example --org neuralmimicry --gpu-count 8 --arch amd64 --region us-east-1 --provider rosa
+./nmc_client/build/nmc openshift status hpc-example --watch --until Ready --interval 10 --timeout 900
+
+./nmc_client/build/nmc openstack resources
+./nmc_client/build/nmc openstack request hpc-os --org neuralmimicry --gpu-count 8 --arch amd64 --region uk1 --provider openstack
+./nmc_client/build/nmc openstack status hpc-os --watch --until Ready --interval 10 --timeout 900
+```
+
+### Tracey workflows
+
+```bash
+./nmc_client/build/nmc tracey fleet
+./nmc_client/build/nmc tracey adaptive
+./nmc_client/build/nmc tracey adaptive --policy risk
+./nmc_client/build/nmc tracey agents
+./nmc_client/build/nmc tracey assessment
+./nmc_client/build/nmc tracey assessment-plan tracey-1
+./nmc_client/build/nmc tracey assessment-report tracey-1 --payload '{"slice_id":0,"result":"ok"}'
+./nmc_client/build/nmc tracey analytics --window-seconds 3600 --bucket-seconds 60
+./nmc_client/build/nmc tracey analysis tracey-1 --window-seconds 7200
+./nmc_client/build/nmc tracey server tracey-1
+./nmc_client/build/nmc tracey gpu tracey-1 nvidia:0
+./nmc_client/build/nmc tracey control tracey-1 --action clear_quarantine --reason maintenance
+./nmc_client/build/nmc tracey deepdive tracey-1
+```
+
+### Node recruitment and Refiner workflows
+
+```bash
+./nmc_client/build/nmc node recruit \
+  --host 192.168.1.60 \
+  --user ubuntu \
+  --ssh-key /home/me/.ssh/id_ed25519 \
+  --auto-configure \
+  --tenant-id acme \
+  --capability apps \
+  --capability kubernetes
+
+./nmc_client/build/nmc refiner deploy --manifest ./refiner-k8s.yaml --namespace refiner
+./nmc_client/build/nmc refiner status --namespace refiner
+./nmc_client/build/nmc refiner scale --replicas 3 --namespace refiner
+```
+
+### Server
+
+```bash
+./nmc_server/build/nmc_server --port 8080 -k /etc/nmc/kubeconfig
+```
+
+When docs are enabled, `nmc_server` serves the built-in operator site from its build directory at:
+- `/`
+- `/docs`
+- `/login`
+- `/services/health/monitoring`
+
+The lightweight unauthenticated liveness route is `GET /health`.
+
+## Authentication and Configuration Notes
+
+- Server auth modes: `NMC_AUTH_MODE=token` (default), `oidc`, or `off`.
+- Token mode accepts `Authorization: Bearer <token>` and `X-NMC-Token`.
+- Client bearer token precedence is:
+  1. `NMC_OIDC_ACCESS_TOKEN`
+  2. `NM_OIDC_ACCESS_TOKEN`
+  3. `NMC_BEARER_TOKEN`
+  4. `NM_BEARER_TOKEN`
+  5. active connection token from `~/.nmc/config.json`
+  6. `NMC_AUTH_TOKEN`
+  7. `NM_AUTH_TOKEN`
+- Connection config permissions are hardened to owner read/write only.
+- Optional node recruitment hardening:
+  - `NMC_RECRUIT_TOKEN` on the server to require a second shared secret.
+  - `NMC_RECRUIT_ANSIBLE_PLAYBOOK` on recruiter hosts to override the default post-recruit playbook.
+  - `NMC_SUDO_PASSWORD` or `NMC_BECOME_PASSWORD` on the CLI host for non-interactive `sudo -S` / Ansible become.
+
+## Deployment and Release
+
+- `deploy.sh` bootstraps an Ubuntu host with build dependencies, optional Kubernetes install, optional GPU tooling, `nmc_server` systemd service setup, optional auto-update timer, and optional local Tracey sidecar.
+- `ansible/deploy.yml` provides the same deployment path in Ansible form.
+- `VERSION` drives the shared semantic version for client and server builds.
+- `scripts/package-release.sh` and `scripts/package-release.ps1` build versioned release archives and checksum files.
+
+## Documentation Map
+
+- [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md)
+- [`docs/WORKFLOWS.md`](./docs/WORKFLOWS.md)
+- [`docs/SECURITY.md`](./docs/SECURITY.md)
+- [`docs/TESTING.md`](./docs/TESTING.md)
+- [`docs/COMPLIANCE.md`](./docs/COMPLIANCE.md)
+- [`IMPLEMENTATION_COMPLETE_SUMMARY.md`](./IMPLEMENTATION_COMPLETE_SUMMARY.md)
+- [`VCLUSTER_IMPLEMENTATION_STATUS.md`](./VCLUSTER_IMPLEMENTATION_STATUS.md)
+- [`ansible/README.md`](./ansible/README.md)
