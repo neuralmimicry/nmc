@@ -2415,10 +2415,31 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
         const char* authTokenEnv = envOr("NMC_AUTH_TOKEN", "NM_AUTH_TOKEN");
         authToken = authTokenEnv ? authTokenEnv : "";
 
+        const char* centralSessionEnv = envOr("NMC_CENTRAL_AUTH_SESSION_URL", "NM_CENTRAL_AUTH_SESSION_URL");
+        centralAuthSessionUrl = centralSessionEnv ? trim(centralSessionEnv) : "";
+        const char* centralLoginEnv = envOr("NMC_CENTRAL_AUTH_LOGIN_URL", "NM_CENTRAL_AUTH_LOGIN_URL");
+        centralAuthLoginUrl = centralLoginEnv ? trim(centralLoginEnv) : "";
+        centralAuthCacheTtlMs = parseInt64Value(
+                envOr("NMC_CENTRAL_AUTH_CACHE_TTL_MS", "NM_CENTRAL_AUTH_CACHE_TTL_MS"),
+                15'000,
+                1'000,
+                300'000
+        );
+        centralAuthTimeoutMs = parseInt64Value(
+                envOr("NMC_CENTRAL_AUTH_TIMEOUT_MS", "NM_CENTRAL_AUTH_TIMEOUT_MS"),
+                3'000,
+                500,
+                120'000
+        );
+        centralAuthTlsVerify = parseBoolValue(
+                envOr("NMC_CENTRAL_AUTH_TLS_VERIFY", "NM_CENTRAL_AUTH_TLS_VERIFY"),
+                true
+        );
+
         if (authMode == "off") {
             authRequired = false;
         } else if (authMode == "token") {
-            authRequired = !authToken.empty();
+            authRequired = !authToken.empty() || !centralAuthSessionUrl.empty();
         } else {
             authRequired = true;
         }
@@ -2686,6 +2707,9 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
             svr.Get("/login", [](const httplib::Request& req, httplib::Response& res) {
                 res.set_content(Utils::readFile("./docs/login.html"), "text/html");
             });
+            svr.Post("/auth/login", [this](const httplib::Request& req, httplib::Response& res) {
+                handleAuthLogin(req, res);
+            });
             // Legacy launch path used by neuralmimicry.ai control-panel links.
             svr.Get(R"(^/services/health/monitoring/?$)", [](const httplib::Request& req, httplib::Response& res) {
                 res.set_content(Utils::readFile("./docs/index.html"), "text/html");
@@ -2695,6 +2719,9 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
             });
             svr.Get(R"(^/services/health/monitoring/login/?$)", [](const httplib::Request& req, httplib::Response& res) {
                 res.set_content(Utils::readFile("./docs/login.html"), "text/html");
+            });
+            svr.Post(R"(^/services/health/monitoring/auth/login/?$)", [this](const httplib::Request& req, httplib::Response& res) {
+                handleAuthLogin(req, res);
             });
             svr.Get("/logout", [](const httplib::Request& req, httplib::Response& res) {
                 res.set_redirect("/login");
@@ -3222,23 +3249,186 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
         return true;
     }
 
+    std::string APIRoutes::extractAuthToken(const httplib::Request& req) const {
+        const std::string bearer = trim(req.get_header_value("Authorization"));
+        if (!bearer.empty()) {
+            const std::string prefix = "Bearer ";
+            if (bearer.rfind(prefix, 0) == 0) {
+                return trim(bearer.substr(prefix.size()));
+            }
+        }
+        return trim(req.get_header_value("X-NMC-Token"));
+    }
+
+    bool APIRoutes::validateCentralAuthToken(const std::string& token, nlohmann::json* claimsOut) const {
+        const std::string trimmedToken = trim(token);
+        if (trimmedToken.empty() || centralAuthSessionUrl.empty()) {
+            return false;
+        }
+
+        const int64_t nowMs = nowEpochMs();
+        {
+            std::lock_guard<std::mutex> lock(centralAuthCacheMutex);
+            auto it = centralAuthTokenCache.find(trimmedToken);
+            if (it != centralAuthTokenCache.end()) {
+                if (it->second.expiresAtMs > nowMs) {
+                    if (it->second.authenticated && !it->second.user.empty() && claimsOut) {
+                        *claimsOut = {
+                                {"authenticated", true},
+                                {"user", it->second.user},
+                                {"role", it->second.role}
+                        };
+                    }
+                    return it->second.authenticated && !it->second.user.empty();
+                }
+                centralAuthTokenCache.erase(it);
+            }
+        }
+
+        TraceyEndpoint endpoint;
+        if (!parseTraceyEndpoint(centralAuthSessionUrl, endpoint)) {
+            return false;
+        }
+        const std::string sessionPath = endpoint.basePath.empty() ? "/api/session" : endpoint.basePath;
+        const int timeoutSec = static_cast<int>(std::max<int64_t>(1, (centralAuthTimeoutMs + 999) / 1000));
+        httplib::Headers headers{
+                {"Accept", "application/json"},
+                {"Authorization", "Bearer " + trimmedToken}
+        };
+
+        httplib::Result result;
+        if (endpoint.https) {
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+            httplib::SSLClient client(endpoint.host, endpoint.port);
+            client.enable_server_certificate_verification(centralAuthTlsVerify);
+            client.set_connection_timeout(timeoutSec);
+            client.set_read_timeout(timeoutSec);
+            client.set_write_timeout(timeoutSec);
+            result = client.Get(sessionPath.c_str(), headers);
+#else
+            return false;
+#endif
+        } else {
+            httplib::Client client(endpoint.host, endpoint.port);
+            client.set_connection_timeout(timeoutSec);
+            client.set_read_timeout(timeoutSec);
+            client.set_write_timeout(timeoutSec);
+            result = client.Get(sessionPath.c_str(), headers);
+        }
+
+        nlohmann::json payload = nlohmann::json::object();
+        bool authenticated = false;
+        std::string user;
+        std::string role;
+        if (result && result->status < 500 && !result->body.empty()) {
+            const auto parsed = nlohmann::json::parse(result->body, nullptr, false);
+            if (!parsed.is_discarded() && parsed.is_object()) {
+                payload = parsed;
+                authenticated = payload.value("authenticated", false);
+                user = trim(payload.value("user", ""));
+                role = trim(payload.value("role", ""));
+            }
+        }
+
+        CentralAuthCacheEntry cacheEntry;
+        cacheEntry.authenticated = authenticated && !user.empty();
+        cacheEntry.user = user;
+        cacheEntry.role = role;
+        cacheEntry.expiresAtMs = nowMs + (cacheEntry.authenticated
+                                          ? centralAuthCacheTtlMs
+                                          : std::min<int64_t>(centralAuthCacheTtlMs, 2000));
+        {
+            std::lock_guard<std::mutex> lock(centralAuthCacheMutex);
+            if (centralAuthTokenCache.size() > 1024) {
+                centralAuthTokenCache.clear();
+            }
+            centralAuthTokenCache[trimmedToken] = cacheEntry;
+        }
+
+        if (cacheEntry.authenticated && claimsOut) {
+            *claimsOut = {
+                    {"authenticated", true},
+                    {"user", cacheEntry.user},
+                    {"role", cacheEntry.role}
+            };
+        }
+        return cacheEntry.authenticated;
+    }
+
+    void APIRoutes::handleAuthLogin(const httplib::Request& req, httplib::Response& res) {
+        ensureRequestId(req, res);
+        if (!enforceBodyLimit(req, res)) {
+            return;
+        }
+        if (centralAuthLoginUrl.empty()) {
+            sendErrorResponse(res, 503, "Central username/password login is not configured.");
+            return;
+        }
+
+        const auto payload = nlohmann::json::parse(req.body, nullptr, false);
+        if (payload.is_discarded() || !payload.is_object()) {
+            sendErrorResponse(res, 400, "Invalid JSON payload.");
+            return;
+        }
+        const std::string username = trim(payload.value("username", ""));
+        const std::string password = trim(payload.value("password", ""));
+        if (username.empty() || password.empty()) {
+            sendErrorResponse(res, 400, "Username and password are required.");
+            return;
+        }
+
+        TraceyEndpoint endpoint;
+        if (!parseTraceyEndpoint(centralAuthLoginUrl, endpoint)) {
+            sendErrorResponse(res, 503, "Central username/password login endpoint is invalid.");
+            return;
+        }
+        const std::string loginPath = endpoint.basePath.empty() ? "/api/login" : endpoint.basePath;
+        const int timeoutSec = static_cast<int>(std::max<int64_t>(1, (centralAuthTimeoutMs + 999) / 1000));
+        httplib::Headers headers{
+                {"Accept", "application/json"},
+                {"Content-Type", "application/json"}
+        };
+
+        httplib::Result result;
+        if (endpoint.https) {
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+            httplib::SSLClient client(endpoint.host, endpoint.port);
+            client.enable_server_certificate_verification(centralAuthTlsVerify);
+            client.set_connection_timeout(timeoutSec);
+            client.set_read_timeout(timeoutSec);
+            client.set_write_timeout(timeoutSec);
+            result = client.Post(loginPath.c_str(), headers, payload.dump(), "application/json");
+#else
+            sendErrorResponse(res, 503, "HTTPS central auth login is unavailable: httplib lacks OpenSSL support.");
+            return;
+#endif
+        } else {
+            httplib::Client client(endpoint.host, endpoint.port);
+            client.set_connection_timeout(timeoutSec);
+            client.set_read_timeout(timeoutSec);
+            client.set_write_timeout(timeoutSec);
+            result = client.Post(loginPath.c_str(), headers, payload.dump(), "application/json");
+        }
+
+        if (!result) {
+            sendErrorResponse(res, 502, "Central auth login request failed.");
+            return;
+        }
+
+        res.status = result->status;
+        res.set_content(result->body.empty() ? "{}" : result->body, "application/json");
+    }
+
     bool APIRoutes::authorizeOrReject(const httplib::Request& req, httplib::Response& res) const {
         if (!authRequired) {
             return true;
         }
         if (authMode == "token") {
-            const std::string bearer = req.get_header_value("Authorization");
-            if (!bearer.empty()) {
-                const std::string prefix = "Bearer ";
-                if (bearer.rfind(prefix, 0) == 0) {
-                    const std::string token = bearer.substr(prefix.size());
-                    if (!authToken.empty() && token == authToken) {
-                        return true;
-                    }
-                }
+            const std::string token = extractAuthToken(req);
+            if (validateCentralAuthToken(token)) {
+                return true;
             }
-            const std::string tokenHeader = req.get_header_value("X-NMC-Token");
-            if (!tokenHeader.empty() && !authToken.empty() && tokenHeader == authToken) {
+            if (!token.empty() && !authToken.empty() && token == authToken) {
                 return true;
             }
             res.set_header("WWW-Authenticate", "Bearer");
@@ -3286,9 +3476,11 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                 "/vm/create",
                 "/model/upload",
                 "/connections/make",
+                "/auth/login",
                 "/openshift/clusters/request",
                 "/openstack/clusters/request",
-                "/node/recruit"
+                "/node/recruit",
+                "/services/health/monitoring/auth/login"
         };
         for (const auto& prefix : redactedPrefixes) {
             if (path.rfind(prefix, 0) == 0) {

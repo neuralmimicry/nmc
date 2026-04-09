@@ -43,14 +43,22 @@
             </div>
             <div class="auth-panel">
                 <h1>Sign in</h1>
-                <p class="subtitle">Use your Continuum API token to access protected endpoints and dashboards.</p>
+                <p class="subtitle">Sign in with your NeuralMimicry username/password or use an API token for advanced access.</p>
                 <p id="authError" class="auth-error" hidden></p>
                 <form id="authForm" class="auth-form">
                     <div class="field">
-                        <label for="token">API Token</label>
-                        <input id="token" name="token" type="password" autocomplete="off" placeholder="Bearer or X-NMC-Token value">
+                        <label for="username">Username</label>
+                        <input id="username" name="username" type="text" autocomplete="username" placeholder="pbisaacs">
                     </div>
-                    <button type="submit" class="primary">Continue</button>
+                    <div class="field">
+                        <label for="password">Password</label>
+                        <input id="password" name="password" type="password" autocomplete="current-password" placeholder="Your password">
+                    </div>
+                    <div class="field">
+                        <label for="token">API Token</label>
+                        <input id="token" name="token" type="password" autocomplete="off" placeholder="Optional bearer token">
+                    </div>
+                    <button type="submit" class="primary">Sign In</button>
                 </form>
                 <button type="button" id="continueWithoutToken" class="ghost auth-oidc">Continue without token</button>
             </div>

@@ -169,6 +169,19 @@ namespace NMC::Server {
         bool docsEnabled;
         std::string authMode;
         std::unique_ptr<OIDCValidator> oidcValidator;
+        struct CentralAuthCacheEntry {
+            bool authenticated{false};
+            std::string user;
+            std::string role;
+            int64_t expiresAtMs{0};
+        };
+        std::string centralAuthSessionUrl;
+        std::string centralAuthLoginUrl;
+        int64_t centralAuthCacheTtlMs{15000};
+        int64_t centralAuthTimeoutMs{3000};
+        bool centralAuthTlsVerify{true};
+        mutable std::unordered_map<std::string, CentralAuthCacheEntry> centralAuthTokenCache;
+        mutable std::mutex centralAuthCacheMutex;
 
         // Utility methods for common server operations
         void logRequest(const httplib::Request& req, const httplib::Response& res) const;
@@ -194,6 +207,9 @@ namespace NMC::Server {
         bool authorizeOrReject(const httplib::Request& req, httplib::Response& res) const;
         bool shouldLogBody(const std::string& path) const;
         std::string redactBody(const std::string& body) const;
+        std::string extractAuthToken(const httplib::Request& req) const;
+        bool validateCentralAuthToken(const std::string& token, nlohmann::json* claimsOut = nullptr) const;
+        void handleAuthLogin(const httplib::Request& req, httplib::Response& res);
 
         // --- Bucket Handlers ---
         void handleCreateBucket(const httplib::Request& req, httplib::Response& res);

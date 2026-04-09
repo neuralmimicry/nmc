@@ -12,10 +12,16 @@
     "public_addr": {{ nmc_tracey_status_public_addr | to_json }}
   },
   "auth": {
-    "mode": "off",
-    "protect_status": false,
-    "protect_otlp_http": false,
-    "protect_otlp_grpc": false
+    "mode": {{ nmc_tracey_auth_mode | to_json }},
+    "protect_status": {{ (nmc_tracey_auth_protect_status | bool) | to_json }},
+    "protect_otlp_http": {{ (nmc_tracey_auth_protect_otlp_http | bool) | to_json }},
+    "protect_otlp_grpc": {{ (nmc_tracey_auth_protect_otlp_grpc | bool) | to_json }},
+    "token": {
+      "session_url": {{ nmc_tracey_auth_session_url | to_json }},
+      "static_token": {{ nmc_tracey_auth_token | to_json }},
+      "cache_ttl_ms": {{ (nmc_tracey_auth_cache_ttl_ms | int) | to_json }},
+      "http_timeout_ms": {{ (nmc_tracey_auth_timeout_ms | int) | to_json }}
+    }
   },
   "storage": {
     "log_path": {{ (nmc_tracey_state_dir ~ '/tracey.log.jsonl') | to_json }}

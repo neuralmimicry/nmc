@@ -25,6 +25,11 @@
     # Auth
     nmc_auth_mode: "token"
     nmc_auth_token: ""
+    nmc_central_auth_session_url: ""
+    nmc_central_auth_login_url: ""
+    nmc_central_auth_cache_ttl_ms: 15000
+    nmc_central_auth_timeout_ms: 3000
+    nmc_central_auth_tls_verify: true
     nmc_oidc_introspection_url: ""
     nmc_oidc_client_id: ""
     nmc_oidc_client_secret: ""
@@ -69,6 +74,14 @@
     nmc_tracey_config_path: "/etc/tracey/tracey-continuum-local.json"
     nmc_tracey_state_dir: "/var/lib/tracey"
     nmc_tracey_cve_root: "/var/lib/nmc/tracey_cve"
+    nmc_tracey_auth_mode: "off"
+    nmc_tracey_auth_protect_status: false
+    nmc_tracey_auth_protect_otlp_http: false
+    nmc_tracey_auth_protect_otlp_grpc: false
+    nmc_tracey_auth_session_url: ""
+    nmc_tracey_auth_token: ""
+    nmc_tracey_auth_cache_ttl_ms: 15000
+    nmc_tracey_auth_timeout_ms: 3000
 
     nmc_base_packages:
       - build-essential
@@ -94,12 +107,15 @@
           - nmc_auth_mode in ["token", "oidc", "off"]
         fail_msg: "nmc_auth_mode must be one of: token, oidc, off"
 
-    - name: Warn when token mode has no token
+    - name: Warn when token mode has no static token or central session URL
       ansible.builtin.debug:
-        msg: "NMC auth mode is token, but nmc_auth_token is empty. Token auth will be effectively disabled."
+        msg: >-
+          NMC auth mode is token, but both nmc_auth_token and
+          nmc_central_auth_session_url are empty. Token auth will be effectively disabled.
       when:
         - nmc_auth_mode == "token"
         - nmc_auth_token | length == 0
+        - nmc_central_auth_session_url | length == 0
 
     - name: Warn when OIDC mode has no introspection URL
       ansible.builtin.debug:
