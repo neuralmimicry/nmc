@@ -814,6 +814,8 @@
           ansible.builtin.command: >-
             cmake --build {{ nmc_build_dir }} -- -j{{ ansible_facts.processor_vcpus | default(2) }}
           become_user: "{{ nmc_effective_build_user }}"
+          notify:
+            - Restart nmc-server
 
         - name: Ensure world-readable build artifacts
           ansible.builtin.command: chmod -R a+rX {{ nmc_build_dir }}
@@ -950,6 +952,8 @@
             group: root
             mode: "0755"
             remote_src: true
+          notify:
+            - Restart tracey-sidecar
           when:
             - nmc_tracey_effective_bin | length == 0
             - nmc_tracey_build_if_missing
