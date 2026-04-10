@@ -197,6 +197,78 @@ class MockServer:
             self._send_json(handler, 200, {"route": "tracey_deepdive", "agent_id": agent_id})
             return
 
+        if handler.command == "GET" and path_only == "/proxmox/resources":
+            self._send_json(
+                handler,
+                200,
+                {
+                    "success": True,
+                    "message": "Proxmox resources retrieved.",
+                    "data": {"total_gpus": 24, "available_gpus": 10, "cluster_nodes": 4},
+                },
+            )
+            return
+
+        if handler.command == "GET" and path_only == "/proxmox/clusters":
+            self._send_json(
+                handler,
+                200,
+                {
+                    "success": True,
+                    "message": "Proxmox clusters listed.",
+                    "data": [
+                        {
+                            "name": "edge-pve",
+                            "status": "running",
+                            "endpoint": "https://pve.example.internal:8006",
+                            "provider": "proxmox",
+                        }
+                    ],
+                },
+            )
+            return
+
+        proxmox_details_match = re.match(r"^/proxmox/details/([^/]+)$", path_only)
+        if handler.command == "GET" and proxmox_details_match:
+            self._send_json(
+                handler,
+                200,
+                {
+                    "success": True,
+                    "message": "Proxmox cluster details retrieved.",
+                    "data": {
+                        "name": proxmox_details_match.group(1),
+                        "status": "running",
+                        "endpoint": "https://pve.example.internal:8006",
+                        "provider": "proxmox",
+                    },
+                },
+            )
+            return
+
+        if handler.command == "POST" and path_only == "/proxmox/clusters/request":
+            try:
+                payload = json.loads(body) if body else {}
+            except json.JSONDecodeError:
+                self._send_json(handler, 400, {"message": "invalid json payload"})
+                return
+            self._send_json(
+                handler,
+                200,
+                {
+                    "success": True,
+                    "message": "Proxmox cluster request submitted.",
+                    "data": {
+                        "cluster": {
+                            "name": payload.get("name", "unknown"),
+                            "status": "creating",
+                            "provider": payload.get("provider", "proxmox"),
+                        }
+                    },
+                },
+            )
+            return
+
         self._send_json(handler, 404, {"message": "not found"})
 
 
@@ -459,6 +531,82 @@ def test_malformed_upstream_response_fails_predictably(server: MockServer, home_
     )
 
 
+def test_proxmox_request_serialization(server: MockServer, home_dir: pathlib.Path) -> None:
+    server.clear_records()
+    result = run_nmc(
+        [
+            "proxmox",
+            "request",
+            "edge-pve",
+            "--org",
+            "neuralmimicry",
+            "--gpu-count",
+            "4",
+            "--arch",
+            "amd64",
+            "--region",
+            "edge-1",
+            "--provider",
+            "proxmox",
+        ],
+        home_dir,
+    )
+    assert_success(result, "proxmox request")
+
+    records = server.records()
+    assert_true(len(records) == 1, f"proxmox request expected 1 request, got {len(records)}")
+    req = records[0]
+    assert_true(req.method == "POST", f"proxmox request expected POST, got {req.method}")
+    assert_true(req.path == "/proxmox/clusters/request", f"proxmox request wrong path: {req.path}")
+    payload = json.loads(req.body or "{}")
+    assert_true(payload.get("name") == "edge-pve", "proxmox request missing name")
+    assert_true(payload.get("organization") == "neuralmimicry", "proxmox request missing organization")
+    assert_true(payload.get("gpu_count") == 4, "proxmox request missing gpu_count")
+    assert_true(payload.get("architecture") == "amd64", "proxmox request missing architecture")
+    assert_true(payload.get("region") == "edge-1", "proxmox request missing region")
+    assert_true(payload.get("provider") == "proxmox", "proxmox request missing provider")
+
+
+def test_proxmox_status_serialization(server: MockServer, home_dir: pathlib.Path) -> None:
+    server.clear_records()
+    result = run_nmc(["proxmox", "status", "edge-pve"], home_dir)
+    assert_success(result, "proxmox status")
+
+    records = server.records()
+    assert_true(len(records) == 1, f"proxmox status expected 1 request, got {len(records)}")
+    req = records[0]
+    assert_true(req.method == "GET", f"proxmox status expected GET, got {req.method}")
+    assert_true(req.path == "/proxmox/details/edge-pve", f"proxmox status wrong path: {req.path}")
+
+
+def test_proxmox_invalid_provider_fails_before_network(server: MockServer, home_dir: pathlib.Path) -> None:
+    server.clear_records()
+    result = run_nmc(
+        [
+            "proxmox",
+            "request",
+            "edge-pve",
+            "--org",
+            "neuralmimicry",
+            "--gpu-count",
+            "4",
+            "--arch",
+            "amd64",
+            "--region",
+            "edge-1",
+            "--provider",
+            "vmware",
+        ],
+        home_dir,
+    )
+    assert_failure(result, "proxmox request invalid-provider")
+    assert_true(
+        "provider must be one of: proxmox, proxmox-ve, hybrid-burst." in result.stderr,
+        f"expected proxmox provider validation error, got stderr:\n{result.stderr}",
+    )
+    assert_true(len(server.records()) == 0, "invalid proxmox provider should not perform network calls")
+
+
 def main() -> int:
     if not NMC_BIN.exists():
         print(
@@ -485,6 +633,9 @@ def main() -> int:
             test_invalid_flag_fails_before_network(server, home_dir)
             test_invalid_adaptive_policy_fails_before_network(server, home_dir)
             test_malformed_upstream_response_fails_predictably(server, home_dir)
+            test_proxmox_request_serialization(server, home_dir)
+            test_proxmox_status_serialization(server, home_dir)
+            test_proxmox_invalid_provider_fails_before_network(server, home_dir)
     except AssertionError as exc:
         print(f"[functional-test] FAILED: {exc}", file=sys.stderr)
         return 1

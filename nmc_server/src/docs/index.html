@@ -42,7 +42,7 @@
 <header class="hero hero-compact">
     <div>
         <h1><img class="headline-logo" src="/public/nmcontinuum.png" alt="Continuum logo"> Control Centre</h1>
-        <p class="subtitle">Unified status and health monitoring for Kubernetes, OpenShift, OpenStack, VM workloads, and detected Tracey agents.</p>
+        <p class="subtitle">Unified status and health monitoring for Kubernetes, OpenShift, OpenStack, Proxmox, VM workloads, and detected Tracey agents.</p>
     </div>
     <a class="site-nav-link site-nav-cta" href="/login">Sign in</a>
 </header>
@@ -73,6 +73,11 @@
         <article class="card">
             <h2>OpenStack Clusters</h2>
             <p class="metric" id="openstackMetric">-- / --</p>
+            <p class="label">Ready / Total</p>
+        </article>
+        <article class="card">
+            <h2>Proxmox Clusters</h2>
+            <p class="metric" id="proxmoxMetric">-- / --</p>
             <p class="label">Ready / Total</p>
         </article>
         <article class="card">
@@ -173,6 +178,27 @@
                     </thead>
                     <tbody id="openstackRows">
                     <tr><td colspan="3" class="empty">Loading OpenStack status...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </article>
+
+        <article class="panel">
+            <div class="panel-title-row">
+                <h3>Proxmox Cluster Status</h3>
+                <span class="panel-tag">/proxmox/clusters</span>
+            </div>
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>Endpoint</th>
+                        <th>Status</th>
+                    </tr>
+                    </thead>
+                    <tbody id="proxmoxRows">
+                    <tr><td colspan="3" class="empty">Loading Proxmox status...</td></tr>
                     </tbody>
                 </table>
             </div>
@@ -312,6 +338,7 @@
                 <div class="check-item"><span>Connection API</span><strong id="connStatus">Checking</strong></div>
                 <div class="check-item"><span>OpenShift Resources</span><strong id="resourceStatus">Checking</strong></div>
                 <div class="check-item"><span>OpenStack Resources</span><strong id="openstackResourceStatus">Checking</strong></div>
+                <div class="check-item"><span>Proxmox Resources</span><strong id="proxmoxResourceStatus">Checking</strong></div>
                 <div class="check-item"><span>VM Inventory</span><strong id="vmInventoryStatus">Checking</strong></div>
                 <div class="check-item"><span>Tracey Reporting</span><strong id="traceyStatus">Checking</strong></div>
             </div>
@@ -329,6 +356,7 @@
             <a href="/vcluster.html">VCluster API</a>
             <a href="/openshift.html">OpenShift API</a>
             <a href="/openstack.html">OpenStack API</a>
+            <a href="/proxmox.html">Proxmox API</a>
             <a href="/model.html">Model API</a>
             <a href="/node.html">Node Recruitment API</a>
             <a href="/ssh.html">SSH API</a>

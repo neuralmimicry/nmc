@@ -25,7 +25,7 @@ The server is responsible for:
 - HTTP route registration and request guards
 - Kubernetes-backed handlers for `k8s` and `vcluster`
 - in-memory resource handlers for several CRUD-style surfaces
-- OpenShift and OpenStack portal proxying
+- OpenShift, OpenStack, and Proxmox portal proxying
 - Tracey discovery, status polling, fleet views, adaptive loop synthesis, compromise-assessment brokering, and control forwarding
 - built-in operator web docs when `NMC_DOCS_ENABLED=true`
 
@@ -34,6 +34,7 @@ Primary modules:
 - `nmc_server/src/Core/K8sHandlers*`: Kubernetes and vcluster handlers
 - `nmc_server/src/Core/OpenShiftClient.*`: OpenShift portal transport
 - `nmc_server/src/Core/OpenStackClient.*`: OpenStack portal transport
+- `nmc_server/src/Core/ProxmoxClient.*`: Proxmox portal transport
 - `nmc_server/src/Core/OIDCValidator.*`: RFC 7662 bearer-token introspection
 - `nmc_server/src/Core/TraceyCVEIntel.*`: Tracey CVE mirror state
 - `nmc_server/src/docs/`: web documentation copied into the server build directory
@@ -58,6 +59,7 @@ Primary modules:
 | Virtual clusters | `nmc vcluster *` | `/vcluster/*` + `K8sHandlers_VCluster_*` | Kubernetes-backed workload plus in-memory config registry |
 | OpenShift portal | `nmc openshift *` | `/openshift/*` + `OpenShiftClient` | proxied to external portal |
 | OpenStack portal | `nmc openstack *` | `/openstack/*` + `OpenStackClient` | proxied to external portal |
+| Proxmox portal | `nmc proxmox *` | `/proxmox/*` + `ProxmoxClient` | proxied to external portal |
 | Tracey | `nmc tracey *` | `/tracey/*` routes | in-memory server state with discovery, status polling, adaptive-loop synthesis, and assessment handoff |
 | Refiner | `nmc refiner *` | local `kubectl` plus limited `/k8s/refiner/*` routes | local cluster operations or server passthrough |
 | Node recruitment | `nmc node recruit` | direct SSH/SCP or `POST /node/recruit` | imperative execution with optional Ansible follow-up |
@@ -141,7 +143,7 @@ Placement intent is operator-tunable through the `policy` query on `/tracey/adap
 
 That same adaptive contract drives the CLI, the built-in docs, and dashboard-facing Continuum operator views, so closed-loop behaviour is native to the existing control plane rather than a separate service.
 
-Managed-resource enforcement is route-driven for several server-side create flows (`vm`, `k8s`, `openshift`, `openstack`, `node`). The vcluster server path stores Tracey metadata in config/create responses but does not currently register the same managed-resource requirement hook.
+Managed-resource enforcement is route-driven for several server-side create flows (`vm`, `k8s`, `openshift`, `openstack`, `proxmox`, `node`). The vcluster server path stores Tracey metadata in config/create responses but does not currently register the same managed-resource requirement hook.
 
 ### 5.3 Refiner
 
@@ -184,6 +186,6 @@ Implemented patterns include:
 
 - Several resource families are demo-style or in-memory rather than durable services.
 - The server build has a heavier dependency chain than the CLI because it embeds the Kubernetes C client.
-- OpenShift and OpenStack flows depend on external portal API contracts.
+- OpenShift, OpenStack, and Proxmox flows depend on external portal API contracts.
 - Vcluster `config-update` stores new configuration metadata but does not hot-apply most changes to running workloads.
 - Vcluster metrics are pod/state summaries, not full Prometheus resource telemetry.

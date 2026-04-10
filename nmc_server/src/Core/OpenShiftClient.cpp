@@ -94,7 +94,7 @@ namespace NMC::Server {
                     apiResponse.data = nlohmann::json::parse(res->body);
                 } catch (const nlohmann::json::parse_error& e) {
                     apiResponse.success = false;
-                    apiResponse.message = "Failed to parse OpenShift response: " + std::string(e.what());
+                    apiResponse.message = "Failed to parse " + backendLabel + " response: " + std::string(e.what());
                     apiResponse.data = res->body;
                 }
             } else {

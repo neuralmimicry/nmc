@@ -21,6 +21,7 @@
 #include "../Models/CloudResponse.h"
 #include "OpenStackClient.h"
 #include "OpenShiftClient.h"
+#include "ProxmoxClient.h"
 #include "OIDCValidator.h"
 #include "TraceyCVEIntel.h"
 
@@ -250,6 +251,10 @@ namespace NMC::Server {
         void handleOpenStackClusters(const httplib::Request& req, httplib::Response& res);
         void handleOpenStackClusterDetails(const httplib::Request& req, httplib::Response& res);
         void handleOpenStackRequestCluster(const httplib::Request& req, httplib::Response& res);
+        void handleProxmoxResources(const httplib::Request& req, httplib::Response& res);
+        void handleProxmoxClusters(const httplib::Request& req, httplib::Response& res);
+        void handleProxmoxClusterDetails(const httplib::Request& req, httplib::Response& res);
+        void handleProxmoxRequestCluster(const httplib::Request& req, httplib::Response& res);
         void handleServerVersion(const httplib::Request& req, httplib::Response& res);
         void handleTraceyHeartbeat(const httplib::Request& req, httplib::Response& res);
         void handleListTraceyAgents(const httplib::Request& req, httplib::Response& res);
@@ -298,6 +303,7 @@ namespace NMC::Server {
         std::unique_ptr<K8sHandlers> k8sHandlers;
         std::unique_ptr<OpenStackClient> openStackClient;
         std::unique_ptr<OpenShiftClient> openShiftClient;
+        std::unique_ptr<ProxmoxClient> proxmoxClient;
     };
 
 } // namespace NMC::Server

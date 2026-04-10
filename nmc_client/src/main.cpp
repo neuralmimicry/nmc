@@ -6,6 +6,7 @@
 #include "Commands/ModelCommands.h"
 #include "Commands/SSHCommands.h"
 #include "Commands/OpenShiftCommands.h"
+#include "Commands/ProxmoxCommands.h"
 #include "Commands/ServerCommands.h"
 #include "Commands/TraceyCommands.h"
 #include "Commands/VMCommands.h"
@@ -37,9 +38,6 @@ int main(int argc, char* argv[]) {
             "127.0.0.1",
             8080,
             NMC::Core::Utils::getConfigPath());
-
-    // Register Root Command (mainly for help output)
-    auto rootCmd = std::make_shared<NMC::Commands::RootCommand>(apiClient);
 
     // Register top-level commands and their subcommand workflows.
     auto bucketCmd = std::make_shared<NMC::Commands::BucketCommand>(apiClient);
@@ -106,6 +104,13 @@ int main(int argc, char* argv[]) {
     openStackCmd->addSubcommand(std::make_shared<NMC::Commands::OpenStackRequestCommand>(apiClient));
     openStackCmd->addSubcommand(std::make_shared<NMC::Commands::OpenStackStatusCommand>(apiClient));
     parser.registerCommand(openStackCmd);
+
+    auto proxmoxCmd = std::make_shared<NMC::Commands::ProxmoxCommand>(apiClient);
+    proxmoxCmd->addSubcommand(std::make_shared<NMC::Commands::ProxmoxResourcesCommand>(apiClient));
+    proxmoxCmd->addSubcommand(std::make_shared<NMC::Commands::ProxmoxClustersCommand>(apiClient));
+    proxmoxCmd->addSubcommand(std::make_shared<NMC::Commands::ProxmoxRequestCommand>(apiClient));
+    proxmoxCmd->addSubcommand(std::make_shared<NMC::Commands::ProxmoxStatusCommand>(apiClient));
+    parser.registerCommand(proxmoxCmd);
 
     auto serverCmd = std::make_shared<NMC::Commands::ServerCommand>(apiClient);
     serverCmd->addSubcommand(std::make_shared<NMC::Commands::ServerHealthCommand>(apiClient));

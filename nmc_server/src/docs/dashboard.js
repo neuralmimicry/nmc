@@ -10,6 +10,7 @@
         vclusterMetric: document.getElementById("vclusterMetric"),
         openshiftMetric: document.getElementById("openshiftMetric"),
         openstackMetric: document.getElementById("openstackMetric"),
+        proxmoxMetric: document.getElementById("proxmoxMetric"),
         vmMetric: document.getElementById("vmMetric"),
         traceyMetric: document.getElementById("traceyMetric"),
         traceyAdaptiveMetric: document.getElementById("traceyAdaptiveMetric"),
@@ -23,6 +24,7 @@
         vclusterRows: document.getElementById("vclusterRows"),
         openshiftRows: document.getElementById("openshiftRows"),
         openstackRows: document.getElementById("openstackRows"),
+        proxmoxRows: document.getElementById("proxmoxRows"),
         traceyRows: document.getElementById("traceyRows"),
         traceyNetworkRows: document.getElementById("traceyNetworkRows"),
         traceyAdaptiveSummaryCards: document.getElementById("traceyAdaptiveSummaryCards"),
@@ -36,6 +38,7 @@
         connStatus: document.getElementById("connStatus"),
         resourceStatus: document.getElementById("resourceStatus"),
         openstackResourceStatus: document.getElementById("openstackResourceStatus"),
+        proxmoxResourceStatus: document.getElementById("proxmoxResourceStatus"),
         vmInventoryStatus: document.getElementById("vmInventoryStatus"),
         traceyStatus: document.getElementById("traceyStatus"),
         clusterDetailsModal: document.getElementById("clusterDetailsModal"),
@@ -3485,25 +3488,29 @@
             vclusterListRes,
             openshiftClustersRes,
             openstackClustersRes,
+            proxmoxClustersRes,
             vmListRes,
             traceyAgentsRes,
             traceyAdaptiveRes,
             k8sHealthRes,
             connectionRes,
             openshiftResourcesRes,
-            openstackResourcesRes
+            openstackResourcesRes,
+            proxmoxResourcesRes
         ] = await Promise.all([
             fetchJson("/k8s/list"),
             fetchJson("/vcluster/list"),
             fetchJson("/openshift/clusters"),
             fetchJson("/openstack/clusters"),
+            fetchJson("/proxmox/clusters"),
             fetchJson("/vm/list"),
             fetchJson("/tracey/agents"),
             fetchJson(buildTraceyAdaptivePath()),
             fetchJson("/k8s/healthz"),
             fetchJson("/connections/status"),
             fetchJson("/openshift/resources"),
-            fetchJson("/openstack/resources")
+            fetchJson("/openstack/resources"),
+            fetchJson("/proxmox/resources")
         ]);
 
         const allResponses = [
@@ -3511,13 +3518,15 @@
             vclusterListRes,
             openshiftClustersRes,
             openstackClustersRes,
+            proxmoxClustersRes,
             vmListRes,
             traceyAgentsRes,
             traceyAdaptiveRes,
             k8sHealthRes,
             connectionRes,
             openshiftResourcesRes,
-            openstackResourcesRes
+            openstackResourcesRes,
+            proxmoxResourcesRes
         ];
         updateAuthPill(allResponses);
 
@@ -3586,6 +3595,17 @@
         });
         renderRows(nodes.openstackRows, openstackRows, "No OpenStack clusters detected.", 3);
 
+        const proxmoxItems = arrayFromUnknown(proxmoxClustersRes.payload);
+        const proxmoxSummary = summarizeRunning(proxmoxItems);
+        nodes.proxmoxMetric.textContent = `${proxmoxSummary.running} / ${proxmoxSummary.total}`;
+        const proxmoxRows = proxmoxItems.map((cluster) => {
+            const name = cluster.name || cluster.id || "unknown";
+            const endpoint = cluster.endpoint || cluster.api || cluster.console || "-";
+            const status = cluster.status || "Unknown";
+            return `<tr><td>${escapeHtml(name)}</td><td>${escapeHtml(endpoint)}</td><td>${statusBadge(status)}</td></tr>`;
+        });
+        renderRows(nodes.proxmoxRows, proxmoxRows, "No Proxmox clusters detected.", 3);
+
         const vmItems = arrayFromUnknown(vmListRes.payload);
         const vmSummary = summarizeRunning(vmItems);
         nodes.vmMetric.textContent = `${vmSummary.running} / ${vmSummary.total}`;
@@ -3640,6 +3660,7 @@
         setCheck(nodes.connStatus, connectionText, connectionRes.ok ? "#22c55e" : "#ef4444");
         setCheck(nodes.resourceStatus, openshiftResourcesRes.ok ? "Reachable" : "Unavailable", openshiftResourcesRes.ok ? "#22c55e" : "#ef4444");
         setCheck(nodes.openstackResourceStatus, openstackResourcesRes.ok ? "Reachable" : "Unavailable", openstackResourcesRes.ok ? "#22c55e" : "#ef4444");
+        setCheck(nodes.proxmoxResourceStatus, proxmoxResourcesRes.ok ? "Reachable" : "Unavailable", proxmoxResourcesRes.ok ? "#22c55e" : "#ef4444");
         setCheck(nodes.vmInventoryStatus, vmListRes.ok ? `${vmItems.length} listed` : "Unavailable", vmListRes.ok ? "#22c55e" : "#ef4444");
         const reachableTracey = Number(traceySummary.reachable || 0);
         const discoveredTracey = Number(traceySummary.discovered || 0);

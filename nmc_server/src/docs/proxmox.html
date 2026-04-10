@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Proxmox API Documentation</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="container">
+    <h1>Proxmox API Endpoints</h1>
+
+    <section>
+        <h2>List Proxmox Resources</h2>
+        <p><strong>Endpoint:</strong> <code>GET /proxmox/resources</code></p>
+        <p>Returns a snapshot of available Proxmox capacity from the configured backend provider service.</p>
+        <h3>Successful Response (HTTP 200 OK):</h3>
+        <pre><code class="language-json">
+{
+    "success": true,
+    "message": "Proxmox resources retrieved.",
+    "data": {
+        "total_gpus": 24,
+        "available_gpus": 10,
+        "cluster_nodes": 4,
+        "storage_tb": 96
+    }
+}
+            </code></pre>
+    </section>
+
+    <section>
+        <h2>List Proxmox Clusters</h2>
+        <p><strong>Endpoint:</strong> <code>GET /proxmox/clusters</code></p>
+        <p>Returns clusters known to the Proxmox orchestration backend.</p>
+        <p>Status values are normalized to NMC states: <code>Pending</code>, <code>Provisioning</code>, <code>Ready</code>, <code>Failed</code>, <code>Unknown</code>.</p>
+        <h3>Successful Response (HTTP 200 OK):</h3>
+        <pre><code class="language-json">
+{
+    "success": true,
+    "message": "Proxmox clusters listed.",
+    "data": [
+        {
+            "name": "edge-pve-prod",
+            "status": "Ready",
+            "endpoint": "https://pve.edge.example.com:8006",
+            "provider": "proxmox"
+        }
+    ]
+}
+            </code></pre>
+    </section>
+
+    <section>
+        <h2>Get Proxmox Cluster Details</h2>
+        <p><strong>Endpoint:</strong> <code>GET /proxmox/details/{idOrName}</code></p>
+        <p>Returns details for one Proxmox cluster, including endpoint-derived hosts/IPs and ports in use.</p>
+        <h3>Successful Response (HTTP 200 OK):</h3>
+        <pre><code class="language-json">
+{
+    "success": true,
+    "message": "Proxmox cluster details retrieved.",
+    "data": {
+        "name": "edge-pve-prod",
+        "status": "Ready",
+        "endpoint": "https://pve.edge.example.com:8006",
+        "networking": {
+            "endpoint": "https://pve.edge.example.com:8006",
+            "endpoint_candidates": [
+                "https://pve.edge.example.com:8006"
+            ],
+            "ips_in_use": [
+                "pve.edge.example.com"
+            ],
+            "ports_in_use": [
+                8006
+            ]
+        }
+    }
+}
+            </code></pre>
+    </section>
+
+    <section>
+        <h2>Request Proxmox Cluster</h2>
+        <p><strong>Endpoint:</strong> <code>POST /proxmox/clusters/request</code></p>
+        <p>Submits a Proxmox cluster provisioning request to the configured backend provider API.</p>
+        <p><strong>Provider options:</strong> <code>proxmox</code>, <code>proxmox-ve</code>, <code>hybrid-burst</code>.</p>
+        <p><strong>Tracey policy:</strong> requests must include a <code>tracey</code> block when managed-resource compliance is required.</p>
+        <h3>Request Body:</h3>
+        <pre><code class="language-json">
+{
+    "name": "edge-pve-example",
+    "organization": "neuralmimicry",
+    "gpu_count": 8,
+    "architecture": "amd64",
+    "region": "edge-1",
+    "provider": "proxmox",
+    "tracey": {
+        "agent_id": "tracey-edge-pve-example",
+        "status_addr": "https://10.20.0.37:48000"
+    }
+}
+            </code></pre>
+        <h3>Successful Response (HTTP 200 OK):</h3>
+        <pre><code class="language-json">
+{
+    "success": true,
+    "message": "Proxmox cluster request submitted.",
+    "data": {
+        "cluster": {
+            "name": "edge-pve-example",
+            "status": "Provisioning",
+            "provider": "proxmox"
+        },
+        "tracey": {
+            "required": true,
+            "agent_id": "tracey-edge-pve-example",
+            "status_addr": "https://10.20.0.37:48000",
+            "compliance_state": "pending"
+        }
+    }
+}
+            </code></pre>
+    </section>
+
+    <section>
+        <h2>Status Polling (CLI)</h2>
+        <p>The CLI can poll cluster status via:</p>
+        <pre><code class="language-bash">
+./nmc proxmox status edge-pve-example --watch --until Ready --interval 10 --timeout 900
+        </code></pre>
+        <p>Under the hood, this repeatedly calls <code>GET /proxmox/details/{idOrName}</code> until the target status is reached or timeout expires.</p>
+    </section>
+
+</div>
+</body>
+</html>

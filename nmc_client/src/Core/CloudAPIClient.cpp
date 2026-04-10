@@ -91,6 +91,14 @@ namespace {
         fallback.statusCode = 200;
         return fallback;
     }
+
+    // Unwrap the server's standard {success,message,data} envelope when present.
+    nlohmann::json unwrapEnvelopeData(const nlohmann::json& payload) {
+        if (payload.is_object() && payload.contains("data")) {
+            return payload["data"];
+        }
+        return payload;
+    }
 }
 
 namespace NMC::Core {
@@ -623,7 +631,7 @@ namespace NMC::Core {
         return processHttpResponse(res, "VM '" + id + "' suspended successfully.");
     }
 
-// --- OpenShift / OpenStack Continuum Operations ---
+// --- OpenShift / OpenStack / Proxmox Continuum Operations ---
     Models::CloudResponse CloudAPIClient::getServerHealth() {
         auto res = cli->Get("/health");
         return processHttpResponse(res, "Server health retrieved.");
@@ -636,17 +644,28 @@ namespace NMC::Core {
 
     Models::CloudResponse CloudAPIClient::listOpenShiftResources() {
         auto res = cli->Get("/openshift/resources");
-        return processHttpResponse(res, "OpenShift resources retrieved.");
+        auto apiResponse = processHttpResponse(res, "OpenShift resources retrieved.");
+        if (apiResponse.success) {
+            apiResponse.data = unwrapEnvelopeData(apiResponse.data);
+        }
+        return apiResponse;
     }
 
     Models::CloudResponse CloudAPIClient::listOpenShiftClusters() {
         auto res = cli->Get("/openshift/clusters");
-        return processHttpResponse(res, "OpenShift clusters listed.");
+        auto apiResponse = processHttpResponse(res, "OpenShift clusters listed.");
+        if (apiResponse.success) {
+            apiResponse.data = extractClusterArray(apiResponse.data);
+        }
+        return apiResponse;
     }
 
     Models::CloudResponse CloudAPIClient::getOpenShiftClusterDetails(const std::string& idOrName) {
         auto res = cli->Get("/openshift/details/" + idOrName);
         auto apiResponse = processHttpResponse(res, "OpenShift cluster details retrieved.");
+        if (apiResponse.success) {
+            apiResponse.data = unwrapEnvelopeData(apiResponse.data);
+        }
         if (apiResponse.success || (res && res->status != 404)) {
             return apiResponse;
         }
@@ -674,22 +693,37 @@ namespace NMC::Core {
         }
 
         auto res = cli->Post("/openshift/clusters/request", request_body.dump(), "application/json");
-        return processHttpResponse(res, "OpenShift cluster request submitted.");
+        auto apiResponse = processHttpResponse(res, "OpenShift cluster request submitted.");
+        if (apiResponse.success) {
+            apiResponse.data = unwrapEnvelopeData(apiResponse.data);
+        }
+        return apiResponse;
     }
 
     Models::CloudResponse CloudAPIClient::listOpenStackResources() {
         auto res = cli->Get("/openstack/resources");
-        return processHttpResponse(res, "OpenStack resources retrieved.");
+        auto apiResponse = processHttpResponse(res, "OpenStack resources retrieved.");
+        if (apiResponse.success) {
+            apiResponse.data = unwrapEnvelopeData(apiResponse.data);
+        }
+        return apiResponse;
     }
 
     Models::CloudResponse CloudAPIClient::listOpenStackClusters() {
         auto res = cli->Get("/openstack/clusters");
-        return processHttpResponse(res, "OpenStack clusters listed.");
+        auto apiResponse = processHttpResponse(res, "OpenStack clusters listed.");
+        if (apiResponse.success) {
+            apiResponse.data = extractClusterArray(apiResponse.data);
+        }
+        return apiResponse;
     }
 
     Models::CloudResponse CloudAPIClient::getOpenStackClusterDetails(const std::string& idOrName) {
         auto res = cli->Get("/openstack/details/" + idOrName);
         auto apiResponse = processHttpResponse(res, "OpenStack cluster details retrieved.");
+        if (apiResponse.success) {
+            apiResponse.data = unwrapEnvelopeData(apiResponse.data);
+        }
         if (apiResponse.success || (res && res->status != 404)) {
             return apiResponse;
         }
@@ -717,7 +751,69 @@ namespace NMC::Core {
         }
 
         auto res = cli->Post("/openstack/clusters/request", request_body.dump(), "application/json");
-        return processHttpResponse(res, "OpenStack cluster request submitted.");
+        auto apiResponse = processHttpResponse(res, "OpenStack cluster request submitted.");
+        if (apiResponse.success) {
+            apiResponse.data = unwrapEnvelopeData(apiResponse.data);
+        }
+        return apiResponse;
+    }
+
+    Models::CloudResponse CloudAPIClient::listProxmoxResources() {
+        auto res = cli->Get("/proxmox/resources");
+        auto apiResponse = processHttpResponse(res, "Proxmox resources retrieved.");
+        if (apiResponse.success) {
+            apiResponse.data = unwrapEnvelopeData(apiResponse.data);
+        }
+        return apiResponse;
+    }
+
+    Models::CloudResponse CloudAPIClient::listProxmoxClusters() {
+        auto res = cli->Get("/proxmox/clusters");
+        auto apiResponse = processHttpResponse(res, "Proxmox clusters listed.");
+        if (apiResponse.success) {
+            apiResponse.data = extractClusterArray(apiResponse.data);
+        }
+        return apiResponse;
+    }
+
+    Models::CloudResponse CloudAPIClient::getProxmoxClusterDetails(const std::string& idOrName) {
+        auto res = cli->Get("/proxmox/details/" + idOrName);
+        auto apiResponse = processHttpResponse(res, "Proxmox cluster details retrieved.");
+        if (apiResponse.success) {
+            apiResponse.data = unwrapEnvelopeData(apiResponse.data);
+        }
+        if (apiResponse.success || (res && res->status != 404)) {
+            return apiResponse;
+        }
+
+        // Backward compatibility for older servers that do not expose /proxmox/details.
+        return resolveClusterDetailsFromList("Proxmox", idOrName, listProxmoxClusters());
+    }
+
+    Models::CloudResponse CloudAPIClient::requestProxmoxCluster(const std::string& name,
+                                                                const std::string& organization,
+                                                                int gpuCount,
+                                                                const std::string& architecture,
+                                                                const std::string& region,
+                                                                const std::string& provider,
+                                                                const std::vector<std::string>& burstTargets) {
+        nlohmann::json request_body;
+        request_body["name"] = name;
+        request_body["organization"] = organization;
+        request_body["gpu_count"] = gpuCount;
+        request_body["architecture"] = architecture;
+        request_body["region"] = region;
+        request_body["provider"] = provider;
+        if (!burstTargets.empty()) {
+            request_body["burst_targets"] = burstTargets;
+        }
+
+        auto res = cli->Post("/proxmox/clusters/request", request_body.dump(), "application/json");
+        auto apiResponse = processHttpResponse(res, "Proxmox cluster request submitted.");
+        if (apiResponse.success) {
+            apiResponse.data = unwrapEnvelopeData(apiResponse.data);
+        }
+        return apiResponse;
     }
 
     Models::CloudResponse CloudAPIClient::recruitNode(const nlohmann::json& requestPayload) {

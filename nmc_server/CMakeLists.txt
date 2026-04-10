@@ -172,6 +172,7 @@ set(NMC_SERVER_SOURCES
         src/Core/OIDCValidator.cpp
         src/Core/OpenStackClient.cpp
         src/Core/OpenShiftClient.cpp
+        src/Core/ProxmoxClient.cpp
         src/Core/TraceyCVEIntel.cpp
         src/Core/VersionCheck.cpp
         src/Core/Utils.cpp

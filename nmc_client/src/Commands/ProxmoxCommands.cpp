@@ -1,0 +1,366 @@
+// nmc_client/src/Commands/ProxmoxCommands.cpp
+#include "ProxmoxCommands.h"
+#include <chrono>
+#include <cctype>
+#include <iostream>
+#include <nlohmann/json.hpp>
+#include <set>
+#include <sstream>
+#include <thread>
+
+namespace NMC::Commands {
+
+    namespace {
+        std::string toLower(std::string value) {
+            for (auto& ch : value) {
+                ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+            }
+            return value;
+        }
+
+        std::string trim(const std::string& value) {
+            const auto start = value.find_first_not_of(" \t");
+            if (start == std::string::npos) {
+                return "";
+            }
+            const auto end = value.find_last_not_of(" \t");
+            return value.substr(start, end - start + 1);
+        }
+
+        std::vector<std::string> splitCommaList(const std::string& input) {
+            std::vector<std::string> out;
+            std::stringstream ss(input);
+            std::string item;
+            while (std::getline(ss, item, ',')) {
+                const std::string trimmed = trim(item);
+                if (!trimmed.empty()) {
+                    out.push_back(trimmed);
+                }
+            }
+            return out;
+        }
+
+        std::string normalizeStatus(const std::string& rawStatus) {
+            const std::string status = toLower(trim(rawStatus));
+            if (status == "ready" || status == "running" || status == "active" || status == "available") {
+                return "Ready";
+            }
+            if (status == "failed" || status == "error" || status == "unhealthy" || status == "deleted" || status == "terminated") {
+                return "Failed";
+            }
+            if (status == "pending" || status == "accepted" || status == "queued" || status == "requested") {
+                return "Pending";
+            }
+            if (status == "provisioning" || status == "gitops-syncing" || status == "gitops_syncing" ||
+                status == "syncing" || status == "installing" || status == "creating" ||
+                status == "build" || status == "rebuild" || status == "spawning") {
+                return "Provisioning";
+            }
+            return "Unknown";
+        }
+
+        std::string normalizeTarget(const std::string& rawTarget) {
+            const std::string target = toLower(trim(rawTarget));
+            if (target == "ready") {
+                return "Ready";
+            }
+            if (target == "failed") {
+                return "Failed";
+            }
+            if (target == "pending") {
+                return "Pending";
+            }
+            if (target == "provisioning") {
+                return "Provisioning";
+            }
+            if (target == "unknown") {
+                return "Unknown";
+            }
+            return "";
+        }
+    } // namespace
+
+    ProxmoxCommand::ProxmoxCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client)
+            : BaseCommand("proxmox", "Manage Proxmox resources via NeuralMimicry Continuum", std::move(client)) {
+        usage = "nmc proxmox [command]";
+        addAlias("pve");
+    }
+
+    int ProxmoxCommand::execute(const std::map<std::string, std::string>&,
+                                const std::vector<std::string>&,
+                                const CLI::GlobalFlags&) {
+        printHelp();
+        return 0;
+    }
+
+    ProxmoxResourcesCommand::ProxmoxResourcesCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client)
+            : BaseCommand("resources", "Show available Proxmox capacity", std::move(client)) {
+        usage = "nmc proxmox resources";
+        examples = "nmc proxmox resources";
+    }
+
+    int ProxmoxResourcesCommand::execute(const std::map<std::string, std::string>& parsedFlags,
+                                         const std::vector<std::string>& parsedArgs,
+                                         const CLI::GlobalFlags& globalFlags) {
+        if (!validateArguments(parsedArgs) || !validateFlags(parsedFlags)) {
+            return 1;
+        }
+        Models::CloudResponse response = apiClient->listProxmoxResources();
+        printOutput(response, globalFlags);
+        return response.success ? 0 : 1;
+    }
+
+    ProxmoxClustersCommand::ProxmoxClustersCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client)
+            : BaseCommand("clusters", "List Proxmox clusters", std::move(client)) {
+        usage = "nmc proxmox clusters";
+        examples = "nmc proxmox clusters";
+    }
+
+    int ProxmoxClustersCommand::execute(const std::map<std::string, std::string>& parsedFlags,
+                                        const std::vector<std::string>& parsedArgs,
+                                        const CLI::GlobalFlags& globalFlags) {
+        if (!validateArguments(parsedArgs) || !validateFlags(parsedFlags)) {
+            return 1;
+        }
+        Models::CloudResponse response = apiClient->listProxmoxClusters();
+        if (response.success && response.data.is_array()) {
+            nlohmann::json normalized = nlohmann::json::array();
+            for (auto& cluster : response.data) {
+                if (cluster.is_object() && cluster.contains("status") && cluster["status"].is_string()) {
+                    cluster["status"] = normalizeStatus(cluster["status"].get<std::string>());
+                }
+                normalized.push_back(cluster);
+            }
+            response.data = normalized;
+        }
+        printOutput(response, globalFlags);
+        return response.success ? 0 : 1;
+    }
+
+    ProxmoxRequestCommand::ProxmoxRequestCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client)
+            : BaseCommand("request", "Request a new Proxmox cluster", std::move(client)) {
+        usage = "nmc proxmox request NAME --org ORG --gpu-count 8 --arch amd64 --region edge-1 --provider proxmox";
+        examples = "nmc proxmox request hpc-pve --org neuralmimicry --gpu-count 8 --arch amd64 --region edge-1 --provider proxmox";
+        addArgument(CLI::Argument("NAME", "Cluster name", true, 0));
+        addFlag(CLI::Flag("o", "org", "Organization name", CLI::FlagType::String, true));
+        addFlag(CLI::Flag("g", "gpu-count", "Requested GPU count", CLI::FlagType::Int, true));
+        addFlag(CLI::Flag("a", "arch", "Architecture: amd64 or arm64", CLI::FlagType::String, true));
+        addFlag(CLI::Flag("r", "region", "Region or location", CLI::FlagType::String, true));
+        addFlag(CLI::Flag("p", "provider", "Provider: proxmox, proxmox-ve, hybrid-burst", CLI::FlagType::String, false));
+        addFlag(CLI::Flag("b", "burst-targets", "Comma-separated burst targets for hybrid-burst (deprecated)", CLI::FlagType::String, false));
+        addFlag(CLI::Flag("t", "burst-target", "Repeatable burst target for hybrid-burst", CLI::FlagType::String, false));
+    }
+
+    int ProxmoxRequestCommand::execute(const std::map<std::string, std::string>& parsedFlags,
+                                       const std::vector<std::string>& parsedArgs,
+                                       const CLI::GlobalFlags& globalFlags) {
+        if (!validateArguments(parsedArgs) || !validateFlags(parsedFlags)) {
+            return 1;
+        }
+
+        const std::string& name = parsedArgs[0];
+        const std::string organization = parsedFlags.count("org") ? parsedFlags.at("org") : "";
+        const std::string gpuCountStr = parsedFlags.count("gpu-count") ? parsedFlags.at("gpu-count") : "";
+        const std::string architecture = parsedFlags.count("arch") ? parsedFlags.at("arch") : "";
+        const std::string region = parsedFlags.count("region") ? parsedFlags.at("region") : "";
+        const std::string provider = parsedFlags.count("provider") ? parsedFlags.at("provider") : "proxmox";
+        const std::string burstTargetsRaw = parsedFlags.count("burst-targets") ? parsedFlags.at("burst-targets") : "";
+        const std::string burstTargetRaw = parsedFlags.count("burst-target") ? parsedFlags.at("burst-target") : "";
+
+        if (name.empty() || organization.empty() || gpuCountStr.empty() || architecture.empty() || region.empty()) {
+            std::cerr << "Error: name, org, gpu-count, arch, and region are required." << std::endl;
+            printHelp();
+            return 1;
+        }
+
+        int gpuCount = 0;
+        try {
+            gpuCount = std::stoi(gpuCountStr);
+        } catch (const std::exception&) {
+            std::cerr << "Error: gpu-count must be an integer." << std::endl;
+            printHelp();
+            return 1;
+        }
+        if (gpuCount <= 0) {
+            std::cerr << "Error: gpu-count must be greater than zero." << std::endl;
+            printHelp();
+            return 1;
+        }
+
+        std::vector<std::string> burstTargets = splitCommaList(burstTargetsRaw);
+        const std::vector<std::string> burstTargetsExtra = splitCommaList(burstTargetRaw);
+        burstTargets.insert(burstTargets.end(), burstTargetsExtra.begin(), burstTargetsExtra.end());
+        const std::set<std::string> allowedProviders = {
+                "proxmox",
+                "proxmox-ve",
+                "hybrid-burst"
+        };
+        if (!allowedProviders.count(provider)) {
+            std::cerr << "Error: provider must be one of: proxmox, proxmox-ve, hybrid-burst." << std::endl;
+            printHelp();
+            return 1;
+        }
+        if (provider == "hybrid-burst" && burstTargets.empty()) {
+            std::cerr << "Error: burst-targets is required when provider is hybrid-burst." << std::endl;
+            printHelp();
+            return 1;
+        }
+
+        Models::CloudResponse response = apiClient->requestProxmoxCluster(
+                name,
+                organization,
+                gpuCount,
+                architecture,
+                region,
+                provider,
+                burstTargets
+        );
+        printOutput(response, globalFlags);
+        return response.success ? 0 : 1;
+    }
+
+    ProxmoxStatusCommand::ProxmoxStatusCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client)
+            : BaseCommand("status", "Get Proxmox cluster status (optionally poll)", std::move(client)) {
+        usage = "nmc proxmox status NAME [--watch] [--until Ready] [--interval 10] [--timeout 600]";
+        examples = "nmc proxmox status hpc-pve --watch --until Ready --interval 10 --timeout 900";
+        addArgument(CLI::Argument("NAME", "Cluster name", true, 0));
+        addFlag(CLI::Flag("w", "watch", "Poll until status matches --until", CLI::FlagType::Bool, false));
+        addFlag(CLI::Flag("u", "until", "Stop polling when status matches target (Pending, Provisioning, Ready, Failed, Unknown)", CLI::FlagType::String, false));
+        addFlag(CLI::Flag("i", "interval", "Polling interval in seconds", CLI::FlagType::Int, false));
+        addFlag(CLI::Flag("T", "timeout", "Polling timeout in seconds", CLI::FlagType::Int, false));
+    }
+
+    int ProxmoxStatusCommand::execute(const std::map<std::string, std::string>& parsedFlags,
+                                      const std::vector<std::string>& parsedArgs,
+                                      const CLI::GlobalFlags& globalFlags) {
+        if (!validateArguments(parsedArgs) || !validateFlags(parsedFlags)) {
+            return 1;
+        }
+
+        const std::string& name = parsedArgs[0];
+        const bool watch = parsedFlags.count("watch") > 0;
+        const std::string untilRaw = parsedFlags.count("until") ? parsedFlags.at("until") : "Ready";
+        const std::string untilStatus = normalizeTarget(untilRaw);
+        if (untilStatus.empty()) {
+            std::cerr << "Error: until must be one of: Pending, Provisioning, Ready, Failed, Unknown." << std::endl;
+            printHelp();
+            return 1;
+        }
+
+        int intervalSeconds = 10;
+        if (parsedFlags.count("interval")) {
+            try {
+                intervalSeconds = std::stoi(parsedFlags.at("interval"));
+            } catch (const std::exception&) {
+                std::cerr << "Error: interval must be an integer." << std::endl;
+                printHelp();
+                return 1;
+            }
+        }
+        if (intervalSeconds <= 0) {
+            std::cerr << "Error: interval must be greater than zero." << std::endl;
+            printHelp();
+            return 1;
+        }
+
+        int timeoutSeconds = 600;
+        if (parsedFlags.count("timeout")) {
+            try {
+                timeoutSeconds = std::stoi(parsedFlags.at("timeout"));
+            } catch (const std::exception&) {
+                std::cerr << "Error: timeout must be an integer." << std::endl;
+                printHelp();
+                return 1;
+            }
+        }
+        if (timeoutSeconds <= 0) {
+            std::cerr << "Error: timeout must be greater than zero." << std::endl;
+            printHelp();
+            return 1;
+        }
+
+        const auto start = std::chrono::steady_clock::now();
+        std::string lastStatus;
+        Models::CloudResponse finalResponse;
+        finalResponse.success = false;
+        finalResponse.message = "";
+        finalResponse.data = nlohmann::json::object();
+
+        while (true) {
+            Models::CloudResponse response = apiClient->getProxmoxClusterDetails(name);
+            if (!response.success) {
+                if (!watch) {
+                    printOutput(response, globalFlags);
+                    return 1;
+                }
+                if (globalFlags.outputFormat.empty()) {
+                    std::cerr << "Warning: failed to fetch Proxmox details, retrying..." << std::endl;
+                }
+            } else {
+                nlohmann::json found = response.data;
+                if (!found.is_object() && response.data.is_object() && response.data.contains("data") && response.data["data"].is_object()) {
+                    found = response.data["data"];
+                }
+
+                if (!found.is_object()) {
+                    if (!watch) {
+                        finalResponse.success = false;
+                        finalResponse.message = "Cluster '" + name + "' status payload was not an object.";
+                        finalResponse.data = nlohmann::json::object();
+                        printOutput(finalResponse, globalFlags);
+                        return 1;
+                    }
+                } else {
+                    const std::string rawStatus = found.value("status", "Unknown");
+                    const std::string status = normalizeStatus(rawStatus);
+                    found["status"] = status;
+                    if (globalFlags.outputFormat.empty() && watch && status != lastStatus) {
+                        std::cout << "Cluster " << name << " status: " << status << std::endl;
+                        lastStatus = status;
+                    }
+
+                    finalResponse.success = (status == untilStatus);
+                    finalResponse.message = "Cluster '" + name + "' status: " + status;
+                    finalResponse.data = found;
+
+                    if (!watch) {
+                        printOutput(finalResponse, globalFlags);
+                        return finalResponse.success ? 0 : 1;
+                    }
+
+                    if (status == untilStatus) {
+                        printOutput(finalResponse, globalFlags);
+                        return 0;
+                    }
+                    if (status == "Failed") {
+                        printOutput(finalResponse, globalFlags);
+                        return 1;
+                    }
+                }
+            }
+
+            if (!watch) {
+                break;
+            }
+            const auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
+                    std::chrono::steady_clock::now() - start).count();
+            if (elapsed >= timeoutSeconds) {
+                finalResponse.success = false;
+                finalResponse.message = "Timed out waiting for cluster '" + name + "' to reach " + untilStatus + " state.";
+                if (finalResponse.data.is_null()) {
+                    finalResponse.data = nlohmann::json::object();
+                }
+                printOutput(finalResponse, globalFlags);
+                return 1;
+            }
+            std::this_thread::sleep_for(std::chrono::seconds(intervalSeconds));
+        }
+
+        finalResponse.success = false;
+        finalResponse.message = "Failed to fetch cluster status.";
+        finalResponse.data = nlohmann::json::object();
+        printOutput(finalResponse, globalFlags);
+        return 1;
+    }
+
+} // namespace NMC::Commands

@@ -16,7 +16,8 @@ namespace NMC::Server {
      *
      * The class keeps OpenShift naming for backward compatibility in the codebase,
      * but is intentionally backend-agnostic: callers can provide a backend label
-     * (for example, "OpenShift" or "OpenStack") to customize response messages.
+     * (for example, "OpenShift", "OpenStack", or "Proxmox") to customize
+     * response messages.
      *
      * This keeps request/response transport logic in one place and allows
      * additional providers to be introduced without duplicating low-level HTTP code.

@@ -2674,6 +2674,11 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
         const char* openStackUrlEnv = std::getenv("NMC_OPENSTACK_API_URL");
         std::string openStackUrl = openStackUrlEnv ? openStackUrlEnv : osUrl;
         openStackClient = std::make_unique<OpenStackClient>(openStackUrl);
+        // Proxmox portal API base URL. Defaults to the OpenStack URL so the same
+        // unified provider backend can satisfy all portal routes when desired.
+        const char* proxmoxUrlEnv = std::getenv("NMC_PROXMOX_API_URL");
+        std::string proxmoxUrl = proxmoxUrlEnv ? proxmoxUrlEnv : openStackUrl;
+        proxmoxClient = std::make_unique<ProxmoxClient>(proxmoxUrl);
 
         // Enable logging of all requests
         svr.set_logger([this](const httplib::Request& req, const httplib::Response& res) {
@@ -3065,6 +3070,24 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
         svr.Post("/openstack/clusters/request", [this, guard](const httplib::Request& req, httplib::Response& res) {
             if (!guard(req, res)) return;
             handleOpenStackRequestCluster(req, res);
+        });
+
+        // --- Proxmox Routes ---
+        svr.Get("/proxmox/resources", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            handleProxmoxResources(req, res);
+        });
+        svr.Get("/proxmox/clusters", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            handleProxmoxClusters(req, res);
+        });
+        svr.Get(R"(/proxmox/details/(.*))", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            handleProxmoxClusterDetails(req, res);
+        });
+        svr.Post("/proxmox/clusters/request", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            handleProxmoxRequestCluster(req, res);
         });
 
         // --- Tracey Agent Routes ---
@@ -3479,6 +3502,7 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                 "/auth/login",
                 "/openshift/clusters/request",
                 "/openstack/clusters/request",
+                "/proxmox/clusters/request",
                 "/node/recruit",
                 "/services/health/monitoring/auth/login"
         };
@@ -4715,6 +4739,142 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
             if (apiResponse.success && !traceyAgentId.empty()) {
                 std::lock_guard<std::mutex> lock(dataMutex);
                 upsertTraceyRequirementLocked("openstack_cluster", name, region, traceyAgentId, traceyStatusAddr, nowEpochMs());
+                if (!apiResponse.data.is_object()) {
+                    apiResponse.data = nlohmann::json::object();
+                }
+                apiResponse.data["tracey"] = {
+                        {"required", true},
+                        {"agent_id", traceyAgentId},
+                        {"status_addr", traceyStatusAddr},
+                        {"compliance_state", "pending"},
+                        {"reason", "Waiting for Tracey agent heartbeat/discovery after provisioning."}
+                };
+            }
+            sendJsonResponse(res, apiResponse);
+            res.status = apiResponse.statusCode;
+        } catch (const nlohmann::json::parse_error& e) {
+            sendErrorResponse(res, 400, "Invalid JSON body: " + std::string(e.what()));
+        } catch (const std::exception& e) {
+            sendErrorResponse(res, 500, "Server error: " + std::string(e.what()));
+        }
+    }
+
+    void APIRoutes::handleProxmoxResources(const httplib::Request& req, httplib::Response& res) {
+        (void)req;
+        Models::CloudResponse apiResponse = proxmoxClient->getResources();
+        sendJsonResponse(res, apiResponse);
+        res.status = apiResponse.statusCode;
+    }
+
+    void APIRoutes::handleProxmoxClusters(const httplib::Request& req, httplib::Response& res) {
+        (void)req;
+        Models::CloudResponse apiResponse = proxmoxClient->listClusters();
+        if (apiResponse.success) {
+            if (apiResponse.data.is_array()) {
+                for (auto& cluster : apiResponse.data) {
+                    normalizeClusterStatus(cluster);
+                }
+            } else if (apiResponse.data.is_object()) {
+                if (apiResponse.data.contains("data") && apiResponse.data["data"].is_array()) {
+                    for (auto& cluster : apiResponse.data["data"]) {
+                        normalizeClusterStatus(cluster);
+                    }
+                }
+                if (apiResponse.data.contains("clusters") && apiResponse.data["clusters"].is_array()) {
+                    for (auto& cluster : apiResponse.data["clusters"]) {
+                        normalizeClusterStatus(cluster);
+                    }
+                }
+            }
+        }
+        sendJsonResponse(res, apiResponse);
+        res.status = apiResponse.statusCode;
+    }
+
+    void APIRoutes::handleProxmoxClusterDetails(const httplib::Request& req, httplib::Response& res) {
+        const std::string identifier = req.matches.size() > 1 ? trim(req.matches[1].str()) : "";
+        if (identifier.empty()) {
+            return sendErrorResponse(res, 400, "Missing Proxmox cluster identifier.");
+        }
+
+        Models::CloudResponse listResponse = proxmoxClient->listClusters();
+        if (!listResponse.success) {
+            sendJsonResponse(res, listResponse);
+            res.status = listResponse.statusCode;
+            return;
+        }
+
+        const std::vector<nlohmann::json> clusters = collectClusterObjects(listResponse.data);
+        if (clusters.empty()) {
+            Models::CloudResponse notFound;
+            notFound.success = false;
+            notFound.statusCode = 404;
+            notFound.message = "Proxmox cluster '" + identifier + "' not found.";
+            notFound.data = nlohmann::json::object();
+            sendJsonResponse(res, notFound);
+            res.status = 404;
+            return;
+        }
+
+        nlohmann::json selectedCluster = findClusterByIdentifier(clusters, identifier);
+        if (selectedCluster.is_null()) {
+            Models::CloudResponse notFound;
+            notFound.success = false;
+            notFound.statusCode = 404;
+            notFound.message = "Proxmox cluster '" + identifier + "' not found.";
+            notFound.data = nlohmann::json::object();
+            sendJsonResponse(res, notFound);
+            res.status = 404;
+            return;
+        }
+
+        normalizeClusterStatus(selectedCluster);
+        const nlohmann::json details = buildClusterDetailsWithNetworking(selectedCluster);
+
+        Models::CloudResponse apiResponse;
+        apiResponse.success = true;
+        apiResponse.statusCode = 200;
+        apiResponse.message = "Proxmox cluster details retrieved.";
+        apiResponse.data = details;
+        sendJsonResponse(res, apiResponse);
+        res.status = 200;
+    }
+
+    void APIRoutes::handleProxmoxRequestCluster(const httplib::Request& req, httplib::Response& res) {
+        try {
+            auto json_body = nlohmann::json::parse(req.body);
+            std::string traceyAgentId;
+            std::string traceyStatusAddr;
+            std::string traceyReason;
+
+            const std::string name = json_body.value("name", "");
+            const std::string organization = json_body.value("organization", "");
+            const int gpuCount = json_body.value("gpu_count", 0);
+            const std::string architecture = json_body.value("architecture", "");
+            const std::string region = json_body.value("region", "");
+            const std::string provider = json_body.value("provider", "proxmox");
+            const std::set<std::string> allowedProviders = {"proxmox", "proxmox-ve", "hybrid-burst"};
+
+            if (name.empty() || organization.empty() || architecture.empty() || region.empty() || gpuCount <= 0) {
+                return sendErrorResponse(res, 400, "Missing required parameters: name, organization, gpu_count, architecture, or region.");
+            }
+            if (allowedProviders.find(provider) == allowedProviders.end()) {
+                return sendErrorResponse(res, 400, "Invalid provider. Supported: proxmox, proxmox-ve, hybrid-burst.");
+            }
+            if (provider == "hybrid-burst" && (!json_body.contains("burst_targets") || json_body["burst_targets"].empty())) {
+                return sendErrorResponse(res, 400, "burst_targets is required when provider is hybrid-burst.");
+            }
+            if (!extractTraceyProvisioningRequest(json_body, traceyAgentId, traceyStatusAddr, traceyReason)) {
+                return sendErrorResponse(res, 400, traceyReason);
+            }
+
+            Models::CloudResponse apiResponse = proxmoxClient->requestCluster(json_body);
+            if (apiResponse.success && apiResponse.data.is_object() && apiResponse.data.contains("cluster")) {
+                normalizeClusterStatus(apiResponse.data["cluster"]);
+            }
+            if (apiResponse.success && !traceyAgentId.empty()) {
+                std::lock_guard<std::mutex> lock(dataMutex);
+                upsertTraceyRequirementLocked("proxmox_cluster", name, region, traceyAgentId, traceyStatusAddr, nowEpochMs());
                 if (!apiResponse.data.is_object()) {
                     apiResponse.data = nlohmann::json::object();
                 }

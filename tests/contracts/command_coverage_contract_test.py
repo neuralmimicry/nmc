@@ -261,7 +261,7 @@ def collect_class_api_calls(commands_dir: pathlib.Path) -> Dict[str, Set[str]]:
 def is_docs_route(route: Route) -> bool:
     if route.is_regex:
         return route.path.startswith("^/services/health/monitoring")
-    return route.path in {"/", "/index.html", "/docs", "/login", "/logout"}
+    return route.path in {"/", "/index.html", "/docs", "/login", "/logout", "/auth/login"}
 
 
 def endpoint_samples(path: str) -> Sequence[str]:

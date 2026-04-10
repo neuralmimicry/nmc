@@ -49,6 +49,7 @@ set(NMC_CLIENT_SOURCES
         src/Commands/NodeCommands.cpp
         src/Commands/OpenStackCommands.cpp
         src/Commands/OpenShiftCommands.cpp
+        src/Commands/ProxmoxCommands.cpp
         src/Commands/RefinerCommands.cpp
         src/Commands/RootCommand.cpp
         src/Commands/ServerCommands.cpp

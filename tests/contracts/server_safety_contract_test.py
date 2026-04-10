@@ -18,7 +18,7 @@ from typing import List
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 SERVER_FILE = REPO_ROOT / "nmc_server" / "src" / "Core" / "APIRoutes.cpp"
 
-DOCS_STATIC_PATHS = {"/", "/index.html", "/docs", "/login", "/logout"}
+DOCS_STATIC_PATHS = {"/", "/index.html", "/docs", "/login", "/logout", "/auth/login"}
 REDACTION_MINIMUM_PREFIXES = {
     "/ssh/create",
     "/vm/create",
@@ -26,6 +26,7 @@ REDACTION_MINIMUM_PREFIXES = {
     "/connections/make",
     "/openshift/clusters/request",
     "/openstack/clusters/request",
+    "/proxmox/clusters/request",
     "/node/recruit",
 }
 

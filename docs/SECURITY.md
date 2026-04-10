@@ -12,7 +12,7 @@ In scope:
 
 Out of scope:
 - reverse proxies and TLS termination layers
-- external OpenShift and OpenStack portal services
+- external OpenShift, OpenStack, and Proxmox portal services
 - CI/CD platforms and secret stores
 - organization-level access review, monitoring, and incident response processes
 
@@ -46,6 +46,7 @@ Request bodies are intentionally not logged for these endpoint prefixes:
 - `/connections/make`
 - `/openshift/clusters/request`
 - `/openstack/clusters/request`
+- `/proxmox/clusters/request`
 - `/node/recruit`
 
 ### 2.4 Secret handling
@@ -151,6 +152,7 @@ These controls are still required in deployment:
 - `NMC_K8S_API_URL`
 - `NMC_OSHIFT_API_URL`
 - `NMC_OPENSTACK_API_URL`
+- `NMC_PROXMOX_API_URL`
 
 ### 5.4 Tracey behavior
 

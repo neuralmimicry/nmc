@@ -106,6 +106,14 @@ Server-side advanced workflow:
 4. `openstack status` performs the same poll/until workflow as OpenShift.
 5. Status values are normalized to the same common state set.
 
+### 5.3 Proxmox
+
+1. The server uses `NMC_PROXMOX_API_URL` or falls back to `NMC_OPENSTACK_API_URL`.
+2. `proxmox resources` and `proxmox clusters` proxy read operations.
+3. `proxmox request` validates and forwards the provisioning payload.
+4. `proxmox status` performs the same poll/until workflow as OpenShift and OpenStack.
+5. Status values are normalized to the same common state set.
+
 ## 6. Tracey Workflows
 
 ### 6.1 Ingestion and inventory
@@ -150,6 +158,7 @@ The server records Tracey requirements for several create/recruit flows so fleet
 - `vm`
 - `openshift`
 - `openstack`
+- `proxmox`
 - `node recruit`
 - local server bootstrap sidecar requirement
 
