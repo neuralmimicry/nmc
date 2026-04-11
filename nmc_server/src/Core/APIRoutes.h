@@ -174,6 +174,10 @@ namespace NMC::Server {
             bool authenticated{false};
             std::string user;
             std::string role;
+            std::vector<std::string> groups;
+            nlohmann::json activeTeam;
+            int64_t teamCount{0};
+            int64_t pendingInvitationCount{0};
             int64_t expiresAtMs{0};
         };
         std::string centralAuthSessionUrl;
@@ -209,8 +213,10 @@ namespace NMC::Server {
         bool shouldLogBody(const std::string& path) const;
         std::string redactBody(const std::string& body) const;
         std::string extractAuthToken(const httplib::Request& req) const;
+        nlohmann::json centralAuthClaimsJson(const CentralAuthCacheEntry& entry) const;
         bool validateCentralAuthToken(const std::string& token, nlohmann::json* claimsOut = nullptr) const;
         void handleAuthLogin(const httplib::Request& req, httplib::Response& res);
+        void handleAuthSession(const httplib::Request& req, httplib::Response& res);
 
         // --- Bucket Handlers ---
         void handleCreateBucket(const httplib::Request& req, httplib::Response& res);

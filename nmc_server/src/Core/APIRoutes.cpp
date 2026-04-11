@@ -2715,6 +2715,9 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
             svr.Post("/auth/login", [this](const httplib::Request& req, httplib::Response& res) {
                 handleAuthLogin(req, res);
             });
+            svr.Get("/auth/session", [this](const httplib::Request& req, httplib::Response& res) {
+                handleAuthSession(req, res);
+            });
             // Legacy launch path used by neuralmimicry.ai control-panel links.
             svr.Get(R"(^/services/health/monitoring/?$)", [](const httplib::Request& req, httplib::Response& res) {
                 res.set_content(Utils::readFile("./docs/index.html"), "text/html");
@@ -2727,6 +2730,9 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
             });
             svr.Post(R"(^/services/health/monitoring/auth/login/?$)", [this](const httplib::Request& req, httplib::Response& res) {
                 handleAuthLogin(req, res);
+            });
+            svr.Get(R"(^/services/health/monitoring/auth/session/?$)", [this](const httplib::Request& req, httplib::Response& res) {
+                handleAuthSession(req, res);
             });
             svr.Get("/logout", [](const httplib::Request& req, httplib::Response& res) {
                 res.set_redirect("/login");
@@ -3283,6 +3289,18 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
         return trim(req.get_header_value("X-NMC-Token"));
     }
 
+    nlohmann::json APIRoutes::centralAuthClaimsJson(const CentralAuthCacheEntry& entry) const {
+        return {
+                {"authenticated", entry.authenticated},
+                {"user", entry.user},
+                {"role", entry.role},
+                {"groups", entry.groups},
+                {"active_team", entry.activeTeam.is_null() ? nlohmann::json(nullptr) : entry.activeTeam},
+                {"team_count", entry.teamCount},
+                {"pending_invitation_count", entry.pendingInvitationCount}
+        };
+    }
+
     bool APIRoutes::validateCentralAuthToken(const std::string& token, nlohmann::json* claimsOut) const {
         const std::string trimmedToken = trim(token);
         if (trimmedToken.empty() || centralAuthSessionUrl.empty()) {
@@ -3296,11 +3314,7 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
             if (it != centralAuthTokenCache.end()) {
                 if (it->second.expiresAtMs > nowMs) {
                     if (it->second.authenticated && !it->second.user.empty() && claimsOut) {
-                        *claimsOut = {
-                                {"authenticated", true},
-                                {"user", it->second.user},
-                                {"role", it->second.role}
-                        };
+                        *claimsOut = centralAuthClaimsJson(it->second);
                     }
                     return it->second.authenticated && !it->second.user.empty();
                 }
@@ -3340,6 +3354,79 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
         }
 
         nlohmann::json payload = nlohmann::json::object();
+        auto parseGroups = [this](const nlohmann::json& value) {
+            std::vector<std::string> groups;
+            auto pushGroup = [&groups, this](const std::string& candidate) {
+                const std::string cleaned = trim(candidate);
+                if (cleaned.empty()) {
+                    return;
+                }
+                const std::string lowered = toLower(cleaned);
+                if (std::find(groups.begin(), groups.end(), lowered) != groups.end()) {
+                    return;
+                }
+                groups.push_back(lowered);
+            };
+            if (value.is_string()) {
+                std::stringstream stream(value.get<std::string>());
+                std::string item;
+                while (std::getline(stream, item, ',')) {
+                    pushGroup(item);
+                }
+                return groups;
+            }
+            if (value.is_array()) {
+                for (const auto& item: value) {
+                    if (item.is_string()) {
+                        pushGroup(item.get<std::string>());
+                    }
+                }
+            }
+            return groups;
+        };
+        auto parseCount = [](const nlohmann::json& value) -> int64_t {
+            if (value.is_number_integer()) {
+                return value.get<int64_t>();
+            }
+            if (value.is_number_unsigned()) {
+                return static_cast<int64_t>(value.get<uint64_t>());
+            }
+            if (value.is_string()) {
+                try {
+                    return std::stoll(value.get<std::string>());
+                } catch (...) {
+                    return 0;
+                }
+            }
+            return 0;
+        };
+        auto normalizeActiveTeam = [this](const nlohmann::json& value) {
+            if (value.is_null()) {
+                return nlohmann::json(nullptr);
+            }
+            if (value.is_string()) {
+                const std::string teamId = trim(value.get<std::string>());
+                if (teamId.empty()) {
+                    return nlohmann::json(nullptr);
+                }
+                return nlohmann::json{{"team_id", teamId}};
+            }
+            if (!value.is_object()) {
+                return nlohmann::json(nullptr);
+            }
+            auto normalized = value;
+            std::string teamId;
+            if (normalized.contains("team_id") && normalized["team_id"].is_string()) {
+                teamId = trim(normalized["team_id"].get<std::string>());
+            } else if (normalized.contains("id") && normalized["id"].is_string()) {
+                teamId = trim(normalized["id"].get<std::string>());
+            }
+            if (teamId.empty()) {
+                return nlohmann::json(nullptr);
+            }
+            normalized["team_id"] = teamId;
+            return normalized;
+        };
         bool authenticated = false;
         std::string user;
         std::string role;
@@ -3357,6 +3444,24 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
         cacheEntry.authenticated = authenticated && !user.empty();
         cacheEntry.user = user;
         cacheEntry.role = role;
+        if (payload.contains("groups")) {
+            cacheEntry.groups = parseGroups(payload["groups"]);
+        }
+        if (!cacheEntry.role.empty()
+            && std::find(cacheEntry.groups.begin(), cacheEntry.groups.end(), cacheEntry.role) == cacheEntry.groups.end()) {
+            cacheEntry.groups.insert(cacheEntry.groups.begin(), cacheEntry.role);
+        }
+        if (payload.contains("active_team")) {
+            cacheEntry.activeTeam = normalizeActiveTeam(payload["active_team"]);
+        }
+        if (payload.contains("team_count")) {
+            cacheEntry.teamCount = std::max<int64_t>(0, parseCount(payload["team_count"]));
+        } else if (!cacheEntry.activeTeam.is_null()) {
+            cacheEntry.teamCount = 1;
+        }
+        if (payload.contains("pending_invitation_count")) {
+            cacheEntry.pendingInvitationCount = std::max<int64_t>(0, parseCount(payload["pending_invitation_count"]));
+        }
         cacheEntry.expiresAtMs = nowMs + (cacheEntry.authenticated
                                           ? centralAuthCacheTtlMs
                                           : std::min<int64_t>(centralAuthCacheTtlMs, 2000));
@@ -3369,11 +3474,7 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
         }
 
         if (cacheEntry.authenticated && claimsOut) {
-            *claimsOut = {
-                    {"authenticated", true},
-                    {"user", cacheEntry.user},
-                    {"role", cacheEntry.role}
-            };
+            *claimsOut = centralAuthClaimsJson(cacheEntry);
         }
         return cacheEntry.authenticated;
     }
@@ -3440,6 +3541,34 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
 
         res.status = result->status;
         res.set_content(result->body.empty() ? "{}" : result->body, "application/json");
+    }
+
+    void APIRoutes::handleAuthSession(const httplib::Request& req, httplib::Response& res) {
+        ensureRequestId(req, res);
+        const std::string token = extractAuthToken(req);
+        nlohmann::json claims;
+        if (validateCentralAuthToken(token, &claims)) {
+            res.status = 200;
+            res.set_content(claims.dump(), "application/json");
+            return;
+        }
+        if (!token.empty() && !authToken.empty() && token == authToken) {
+            res.status = 200;
+            res.set_content(
+                    nlohmann::json{
+                            {"authenticated", true},
+                            {"user", "service-token"},
+                            {"role", "admin"},
+                            {"groups", nlohmann::json::array({"admin"})},
+                            {"active_team", nullptr},
+                            {"team_count", 0},
+                            {"pending_invitation_count", 0}
+                    }.dump(),
+                    "application/json");
+            return;
+        }
+        res.set_header("WWW-Authenticate", "Bearer");
+        sendErrorResponse(res, 401, "Unauthorized.");
     }
 
     bool APIRoutes::authorizeOrReject(const httplib::Request& req, httplib::Response& res) const {

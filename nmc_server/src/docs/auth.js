@@ -1,5 +1,6 @@
 (() => {
     const STORAGE_KEY = "nmc_dashboard_token";
+    const IDENTITY_STORAGE_KEY = "nmc_dashboard_identity";
     const params = new URLSearchParams(window.location.search);
     const form = document.getElementById("authForm");
     if (!form) {
@@ -49,8 +50,30 @@
             localStorage.setItem(STORAGE_KEY, trimmed);
         } else {
             localStorage.removeItem(STORAGE_KEY);
+            localStorage.removeItem(IDENTITY_STORAGE_KEY);
         }
         return trimmed;
+    }
+
+    function persistIdentity(payload) {
+        const identity = payload && typeof payload === "object"
+            ? {
+                user: (payload.user || "").trim(),
+                role: (payload.role || "").trim(),
+                groups: Array.isArray(payload.groups) ? payload.groups : [],
+                active_team: payload.active_team && typeof payload.active_team === "object" ? payload.active_team : null,
+                team_count: Number.isFinite(payload.team_count) ? payload.team_count : Number(payload.team_count || 0),
+                pending_invitation_count: Number.isFinite(payload.pending_invitation_count)
+                    ? payload.pending_invitation_count
+                    : Number(payload.pending_invitation_count || 0),
+            }
+            : null;
+        if (!identity || !identity.user) {
+            localStorage.removeItem(IDENTITY_STORAGE_KEY);
+            return null;
+        }
+        localStorage.setItem(IDENTITY_STORAGE_KEY, JSON.stringify(identity));
+        return identity;
     }
 
     function authHeaders(token) {
@@ -112,6 +135,21 @@
         }
     }
 
+    async function fetchAuthSession(token) {
+        try {
+            const response = await fetch(withBase("/auth/session"), {
+                headers: authHeaders(token),
+                cache: "no-store"
+            });
+            if (!response.ok) {
+                return null;
+            }
+            return response.json().catch(() => null);
+        } catch (_error) {
+            return null;
+        }
+    }
+
     async function signIn(token) {
         const status = await validateToken(token);
         if (status === 0) {
@@ -122,6 +160,8 @@
             setError("Authentication failed. Check your credentials or token and try again.");
             return false;
         }
+        const sessionPayload = await fetchAuthSession(token);
+        persistIdentity(sessionPayload);
         setError("");
         window.location.href = nextPathFromQuery();
         return true;
@@ -146,6 +186,7 @@
         if (tokenEl) {
             tokenEl.value = token;
         }
+        persistIdentity(result.payload);
         return signIn(token);
     }
 

@@ -1,7 +1,12 @@
 (function () {
     const REFRESH_INTERVAL_MS = 15000;
     const TOKEN_STORAGE_KEY = "nmc_dashboard_token";
+    const IDENTITY_STORAGE_KEY = "nmc_dashboard_identity";
     const TRACEY_ADAPTIVE_POLICY_KEY = "nmc_tracey_adaptive_policy";
+    const monitoringPrefix = "/services/health/monitoring";
+    const basePath = window.location.pathname.startsWith(monitoringPrefix)
+        ? monitoringPrefix
+        : "";
 
     const nodes = {
         sessionLabel: document.getElementById("sessionLabel"),
@@ -125,6 +130,7 @@
     };
 
     let authToken = loadToken();
+    let authIdentity = loadIdentity();
     let clusterDetailsRequestSeq = 0;
     let openshiftDetailsRequestSeq = 0;
     let traceyInsightsRequestSeq = 0;
@@ -174,6 +180,52 @@
         return (localStorage.getItem(TOKEN_STORAGE_KEY) || "").trim();
     }
 
+    function withBase(path) {
+        if (!basePath) {
+            return path;
+        }
+        if (!path.startsWith("/")) {
+            return `${basePath}/${path}`;
+        }
+        return `${basePath}${path}`;
+    }
+
+    function loadIdentity() {
+        const raw = localStorage.getItem(IDENTITY_STORAGE_KEY) || "";
+        if (!raw) {
+            return null;
+        }
+        try {
+            const parsed = JSON.parse(raw);
+            if (!parsed || typeof parsed !== "object" || !parsed.user) {
+                return null;
+            }
+            return parsed;
+        } catch (_error) {
+            return null;
+        }
+    }
+
+    function saveIdentity(identity) {
+        if (!identity || typeof identity !== "object" || !identity.user) {
+            localStorage.removeItem(IDENTITY_STORAGE_KEY);
+            authIdentity = null;
+            updateSessionLabel();
+            return null;
+        }
+        authIdentity = {
+            user: String(identity.user || "").trim(),
+            role: String(identity.role || "").trim(),
+            groups: Array.isArray(identity.groups) ? identity.groups : [],
+            active_team: identity.active_team && typeof identity.active_team === "object" ? identity.active_team : null,
+            team_count: Number(identity.team_count || 0),
+            pending_invitation_count: Number(identity.pending_invitation_count || 0),
+        };
+        localStorage.setItem(IDENTITY_STORAGE_KEY, JSON.stringify(authIdentity));
+        updateSessionLabel();
+        return authIdentity;
+    }
+
     function normalizeTraceyAdaptivePolicy(value) {
         const normalized = String(value || "").trim().toLowerCase();
         if (["throughput", "risk", "energy"].includes(normalized)) {
@@ -216,6 +268,8 @@
             localStorage.setItem(TOKEN_STORAGE_KEY, trimmed);
         } else {
             localStorage.removeItem(TOKEN_STORAGE_KEY);
+            localStorage.removeItem(IDENTITY_STORAGE_KEY);
+            authIdentity = null;
         }
         authToken = trimmed;
         updateSessionLabel();
@@ -236,7 +290,34 @@
         if (!nodes.sessionLabel) {
             return;
         }
+        if (authIdentity && authIdentity.user) {
+            const role = authIdentity.role ? ` (${authIdentity.role})` : "";
+            const team = authIdentity.active_team?.team_name || authIdentity.active_team?.name || authIdentity.active_team?.team_id;
+            const teamLabel = team ? ` · ${team}` : "";
+            nodes.sessionLabel.textContent = `${authIdentity.user}${role}${teamLabel}`;
+            return;
+        }
         nodes.sessionLabel.textContent = authToken ? `Bearer ${maskToken(authToken)}` : "Token not set";
+    }
+
+    async function refreshAuthIdentity() {
+        if (!authToken) {
+            saveIdentity(null);
+            return null;
+        }
+        try {
+            const response = await fetch(withBase("/auth/session"), {
+                headers: authHeaders(),
+                cache: "no-store"
+            });
+            if (!response.ok) {
+                return null;
+            }
+            const payload = await response.json().catch(() => null);
+            return saveIdentity(payload);
+        } catch (_error) {
+            return null;
+        }
     }
 
     function authHeaders() {
@@ -3690,6 +3771,9 @@
 
     function initializeSessionUi() {
         updateSessionLabel();
+        if (authToken && !authIdentity) {
+            void refreshAuthIdentity();
+        }
         if (!nodes.logoutBtn) {
             return;
         }
