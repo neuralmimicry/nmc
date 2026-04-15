@@ -128,6 +128,23 @@ namespace NMC::Server {
             std::string message;
             nlohmann::json context;
         };
+        struct AarnnOrchestratorRecord {
+            std::string orchestratorId;
+            std::string clusterId;
+            std::string grpcUrl;
+            std::string host;
+            int port{0};
+            std::string source;
+            std::string discoveryProtocol;
+            std::string lastError;
+            nlohmann::json statusCache;
+            int64_t firstSeenEpochMs{0};
+            int64_t lastSeenEpochMs{0};
+            int64_t lastPolledEpochMs{0};
+            int64_t nextPollEpochMs{0};
+            bool stale{false};
+            bool statusReachable{false};
+        };
         struct RecruitCapacityAssessment {
             bool sameHardware{false};
             bool allowed{true};
@@ -139,6 +156,7 @@ namespace NMC::Server {
         std::unordered_map<std::string, TraceyRequirement> traceyRequirements;
         std::unordered_map<std::string, std::deque<TraceyStatusSample>> traceyAgentHistory;
         std::unordered_map<std::string, std::deque<TraceyAgentLogEntry>> traceyAgentLogs;
+        std::unordered_map<std::string, AarnnOrchestratorRecord> aarnnOrchestrators;
         int64_t traceyStaleAfterSeconds;
         bool traceyEnforceManagedResources;
         bool traceyDiscoveryEnabled;
@@ -159,6 +177,15 @@ namespace NMC::Server {
         std::thread traceyDiscoveryThread;
         std::atomic<bool> stopTraceyDiscovery;
         TraceyCVEIntel traceyCveIntel;
+        bool aarnnDiscoveryEnabled;
+        bool aarnnAllowPublicAddr;
+        std::string aarnnDiscoveryBindAddr;
+        int aarnnDiscoveryPort;
+        int64_t aarnnStaleAfterSeconds;
+        int64_t aarnnStatusPollMs;
+        int64_t aarnnStatusTimeoutMs;
+        std::thread aarnnDiscoveryThread;
+        std::atomic<bool> stopAarnnDiscovery;
 
         std::mutex dataMutex; // Mutex to protect access to data in a multi-threaded environment
 
@@ -279,10 +306,35 @@ namespace NMC::Server {
         void handleTraceyAgentCompromise(const httplib::Request& req, httplib::Response& res);
         void handleTraceyAgentControl(const httplib::Request& req, httplib::Response& res);
         void handleTraceyAgentDeepDive(const httplib::Request& req, httplib::Response& res);
+        void handleAarnnEndpoints(const httplib::Request& req, httplib::Response& res);
+        void handleAarnnInventory(const httplib::Request& req, httplib::Response& res);
+        void handleAarnnProxy(const httplib::Request& req, httplib::Response& res, const std::string& plane);
+        nlohmann::json buildAarnnEndpointsPayload(std::string& errorOut);
+        nlohmann::json buildAarnnInventoryPayload(const std::string& clusterId,
+                                                 const std::string& orchestratorId,
+                                                 std::string& errorOut);
+        bool resolveAarnnEndpoint(const std::string& plane,
+                                  std::string& endpointOut,
+                                  nlohmann::json& endpointInfoOut,
+                                  std::string& errorOut);
+        bool resolveAarnnOrchestratorTarget(const std::string& clusterId,
+                                           const std::string& orchestratorId,
+                                           nlohmann::json& targetOut,
+                                           std::string& errorOut);
+        bool fetchAarnnStatusViaControlPlane(const std::string& grpcUrl,
+                                             int64_t nowMs,
+                                             nlohmann::json& statusOut,
+                                             std::string& errorOut);
         nlohmann::json buildTraceyContinuumAgentView(const TraceyAgent& agent, int64_t nowMs) const;
         RecruitCapacityAssessment assessRecruitCapacity(const std::string& host);
         void handleRecruitNode(const httplib::Request& req, httplib::Response& res);
         void runTraceyDiscoveryLoop();
+        void runAarnnDiscoveryLoop();
+        void ingestAarnnDiscoveryAnnouncement(const std::string& payload,
+                                              const std::string& senderAddress,
+                                              int64_t receivedAtMs);
+        void pollAarnnOrchestratorStatus(const std::string& mapKey, const std::string& grpcUrl, int64_t nowMs);
+        void markAarnnStaleOrchestrators(int64_t nowMs);
         void ingestTraceyDiscoveryAnnouncement(const nlohmann::json& payload, const std::string& senderAddress, int64_t receivedAtMs);
         void pollTraceyStatus(const std::string& agentId, const std::string& statusAddr, int64_t nowMs);
         void markTraceyStaleAgents(int64_t nowMs);

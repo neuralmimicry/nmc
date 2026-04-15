@@ -269,6 +269,66 @@ class MockServer:
             )
             return
 
+        if handler.command == "GET" and path_only == "/aarnn/endpoints":
+            self._send_json(
+                handler,
+                200,
+                {
+                    "success": True,
+                    "message": "AARNN endpoints discovered.",
+                    "data": {
+                        "runtime": {"found": True, "api_base_url": "http://10.0.0.10:8080"},
+                        "control": {"found": True, "api_base_url": "http://10.0.0.11:8080"},
+                        "orchestrator": {"found": True, "grpc_url": "http://10.0.0.12:50051"},
+                    },
+                },
+            )
+            return
+
+        if handler.command == "GET" and path_only == "/aarnn/inventory":
+            self._send_json(
+                handler,
+                200,
+                {
+                    "success": True,
+                    "message": "AARNN inventory generated.",
+                    "data": {
+                        "summary": {
+                            "cluster_count": 1,
+                            "orchestrator_count": 1,
+                            "node_count": 2,
+                            "network_count": 1,
+                        },
+                        "clusters": [{"cluster_id": "aarnn-cluster-edge-1-50051"}],
+                        "orchestrators": [{"orchestrator_id": "aarnn-orchestrator-edge-1-50051"}],
+                        "nodes": [{"node_id": "node-1"}, {"node_id": "node-2"}],
+                        "networks": [{"network_id": "tenant-aarnn"}],
+                    },
+                },
+            )
+            return
+
+        aarnn_proxy_match = re.match(r"^/aarnn/proxy/([^/]+)$", path_only)
+        if handler.command == "POST" and aarnn_proxy_match:
+            try:
+                payload = json.loads(body) if body else {}
+            except json.JSONDecodeError:
+                self._send_json(handler, 400, {"message": "invalid json payload"})
+                return
+            self._send_json(
+                handler,
+                200,
+                {
+                    "success": True,
+                    "message": "AARNN proxy request completed.",
+                    "data": {
+                        "plane": aarnn_proxy_match.group(1),
+                        "payload": payload,
+                    },
+                },
+            )
+            return
+
         self._send_json(handler, 404, {"message": "not found"})
 
 
@@ -607,6 +667,142 @@ def test_proxmox_invalid_provider_fails_before_network(server: MockServer, home_
     assert_true(len(server.records()) == 0, "invalid proxmox provider should not perform network calls")
 
 
+def test_aarnn_endpoints_serialization(server: MockServer, home_dir: pathlib.Path) -> None:
+    server.clear_records()
+    result = run_nmc(["aarnn", "endpoints"], home_dir)
+    assert_success(result, "aarnn endpoints")
+
+    records = server.records()
+    assert_true(len(records) == 1, f"aarnn endpoints expected 1 request, got {len(records)}")
+    req = records[0]
+    assert_true(req.method == "GET", f"aarnn endpoints expected GET, got {req.method}")
+    assert_true(req.path == "/aarnn/endpoints", f"aarnn endpoints wrong path: {req.path}")
+
+
+def test_aarnn_inventory_serialization(server: MockServer, home_dir: pathlib.Path) -> None:
+    server.clear_records()
+    result = run_nmc(["aarnn", "inventory", "--cluster", "aarnn-cluster-edge-1-50051"], home_dir)
+    assert_success(result, "aarnn inventory")
+
+    records = server.records()
+    assert_true(len(records) == 1, f"aarnn inventory expected 1 request, got {len(records)}")
+    req = records[0]
+    assert_true(req.method == "GET", f"aarnn inventory expected GET, got {req.method}")
+    assert_true(
+        req.path == "/aarnn/inventory?cluster_id=aarnn-cluster-edge-1-50051",
+        f"aarnn inventory wrong path: {req.path}",
+    )
+
+
+def test_aarnn_network_status_inventory_serialization(server: MockServer, home_dir: pathlib.Path) -> None:
+    server.clear_records()
+    result = run_nmc(["aarnn", "network", "status"], home_dir)
+    assert_success(result, "aarnn network status")
+
+    records = server.records()
+    assert_true(len(records) == 1, f"aarnn network status expected 1 request, got {len(records)}")
+    req = records[0]
+    assert_true(req.method == "GET", f"aarnn network status expected GET, got {req.method}")
+    assert_true(req.path == "/aarnn/inventory", f"aarnn network status wrong path: {req.path}")
+
+
+def test_aarnn_network_control_proxy_serialization(server: MockServer, home_dir: pathlib.Path) -> None:
+    server.clear_records()
+    result = run_nmc(
+        ["aarnn", "network", "control", "tenant-aarnn", "--action", "start"],
+        home_dir,
+    )
+    assert_success(result, "aarnn network control")
+
+    records = server.records()
+    assert_true(len(records) == 1, f"aarnn network control expected 1 request, got {len(records)}")
+    req = records[0]
+    assert_true(req.method == "POST", f"aarnn network control expected POST, got {req.method}")
+    assert_true(req.path == "/aarnn/proxy/control", f"aarnn network control wrong path: {req.path}")
+    payload = json.loads(req.body or "{}")
+    assert_true(payload.get("method") == "POST", "aarnn network control missing proxy method")
+    assert_true(payload.get("path") == "/api/control_network", "aarnn network control wrong upstream path")
+    upstream_json = payload.get("json", {})
+    assert_true(upstream_json.get("network_id") == "tenant-aarnn", "aarnn network control missing network_id")
+    assert_true(upstream_json.get("action") == "start", "aarnn network control missing action")
+
+
+def test_aarnn_network_targeted_proxy_serialization(server: MockServer, home_dir: pathlib.Path) -> None:
+    server.clear_records()
+    result = run_nmc(
+        [
+            "aarnn",
+            "network",
+            "snapshot",
+            "tenant-aarnn",
+            "--orchestrator",
+            "aarnn-orchestrator-edge-1-50051",
+        ],
+        home_dir,
+    )
+    assert_success(result, "aarnn network snapshot targeted")
+
+    records = server.records()
+    assert_true(len(records) == 1, f"aarnn targeted snapshot expected 1 request, got {len(records)}")
+    req = records[0]
+    assert_true(req.method == "POST", f"aarnn targeted snapshot expected POST, got {req.method}")
+    assert_true(req.path == "/aarnn/proxy/control", f"aarnn targeted snapshot wrong path: {req.path}")
+    payload = json.loads(req.body or "{}")
+    assert_true(payload.get("method") == "GET", "aarnn targeted snapshot missing proxy method")
+    assert_true(payload.get("path") == "/api/snapshot?network_id=tenant-aarnn", "aarnn targeted snapshot wrong upstream path")
+    assert_true(
+        payload.get("orchestrator_id") == "aarnn-orchestrator-edge-1-50051",
+        "aarnn targeted snapshot missing orchestrator_id",
+    )
+
+
+def test_aarnn_runtime_create_control_plane_serialization(server: MockServer, home_dir: pathlib.Path) -> None:
+    server.clear_records()
+    result = run_nmc(
+        [
+            "aarnn",
+            "runtime",
+            "create",
+            "--plane",
+            "control",
+            "--workspace-id",
+            "ws-1",
+            "--name",
+            "demo",
+            "--config-json",
+            '{"num_sensory_neurons":4,"num_hidden_layers":1,"num_output_neurons":2}',
+            "--auto-start",
+        ],
+        home_dir,
+    )
+    assert_success(result, "aarnn runtime create")
+
+    records = server.records()
+    assert_true(len(records) == 1, f"aarnn runtime create expected 1 request, got {len(records)}")
+    req = records[0]
+    assert_true(req.method == "POST", f"aarnn runtime create expected POST, got {req.method}")
+    assert_true(req.path == "/aarnn/proxy/control", f"aarnn runtime create wrong path: {req.path}")
+    payload = json.loads(req.body or "{}")
+    assert_true(payload.get("method") == "POST", "aarnn runtime create missing proxy method")
+    assert_true(payload.get("path") == "/api/runtime/workspaces", "aarnn runtime create wrong upstream path")
+    upstream_json = payload.get("json", {})
+    assert_true(upstream_json.get("workspace_id") == "ws-1", "aarnn runtime create missing workspace_id")
+    assert_true(upstream_json.get("name") == "demo", "aarnn runtime create missing name")
+    assert_true(upstream_json.get("auto_start") is True, "aarnn runtime create missing auto_start")
+    assert_true(isinstance(upstream_json.get("config_json"), str), "aarnn runtime create config_json should be string")
+
+
+def test_aarnn_runtime_invalid_plane_fails_before_network(server: MockServer, home_dir: pathlib.Path) -> None:
+    server.clear_records()
+    result = run_nmc(["aarnn", "runtime", "status", "--plane", "bogus"], home_dir)
+    assert_failure(result, "aarnn runtime invalid-plane")
+    assert_true(
+        "--plane must be either 'runtime' or 'control'." in result.stderr,
+        f"expected invalid plane error, got stderr:\n{result.stderr}",
+    )
+    assert_true(len(server.records()) == 0, "invalid plane should not perform network calls")
+
+
 def main() -> int:
     if not NMC_BIN.exists():
         print(
@@ -636,6 +832,13 @@ def main() -> int:
             test_proxmox_request_serialization(server, home_dir)
             test_proxmox_status_serialization(server, home_dir)
             test_proxmox_invalid_provider_fails_before_network(server, home_dir)
+            test_aarnn_endpoints_serialization(server, home_dir)
+            test_aarnn_inventory_serialization(server, home_dir)
+            test_aarnn_network_status_inventory_serialization(server, home_dir)
+            test_aarnn_network_control_proxy_serialization(server, home_dir)
+            test_aarnn_network_targeted_proxy_serialization(server, home_dir)
+            test_aarnn_runtime_create_control_plane_serialization(server, home_dir)
+            test_aarnn_runtime_invalid_plane_fails_before_network(server, home_dir)
     except AssertionError as exc:
         print(f"[functional-test] FAILED: {exc}", file=sys.stderr)
         return 1

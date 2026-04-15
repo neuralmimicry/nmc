@@ -122,7 +122,7 @@ Server-side advanced workflow:
 2. `tracey agents`, `tracey fleet`, `tracey racks`, and `tracey rack` inspect the server's fleet view.
 3. The server can bootstrap a required local Tracey sidecar entry using `NMC_TRACEY_BOOTSTRAP_LOCAL_AGENT`, `NMC_TRACEY_LOCAL_AGENT_ID`, and `NMC_TRACEY_LOCAL_STATUS_ADDR`.
 
-### 6.2 Adaptive plan/ramp/optimize/repeat workflow
+### 6.2 Adaptive plan/ramp/optimise/repeat workflow
 
 - `tracey adaptive` queries `/tracey/adaptive` and returns the always-on fleet control loop used by Continuum dashboards and operator workflows.
 - `tracey adaptive --policy balanced|throughput|risk|energy` applies an operator-selected placement bias before the server ranks placement candidates and recommendations.
@@ -130,7 +130,7 @@ Server-side advanced workflow:
 - For older agents, the server synthesizes a fallback loop from the available telemetry, assessment, TraceyGuard, loader-threat, and Slurm state so the response contract stays stable.
 - The response is organised around:
   - `summary` for overall mode, scores, policy, counts, and next action
-  - `plan`, `ramp`, `optimize`, and `repeat` for normalized phase state
+  - `plan`, `ramp`, `optimise`, and `repeat` for normalized phase state
   - `recommendations`, `placement_candidates`, `gpu_candidates`, and `recent_actions` for the next scheduling cycle
 
 ### 6.3 Analytics and compromise-assessment views

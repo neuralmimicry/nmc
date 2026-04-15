@@ -97,6 +97,17 @@ namespace NMC {
             void handleGetVClusterHealth(const httplib::Request& req, httplib::Response& res);
             void handleGetVClusterResources(const httplib::Request& req, httplib::Response& res);
 
+            // Generic namespaced reads/lists used by higher-level API routes.
+            std::optional<nlohmann::json> readNamespacedResource(const std::string& group,
+                                                                 const std::string& version,
+                                                                 const std::string& plural,
+                                                                 const std::string& namespaceName,
+                                                                 const std::string& resourceName);
+            std::optional<nlohmann::json> listNamespacedResources(const std::string& group,
+                                                                  const std::string& version,
+                                                                  const std::string& plural,
+                                                                  const std::string& namespaceName);
+
         private:
             // Kubernetes C client related members
             apiClient_t *apiClient;

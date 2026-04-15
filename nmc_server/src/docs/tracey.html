@@ -117,11 +117,11 @@
 
     <section class="endpoint-section">
         <h2>GET /tracey/adaptive</h2>
-        <p>Builds the integrated plan / ramp / optimize / repeat loop used by the Continuum dashboard and CLI.</p>
+        <p>Builds the integrated plan / ramp / optimise / repeat loop used by the Continuum dashboard and CLI.</p>
         <ul>
             <li><code>policy</code> query parameter - optional placement bias: <code>balanced</code>, <code>throughput</code>, <code>risk</code>, or <code>energy</code>.</li>
             <li><code>summary</code> - fleet-wide mode, resolved placement policy, overall/readiness/placement scores, ramp pressure, placement counts, and next action.</li>
-            <li><code>plan</code>, <code>ramp</code>, <code>optimize</code>, <code>repeat</code> - normalized phase snapshots for the always-on control loop.</li>
+            <li><code>plan</code>, <code>ramp</code>, <code>optimise</code>, <code>repeat</code> - normalized phase snapshots for the always-on control loop.</li>
             <li><code>recommendations</code> - prioritized operator actions merged from per-agent loop state.</li>
             <li><code>placement_candidates</code>, <code>gpu_candidates</code> - best-fit host/GPU targets for upcoming workload placement.</li>
             <li><code>recent_actions</code> - fleet feedback signals that close the loop into the next scheduling cycle.</li>

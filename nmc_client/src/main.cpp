@@ -1,6 +1,7 @@
 #include "CLI/CLIParser.h"
 #include "Commands/RootCommand.h"
 #include "Commands/BucketCommands.h"
+#include "Commands/AarnnCommands.h"
 #include "Commands/K8sCommands.h"
 #include "Commands/VClusterCommands.h"
 #include "Commands/ModelCommands.h"
@@ -172,6 +173,34 @@ int main(int argc, char* argv[]) {
     refinerCmd->addSubcommand(std::make_shared<NMC::Commands::RefinerLogsCommand>(apiClient));
     refinerCmd->addSubcommand(std::make_shared<NMC::Commands::RefinerRemoveCommand>(apiClient));
     parser.registerCommand(refinerCmd);
+
+    auto aarnnCmd = std::make_shared<NMC::Commands::AarnnCommand>(apiClient);
+    aarnnCmd->addSubcommand(std::make_shared<NMC::Commands::AarnnEndpointsCommand>(apiClient));
+    aarnnCmd->addSubcommand(std::make_shared<NMC::Commands::AarnnInventoryCommand>(apiClient));
+    aarnnCmd->addSubcommand(std::make_shared<NMC::Commands::AarnnProxyCommand>(apiClient));
+
+    auto aarnnNetworkCmd = std::make_shared<NMC::Commands::AarnnNetworkCommand>(apiClient);
+    aarnnNetworkCmd->addSubcommand(std::make_shared<NMC::Commands::AarnnNetworkStatusCommand>(apiClient));
+    aarnnNetworkCmd->addSubcommand(std::make_shared<NMC::Commands::AarnnNetworkSnapshotCommand>(apiClient));
+    aarnnNetworkCmd->addSubcommand(std::make_shared<NMC::Commands::AarnnNetworkActivityCommand>(apiClient));
+    aarnnNetworkCmd->addSubcommand(std::make_shared<NMC::Commands::AarnnNetworkUpdateCommand>(apiClient));
+    aarnnNetworkCmd->addSubcommand(std::make_shared<NMC::Commands::AarnnNetworkControlCommand>(apiClient));
+    aarnnNetworkCmd->addSubcommand(std::make_shared<NMC::Commands::AarnnNetworkAerInjectCommand>(apiClient));
+    aarnnNetworkCmd->addSubcommand(std::make_shared<NMC::Commands::AarnnNetworkAerStreamCommand>(apiClient));
+    aarnnCmd->addSubcommand(aarnnNetworkCmd);
+
+    auto aarnnRuntimeCmd = std::make_shared<NMC::Commands::AarnnRuntimeCommand>(apiClient);
+    aarnnRuntimeCmd->addSubcommand(std::make_shared<NMC::Commands::AarnnRuntimeStatusCommand>(apiClient));
+    aarnnRuntimeCmd->addSubcommand(std::make_shared<NMC::Commands::AarnnRuntimeListCommand>(apiClient));
+    aarnnRuntimeCmd->addSubcommand(std::make_shared<NMC::Commands::AarnnRuntimeCreateCommand>(apiClient));
+    aarnnRuntimeCmd->addSubcommand(std::make_shared<NMC::Commands::AarnnRuntimeGetCommand>(apiClient));
+    aarnnRuntimeCmd->addSubcommand(std::make_shared<NMC::Commands::AarnnRuntimeDeleteCommand>(apiClient));
+    aarnnRuntimeCmd->addSubcommand(std::make_shared<NMC::Commands::AarnnRuntimeControlCommand>(apiClient));
+    aarnnRuntimeCmd->addSubcommand(std::make_shared<NMC::Commands::AarnnRuntimeSnapshotCommand>(apiClient));
+    aarnnRuntimeCmd->addSubcommand(std::make_shared<NMC::Commands::AarnnRuntimeActivityCommand>(apiClient));
+    aarnnCmd->addSubcommand(aarnnRuntimeCmd);
+
+    parser.registerCommand(aarnnCmd);
 
     // Register standalone commands
     parser.registerCommand(std::make_shared<NMC::Commands::VersionCommand>(apiClient));

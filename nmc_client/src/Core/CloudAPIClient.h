@@ -169,6 +169,19 @@ namespace NMC::Core {
         Models::CloudResponse controlTraceyAgent(const std::string& agentId, const nlohmann::json& controlPayload);
         Models::CloudResponse getTraceyAgentDeepDive(const std::string& agentId);
 
+        // AARNN Operations
+        Models::CloudResponse aarnnEndpoints();
+        Models::CloudResponse aarnnInventory(const std::string& clusterId = "",
+                                             const std::string& orchestratorId = "");
+        Models::CloudResponse aarnnProxy(const std::string& plane,
+                                         const std::string& method,
+                                         const std::string& path,
+                                         const nlohmann::json& jsonPayload = nlohmann::json(),
+                                         const std::string& rawBody = "",
+                                         const std::string& contentType = "",
+                                         const std::string& clusterId = "",
+                                         const std::string& orchestratorId = "");
+
         // Server-side Connection Management
         Models::CloudResponse getServerConnectionStatus();
         Models::CloudResponse makeServerConnection(const std::string& name, const std::string& endpoint, bool setDefault);

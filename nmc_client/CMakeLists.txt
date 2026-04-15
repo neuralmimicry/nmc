@@ -41,6 +41,7 @@ set(NMC_CLIENT_SOURCES
         src/main.cpp
         src/CLI/CLIParser.cpp
         src/CLI/Command.cpp
+        src/Commands/AarnnCommands.cpp
         src/Commands/BaseCommand.cpp
         src/Commands/BucketCommands.cpp
         src/Commands/ConnectionCommands.cpp

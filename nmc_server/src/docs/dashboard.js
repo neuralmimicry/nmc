@@ -1310,7 +1310,7 @@
         if (nodes.traceyAdaptiveLabel) {
             nodes.traceyAdaptiveLabel.textContent = hasObjectContent(summary)
                 ? `${policyLabel} policy • overall ${formatRatioPercent(summary.overall_score, 0, "-")} • place ${formatRatioPercent(summary.placement_score, 0, "-")}`
-                : "Plan / Ramp / Optimize / Repeat";
+                : "Plan / Ramp / Optimise / Repeat";
         }
 
         const cards = hasObjectContent(summary)

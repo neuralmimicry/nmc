@@ -192,6 +192,16 @@ def collect_command_graph(main_src: str) -> Tuple[Set[str], Dict[str, Set[str]]]
             continue
         edges[parent_class].add(child_class)
 
+    for parent_var, child_var in re.findall(
+        r"([A-Za-z_]\w*)->addSubcommand\(\s*([A-Za-z_]\w*)\s*\)\s*;",
+        src,
+    ):
+        parent_class = var_to_class.get(parent_var)
+        child_class = var_to_class.get(child_var)
+        if not parent_class or not child_class:
+            continue
+        edges[parent_class].add(child_class)
+
     roots: Set[str] = set()
     for root_var in re.findall(r"parser\.registerCommand\(\s*([A-Za-z_]\w*)\s*\)\s*;", src):
         class_name = var_to_class.get(root_var)
@@ -261,7 +271,7 @@ def collect_class_api_calls(commands_dir: pathlib.Path) -> Dict[str, Set[str]]:
 def is_docs_route(route: Route) -> bool:
     if route.is_regex:
         return route.path.startswith("^/services/health/monitoring")
-    return route.path in {"/", "/index.html", "/docs", "/login", "/logout", "/auth/login"}
+    return route.path in {"/", "/index.html", "/docs", "/login", "/logout", "/auth/login", "/auth/session"}
 
 
 def endpoint_samples(path: str) -> Sequence[str]:

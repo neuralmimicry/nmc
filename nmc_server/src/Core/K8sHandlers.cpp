@@ -386,6 +386,77 @@ namespace NMC {
             );
         }
 
+        std::optional<nlohmann::json> K8sHandlers::readNamespacedResource(
+                const std::string& group,
+                const std::string& version,
+                const std::string& plural,
+                const std::string& namespaceName,
+                const std::string& resourceName
+        ) {
+            if (namespaceName.empty() || resourceName.empty()) {
+                return std::nullopt;
+            }
+
+            genericClient_t* genericClient = nullptr;
+            char* rawObject = nullptr;
+            std::optional<nlohmann::json> result = std::nullopt;
+            try {
+                genericClient = getGenericClient(group, version, plural);
+                rawObject = Generic_readNamespacedResource(
+                        genericClient,
+                        (char*)namespaceName.c_str(),
+                        (char*)resourceName.c_str()
+                );
+                if (!rawObject) {
+                    result = std::nullopt;
+                } else {
+                    result = nlohmann::json::parse(rawObject);
+                }
+            } catch (const std::exception&) {
+                result = std::nullopt;
+            }
+            if (rawObject) {
+                free(rawObject);
+            }
+            if (genericClient) {
+                genericClient_free(genericClient);
+            }
+            return result;
+        }
+
+        std::optional<nlohmann::json> K8sHandlers::listNamespacedResources(
+                const std::string& group,
+                const std::string& version,
+                const std::string& plural,
+                const std::string& namespaceName
+        ) {
+            if (namespaceName.empty()) {
+                return std::nullopt;
+            }
+
+            genericClient_t* genericClient = nullptr;
+            char* rawList = nullptr;
+            std::optional<nlohmann::json> result = std::nullopt;
+            try {
+                genericClient = getGenericClient(group, version, plural);
+                rawList = Generic_listNamespaced(genericClient, (char*)namespaceName.c_str());
+                if (!rawList) {
+                    result = std::nullopt;
+                } else {
+                    result = nlohmann::json::parse(rawList);
+                }
+            } catch (const std::exception&) {
+                result = std::nullopt;
+            }
+            if (rawList) {
+                free(rawList);
+            }
+            if (genericClient) {
+                genericClient_free(genericClient);
+            }
+            return result;
+        }
+
 
         // A very simplified example of converting a K8s object to our internal model.
         // This assumes a CRD structure that includes 'metadata.name', 'metadata.uid',

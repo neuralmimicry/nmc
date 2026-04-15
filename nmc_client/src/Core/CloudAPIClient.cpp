@@ -925,6 +925,75 @@ namespace NMC::Core {
         return processHttpResponse(res, "Tracey deep-dive retrieved.");
     }
 
+// --- AARNN Operations ---
+    Models::CloudResponse CloudAPIClient::aarnnEndpoints() {
+        auto res = cli->Get("/aarnn/endpoints");
+        auto apiResponse = processHttpResponse(res, "AARNN endpoints retrieved.");
+        if (apiResponse.data.is_object()) {
+            if (apiResponse.data.contains("message") && apiResponse.data["message"].is_string()) {
+                apiResponse.message = apiResponse.data["message"].get<std::string>();
+            }
+            apiResponse.data = unwrapEnvelopeData(apiResponse.data);
+        }
+        return apiResponse;
+    }
+
+    Models::CloudResponse CloudAPIClient::aarnnInventory(const std::string& clusterId,
+                                                         const std::string& orchestratorId) {
+        std::string path = "/aarnn/inventory";
+        appendQueryString(path, "cluster_id", clusterId);
+        appendQueryString(path, "orchestrator_id", orchestratorId);
+        auto res = cli->Get(path);
+        auto apiResponse = processHttpResponse(res, "AARNN inventory retrieved.");
+        if (apiResponse.data.is_object()) {
+            if (apiResponse.data.contains("message") && apiResponse.data["message"].is_string()) {
+                apiResponse.message = apiResponse.data["message"].get<std::string>();
+            }
+            apiResponse.data = unwrapEnvelopeData(apiResponse.data);
+        }
+        return apiResponse;
+    }
+
+    Models::CloudResponse CloudAPIClient::aarnnProxy(const std::string& plane,
+                                                     const std::string& method,
+                                                     const std::string& path,
+                                                     const nlohmann::json& jsonPayload,
+                                                     const std::string& rawBody,
+                                                     const std::string& contentType,
+                                                     const std::string& clusterId,
+                                                     const std::string& orchestratorId) {
+        nlohmann::json requestBody = {
+                {"method", method},
+                {"path", path}
+        };
+        if (!jsonPayload.is_null()) {
+            requestBody["json"] = jsonPayload;
+        }
+        if (!rawBody.empty()) {
+            requestBody["body"] = rawBody;
+        }
+        if (!contentType.empty()) {
+            requestBody["content_type"] = contentType;
+        }
+        if (!clusterId.empty()) {
+            requestBody["cluster_id"] = clusterId;
+        }
+        if (!orchestratorId.empty()) {
+            requestBody["orchestrator_id"] = orchestratorId;
+        }
+
+        std::string proxyPath = "/aarnn/proxy/" + plane;
+        auto res = cli->Post(proxyPath, requestBody.dump(), "application/json");
+        auto apiResponse = processHttpResponse(res, "AARNN proxy request completed.");
+        if (apiResponse.data.is_object()) {
+            if (apiResponse.data.contains("message") && apiResponse.data["message"].is_string()) {
+                apiResponse.message = apiResponse.data["message"].get<std::string>();
+            }
+            apiResponse.data = unwrapEnvelopeData(apiResponse.data);
+        }
+        return apiResponse;
+    }
+
 // --- Server-side Connection Management ---
     Models::CloudResponse CloudAPIClient::getServerConnectionStatus() {
         auto res = cli->Get("/connections/status");
