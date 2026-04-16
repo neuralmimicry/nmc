@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <condition_variable>
+#include <deque>
 #include <filesystem>
 #include <functional>
 #include <mutex>
@@ -38,14 +39,28 @@ namespace NMC::Server {
         void stop();
 
         void scheduleSnapshot(int64_t updatedEpochMs);
+        void recordEvent(const std::string& entityType,
+                         const std::string& entityKey,
+                         const std::string& action,
+                         int64_t tsMs,
+                         nlohmann::json payload);
 
         bool enabled() const;
         bool postgresConfigured() const;
 
     private:
+        struct Event {
+            std::string entityType;
+            std::string entityKey;
+            std::string action;
+            int64_t tsMs{0};
+            nlohmann::json payload;
+        };
+
         Config config_;
         mutable std::mutex mutex_;
         std::condition_variable cv_;
+        std::deque<Event> events_;
         int64_t pendingSnapshotEpochMs_{0};
         int64_t snapshotDirtySinceMs_{0};
         bool snapshotDirty_{false};

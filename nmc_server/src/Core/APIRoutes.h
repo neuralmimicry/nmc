@@ -393,6 +393,11 @@ namespace NMC::Server {
         nlohmann::json buildServerStateSnapshotLocked(int64_t nowMs) const;
         void restoreServerStateSnapshotLocked(const nlohmann::json& snapshot);
         void scheduleServerStateSnapshot(int64_t nowMs);
+        void recordServerStateEvent(const std::string& entityType,
+                                    const std::string& entityKey,
+                                    const std::string& action,
+                                    int64_t tsMs,
+                                    nlohmann::json payload);
         nlohmann::json buildTraceyStateSnapshotLocked(int64_t nowMs) const;
         void restoreTraceyStateSnapshotLocked(const nlohmann::json& snapshot);
         void scheduleTraceyStateSnapshotLocked(int64_t nowMs);

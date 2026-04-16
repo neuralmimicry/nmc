@@ -101,6 +101,107 @@ namespace {
         return "";
     }
 
+    bool sameClusterRecord(const NMC::Server::Models::K8sCluster& left,
+                           const NMC::Server::Models::K8sCluster& right) {
+        return left.id == right.id
+               && left.name == right.name
+               && left.region == right.region
+               && left.status == right.status
+               && left.is_vcluster == right.is_vcluster
+               && left.parent_cluster == right.parent_cluster
+               && left.vcluster_namespace == right.vcluster_namespace
+               && left.config_id == right.config_id;
+    }
+
+    std::string clusterSortKey(const NMC::Server::Models::K8sCluster& cluster) {
+        return toLowerCopy(trimCopy(cluster.name)) + "|" +
+               toLowerCopy(trimCopy(cluster.id)) + "|" +
+               toLowerCopy(trimCopy(cluster.region)) + "|" +
+               toLowerCopy(trimCopy(cluster.status)) + "|" +
+               (cluster.is_vcluster ? "1" : "0") + "|" +
+               toLowerCopy(trimCopy(cluster.parent_cluster)) + "|" +
+               toLowerCopy(trimCopy(cluster.vcluster_namespace)) + "|" +
+               toLowerCopy(trimCopy(cluster.config_id));
+    }
+
+    void sortClusterRegistry(std::vector<NMC::Server::Models::K8sCluster>& clusters) {
+        std::sort(clusters.begin(), clusters.end(), [](const auto& left, const auto& right) {
+            return clusterSortKey(left) < clusterSortKey(right);
+        });
+    }
+
+    bool clusterRegistryEqual(const std::vector<NMC::Server::Models::K8sCluster>& left,
+                              const std::vector<NMC::Server::Models::K8sCluster>& right) {
+        if (left.size() != right.size()) {
+            return false;
+        }
+        std::vector<NMC::Server::Models::K8sCluster> sortedLeft = left;
+        std::vector<NMC::Server::Models::K8sCluster> sortedRight = right;
+        sortClusterRegistry(sortedLeft);
+        sortClusterRegistry(sortedRight);
+        for (size_t index = 0; index < sortedLeft.size(); ++index) {
+            if (!sameClusterRecord(sortedLeft[index], sortedRight[index])) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    bool clusterMatchesIdentifier(const NMC::Server::Models::K8sCluster& cluster, const std::string& identifier) {
+        const std::string normalizedIdentifier = toLowerCopy(trimCopy(identifier));
+        if (normalizedIdentifier.empty()) {
+            return false;
+        }
+        return (!trimCopy(cluster.id).empty() && toLowerCopy(trimCopy(cluster.id)) == normalizedIdentifier)
+               || (!trimCopy(cluster.name).empty() && toLowerCopy(trimCopy(cluster.name)) == normalizedIdentifier);
+    }
+
+    bool upsertClusterRecord(std::vector<NMC::Server::Models::K8sCluster>& clusters,
+                             const NMC::Server::Models::K8sCluster& cluster) {
+        const std::string normalizedId = toLowerCopy(trimCopy(cluster.id));
+        const std::string normalizedName = toLowerCopy(trimCopy(cluster.name));
+        if (normalizedId.empty() && normalizedName.empty()) {
+            return false;
+        }
+
+        auto existing = std::find_if(clusters.begin(), clusters.end(), [&](const auto& candidate) {
+            const std::string candidateId = toLowerCopy(trimCopy(candidate.id));
+            const std::string candidateName = toLowerCopy(trimCopy(candidate.name));
+            return (!normalizedId.empty() && !candidateId.empty() && candidateId == normalizedId)
+                   || (!normalizedName.empty() && !candidateName.empty() && candidateName == normalizedName);
+        });
+        if (existing == clusters.end()) {
+            clusters.push_back(cluster);
+            return true;
+        }
+        if (sameClusterRecord(*existing, cluster)) {
+            return false;
+        }
+        *existing = cluster;
+        return true;
+    }
+
+    bool removeClusterRecord(std::vector<NMC::Server::Models::K8sCluster>& clusters, const std::string& identifier) {
+        auto newEnd = std::remove_if(clusters.begin(), clusters.end(), [&](const auto& cluster) {
+            return clusterMatchesIdentifier(cluster, identifier);
+        });
+        if (newEnd == clusters.end()) {
+            return false;
+        }
+        clusters.erase(newEnd, clusters.end());
+        return true;
+    }
+
+    bool replaceClusterRegistry(std::vector<NMC::Server::Models::K8sCluster>& clusters,
+                                std::vector<NMC::Server::Models::K8sCluster> replacement) {
+        sortClusterRegistry(replacement);
+        if (clusterRegistryEqual(clusters, replacement)) {
+            return false;
+        }
+        clusters = std::move(replacement);
+        return true;
+    }
+
     bool isLocalClusterIdentifier(const std::string& identifier) {
         const std::string normalized = toLowerCopy(identifier);
         return normalized == "refiner-local"
@@ -315,12 +416,14 @@ namespace NMC {
                 const std::string& api_server_url,
                 const std::string &kubeconfig_path,
                 std::mutex &mutex_ref,
+                std::vector<Models::K8sCluster>& k8s_clusters_ref,
                 std::unordered_map<std::string, Models::VClusterConfig>& vcluster_configs_ref,
                 std::function<void(httplib::Response&, const Models::CloudResponse&)> send_json_cb,
                 std::function<void(httplib::Response&, int, const std::string&)> send_error_cb,
                 std::function<void(int64_t)> state_snapshot_cb
         ) :
         dataMutex(mutex_ref),
+        k8sClustersRef(k8s_clusters_ref),
         vclusterConfigsRef(vcluster_configs_ref),
         sendJsonResponse(send_json_cb),
         sendErrorResponse(send_error_cb),
@@ -469,6 +572,10 @@ namespace NMC {
                 Models::K8sCluster cluster;
                 cluster.id = k8sObject["metadata"].value("uid", "unknown");
                 cluster.name = k8sObject["metadata"].value("name", "unknown");
+                cluster.is_vcluster = false;
+                cluster.parent_cluster.clear();
+                cluster.vcluster_namespace.clear();
+                cluster.config_id.clear();
 
                 // Try to get region from spec.region or metadata.labels.region
                 if (k8sObject.contains("spec") && k8sObject["spec"].contains("region")) {
@@ -482,6 +589,8 @@ namespace NMC {
                 // Determine status from status.state or conditions
                 if (k8sObject.contains("status") && k8sObject["status"].contains("state")) {
                     cluster.status = k8sObject["status"].value("state", "Unknown");
+                } else if (k8sObject.contains("spec") && k8sObject["spec"].contains("state")) {
+                    cluster.status = k8sObject["spec"].value("state", "Unknown");
                 } else if (k8sObject.contains("status") && k8sObject["status"].contains("conditions") && k8sObject["status"]["conditions"].is_array()) {
                     for (const auto& condition : k8sObject["status"]["conditions"]) {
                         if (condition.value("type", "") == "Ready" && condition.value("status", "") == "True") {
@@ -533,11 +642,20 @@ namespace NMC {
                 if (created_object_str) {
                     auto created_obj = nlohmann::json::parse(created_object_str);
                     if (auto newCluster = parseKubernetesObjectToK8sCluster(created_obj)) {
+                        bool snapshotChanged = false;
+                        const int64_t mutationTs = static_cast<int64_t>(std::time(nullptr)) * 1000;
+                        {
+                            std::lock_guard<std::mutex> lock(dataMutex);
+                            snapshotChanged = upsertClusterRecord(k8sClustersRef, *newCluster);
+                        }
                         Models::CloudResponse apiResponse;
                         apiResponse.success = true;
                         apiResponse.message = "K8s cluster '" + name + "' created successfully.";
                         apiResponse.data = newCluster->toJsonString();
                         sendJsonResponse(res, apiResponse);
+                        if (snapshotChanged && scheduleStateSnapshot) {
+                            scheduleStateSnapshot(mutationTs);
+                        }
                     } else {
                         sendErrorResponse(res, 500, "Failed to parse created Kubernetes object for cluster '" + name + "'.");
                     }
@@ -560,7 +678,7 @@ namespace NMC {
 
         void K8sHandlers::handleDeleteK8sCluster(const httplib::Request& req, httplib::Response& res) {
             try {
-                std::string id = req.path_params.at("id"); // Assuming ID is part of path
+                std::string id = extractClusterIdentifierFromRequest(req);
                 if (id.empty()) {
                     return sendErrorResponse(res, 400, "Missing cluster ID.");
                 }
@@ -577,12 +695,21 @@ namespace NMC {
                 );
 
                 if (deleted_object_str) {
+                    bool snapshotChanged = false;
+                    const int64_t mutationTs = static_cast<int64_t>(std::time(nullptr)) * 1000;
+                    {
+                        std::lock_guard<std::mutex> lock(dataMutex);
+                        snapshotChanged = removeClusterRecord(k8sClustersRef, id);
+                    }
                     // Successfully deleted, parse and send response
                     Models::CloudResponse apiResponse;
                     apiResponse.success = true;
                     apiResponse.message = "K8s cluster '" + id + "' deleted successfully.";
                     apiResponse.data = nlohmann::json::parse(deleted_object_str); // Or just a success message
                     sendJsonResponse(res, apiResponse);
+                    if (snapshotChanged && scheduleStateSnapshot) {
+                        scheduleStateSnapshot(mutationTs);
+                    }
                 } else if (apiClient->response_code == 404) {
                     sendErrorResponse(res, 404, "K8s cluster '" + id + "' not found.");
                 } else {
@@ -602,7 +729,7 @@ namespace NMC {
 
         void K8sHandlers::handleGetK8sCluster(const httplib::Request& req, httplib::Response& res) {
             try {
-                std::string id = req.path_params.at("id"); // Assuming ID is part of path
+                std::string id = extractClusterIdentifierFromRequest(req);
                 if (id.empty()) {
                     return sendErrorResponse(res, 400, "Missing cluster ID.");
                 }
@@ -1134,7 +1261,7 @@ namespace NMC {
 
         void K8sHandlers::handleGetKubeConfig(const httplib::Request& req, httplib::Response& res) {
             try {
-                std::string id = req.path_params.at("id"); // Assuming ID of the cluster to get its kubeconfig
+                std::string id = extractClusterIdentifierFromRequest(req);
                 if (id.empty()) {
                     return sendErrorResponse(res, 400, "Missing cluster ID.");
                 }
@@ -1434,7 +1561,30 @@ users:
                 apiResponse.message = apiResponse.data["clusters"].empty()
                                       ? "No Kubernetes clusters matched the current query."
                                       : "Successfully listed K8s clusters.";
+                bool snapshotChanged = false;
+                int64_t mutationTs = 0;
+                if (filterName.empty()) {
+                    std::vector<Models::K8sCluster> discoveredClusters;
+                    for (const auto& clusterPayload : apiResponse.data["clusters"]) {
+                        if (!clusterPayload.is_object()) {
+                            continue;
+                        }
+                        Models::K8sCluster cluster = Models::K8sCluster::fromJson(clusterPayload);
+                        if (trimCopy(cluster.id).empty() && trimCopy(cluster.name).empty()) {
+                            continue;
+                        }
+                        discoveredClusters.push_back(std::move(cluster));
+                    }
+                    mutationTs = static_cast<int64_t>(std::time(nullptr)) * 1000;
+                    {
+                        std::lock_guard<std::mutex> lock(dataMutex);
+                        snapshotChanged = replaceClusterRegistry(k8sClustersRef, std::move(discoveredClusters));
+                    }
+                }
                 sendJsonResponse(res, apiResponse);
+                if (snapshotChanged && scheduleStateSnapshot) {
+                    scheduleStateSnapshot(mutationTs);
+                }
             } catch (const std::exception& e) {
                 sendErrorResponse(res, 500, "Server error: " + std::string(e.what()));
             }
@@ -1659,7 +1809,7 @@ users:
 
         void K8sHandlers::handleResumeK8sCluster(const httplib::Request& req, httplib::Response& res) {
             try {
-                std::string id = req.path_params.at("id"); // Assuming ID is part of path
+                std::string id = extractClusterIdentifierFromRequest(req);
                 if (id.empty()) {
                     return sendErrorResponse(res, 400, "Missing cluster ID.");
                 }
@@ -1694,11 +1844,20 @@ users:
                 if (patched_object_str) {
                     auto patched_obj = nlohmann::json::parse(patched_object_str);
                     if (auto updatedCluster = parseKubernetesObjectToK8sCluster(patched_obj)) {
+                        bool snapshotChanged = false;
+                        const int64_t mutationTs = static_cast<int64_t>(std::time(nullptr)) * 1000;
+                        {
+                            std::lock_guard<std::mutex> lock(dataMutex);
+                            snapshotChanged = upsertClusterRecord(k8sClustersRef, *updatedCluster);
+                        }
                         Models::CloudResponse apiResponse;
                         apiResponse.success = true;
                         apiResponse.message = "K8s cluster '" + id + "' resumed successfully.";
                         apiResponse.data = updatedCluster->toJsonString();
                         sendJsonResponse(res, apiResponse);
+                        if (snapshotChanged && scheduleStateSnapshot) {
+                            scheduleStateSnapshot(mutationTs);
+                        }
                     } else {
                         sendErrorResponse(res, 500, "Failed to parse patched Kubernetes object for cluster '" + id + "'.");
                     }
@@ -1721,7 +1880,7 @@ users:
 
         void K8sHandlers::handleSuspendK8sCluster(const httplib::Request& req, httplib::Response& res) {
             try {
-                std::string id = req.path_params.at("id"); // Assuming ID is part of path
+                std::string id = extractClusterIdentifierFromRequest(req);
                 if (id.empty()) {
                     return sendErrorResponse(res, 400, "Missing cluster ID.");
                 }
@@ -1754,11 +1913,20 @@ users:
                 if (patched_object_str) {
                     auto patched_obj = nlohmann::json::parse(patched_object_str);
                     if (auto updatedCluster = parseKubernetesObjectToK8sCluster(patched_obj)) {
+                        bool snapshotChanged = false;
+                        const int64_t mutationTs = static_cast<int64_t>(std::time(nullptr)) * 1000;
+                        {
+                            std::lock_guard<std::mutex> lock(dataMutex);
+                            snapshotChanged = upsertClusterRecord(k8sClustersRef, *updatedCluster);
+                        }
                         Models::CloudResponse apiResponse;
                         apiResponse.success = true;
                         apiResponse.message = "K8s cluster '" + id + "' suspended successfully.";
                         apiResponse.data = updatedCluster->toJsonString();
                         sendJsonResponse(res, apiResponse);
+                        if (snapshotChanged && scheduleStateSnapshot) {
+                            scheduleStateSnapshot(mutationTs);
+                        }
                     } else {
                         sendErrorResponse(res, 500, "Failed to parse patched Kubernetes object for cluster '" + id + "'.");
                     }

@@ -15,7 +15,7 @@ namespace NMC {
                 std::string name;
                 std::string region;
                 std::string status;
-                bool is_vcluster;
+                bool is_vcluster{false};
                 std::string parent_cluster;
                 std::string vcluster_namespace;
                 std::string config_id; // Reference to VClusterConfig

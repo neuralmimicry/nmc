@@ -9,6 +9,7 @@
 #include <memory>
 #include <system_error>
 #include <utility>
+#include <vector>
 
 #ifdef NMC_HAS_LIBPQXX
 #include <pqxx/pqxx>
@@ -90,6 +91,24 @@ namespace {
         txn.exec(R"sql(
             CREATE INDEX IF NOT EXISTS idx_nmc_server_state_snapshots_updated_epoch_ms
             ON nmc_server_state_snapshots (updated_epoch_ms DESC)
+        )sql");
+        txn.exec(R"sql(
+            CREATE TABLE IF NOT EXISTS nmc_server_registry_events (
+                event_id BIGSERIAL PRIMARY KEY,
+                entity_type TEXT NOT NULL,
+                entity_key TEXT NOT NULL,
+                action TEXT NOT NULL,
+                ts_ms BIGINT NOT NULL,
+                payload_json JSONB NOT NULL
+            )
+        )sql");
+        txn.exec(R"sql(
+            CREATE INDEX IF NOT EXISTS idx_nmc_server_registry_events_entity_ts
+            ON nmc_server_registry_events (entity_type, entity_key, ts_ms DESC)
+        )sql");
+        txn.exec(R"sql(
+            CREATE INDEX IF NOT EXISTS idx_nmc_server_registry_events_ts
+            ON nmc_server_registry_events (ts_ms DESC)
         )sql");
         txn.commit();
     }
@@ -269,6 +288,37 @@ namespace NMC::Server {
         cv_.notify_one();
     }
 
+    void ServerStateStore::recordEvent(const std::string& entityType,
+                                       const std::string& entityKey,
+                                       const std::string& action,
+                                       int64_t tsMs,
+                                       json payload) {
+        if (!postgresConfigured()) {
+            return;
+        }
+        const std::string normalizedEntityType = trimCopy(entityType);
+        const std::string normalizedEntityKey = trimCopy(entityKey);
+        const std::string normalizedAction = trimCopy(action);
+        if (normalizedEntityType.empty() || normalizedAction.empty()) {
+            return;
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (events_.size() >= 50000) {
+                events_.pop_front();
+            }
+            events_.push_back(Event{
+                    normalizedEntityType,
+                    normalizedEntityKey,
+                    normalizedAction,
+                    tsMs > 0 ? tsMs : nowEpochMs(),
+                    std::move(payload)
+            });
+        }
+        cv_.notify_one();
+    }
+
     void ServerStateStore::runWorker() {
 #ifdef NMC_HAS_LIBPQXX
         std::unique_ptr<pqxx::connection> postgresConnection;
@@ -306,19 +356,42 @@ namespace NMC::Server {
         bool warnedUnsupportedPostgres = false;
 #endif
 
+        int64_t eventRetryNotBeforeMs = 0;
+        const int64_t eventRetryBaseMs = std::max<int64_t>(1000, std::min<int64_t>(config_.flushIntervalMs, 5000));
+        auto requeueEvents = [&](std::vector<Event>& batch, int64_t retryNotBeforeMs) {
+            if (batch.empty()) {
+                return;
+            }
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                for (auto it = batch.rbegin(); it != batch.rend(); ++it) {
+                    events_.push_front(std::move(*it));
+                }
+            }
+            eventRetryNotBeforeMs = retryNotBeforeMs;
+            cv_.notify_one();
+        };
+
         for (;;) {
             json snapshotEnvelope;
+            std::vector<Event> eventBatch;
             int64_t snapshotEpochMs = 0;
             {
                 std::unique_lock<std::mutex> lock(mutex_);
                 auto readyToFlush = [&]() -> bool {
+                    const int64_t currentMs = nowEpochMs();
+                    if (!events_.empty()) {
+                        if (stopRequested_) {
+                            return true;
+                        }
+                        return eventRetryNotBeforeMs <= 0 || currentMs >= eventRetryNotBeforeMs;
+                    }
                     if (stopRequested_) {
                         return true;
                     }
                     if (!snapshotDirty_) {
                         return false;
                     }
-                    const int64_t currentMs = nowEpochMs();
                     return snapshotDirtySinceMs_ <= 0 || (currentMs - snapshotDirtySinceMs_) >= config_.flushIntervalMs;
                 };
                 while (!readyToFlush()) {
@@ -327,9 +400,12 @@ namespace NMC::Server {
                         const int64_t dueMs = snapshotDirtySinceMs_ + config_.flushIntervalMs;
                         waitMs = std::max<int64_t>(1, dueMs - nowEpochMs());
                     }
+                    if (!events_.empty() && !stopRequested_ && eventRetryNotBeforeMs > 0) {
+                        waitMs = std::min(waitMs, std::max<int64_t>(1, eventRetryNotBeforeMs - nowEpochMs()));
+                    }
                     cv_.wait_for(lock, std::chrono::milliseconds(waitMs));
                 }
-                if (stopRequested_ && !snapshotDirty_) {
+                if (stopRequested_ && !snapshotDirty_ && events_.empty()) {
                     break;
                 }
                 if (snapshotDirty_ &&
@@ -337,6 +413,12 @@ namespace NMC::Server {
                     snapshotEpochMs = pendingSnapshotEpochMs_ > 0 ? pendingSnapshotEpochMs_ : nowEpochMs();
                     snapshotDirty_ = false;
                     snapshotDirtySinceMs_ = 0;
+                }
+                const size_t batchSize = std::min<size_t>(events_.size(), 512);
+                eventBatch.reserve(batchSize);
+                for (size_t index = 0; index < batchSize; ++index) {
+                    eventBatch.push_back(std::move(events_.front()));
+                    events_.pop_front();
                 }
             }
 
@@ -351,22 +433,41 @@ namespace NMC::Server {
                 writeFileSnapshotEnvelope(snapshotEnvelope);
             }
 
-            if (postgresConfigured() && snapshotEnvelope.is_object()) {
+            if (postgresConfigured() && (snapshotEnvelope.is_object() || !eventBatch.empty())) {
+                bool dropPendingEvents = false;
+                int64_t retryNotBeforeMs = 0;
 #ifdef NMC_HAS_LIBPQXX
                 if (ensurePostgresReady()) {
+                    bool flushSucceeded = false;
                     try {
                         pqxx::work txn(*postgresConnection);
-                        const json payload = snapshotEnvelope.value("payload", json::object());
-                        txn.exec_params(
-                                "INSERT INTO nmc_server_state_snapshots (snapshot_key, updated_epoch_ms, payload_json) "
-                                "VALUES ($1, $2, $3::jsonb) "
-                                "ON CONFLICT (snapshot_key) DO UPDATE "
-                                "SET updated_epoch_ms = EXCLUDED.updated_epoch_ms, payload_json = EXCLUDED.payload_json",
-                                trimCopy(config_.snapshotKey).empty() ? std::string("primary") : trimCopy(config_.snapshotKey),
-                                snapshotEnvelope.value("updated_epoch_ms", 0LL),
-                                payload.dump()
-                        );
+                        if (snapshotEnvelope.is_object()) {
+                            const json payload = snapshotEnvelope.value("payload", json::object());
+                            txn.exec_params(
+                                    "INSERT INTO nmc_server_state_snapshots (snapshot_key, updated_epoch_ms, payload_json) "
+                                    "VALUES ($1, $2, $3::jsonb) "
+                                    "ON CONFLICT (snapshot_key) DO UPDATE "
+                                    "SET updated_epoch_ms = EXCLUDED.updated_epoch_ms, payload_json = EXCLUDED.payload_json",
+                                    trimCopy(config_.snapshotKey).empty() ? std::string("primary") : trimCopy(config_.snapshotKey),
+                                    snapshotEnvelope.value("updated_epoch_ms", 0LL),
+                                    payload.dump()
+                            );
+                        }
+                        for (const auto& event : eventBatch) {
+                            const json payload = event.payload.is_null() ? json::object() : event.payload;
+                            txn.exec_params(
+                                    "INSERT INTO nmc_server_registry_events (entity_type, entity_key, action, ts_ms, payload_json) "
+                                    "VALUES ($1, $2, $3, $4, $5::jsonb)",
+                                    event.entityType,
+                                    event.entityKey,
+                                    event.action,
+                                    std::max<int64_t>(0, event.tsMs),
+                                    payload.dump()
+                            );
+                        }
                         txn.commit();
+                        flushSucceeded = true;
+                        eventRetryNotBeforeMs = 0;
                     } catch (const std::exception& error) {
                         postgresConnection.reset();
                         postgresSchemaReady = false;
@@ -376,13 +477,46 @@ namespace NMC::Server {
                             lastPostgresErrorMs = currentMs;
                         }
                     }
+                    if (!flushSucceeded && !eventBatch.empty()) {
+                        if (stopRequested_) {
+                            dropPendingEvents = true;
+                        } else {
+                            const int64_t currentMs = nowEpochMs();
+                            retryNotBeforeMs = std::max<int64_t>(
+                                    currentMs + eventRetryBaseMs,
+                                    lastPostgresAttemptMs > 0 ? (lastPostgresAttemptMs + 30000) : 0
+                            );
+                        }
+                    }
+                } else if (!eventBatch.empty()) {
+                    if (stopRequested_) {
+                        dropPendingEvents = true;
+                    } else {
+                        const int64_t currentMs = nowEpochMs();
+                        retryNotBeforeMs = std::max<int64_t>(
+                                currentMs + eventRetryBaseMs,
+                                lastPostgresAttemptMs > 0 ? (lastPostgresAttemptMs + 30000) : 0
+                        );
+                    }
                 }
 #else
                 if (!warnedUnsupportedPostgres) {
                     std::cerr << "[WARN] Server-state PostgreSQL persistence requested but libpqxx support is not available in this build." << std::endl;
                     warnedUnsupportedPostgres = true;
                 }
+                if (!eventBatch.empty()) {
+                    if (stopRequested_) {
+                        dropPendingEvents = true;
+                    } else {
+                        retryNotBeforeMs = nowEpochMs() + std::max<int64_t>(eventRetryBaseMs, 30000);
+                    }
+                }
 #endif
+                if (retryNotBeforeMs > 0) {
+                    requeueEvents(eventBatch, retryNotBeforeMs);
+                } else if (dropPendingEvents && !eventBatch.empty()) {
+                    std::cerr << "[WARN] Dropping pending server-state registry events during shutdown because PostgreSQL is unavailable." << std::endl;
+                }
             }
         }
     }

@@ -54,6 +54,7 @@ namespace NMC {
                     const std::string& api_server_url,
                     const std::string& kubeconfig_path,
                     std::mutex& mutex_ref,
+                    std::vector<Models::K8sCluster>& k8s_clusters_ref,
                     std::unordered_map<std::string, Models::VClusterConfig>& vcluster_configs_ref,
                     std::function<void(httplib::Response&, const Models::CloudResponse&)> send_json_cb,
                     std::function<void(httplib::Response&, int, const std::string&)> send_error_cb,
@@ -133,6 +134,7 @@ namespace NMC {
             bool clusterMatchesFilter(const nlohmann::json& cluster, const std::string& filterName);
 
             std::mutex& dataMutex; /**< Reference to the mutex (still useful for general thread safety). */
+            std::vector<Models::K8sCluster>& k8sClustersRef; /**< Reference to persisted K8s cluster registry */
             std::unordered_map<std::string, Models::VClusterConfig>& vclusterConfigsRef; /**< Reference to VCluster configs storage */
 
             // Callbacks for sending responses, provided by APIRoutes

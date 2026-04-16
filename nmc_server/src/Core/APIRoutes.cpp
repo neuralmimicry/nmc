@@ -158,6 +158,44 @@ namespace NMC::Server {
             return vm;
         }
 
+        nlohmann::json sshKeySnapshotToJson(const NMC::Server::Models::SSHKey& key) {
+            return {
+                    {"id", key.id},
+                    {"name", key.name},
+                    {"publicKey", key.publicKey},
+                    {"description", key.description}
+            };
+        }
+
+        NMC::Server::Models::SSHKey sshKeySnapshotFromJson(const nlohmann::json& payload) {
+            NMC::Server::Models::SSHKey key;
+            if (!payload.is_object()) {
+                return key;
+            }
+            key.id = payload.value("id", "");
+            key.name = payload.value("name", "");
+            key.publicKey = payload.value("publicKey", "");
+            key.description = payload.value("description", "");
+            return key;
+        }
+
+        nlohmann::json k8sClusterSnapshotToJson(const NMC::Server::Models::K8sCluster& cluster) {
+            return {
+                    {"id", cluster.id},
+                    {"name", cluster.name},
+                    {"region", cluster.region},
+                    {"status", cluster.status},
+                    {"is_vcluster", cluster.is_vcluster},
+                    {"parent_cluster", cluster.parent_cluster},
+                    {"vcluster_namespace", cluster.vcluster_namespace},
+                    {"config_id", cluster.config_id}
+            };
+        }
+
+        NMC::Server::Models::K8sCluster k8sClusterSnapshotFromJson(const nlohmann::json& payload) {
+            return NMC::Server::Models::K8sCluster::fromJson(payload);
+        }
+
         nlohmann::json vclusterConfigSnapshotToJson(const NMC::Server::Models::VClusterConfig& config) {
             nlohmann::json payload = config.toJson();
             payload["id"] = config.id;
@@ -3382,6 +3420,7 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                 api_server_url_value,
                 kubeconfigPath,
                 dataMutex,
+                k8sClusters,
                 vclusterConfigs,
                 [this](httplib::Response& res, const Models::CloudResponse& apiResponse) {
                     sendJsonResponse(res, apiResponse);
@@ -5238,6 +5277,8 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
         Models::CloudResponse apiResponse;
         bool created = false;
         int64_t mutationTs = 0;
+        nlohmann::json eventPayload = nlohmann::json::object();
+        std::string eventKey;
 
         try {
             const nlohmann::json params = parseJsonBodyStrict(req.body);
@@ -5299,7 +5340,8 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                         connections.end(),
                         [&](const Models::Connection& connection) { return connection.name == name; }
                 );
-                responseData = stored != connections.end() ? stored->toJsonString() : newConnection.toJsonString();
+                const nlohmann::json storedConnection = stored != connections.end() ? stored->toJsonString() : newConnection.toJsonString();
+                responseData = storedConnection;
                 apiResponse.success = true;
                 apiResponse.message = setDefault
                                       ? "Connection '" + name + "' created and set as default."
@@ -5307,6 +5349,11 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                 apiResponse.data = std::move(responseData);
                 created = true;
                 mutationTs = nowEpochMs();
+                eventKey = name;
+                eventPayload = {
+                        {"connection", storedConnection},
+                        {"current_connection_name", currentConnectionName}
+                };
             }
         } catch (const std::runtime_error& error) {
             return sendErrorResponse(res, 400, std::string("Error processing request: ") + error.what());
@@ -5316,6 +5363,7 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
 
         if (created) {
             scheduleServerStateSnapshot(mutationTs);
+            recordServerStateEvent("connection", eventKey, "created", mutationTs, eventPayload);
         }
         sendJsonResponse(res, apiResponse);
         if (created) {
@@ -5335,24 +5383,24 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
         Models::CloudResponse apiResponse;
         bool removed = false;
         int64_t mutationTs = 0;
+        nlohmann::json eventPayload = nlohmann::json::object();
 
         {
             std::lock_guard<std::mutex> lock(dataMutex);
-            const auto initialSize = connections.size();
-            connections.erase(
-                    std::remove_if(
-                            connections.begin(),
-                            connections.end(),
-                            [&](const Models::Connection& connection) { return connection.name == name; }
-                    ),
-                    connections.end()
+            auto it = std::find_if(
+                    connections.begin(),
+                    connections.end(),
+                    [&](const Models::Connection& connection) { return connection.name == name; }
             );
-
-            if (connections.size() == initialSize) {
+            if (it == connections.end()) {
                 return sendErrorResponse(res, 404, "Connection with name '" + name + "' not found.");
             }
 
-            if (currentConnectionName == name) {
+            const bool wasSelected = currentConnectionName == name;
+            const nlohmann::json removedConnection = it->toJsonString();
+            connections.erase(it);
+
+            if (wasSelected) {
                 currentConnectionName.clear();
             }
             normalizeConnectionRegistry(connections, currentConnectionName);
@@ -5363,10 +5411,16 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                                   : "Connection '" + name + "' dropped.";
             removed = true;
             mutationTs = nowEpochMs();
+            eventPayload = {
+                    {"connection", removedConnection},
+                    {"was_selected", wasSelected},
+                    {"current_connection_name", currentConnectionName}
+            };
         }
 
         if (removed) {
             scheduleServerStateSnapshot(mutationTs);
+            recordServerStateEvent("connection", name, "dropped", mutationTs, eventPayload);
         }
         sendJsonResponse(res, apiResponse);
     }
@@ -5395,6 +5449,8 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
     void APIRoutes::handleSelectConnection(const httplib::Request& req, httplib::Response& res) {
         Models::CloudResponse apiResponse;
         int64_t mutationTs = 0;
+        nlohmann::json eventPayload = nlohmann::json::object();
+        std::string eventKey;
 
         try {
             const nlohmann::json params = parseJsonBodyStrict(req.body);
@@ -5409,6 +5465,7 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
 
             {
                 std::lock_guard<std::mutex> lock(dataMutex);
+                const std::string previousConnectionName = currentConnectionName;
                 auto it = std::find_if(
                         connections.begin(),
                         connections.end(),
@@ -5424,6 +5481,12 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                 apiResponse.success = true;
                 apiResponse.message = "Connection '" + name + "' selected as default.";
                 mutationTs = nowEpochMs();
+                eventKey = name;
+                eventPayload = {
+                        {"connection", it->toJsonString()},
+                        {"previous_connection_name", previousConnectionName},
+                        {"current_connection_name", currentConnectionName}
+                };
             }
         } catch (const std::runtime_error& error) {
             return sendErrorResponse(res, 400, std::string("Error processing request: ") + error.what());
@@ -5432,6 +5495,7 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
         }
 
         scheduleServerStateSnapshot(mutationTs);
+        recordServerStateEvent("connection", eventKey, "selected", mutationTs, eventPayload);
         sendJsonResponse(res, apiResponse);
     }
 
@@ -5454,32 +5518,39 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
             std::string location = json_body.value("location", "");
             std::string type = json_body.value("type", "");
             int64_t mutationTs = 0;
+            Models::CloudResponse apiResponse;
+            nlohmann::json eventPayload = nlohmann::json::object();
 
             if (name.empty() || location.empty() || type.empty()) {
                 return sendErrorResponse(res, 400, "Missing required parameters: name, location, or type.");
             }
 
-            std::lock_guard<std::mutex> lock(dataMutex);
-            // Check if bucket already exists
-            auto it = std::find_if(buckets.begin(), buckets.end(),
-                                   [&](const Models::Bucket& b) { return b.name == name; });
-            if (it != buckets.end()) {
-                return sendErrorResponse(res, 409, "Bucket '" + name + "' already exists."); // Conflict
+            {
+                std::lock_guard<std::mutex> lock(dataMutex);
+                auto it = std::find_if(buckets.begin(), buckets.end(),
+                                       [&](const Models::Bucket& b) { return b.name == name; });
+                if (it != buckets.end()) {
+                    return sendErrorResponse(res, 409, "Bucket '" + name + "' already exists.");
+                }
+
+                Models::Bucket newBucket;
+                newBucket.name = name;
+                newBucket.location = location;
+                newBucket.type = type;
+                newBucket.status = "Active";
+                buckets.push_back(newBucket);
+                mutationTs = nowEpochMs();
+
+                apiResponse.success = true;
+                apiResponse.message = "Bucket '" + name + "' created successfully.";
+                apiResponse.data = newBucket.toJsonString();
+                eventPayload = {
+                        {"bucket", newBucket.toJsonString()}
+                };
             }
 
-            Models::Bucket newBucket;
-            newBucket.name = name;
-            newBucket.location = location;
-            newBucket.type = type;
-            newBucket.status = "Active";
-            buckets.push_back(newBucket);
-            mutationTs = nowEpochMs();
-
-            Models::CloudResponse apiResponse;
-            apiResponse.success = true;
-            apiResponse.message = "Bucket '" + name + "' created successfully.";
-            apiResponse.data = newBucket.toJsonString();
             scheduleServerStateSnapshot(mutationTs);
+            recordServerStateEvent("bucket", name, "created", mutationTs, eventPayload);
             sendJsonResponse(res, apiResponse);
 
         } catch (const nlohmann::json::parse_error& e) {
@@ -5502,23 +5573,30 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
     void APIRoutes::handleDeleteBucket(const httplib::Request& req, httplib::Response& res) {
         std::string name = req.matches[1]; // Get name from regex capture
         int64_t mutationTs = 0;
+        Models::CloudResponse apiResponse;
+        nlohmann::json eventPayload = nlohmann::json::object();
 
-        std::lock_guard<std::mutex> lock(dataMutex);
-        auto initial_size = buckets.size();
-        buckets.erase(std::remove_if(buckets.begin(), buckets.end(),
-                                         [&](const Models::Bucket& b) { return b.name == name; }),
-                          buckets.end());
-
-        if (buckets.size() < initial_size) {
+        {
+            std::lock_guard<std::mutex> lock(dataMutex);
+            auto it = std::find_if(
+                    buckets.begin(),
+                    buckets.end(),
+                    [&](const Models::Bucket& bucket) { return bucket.name == name; }
+            );
+            if (it == buckets.end()) {
+                return sendErrorResponse(res, 404, "Bucket '" + name + "' not found.");
+            }
+            eventPayload = {
+                    {"bucket", it->toJsonString()}
+            };
+            buckets.erase(it);
             mutationTs = nowEpochMs();
-            Models::CloudResponse apiResponse;
             apiResponse.success = true;
             apiResponse.message = "Bucket '" + name + "' deleted successfully.";
-            scheduleServerStateSnapshot(mutationTs);
-            sendJsonResponse(res, apiResponse);
-        } else {
-            sendErrorResponse(res, 404, "Bucket '" + name + "' not found.");
         }
+        scheduleServerStateSnapshot(mutationTs);
+        recordServerStateEvent("bucket", name, "deleted", mutationTs, eventPayload);
+        sendJsonResponse(res, apiResponse);
     }
 
     /**
@@ -5713,29 +5791,35 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
             std::string name = json_body.value("name", "");
             std::string publicKey = json_body.value("publicKey", "");
             std::string description = json_body.value("description", "");
+            int64_t mutationTs = 0;
+            Models::CloudResponse apiResponse;
 
             if (name.empty() || publicKey.empty()) {
                 return sendErrorResponse(res, 400, "Missing required parameters: name or publicKey.");
             }
 
-            std::lock_guard<std::mutex> lock(dataMutex);
-            auto it = std::find_if(sshKeys.begin(), sshKeys.end(),
-                                   [&](const Models::SSHKey& k) { return k.name == name; });
-            if (it != sshKeys.end()) {
-                return sendErrorResponse(res, 409, "SSH key '" + name + "' already exists.");
+            {
+                std::lock_guard<std::mutex> lock(dataMutex);
+                auto it = std::find_if(sshKeys.begin(), sshKeys.end(),
+                                       [&](const Models::SSHKey& k) { return k.name == name; });
+                if (it != sshKeys.end()) {
+                    return sendErrorResponse(res, 409, "SSH key '" + name + "' already exists.");
+                }
+
+                Models::SSHKey newKey;
+                newKey.id = Utils::generateUniqueId("sshkey");
+                newKey.name = name;
+                newKey.publicKey = publicKey;
+                newKey.description = description;
+                sshKeys.push_back(newKey);
+                mutationTs = nowEpochMs();
+
+                apiResponse.success = true;
+                apiResponse.message = "SSH key '" + name + "' created successfully.";
+                apiResponse.data = newKey.toJsonString();
             }
 
-            Models::SSHKey newKey;
-            newKey.id = Utils::generateUniqueId("sshkey");
-            newKey.name = name;
-            newKey.publicKey = publicKey;
-            newKey.description = description;
-            sshKeys.push_back(newKey);
-
-            Models::CloudResponse apiResponse;
-            apiResponse.success = true;
-            apiResponse.message = "SSH key '" + name + "' created successfully.";
-            apiResponse.data = newKey.toJsonString();
+            scheduleServerStateSnapshot(mutationTs);
             sendJsonResponse(res, apiResponse);
 
         } catch (const nlohmann::json::parse_error& e) {
@@ -5757,21 +5841,30 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
      */
     void APIRoutes::handleDeleteSSHKey(const httplib::Request& req, httplib::Response& res) {
         std::string id = req.matches[1];
+        int64_t mutationTs = 0;
+        Models::CloudResponse apiResponse;
+        bool removed = false;
 
-        std::lock_guard<std::mutex> lock(dataMutex);
-        auto initial_size = sshKeys.size();
-        sshKeys.erase(std::remove_if(sshKeys.begin(), sshKeys.end(),
-                                         [&](const Models::SSHKey& k) { return k.id == id; }),
-                          sshKeys.end());
+        {
+            std::lock_guard<std::mutex> lock(dataMutex);
+            auto initial_size = sshKeys.size();
+            sshKeys.erase(std::remove_if(sshKeys.begin(), sshKeys.end(),
+                                             [&](const Models::SSHKey& k) { return k.id == id; }),
+                              sshKeys.end());
 
-        if (sshKeys.size() < initial_size) {
-            Models::CloudResponse apiResponse;
-            apiResponse.success = true;
-            apiResponse.message = "SSH key '" + id + "' deleted successfully.";
-            sendJsonResponse(res, apiResponse);
-        } else {
-            sendErrorResponse(res, 404, "SSH key '" + id + "' not found.");
+            if (sshKeys.size() < initial_size) {
+                mutationTs = nowEpochMs();
+                apiResponse.success = true;
+                apiResponse.message = "SSH key '" + id + "' deleted successfully.";
+                removed = true;
+            }
         }
+
+        if (!removed) {
+            return sendErrorResponse(res, 404, "SSH key '" + id + "' not found.");
+        }
+        scheduleServerStateSnapshot(mutationTs);
+        sendJsonResponse(res, apiResponse);
     }
 
     /**
@@ -5999,6 +6092,26 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                 }
         );
 
+        std::vector<Models::SSHKey> sortedSshKeys = sshKeys;
+        std::sort(
+                sortedSshKeys.begin(),
+                sortedSshKeys.end(),
+                [](const Models::SSHKey& left, const Models::SSHKey& right) {
+                    return std::tie(left.name, left.id, left.description) <
+                           std::tie(right.name, right.id, right.description);
+                }
+        );
+
+        std::vector<Models::K8sCluster> sortedK8sClusters = k8sClusters;
+        std::sort(
+                sortedK8sClusters.begin(),
+                sortedK8sClusters.end(),
+                [](const Models::K8sCluster& left, const Models::K8sCluster& right) {
+                    return std::tie(left.name, left.id, left.region, left.status, left.is_vcluster) <
+                           std::tie(right.name, right.id, right.region, right.status, right.is_vcluster);
+                }
+        );
+
         std::vector<std::string> vclusterIds;
         vclusterIds.reserve(vclusterConfigs.size());
         for (const auto& entry : vclusterConfigs) {
@@ -6021,6 +6134,16 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
             vmPayload.push_back(vmSnapshotToJson(vm));
         }
 
+        nlohmann::json sshKeyPayload = nlohmann::json::array();
+        for (const auto& sshKey : sortedSshKeys) {
+            sshKeyPayload.push_back(sshKeySnapshotToJson(sshKey));
+        }
+
+        nlohmann::json k8sClusterPayload = nlohmann::json::array();
+        for (const auto& cluster : sortedK8sClusters) {
+            k8sClusterPayload.push_back(k8sClusterSnapshotToJson(cluster));
+        }
+
         nlohmann::json vclusterPayload = nlohmann::json::array();
         for (const auto& configId : vclusterIds) {
             const auto it = vclusterConfigs.find(configId);
@@ -6038,6 +6161,8 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                 {"current_connection_name", currentConnectionName},
                 {"buckets", std::move(bucketPayload)},
                 {"connections", std::move(connectionPayload)},
+                {"k8s_clusters", std::move(k8sClusterPayload)},
+                {"ssh_keys", std::move(sshKeyPayload)},
                 {"vms", std::move(vmPayload)},
                 {"vcluster_configs", std::move(vclusterPayload)}
         };
@@ -6050,6 +6175,8 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
 
         buckets.clear();
         connections.clear();
+        k8sClusters.clear();
+        sshKeys.clear();
         vms.clear();
         vclusterConfigs.clear();
         currentConnectionName.clear();
@@ -6072,6 +6199,20 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
         }
         currentConnectionName = snapshot.value("current_connection_name", "");
         normalizeConnectionRegistry(connections, currentConnectionName);
+
+        for (const auto& clusterPayload : snapshot.value("k8s_clusters", nlohmann::json::array())) {
+            Models::K8sCluster cluster = k8sClusterSnapshotFromJson(clusterPayload);
+            if (!trim(cluster.id).empty() || !trim(cluster.name).empty()) {
+                k8sClusters.push_back(std::move(cluster));
+            }
+        }
+
+        for (const auto& sshKeyPayload : snapshot.value("ssh_keys", nlohmann::json::array())) {
+            Models::SSHKey key = sshKeySnapshotFromJson(sshKeyPayload);
+            if (!trim(key.id).empty() || !trim(key.name).empty()) {
+                sshKeys.push_back(std::move(key));
+            }
+        }
 
         for (const auto& vmPayload : snapshot.value("vms", nlohmann::json::array())) {
             Models::VM vm = vmSnapshotFromJson(vmPayload);
@@ -6100,6 +6241,17 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
         }
         const int64_t snapshotTs = nowMs > 0 ? nowMs : nowEpochMs();
         serverStateStore->scheduleSnapshot(snapshotTs);
+    }
+
+    void APIRoutes::recordServerStateEvent(const std::string& entityType,
+                                           const std::string& entityKey,
+                                           const std::string& action,
+                                           int64_t tsMs,
+                                           nlohmann::json payload) {
+        if (!serverStateStore) {
+            return;
+        }
+        serverStateStore->recordEvent(entityType, entityKey, action, tsMs, std::move(payload));
     }
 
     nlohmann::json APIRoutes::traceyAgentToJson(const TraceyAgent& agent) const {
@@ -6488,6 +6640,9 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
             std::string traceyStatusAddr;
             std::string traceyReason;
             int64_t mutationTs = 0;
+            nlohmann::json eventPayload = nlohmann::json::object();
+            std::string eventKey;
+            Models::CloudResponse apiResponse;
 
             if (name.empty() || sku.empty() || region.empty() || osImage.empty() || publicKeyId.empty()) {
                 return sendErrorResponse(res, 400, "Missing required parameters: name, sku, region, osImage, or publicKeyId.");
@@ -6496,52 +6651,62 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                 return sendErrorResponse(res, 400, traceyReason);
             }
 
-            std::lock_guard<std::mutex> lock(dataMutex);
-            auto it = std::find_if(vms.begin(), vms.end(),
-                                   [&](const Models::VM& vm) { return vm.name == name; });
-            if (it != vms.end()) {
-                return sendErrorResponse(res, 409, "VM '" + name + "' already exists.");
-            }
+            {
+                std::lock_guard<std::mutex> lock(dataMutex);
+                auto it = std::find_if(vms.begin(), vms.end(),
+                                       [&](const Models::VM& vm) { return vm.name == name; });
+                if (it != vms.end()) {
+                    return sendErrorResponse(res, 409, "VM '" + name + "' already exists.");
+                }
 
-            // Check if publicKeyId exists in sshKeys
-            auto sshKeyIt = std::find_if(sshKeys.begin(), sshKeys.end(),
-                                         [&](const Models::SSHKey& k) { return k.id == publicKeyId; });
-            if (sshKeyIt == sshKeys.end()) {
-                return sendErrorResponse(res, 400, "Invalid publicKeyId: '" + publicKeyId + "' not found.");
-            }
+                auto sshKeyIt = std::find_if(sshKeys.begin(), sshKeys.end(),
+                                             [&](const Models::SSHKey& k) { return k.id == publicKeyId; });
+                if (sshKeyIt == sshKeys.end()) {
+                    return sendErrorResponse(res, 400, "Invalid publicKeyId: '" + publicKeyId + "' not found.");
+                }
 
-
-            Models::VM newVM;
-            newVM.id = Utils::generateUniqueId("vm");
-            newVM.name = name;
-            newVM.sku = sku;
-            newVM.region = region;
-            newVM.osImage = osImage;
-            newVM.publicKeyId = publicKeyId;
-            newVM.initScript = initScript;
-            newVM.status = "Creating";
-            vms.push_back(newVM);
-            mutationTs = nowEpochMs();
-            upsertTraceyRequirementLocked("vm", name, region, traceyAgentId, traceyStatusAddr, mutationTs);
-
-            Models::CloudResponse apiResponse;
-            apiResponse.success = true;
-            apiResponse.message = "VM '" + name + "' created successfully.";
-            apiResponse.data = newVM.toJsonString();
-            if (!traceyAgentId.empty()) {
-                apiResponse.data["tracey"] = {
-                        {"required", true},
-                        {"agent_id", traceyAgentId},
-                        {"status_addr", traceyStatusAddr},
-                        {"compliance_state", "pending"},
-                        {"reason", "Waiting for Tracey agent heartbeat/discovery after provisioning."}
+                Models::VM newVM;
+                newVM.id = Utils::generateUniqueId("vm");
+                newVM.name = name;
+                newVM.sku = sku;
+                newVM.region = region;
+                newVM.osImage = osImage;
+                newVM.publicKeyId = publicKeyId;
+                newVM.initScript = initScript;
+                newVM.status = "Creating";
+                vms.push_back(newVM);
+                mutationTs = nowEpochMs();
+                upsertTraceyRequirementLocked("vm", name, region, traceyAgentId, traceyStatusAddr, mutationTs);
+                eventKey = newVM.id;
+                eventPayload = {
+                        {"vm", newVM.toJsonString()}
                 };
-            } else {
-                apiResponse.data["tracey"] = {
-                        {"required", traceyEnforceManagedResources}
-                };
+                if (!traceyAgentId.empty()) {
+                    eventPayload["tracey"] = {
+                            {"agent_id", traceyAgentId},
+                            {"status_addr", traceyStatusAddr}
+                    };
+                }
+
+                apiResponse.success = true;
+                apiResponse.message = "VM '" + name + "' created successfully.";
+                apiResponse.data = newVM.toJsonString();
+                if (!traceyAgentId.empty()) {
+                    apiResponse.data["tracey"] = {
+                            {"required", true},
+                            {"agent_id", traceyAgentId},
+                            {"status_addr", traceyStatusAddr},
+                            {"compliance_state", "pending"},
+                            {"reason", "Waiting for Tracey agent heartbeat/discovery after provisioning."}
+                    };
+                } else {
+                    apiResponse.data["tracey"] = {
+                            {"required", traceyEnforceManagedResources}
+                    };
+                }
             }
             scheduleServerStateSnapshot(mutationTs);
+            recordServerStateEvent("vm", eventKey, "created", mutationTs, eventPayload);
             sendJsonResponse(res, apiResponse);
 
         } catch (const nlohmann::json::parse_error& e) {
@@ -6564,31 +6729,40 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
     void APIRoutes::handleDeleteVM(const httplib::Request& req, httplib::Response& res) {
         std::string id = req.matches[1];
         int64_t mutationTs = 0;
-
-        std::lock_guard<std::mutex> lock(dataMutex);
-        auto initial_size = vms.size();
         std::string removedVmName;
-        vms.erase(std::remove_if(vms.begin(), vms.end(),
-                                     [&](const Models::VM& vm) {
-                                         if (vm.id == id) {
-                                             removedVmName = vm.name;
-                                             return true;
-                                         }
-                                         return false;
-                                     }),
-                      vms.end());
+        Models::CloudResponse apiResponse;
+        nlohmann::json eventPayload = nlohmann::json::object();
+        bool removed = false;
 
-        if (vms.size() < initial_size) {
+        {
+            std::lock_guard<std::mutex> lock(dataMutex);
+            auto it = std::find_if(
+                    vms.begin(),
+                    vms.end(),
+                    [&](const Models::VM& vm) { return vm.id == id; }
+            );
+            if (it == vms.end()) {
+                return sendErrorResponse(res, 404, "VM '" + id + "' not found.");
+            }
+
+            removedVmName = it->name;
+            eventPayload = {
+                    {"vm", it->toJsonString()}
+            };
+            vms.erase(it);
             mutationTs = nowEpochMs();
             removeTraceyRequirementLocked("vm", removedVmName);
-            Models::CloudResponse apiResponse;
             apiResponse.success = true;
             apiResponse.message = "VM '" + id + "' deleted successfully.";
-            scheduleServerStateSnapshot(mutationTs);
-            sendJsonResponse(res, apiResponse);
-        } else {
-            sendErrorResponse(res, 404, "VM '" + id + "' not found.");
+            removed = true;
         }
+
+        if (!removed) {
+            return sendErrorResponse(res, 404, "VM '" + id + "' not found.");
+        }
+        scheduleServerStateSnapshot(mutationTs);
+        recordServerStateEvent("vm", id, "deleted", mutationTs, eventPayload);
+        sendJsonResponse(res, apiResponse);
     }
 
     /**
@@ -6813,22 +6987,32 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
      */
     void APIRoutes::handleRestartVM(const httplib::Request& req, httplib::Response& res) {
         std::string id = req.matches[1];
+        int64_t mutationTs = 0;
+        Models::CloudResponse apiResponse;
+        nlohmann::json eventPayload = nlohmann::json::object();
 
-        std::lock_guard<std::mutex> lock(dataMutex);
-        auto it = std::find_if(vms.begin(), vms.end(),
-                               [&](const Models::VM& vm) { return vm.id == id; });
+        {
+            std::lock_guard<std::mutex> lock(dataMutex);
+            auto it = std::find_if(vms.begin(), vms.end(),
+                                   [&](const Models::VM& vm) { return vm.id == id; });
 
-        if (it != vms.end()) {
-            it->status = "Restarting"; // Change status
-            scheduleServerStateSnapshot(nowEpochMs());
-            Models::CloudResponse apiResponse;
+            if (it == vms.end()) {
+                return sendErrorResponse(res, 404, "VM '" + id + "' not found.");
+            }
+            const std::string previousStatus = it->status;
+            it->status = "Restarting";
+            mutationTs = nowEpochMs();
             apiResponse.success = true;
             apiResponse.message = "VM '" + id + "' is restarting.";
             apiResponse.data = it->toJsonString();
-            sendJsonResponse(res, apiResponse);
-        } else {
-            sendErrorResponse(res, 404, "VM '" + id + "' not found.");
+            eventPayload = {
+                    {"vm", it->toJsonString()},
+                    {"previous_status", previousStatus}
+            };
         }
+        scheduleServerStateSnapshot(mutationTs);
+        recordServerStateEvent("vm", id, "restarted", mutationTs, eventPayload);
+        sendJsonResponse(res, apiResponse);
     }
 
     /**
@@ -6843,22 +7027,32 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
      */
     void APIRoutes::handleResumeVM(const httplib::Request& req, httplib::Response& res) {
         std::string id = req.matches[1];
+        int64_t mutationTs = 0;
+        Models::CloudResponse apiResponse;
+        nlohmann::json eventPayload = nlohmann::json::object();
 
-        std::lock_guard<std::mutex> lock(dataMutex);
-        auto it = std::find_if(vms.begin(), vms.end(),
-                               [&](const Models::VM& vm) { return vm.id == id; });
+        {
+            std::lock_guard<std::mutex> lock(dataMutex);
+            auto it = std::find_if(vms.begin(), vms.end(),
+                                   [&](const Models::VM& vm) { return vm.id == id; });
 
-        if (it != vms.end()) {
-            it->status = "Running"; // Change status
-            scheduleServerStateSnapshot(nowEpochMs());
-            Models::CloudResponse apiResponse;
+            if (it == vms.end()) {
+                return sendErrorResponse(res, 404, "VM '" + id + "' not found.");
+            }
+            const std::string previousStatus = it->status;
+            it->status = "Running";
+            mutationTs = nowEpochMs();
             apiResponse.success = true;
             apiResponse.message = "VM '" + id + "' resumed successfully.";
             apiResponse.data = it->toJsonString();
-            sendJsonResponse(res, apiResponse);
-        } else {
-            sendErrorResponse(res, 404, "VM '" + id + "' not found.");
+            eventPayload = {
+                    {"vm", it->toJsonString()},
+                    {"previous_status", previousStatus}
+            };
         }
+        scheduleServerStateSnapshot(mutationTs);
+        recordServerStateEvent("vm", id, "resumed", mutationTs, eventPayload);
+        sendJsonResponse(res, apiResponse);
     }
 
     /**
@@ -6873,22 +7067,32 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
      */
     void APIRoutes::handleSuspendVM(const httplib::Request& req, httplib::Response& res) {
         std::string id = req.matches[1];
+        int64_t mutationTs = 0;
+        Models::CloudResponse apiResponse;
+        nlohmann::json eventPayload = nlohmann::json::object();
 
-        std::lock_guard<std::mutex> lock(dataMutex);
-        auto it = std::find_if(vms.begin(), vms.end(),
-                               [&](const Models::VM& vm) { return vm.id == id; });
+        {
+            std::lock_guard<std::mutex> lock(dataMutex);
+            auto it = std::find_if(vms.begin(), vms.end(),
+                                   [&](const Models::VM& vm) { return vm.id == id; });
 
-        if (it != vms.end()) {
-            it->status = "Suspended"; // Change status
-            scheduleServerStateSnapshot(nowEpochMs());
-            Models::CloudResponse apiResponse;
+            if (it == vms.end()) {
+                return sendErrorResponse(res, 404, "VM '" + id + "' not found.");
+            }
+            const std::string previousStatus = it->status;
+            it->status = "Suspended";
+            mutationTs = nowEpochMs();
             apiResponse.success = true;
             apiResponse.message = "VM '" + id + "' suspended successfully.";
             apiResponse.data = it->toJsonString();
-            sendJsonResponse(res, apiResponse);
-        } else {
-            sendErrorResponse(res, 404, "VM '" + id + "' not found.");
+            eventPayload = {
+                    {"vm", it->toJsonString()},
+                    {"previous_status", previousStatus}
+            };
         }
+        scheduleServerStateSnapshot(mutationTs);
+        recordServerStateEvent("vm", id, "suspended", mutationTs, eventPayload);
+        sendJsonResponse(res, apiResponse);
     }
 
 // --- OpenShift Handlers ---
