@@ -35,6 +35,18 @@ AUTH_ENV_KEYS = (
     "NMC_AUTH_TOKEN",
     "NM_AUTH_TOKEN",
 )
+GAIL_ENV_KEYS = (
+    "NMC_GAIL_BASE_URL",
+    "GAIL_BASE_URL",
+    "NMC_GAIL_URL",
+    "GAIL_URL",
+    "NMC_GAIL_API_TOKEN",
+    "GAIL_API_TOKEN",
+    "NMC_GAIL_BEARER_TOKEN",
+    "GAIL_BEARER_TOKEN",
+    "NMC_GAIL_AUTH_TOKEN",
+    "GAIL_AUTH_TOKEN",
+)
 
 
 @dataclass(frozen=True)
@@ -42,6 +54,8 @@ class RequestRecord:
     method: str
     path: str
     body: str
+    authorization: str
+    content_type: str
 
 
 class MockServer:
@@ -106,9 +120,24 @@ class MockServer:
         with self._lock:
             return list(self._records)
 
-    def _record(self, method: str, path: str, body: str) -> None:
+    def _record(
+        self,
+        method: str,
+        path: str,
+        body: str,
+        authorization: str,
+        content_type: str,
+    ) -> None:
         with self._lock:
-            self._records.append(RequestRecord(method=method, path=path, body=body))
+            self._records.append(
+                RequestRecord(
+                    method=method,
+                    path=path,
+                    body=body,
+                    authorization=authorization,
+                    content_type=content_type,
+                )
+            )
 
     @staticmethod
     def _send_json(handler: BaseHTTPRequestHandler, status: int, payload: object) -> None:
@@ -136,7 +165,13 @@ class MockServer:
             length = 0
         raw_body = handler.rfile.read(length) if length > 0 else b""
         body = raw_body.decode("utf-8")
-        self._record(handler.command, handler.path, body)
+        self._record(
+            handler.command,
+            handler.path,
+            body,
+            handler.headers.get("Authorization", ""),
+            handler.headers.get("Content-Type", ""),
+        )
 
         path_only = handler.path.split("?", 1)[0]
         analysis_match = re.match(r"^/tracey/agents/([^/]+)/analysis$", path_only)
@@ -149,6 +184,51 @@ class MockServer:
 
         if handler.command == "GET" and path_only == "/tracey/adaptive":
             self._send_json(handler, 200, {"route": "tracey_adaptive", "path": handler.path})
+            return
+
+        if handler.command == "GET" and path_only == "/healthz":
+            self._send_json(
+                handler,
+                200,
+                {"ok": True, "service": "gail", "version": "0.1.0", "path": handler.path},
+            )
+            return
+
+        if handler.command == "GET" and path_only == "/v1/status/orchestration":
+            self._send_json(
+                handler,
+                200,
+                {"route": "gail_status", "path": handler.path},
+            )
+            return
+
+        if handler.command == "POST" and path_only == "/v1/llm/complete":
+            try:
+                payload = json.loads(body) if body else {}
+            except json.JSONDecodeError:
+                self._send_json(handler, 400, {"message": "invalid json payload"})
+                return
+            self._send_json(
+                handler,
+                200,
+                {"route": "gail_complete", "payload": payload},
+            )
+            return
+
+        if handler.command == "POST" and path_only == "/v1/llm/transcribe":
+            self._send_json(
+                handler,
+                200,
+                {"route": "gail_transcribe", "path": handler.path},
+            )
+            return
+
+        if handler.command == "PATCH" and path_only == "/v1/testing/raw":
+            self._send_json(
+                handler,
+                200,
+                {"route": "gail_raw", "path": handler.path, "body_length": len(body)},
+            )
             return
 
         if handler.command == "GET" and analysis_match:
@@ -355,11 +435,30 @@ def write_connection_config(home_dir: pathlib.Path, endpoint: str) -> None:
     )
 
 
-def run_nmc(args: List[str], home_dir: pathlib.Path) -> subprocess.CompletedProcess[str]:
+def write_gail_config(home_dir: pathlib.Path, base_url: str, api_token: str) -> None:
+    config_path = home_dir / ".nmc" / "config.json"
+    payload = json.loads(config_path.read_text(encoding="utf-8"))
+    payload["gail"] = {
+        "base_url": base_url,
+        "api_token": api_token,
+    }
+    config_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def run_nmc(
+    args: List[str],
+    home_dir: pathlib.Path,
+    *,
+    extra_env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env["HOME"] = str(home_dir)
     for key in AUTH_ENV_KEYS:
         env.pop(key, None)
+    for key in GAIL_ENV_KEYS:
+        env.pop(key, None)
+    if extra_env:
+        env.update(extra_env)
     return subprocess.run(
         [str(NMC_BIN), *args],
         cwd=REPO_ROOT,
@@ -803,6 +902,171 @@ def test_aarnn_runtime_invalid_plane_fails_before_network(server: MockServer, ho
     assert_true(len(server.records()) == 0, "invalid plane should not perform network calls")
 
 
+def test_gail_health_serialization(server: MockServer, home_dir: pathlib.Path) -> None:
+    server.clear_records()
+    result = run_nmc(
+        ["gail", "health"],
+        home_dir,
+        extra_env={"NMC_GAIL_BASE_URL": server.base_url},
+    )
+    assert_success(result, "gail health")
+
+    records = server.records()
+    assert_true(len(records) == 1, f"gail health expected 1 request, got {len(records)}")
+    req = records[0]
+    assert_true(req.method == "GET", f"gail health expected GET, got {req.method}")
+    assert_true(req.path == "/healthz", f"gail health wrong path: {req.path}")
+
+
+def test_gail_status_serialization(server: MockServer, home_dir: pathlib.Path) -> None:
+    server.clear_records()
+    result = run_nmc(
+        ["gail", "status", "--limit", "7", "--probe-engines", "--probe-providers"],
+        home_dir,
+        extra_env={"NMC_GAIL_BASE_URL": server.base_url},
+    )
+    assert_success(result, "gail status")
+
+    records = server.records()
+    assert_true(len(records) == 1, f"gail status expected 1 request, got {len(records)}")
+    req = records[0]
+    assert_true(req.method == "GET", f"gail status expected GET, got {req.method}")
+    assert_true(
+        req.path == "/v1/status/orchestration?limit=7&probe_engines=true&probe_providers=true",
+        f"gail status wrong path: {req.path}",
+    )
+
+
+def test_gail_health_uses_config_fallback(server: MockServer, home_dir: pathlib.Path) -> None:
+    write_gail_config(home_dir, server.base_url, "config-secret")
+
+    server.clear_records()
+    result = run_nmc(["gail", "health"], home_dir)
+    assert_success(result, "gail health config fallback")
+
+    records = server.records()
+    assert_true(len(records) == 1, f"gail health config fallback expected 1 request, got {len(records)}")
+    req = records[0]
+    assert_true(req.method == "GET", f"gail health config fallback expected GET, got {req.method}")
+    assert_true(req.path == "/healthz", f"gail health config fallback wrong path: {req.path}")
+    assert_true(
+        req.authorization == "Bearer config-secret",
+        f"gail health config fallback missing authorization header: {req.authorization!r}",
+    )
+
+
+def test_gail_complete_serialization_and_auth_header(server: MockServer, home_dir: pathlib.Path) -> None:
+    server.clear_records()
+    result = run_nmc(
+        [
+            "gail",
+            "complete",
+            "--json",
+            '{"workflow":"assistant_requirements","role":"assistant","messages":[{"role":"user","content":"Hello Gail"}]}',
+        ],
+        home_dir,
+        extra_env={
+            "NMC_GAIL_BASE_URL": server.base_url,
+            "NMC_GAIL_API_TOKEN": "gail-secret",
+        },
+    )
+    assert_success(result, "gail complete")
+
+    records = server.records()
+    assert_true(len(records) == 1, f"gail complete expected 1 request, got {len(records)}")
+    req = records[0]
+    assert_true(req.method == "POST", f"gail complete expected POST, got {req.method}")
+    assert_true(req.path == "/v1/llm/complete", f"gail complete wrong path: {req.path}")
+    assert_true(
+        req.authorization == "Bearer gail-secret",
+        f"gail complete missing authorization header: {req.authorization!r}",
+    )
+    payload = json.loads(req.body or "{}")
+    assert_true(payload.get("workflow") == "assistant_requirements", "gail complete missing workflow")
+    assert_true(payload.get("role") == "assistant", "gail complete missing role")
+    assert_true(payload.get("messages", [{}])[0].get("content") == "Hello Gail", "gail complete wrong payload")
+
+
+def test_gail_transcribe_multipart_serialization(server: MockServer, home_dir: pathlib.Path) -> None:
+    audio_path = home_dir / "sample.wav"
+    audio_path.write_bytes(b"RIFFTESTDATA")
+
+    server.clear_records()
+    result = run_nmc(
+        [
+            "gail",
+            "transcribe",
+            "--provider",
+            "openai",
+            "--file",
+            str(audio_path),
+            "--model",
+            "gpt-4o-mini-transcribe",
+        ],
+        home_dir,
+        extra_env={"NMC_GAIL_BASE_URL": server.base_url},
+    )
+    assert_success(result, "gail transcribe")
+
+    records = server.records()
+    assert_true(len(records) == 1, f"gail transcribe expected 1 request, got {len(records)}")
+    req = records[0]
+    assert_true(req.method == "POST", f"gail transcribe expected POST, got {req.method}")
+    assert_true(req.path == "/v1/llm/transcribe", f"gail transcribe wrong path: {req.path}")
+    assert_true(
+        req.content_type.startswith("multipart/form-data;"),
+        f"gail transcribe expected multipart content-type, got {req.content_type!r}",
+    )
+    assert_true('name="provider"' in req.body, "gail transcribe missing provider field")
+    assert_true("openai" in req.body, "gail transcribe missing provider value")
+    assert_true('name="model"' in req.body, "gail transcribe missing model field")
+    assert_true("gpt-4o-mini-transcribe" in req.body, "gail transcribe missing model value")
+    assert_true('filename="sample.wav"' in req.body, "gail transcribe missing filename")
+
+
+def test_gail_request_raw_body_serialization(server: MockServer, home_dir: pathlib.Path) -> None:
+    server.clear_records()
+    result = run_nmc(
+        [
+            "gail",
+            "request",
+            "/v1/testing/raw",
+            "--method",
+            "PATCH",
+            "--body",
+            "hello from nmc",
+            "--content-type",
+            "text/plain",
+        ],
+        home_dir,
+        extra_env={"NMC_GAIL_BASE_URL": server.base_url},
+    )
+    assert_success(result, "gail request raw")
+
+    records = server.records()
+    assert_true(len(records) == 1, f"gail request expected 1 request, got {len(records)}")
+    req = records[0]
+    assert_true(req.method == "PATCH", f"gail request expected PATCH, got {req.method}")
+    assert_true(req.path == "/v1/testing/raw", f"gail request wrong path: {req.path}")
+    assert_true(req.body == "hello from nmc", f"gail request wrong body: {req.body!r}")
+    assert_true(req.content_type == "text/plain", f"gail request wrong content-type: {req.content_type!r}")
+
+
+def test_gail_invalid_json_fails_before_network(server: MockServer, home_dir: pathlib.Path) -> None:
+    server.clear_records()
+    result = run_nmc(
+        ["gail", "complete", "--json", "{bad-json"],
+        home_dir,
+        extra_env={"NMC_GAIL_BASE_URL": server.base_url},
+    )
+    assert_failure(result, "gail invalid-json")
+    assert_true(
+        "Invalid JSON in --json" in result.stderr,
+        f"expected Gail invalid JSON error, got stderr:\n{result.stderr}",
+    )
+    assert_true(len(server.records()) == 0, "invalid Gail payload should not perform network calls")
+
+
 def main() -> int:
     if not NMC_BIN.exists():
         print(
@@ -839,6 +1103,13 @@ def main() -> int:
             test_aarnn_network_targeted_proxy_serialization(server, home_dir)
             test_aarnn_runtime_create_control_plane_serialization(server, home_dir)
             test_aarnn_runtime_invalid_plane_fails_before_network(server, home_dir)
+            test_gail_health_serialization(server, home_dir)
+            test_gail_status_serialization(server, home_dir)
+            test_gail_health_uses_config_fallback(server, home_dir)
+            test_gail_complete_serialization_and_auth_header(server, home_dir)
+            test_gail_transcribe_multipart_serialization(server, home_dir)
+            test_gail_request_raw_body_serialization(server, home_dir)
+            test_gail_invalid_json_fails_before_network(server, home_dir)
     except AssertionError as exc:
         print(f"[functional-test] FAILED: {exc}", file=sys.stderr)
         return 1

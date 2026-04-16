@@ -29,6 +29,8 @@ ansible-playbook -i "localhost," -c local ansible/deploy.yml -K \
   -e nmc_build_group=$(id -gn) \
   -e nmc_auth_mode=token \
   -e nmc_auth_token=changeme \
+  -e nmc_gail_base_url=https://gail.neuralmimicry.ai \
+  -e nmc_gail_api_token=changeme \
   -e nmc_docs_enabled=true
 ```
 
@@ -72,6 +74,11 @@ ansible-playbook -i "localhost," -c local ansible/deploy.yml -K \
 - `nmc_oidc_audience`
 - `nmc_oidc_allowed_audiences`
 - `nmc_oidc_required_scope`
+
+### Gail
+
+- `nmc_gail_base_url`
+- `nmc_gail_api_token`
 
 ### Kubernetes
 
@@ -137,4 +144,5 @@ Key vars:
 - tenant metadata: `nmc_tenant_id`, `nmc_tenant_name`, `nmc_tenant_environment`
 - node metadata: `nmc_node_host`, `nmc_node_name`, `nmc_node_region`, `nmc_node_type`
 - capability source list: `nmc_requested_capabilities`
+- optional Gail bootstrap: `nmc_gail_base_url`, `nmc_gail_api_token`
 - optional Tracey hints: `nmc_tracey_agent_id`, `nmc_tracey_status_addr`

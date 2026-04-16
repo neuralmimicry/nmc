@@ -1,5 +1,7 @@
 #include "NodeCommands.h"
 
+#include "Core/GailClient.h"
+
 #include <algorithm>
 #include <array>
 #include <cctype>
@@ -290,6 +292,7 @@ bool writeTempFile(const std::string& content, std::string& pathOut, std::string
 std::string buildDefaultRecruitScript() {
     return R"(#!/usr/bin/env bash
 set -euo pipefail
+umask 077
 
 export DEBIAN_FRONTEND=noninteractive
 if command -v apt-get >/dev/null 2>&1; then
@@ -304,6 +307,8 @@ NMC_NODE_REGION=${NMC_NODE_REGION:-}
 NMC_NODE_NAME=${NMC_NODE_NAME:-}
 NMC_CONTINUUM_URL=${NMC_CONTINUUM_URL:-}
 NMC_CONTINUUM_AUTH_TOKEN=${NMC_CONTINUUM_AUTH_TOKEN:-}
+NMC_GAIL_BASE_URL=${NMC_GAIL_BASE_URL:-}
+NMC_GAIL_API_TOKEN=${NMC_GAIL_API_TOKEN:-}
 TRACEY_AGENT_ID=${TRACEY_AGENT_ID:-}
 TRACEY_STATUS_ADDR=${TRACEY_STATUS_ADDR:-}
 RECRUITED_AT_UTC=$(date -u +%FT%TZ)
@@ -333,6 +338,27 @@ esac
 echo "ready" >/opt/continuum/node/state
 echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_NODE_TYPE:-bare-metal})."
 )";
+}
+
+bool resolveOptionalRecruitGailConfiguration(std::string& baseUrlOut,
+                                             std::string& apiTokenOut,
+                                             std::string& errorOut) {
+    baseUrlOut.clear();
+    apiTokenOut.clear();
+    errorOut.clear();
+
+    if (Core::GailClient::resolveConfiguration("", "", baseUrlOut, apiTokenOut, errorOut)) {
+        return true;
+    }
+
+    const std::string normalizedError = toLowerCopy(trimCopy(errorOut));
+    if (normalizedError.find("not configured") != std::string::npos) {
+        baseUrlOut.clear();
+        apiTokenOut.clear();
+        errorOut.clear();
+        return true;
+    }
+    return false;
 }
 
 std::string optionalFlag(const std::map<std::string, std::string>& flags,
@@ -552,6 +578,14 @@ Models::CloudResponse runDirectRecruitment(const nlohmann::json& payload) {
         if (payload.contains("tracey") && payload["tracey"].is_object()) {
             traceyAgentId = trimCopy(payload["tracey"].value("agent_id", ""));
             traceyStatusAddr = trimCopy(payload["tracey"].value("status_addr", ""));
+        }
+
+        std::string gailBaseUrl;
+        std::string gailApiToken;
+        std::string gailError;
+        if (!resolveOptionalRecruitGailConfiguration(gailBaseUrl, gailApiToken, gailError)) {
+            response.message = "Invalid Gail configuration: " + gailError;
+            return response;
         }
 
         std::vector<std::string> binaryArgs;
@@ -774,6 +808,8 @@ Models::CloudResponse runDirectRecruitment(const nlohmann::json& payload) {
         appendEnv("NMC_NODE_NAME", nodeName);
         appendEnv("NMC_CONTINUUM_URL", continuumUrl);
         appendEnv("NMC_CONTINUUM_AUTH_TOKEN", continuumAuthToken);
+        appendEnv("NMC_GAIL_BASE_URL", gailBaseUrl);
+        appendEnv("NMC_GAIL_API_TOKEN", gailApiToken);
         appendEnv("TRACEY_AGENT_ID", traceyAgentId);
         appendEnv("TRACEY_STATUS_ADDR", traceyStatusAddr);
 
@@ -854,6 +890,12 @@ Models::CloudResponse runDirectRecruitment(const nlohmann::json& payload) {
             if (!continuumAuthToken.empty()) {
                 mergedAnsibleVars["nmc_continuum_auth_token"] = continuumAuthToken;
             }
+            if (!gailBaseUrl.empty()) {
+                mergedAnsibleVars["nmc_gail_base_url"] = gailBaseUrl;
+            }
+            if (!gailApiToken.empty()) {
+                mergedAnsibleVars["nmc_gail_api_token"] = gailApiToken;
+            }
             if (!traceyAgentId.empty()) {
                 mergedAnsibleVars["nmc_tracey_agent_id"] = traceyAgentId;
             }
@@ -896,6 +938,7 @@ Models::CloudResponse runDirectRecruitment(const nlohmann::json& payload) {
         auto redactSensitive = [&](std::string value) {
             const std::vector<std::string> sensitiveValues = {
                 continuumAuthToken,
+                gailApiToken,
                 sudoPassword
             };
             for (const auto& sensitive : sensitiveValues) {

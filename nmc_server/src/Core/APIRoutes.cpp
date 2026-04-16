@@ -1827,6 +1827,53 @@ namespace NMC::Server {
             return defaultValue;
         }
 
+        std::string normalizeHttpBaseUrl(std::string value) {
+            value = trim(value);
+            while (!value.empty() && value.back() == '/') {
+                value.pop_back();
+            }
+            return value;
+        }
+
+        bool startsWithHttpScheme(const std::string& value) {
+            return value.rfind("http://", 0) == 0 || value.rfind("https://", 0) == 0;
+        }
+
+        bool resolveOptionalRecruitGailEnvironment(std::string& baseUrlOut,
+                                                   std::string& apiTokenOut,
+                                                   std::string& errorOut) {
+            baseUrlOut = normalizeHttpBaseUrl(getenvTrimmedOr("NMC_GAIL_BASE_URL", "GAIL_BASE_URL"));
+            if (baseUrlOut.empty()) {
+                baseUrlOut = normalizeHttpBaseUrl(getenvTrimmedOr("NMC_GAIL_URL", "GAIL_URL"));
+            }
+
+            apiTokenOut.clear();
+            static constexpr std::array<const char*, 6> tokenKeys = {
+                    "NMC_GAIL_API_TOKEN",
+                    "GAIL_API_TOKEN",
+                    "NMC_GAIL_BEARER_TOKEN",
+                    "GAIL_BEARER_TOKEN",
+                    "NMC_GAIL_AUTH_TOKEN",
+                    "GAIL_AUTH_TOKEN"
+            };
+            for (const char* tokenKey : tokenKeys) {
+                apiTokenOut = getenvTrimmed(tokenKey);
+                if (!apiTokenOut.empty()) {
+                    break;
+                }
+            }
+
+            errorOut.clear();
+            if (baseUrlOut.empty()) {
+                return true;
+            }
+            if (!startsWithHttpScheme(baseUrlOut)) {
+                errorOut = "NMC_GAIL_BASE_URL must begin with http:// or https://.";
+                return false;
+            }
+            return true;
+        }
+
         std::string toUpper(std::string value) {
             for (auto& ch : value) {
                 ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
@@ -2454,6 +2501,7 @@ namespace NMC::Server {
         std::string buildDefaultRecruitScript() {
             return R"(#!/usr/bin/env bash
 set -euo pipefail
+umask 077
 
 export DEBIAN_FRONTEND=noninteractive
 if command -v apt-get >/dev/null 2>&1; then
@@ -2468,6 +2516,8 @@ NMC_NODE_REGION=${NMC_NODE_REGION:-}
 NMC_NODE_NAME=${NMC_NODE_NAME:-}
 NMC_CONTINUUM_URL=${NMC_CONTINUUM_URL:-}
 NMC_CONTINUUM_AUTH_TOKEN=${NMC_CONTINUUM_AUTH_TOKEN:-}
+NMC_GAIL_BASE_URL=${NMC_GAIL_BASE_URL:-}
+NMC_GAIL_API_TOKEN=${NMC_GAIL_API_TOKEN:-}
 TRACEY_AGENT_ID=${TRACEY_AGENT_ID:-}
 TRACEY_STATUS_ADDR=${TRACEY_STATUS_ADDR:-}
 RECRUITED_AT_UTC=$(date -u +%FT%TZ)
@@ -10287,6 +10337,13 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                 continuumAuthToken = authToken;
             }
 
+            std::string gailBaseUrl;
+            std::string gailApiToken;
+            std::string gailError;
+            if (!resolveOptionalRecruitGailEnvironment(gailBaseUrl, gailApiToken, gailError)) {
+                return sendErrorResponse(res, 500, "Invalid Gail environment configuration: " + gailError);
+            }
+
             std::string traceyAgentId;
             std::string traceyStatusAddr;
             std::string traceyReason;
@@ -10443,6 +10500,8 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
             appendEnv("NMC_NODE_NAME", nodeName);
             appendEnv("NMC_CONTINUUM_URL", continuumUrl);
             appendEnv("NMC_CONTINUUM_AUTH_TOKEN", continuumAuthToken);
+            appendEnv("NMC_GAIL_BASE_URL", gailBaseUrl);
+            appendEnv("NMC_GAIL_API_TOKEN", gailApiToken);
             appendEnv("TRACEY_AGENT_ID", traceyAgentId);
             appendEnv("TRACEY_STATUS_ADDR", traceyStatusAddr);
 
@@ -10522,6 +10581,12 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                 if (!continuumAuthToken.empty()) {
                     mergedAnsibleVars["nmc_continuum_auth_token"] = continuumAuthToken;
                 }
+                if (!gailBaseUrl.empty()) {
+                    mergedAnsibleVars["nmc_gail_base_url"] = gailBaseUrl;
+                }
+                if (!gailApiToken.empty()) {
+                    mergedAnsibleVars["nmc_gail_api_token"] = gailApiToken;
+                }
                 if (!traceyAgentId.empty()) {
                     mergedAnsibleVars["nmc_tracey_agent_id"] = traceyAgentId;
                 }
@@ -10563,6 +10628,7 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
             auto redactSensitive = [&](std::string value) {
                 const std::vector<std::string> sensitiveValues = {
                         continuumAuthToken,
+                        gailApiToken,
                         sudoPassword
                 };
                 for (const auto& sensitive : sensitiveValues) {

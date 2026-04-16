@@ -35,6 +35,8 @@ OIDC_ISSUER="${NMC_OIDC_ISSUER:-}"
 OIDC_AUDIENCE="${NMC_OIDC_AUDIENCE:-}"
 OIDC_ALLOWED_AUDIENCES="${NMC_OIDC_ALLOWED_AUDIENCES:-}"
 OIDC_REQUIRED_SCOPE="${NMC_OIDC_REQUIRED_SCOPE:-}"
+GAIL_BASE_URL_VALUE="${NMC_GAIL_BASE_URL:-${GAIL_BASE_URL:-}}"
+GAIL_API_TOKEN_VALUE="${NMC_GAIL_API_TOKEN:-${GAIL_API_TOKEN:-}}"
 
 K8S_AUTO_INSTALL="${K8S_AUTO_INSTALL:-true}"
 K8S_VERSION_SERIES="${K8S_VERSION_SERIES:-}"
@@ -217,6 +219,8 @@ Core options:
   --oidc-allowed-audiences CSV    OIDC allowed audiences
   --oidc-required-scope CSV       OIDC required scope(s)
   --oshift-url URL                OpenShift portal API base URL
+  --gail-base-url URL             Gail middleware base URL
+  --gail-api-token TOKEN          Gail bearer token
 
 Kubernetes:
   --k8s-install                   Install/init Kubernetes if missing (default)
@@ -283,6 +287,8 @@ while [[ $# -gt 0 ]]; do
     --oidc-allowed-audiences) OIDC_ALLOWED_AUDIENCES="$2"; shift 2 ;;
     --oidc-required-scope) OIDC_REQUIRED_SCOPE="$2"; shift 2 ;;
     --oshift-url) OSHIFT_URL="$2"; shift 2 ;;
+    --gail-base-url) GAIL_BASE_URL_VALUE="$2"; shift 2 ;;
+    --gail-api-token) GAIL_API_TOKEN_VALUE="$2"; shift 2 ;;
 
     --k8s-install) K8S_AUTO_INSTALL="true"; shift ;;
     --no-k8s-install) K8S_AUTO_INSTALL="false"; shift ;;
@@ -345,6 +351,12 @@ if [[ "$AUTH_MODE" == "token" && -z "$AUTH_TOKEN" ]]; then
 fi
 if [[ "$AUTH_MODE" == "oidc" && -z "$OIDC_INTROSPECTION_URL" ]]; then
   log_warn "NMC_OIDC_INTROSPECTION_URL is empty; OIDC auth will fail closed"
+fi
+if [[ -n "$GAIL_BASE_URL_VALUE" && -z "$GAIL_API_TOKEN_VALUE" ]]; then
+  log_warn "NMC_GAIL_BASE_URL is set but NMC_GAIL_API_TOKEN is empty; Gail requests may be rejected."
+fi
+if [[ -z "$GAIL_BASE_URL_VALUE" && -n "$GAIL_API_TOKEN_VALUE" ]]; then
+  log_warn "NMC_GAIL_API_TOKEN is set but NMC_GAIL_BASE_URL is empty; Gail integration will stay disabled."
 fi
 
 if ! command -v systemctl >/dev/null 2>&1; then
@@ -855,10 +867,13 @@ NMC_OIDC_ISSUER=$OIDC_ISSUER
 NMC_OIDC_AUDIENCE=$OIDC_AUDIENCE
 NMC_OIDC_ALLOWED_AUDIENCES=$OIDC_ALLOWED_AUDIENCES
 NMC_OIDC_REQUIRED_SCOPE=$OIDC_REQUIRED_SCOPE
+NMC_GAIL_BASE_URL=$GAIL_BASE_URL_VALUE
+NMC_GAIL_API_TOKEN=$GAIL_API_TOKEN_VALUE
 NMC_TRACEY_BOOTSTRAP_LOCAL_AGENT=$ENABLE_TRACEY_SIDECAR
 NMC_TRACEY_LOCAL_AGENT_ID=$TRACEY_AGENT_ID
 NMC_TRACEY_LOCAL_STATUS_ADDR=$TRACEY_LOCAL_STATUS_ADDR
 EOF
+run_root chmod 600 /etc/nmc/nmc.env
 
 if [[ "$ENABLE_TRACEY_SIDECAR" == "true" ]]; then
 cat <<EOF | run_root tee /etc/systemd/system/nmc-server.service >/dev/null
@@ -1019,4 +1034,7 @@ if [[ "$ENABLE_TRACEY_SIDECAR" == "true" ]]; then
 fi
 log_info "Docs: http://<host>:$PORT/docs (if enabled)"
 log_info "Config: /etc/nmc/nmc.env"
+if [[ -n "$GAIL_BASE_URL_VALUE" ]]; then
+  log_info "Gail base URL: $GAIL_BASE_URL_VALUE"
+fi
 log_info "Kubeconfig: /etc/nmc/kubeconfig"

@@ -19,6 +19,8 @@
     nmc_node_region: ""
     nmc_node_type: ""
     nmc_continuum_url: ""
+    nmc_gail_base_url: ""
+    nmc_gail_api_token: ""
     nmc_tracey_agent_id: ""
     nmc_tracey_status_addr: ""
     nmc_metadata_dir: "/etc/continuum"
@@ -101,6 +103,9 @@
             type: "{{ nmc_node_type }}"
           continuum:
             url: "{{ nmc_continuum_url }}"
+          gail:
+            enabled: "{{ nmc_gail_base_url | trim | length > 0 }}"
+            base_url: "{{ nmc_gail_base_url }}"
           capabilities:
             requested: "{{ nmc_requested_capabilities }}"
             enabled:
@@ -126,7 +131,7 @@
         dest: "{{ nmc_state_dir }}/tenant.env"
         owner: root
         group: root
-        mode: "0640"
+        mode: "0600"
         content: |
           NMC_TENANT_ID={{ nmc_tenant_id }}
           NMC_TENANT_NAME={{ nmc_tenant_name }}
@@ -136,6 +141,8 @@
           NMC_NODE_REGION={{ nmc_node_region }}
           NMC_NODE_TYPE={{ nmc_node_type }}
           NMC_CONTINUUM_URL={{ nmc_continuum_url }}
+          NMC_GAIL_BASE_URL={{ nmc_gail_base_url }}
+          NMC_GAIL_API_TOKEN={{ nmc_gail_api_token }}
           NMC_ENABLE_APPS={{ '1' if nmc_enable_apps else '0' }}
           NMC_ENABLE_VM={{ '1' if nmc_enable_vm else '0' }}
           NMC_ENABLE_PODMAN={{ '1' if nmc_enable_podman else '0' }}
@@ -143,6 +150,7 @@
           NMC_ENABLE_OPENSTACK={{ '1' if nmc_enable_openstack else '0' }}
           TRACEY_AGENT_ID={{ nmc_tracey_agent_id }}
           TRACEY_STATUS_ADDR={{ nmc_tracey_status_addr }}
+      no_log: "{{ nmc_gail_api_token | default('', true) | trim | length > 0 }}"
 
     - name: Install app hosting packages
       ansible.builtin.apt:

@@ -37,6 +37,8 @@
     nmc_oidc_audience: ""
     nmc_oidc_allowed_audiences: ""
     nmc_oidc_required_scope: ""
+    nmc_gail_base_url: ""
+    nmc_gail_api_token: ""
 
     # Kubernetes
     nmc_k8s_auto_install: true
@@ -1048,9 +1050,15 @@
         dest: /etc/nmc/nmc.env
         owner: root
         group: root
-        mode: "0644"
+        mode: "0600"
       notify:
         - Restart nmc-server
+      no_log: >-
+        {{
+          (nmc_auth_token | default('', true) | length > 0)
+          or (nmc_oidc_client_secret | default('', true) | length > 0)
+          or (nmc_gail_api_token | default('', true) | length > 0)
+        }}
 
     - name: Install nmc-server systemd unit
       ansible.builtin.template:

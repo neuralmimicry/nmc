@@ -14,6 +14,7 @@ set(NMC_CLIENT_VERSION "${PROJECT_VERSION}" CACHE STRING "NMC client semantic ve
 # Include FetchContent module for automatic dependency downloading
 include(FetchContent)
 include(GNUInstallDirs)
+find_package(CURL REQUIRED)
 
 # --- Fetch nlohmann/json ---
 FetchContent_Declare(
@@ -45,6 +46,7 @@ set(NMC_CLIENT_SOURCES
         src/Commands/BaseCommand.cpp
         src/Commands/BucketCommands.cpp
         src/Commands/ConnectionCommands.cpp
+        src/Commands/GailCommands.cpp
         src/Commands/K8sCommands.cpp
         src/Commands/ModelCommands.cpp
         src/Commands/NodeCommands.cpp
@@ -60,6 +62,7 @@ set(NMC_CLIENT_SOURCES
         src/Commands/VClusterCommands.cpp
         src/Commands/VMCommands.cpp
         src/Core/CloudAPIClient.cpp
+        src/Core/GailClient.cpp
         src/Core/VersionCheck.cpp
         src/Core/Utils.cpp
 )
@@ -76,7 +79,7 @@ target_include_directories(nmc PRIVATE
 )
 
 # Link against the interface targets provided by the fetched libraries.
-target_link_libraries(nmc PRIVATE nlohmann_json::nlohmann_json httplib)
+target_link_libraries(nmc PRIVATE nlohmann_json::nlohmann_json httplib CURL::libcurl)
 
 # Add a compile definition to explicitly disable SSL support in httplib from the client's perspective.
 # This ensures that the #ifdef CPPHTTPLIB_OPENSSL_SUPPORT block in httplib.h is skipped.

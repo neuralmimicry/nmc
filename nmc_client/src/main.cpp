@@ -13,6 +13,7 @@
 #include "Commands/VMCommands.h"
 #include "Commands/VersionCommand.h"
 #include "Commands/ConnectionCommands.h"
+#include "Commands/GailCommands.h"
 #include "Commands/RefinerCommands.h"
 #include "Commands/NodeCommands.h"
 #include "Commands/OpenStackCommands.h"
@@ -173,6 +174,8 @@ int main(int argc, char* argv[]) {
     refinerCmd->addSubcommand(std::make_shared<NMC::Commands::RefinerLogsCommand>(apiClient));
     refinerCmd->addSubcommand(std::make_shared<NMC::Commands::RefinerRemoveCommand>(apiClient));
     parser.registerCommand(refinerCmd);
+
+    parser.registerCommand(NMC::Commands::buildGailCommandTree());
 
     auto aarnnCmd = std::make_shared<NMC::Commands::AarnnCommand>(apiClient);
     aarnnCmd->addSubcommand(std::make_shared<NMC::Commands::AarnnEndpointsCommand>(apiClient));
