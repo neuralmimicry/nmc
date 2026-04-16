@@ -76,6 +76,8 @@ FetchContent_MakeAvailable(httplib)
 # It's important to find OpenSSL BEFORE libwebsockets if libwebsockets's CMake
 # expects it to be available via find_package.
 find_package(OpenSSL REQUIRED)
+find_package(PkgConfig QUIET)
+find_package(PostgreSQL QUIET)
 
 # Logger - https://github.com/gabime/spdlog
 find_package(spdlog REQUIRED)
@@ -164,7 +166,6 @@ message(STATUS "kubernetes_client_c_ext_SOURCE_DIR: ${kubernetes_client_c_ext_SO
 set(NMC_SERVER_SOURCES
         src/main.cpp
         src/Core/APIRoutes.cpp
-        src/Core/ConnectionHandlers.cpp
         src/Core/K8sHandlers.cpp
         src/Core/K8sHandlers_VCluster_Advanced.cpp
         src/Core/K8sHandlers_VCluster_Lifecycle.cpp
@@ -173,7 +174,9 @@ set(NMC_SERVER_SOURCES
         src/Core/OpenStackClient.cpp
         src/Core/OpenShiftClient.cpp
         src/Core/ProxmoxClient.cpp
+        src/Core/ServerStateStore.cpp
         src/Core/TraceyCVEIntel.cpp
+        src/Core/TraceyStateStore.cpp
         src/Core/VersionCheck.cpp
         src/Core/Utils.cpp
 )
@@ -210,6 +213,19 @@ target_link_libraries(nmc_server PRIVATE
         # Link against Zstandard via the imported target
         ${ZSTD_LIBRARIES}
 )
+if (PkgConfig_FOUND)
+    pkg_check_modules(LIBPQXX QUIET IMPORTED_TARGET libpqxx)
+    pkg_check_modules(LIBPQ QUIET IMPORTED_TARGET libpq)
+    if (LIBPQXX_FOUND)
+        target_link_libraries(nmc_server PRIVATE PkgConfig::LIBPQXX pq)
+        if (LIBPQ_FOUND)
+            target_link_libraries(nmc_server PRIVATE PkgConfig::LIBPQ)
+        elseif (PostgreSQL_FOUND)
+            target_link_libraries(nmc_server PRIVATE PostgreSQL::PostgreSQL)
+        endif()
+        target_compile_definitions(nmc_server PRIVATE NMC_HAS_LIBPQXX=1)
+    endif()
+endif()
 target_compile_definitions(nmc_server PRIVATE NMC_SERVER_VERSION="${NMC_SERVER_VERSION}")
 
 # Add compiler warnings for best practices

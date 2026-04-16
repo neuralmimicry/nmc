@@ -1,7 +1,6 @@
 // server/APIRoutes.cpp
 #include "APIRoutes.h"
 #include "K8sHandlers.h"
-#include "ConnectionHandlers.h"
 #include "VersionCheck.h"
 #include "Utils.h"
 #include <cstdlib>
@@ -20,6 +19,7 @@
 #include <set>       // For unique locations/types
 #include <chrono>
 #include <thread>
+#include <tuple>
 #include <vector>
 #include <poll.h>
 #include <ifaddrs.h>
@@ -96,6 +96,104 @@ namespace NMC::Server {
             return std::chrono::duration_cast<std::chrono::milliseconds>(
                     std::chrono::system_clock::now().time_since_epoch()
             ).count();
+        }
+
+        nlohmann::json parseJsonBodyStrict(const std::string& body) {
+            try {
+                return nlohmann::json::parse(body);
+            } catch (const nlohmann::json::parse_error& error) {
+                throw std::runtime_error("Invalid JSON body: " + std::string(error.what()));
+            }
+        }
+
+        std::string simulateConnectionHealthCheck(const std::string& endpoint) {
+            if (endpoint.rfind("https://", 0) == 0 || endpoint.rfind("http://", 0) == 0) {
+                return "healthy";
+            }
+            return "unhealthy";
+        }
+
+        nlohmann::json connectionSnapshotToJson(const NMC::Server::Models::Connection& connection) {
+            return connection.toJsonString();
+        }
+
+        NMC::Server::Models::Connection connectionSnapshotFromJson(const nlohmann::json& payload) {
+            NMC::Server::Models::Connection connection;
+            if (!payload.is_object()) {
+                return connection;
+            }
+            connection.name = payload.value("name", "");
+            connection.endpoint = payload.value("endpoint", "");
+            connection.isActive = payload.value("isActive", false);
+            connection.healthStatus = payload.value("healthStatus", std::string("unknown"));
+            return connection;
+        }
+
+        nlohmann::json vmSnapshotToJson(const NMC::Server::Models::VM& vm) {
+            return {
+                    {"id", vm.id},
+                    {"name", vm.name},
+                    {"sku", vm.sku},
+                    {"region", vm.region},
+                    {"osImage", vm.osImage},
+                    {"publicKeyId", vm.publicKeyId},
+                    {"initScript", vm.initScript},
+                    {"status", vm.status}
+            };
+        }
+
+        NMC::Server::Models::VM vmSnapshotFromJson(const nlohmann::json& payload) {
+            NMC::Server::Models::VM vm;
+            if (!payload.is_object()) {
+                return vm;
+            }
+            vm.id = payload.value("id", "");
+            vm.name = payload.value("name", "");
+            vm.sku = payload.value("sku", "");
+            vm.region = payload.value("region", "");
+            vm.osImage = payload.value("osImage", "");
+            vm.publicKeyId = payload.value("publicKeyId", "");
+            vm.initScript = payload.value("initScript", "");
+            vm.status = payload.value("status", "");
+            return vm;
+        }
+
+        nlohmann::json vclusterConfigSnapshotToJson(const NMC::Server::Models::VClusterConfig& config) {
+            nlohmann::json payload = config.toJson();
+            payload["id"] = config.id;
+            if (!config.security.ca_cert.empty()) {
+                payload["security"]["ca_cert"] = config.security.ca_cert;
+            }
+            return payload;
+        }
+
+        void normalizeConnectionRegistry(std::vector<NMC::Server::Models::Connection>& connections,
+                                         std::string& currentConnectionName) {
+            currentConnectionName = trim(currentConnectionName);
+
+            auto findByName = [&](const std::string& name) {
+                return std::find_if(
+                        connections.begin(),
+                        connections.end(),
+                        [&](const NMC::Server::Models::Connection& connection) {
+                            return connection.name == name;
+                        }
+                );
+            };
+
+            auto selectedIt = currentConnectionName.empty() ? connections.end() : findByName(currentConnectionName);
+            if (selectedIt == connections.end()) {
+                selectedIt = std::find_if(
+                        connections.begin(),
+                        connections.end(),
+                        [](const NMC::Server::Models::Connection& connection) { return connection.isActive; }
+                );
+                currentConnectionName = selectedIt != connections.end() ? selectedIt->name : "";
+            }
+
+            for (auto& connection : connections) {
+                connection.isActive = !currentConnectionName.empty() && connection.name == currentConnectionName;
+            }
         }
 
         constexpr double SAME_HARDWARE_MAX_LOAD_PER_CPU = 0.85;
@@ -823,7 +921,6 @@ namespace NMC::Server {
                     hasCompromiseRisk = true;
                 }
 
-                const auto* serverNode = firstObjectValue(agentView, {"server"});
                 const auto* ecc = serverNode != nullptr ? firstObjectValue(*serverNode, {"ecc"}) : nullptr;
                 if (ecc != nullptr) {
                     const auto corrected = static_cast<uint64_t>(std::max<int64_t>(0, firstInt64Value(*ecc, {"corrected_total", "correctedTotal"}, 0)));
@@ -3042,6 +3139,119 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
         const char* traceyStatusTokenEnv = envOr("NMC_TRACEY_STATUS_BEARER_TOKEN", "NM_TRACEY_STATUS_BEARER_TOKEN");
         traceyStatusBearerToken = traceyStatusTokenEnv ? trim(traceyStatusTokenEnv) : "";
 
+        const char* serverStateRootEnv = envOr("NMC_SERVER_STATE_ROOT", "NM_SERVER_STATE_ROOT");
+        if (!serverStateRootEnv) {
+            serverStateRootEnv = envOr("NMC_STATE_ROOT", "NM_STATE_ROOT");
+        }
+        if (!serverStateRootEnv) {
+            serverStateRootEnv = envOr("NMC_TRACEY_STATE_ROOT", "NM_TRACEY_STATE_ROOT");
+        }
+        std::filesystem::path serverStateSnapshotPath;
+        if (serverStateRootEnv && !trim(serverStateRootEnv).empty()) {
+            serverStateSnapshotPath = std::filesystem::path(trim(serverStateRootEnv)) / "server_state_snapshot.json";
+        }
+
+        std::string serverPostgresDsn;
+        if (const char* serverDsnEnv = envOr("NMC_SERVER_POSTGRES_DSN", "NM_SERVER_POSTGRES_DSN")) {
+            serverPostgresDsn = trim(serverDsnEnv);
+        }
+        if (serverPostgresDsn.empty()) {
+            if (const char* genericPostgresEnv = envOr("NMC_POSTGRES_DSN", "NM_POSTGRES_DSN")) {
+                serverPostgresDsn = trim(genericPostgresEnv);
+            }
+        }
+        if (serverPostgresDsn.empty()) {
+            if (const char* postgresUrlEnv = envOr("NMC_POSTGRES_URL", "NM_POSTGRES_URL")) {
+                serverPostgresDsn = trim(postgresUrlEnv);
+            }
+        }
+        if (serverPostgresDsn.empty()) {
+            if (const char* traceyDsnEnv = envOr("NMC_TRACEY_POSTGRES_DSN", "NM_TRACEY_POSTGRES_DSN")) {
+                serverPostgresDsn = trim(traceyDsnEnv);
+            }
+        }
+        if (serverPostgresDsn.empty()) {
+            const char* databaseUrlEnv = std::getenv("DATABASE_URL");
+            serverPostgresDsn = databaseUrlEnv ? trim(databaseUrlEnv) : "";
+        }
+
+        const char* serverPersistFlushEnv = envOr("NMC_SERVER_PERSIST_FLUSH_MS", "NM_SERVER_PERSIST_FLUSH_MS");
+        if (!serverPersistFlushEnv) {
+            serverPersistFlushEnv = envOr("NMC_PERSIST_FLUSH_MS", "NM_PERSIST_FLUSH_MS");
+        }
+        if (!serverPersistFlushEnv) {
+            serverPersistFlushEnv = envOr("NMC_TRACEY_PERSIST_FLUSH_MS", "NM_TRACEY_PERSIST_FLUSH_MS");
+        }
+        const int64_t serverStateSnapshotFlushMs = parseInt64Value(
+                serverPersistFlushEnv,
+                5000,
+                250,
+                60000
+        );
+        serverStateStore = std::make_unique<ServerStateStore>(ServerStateStore::Config{
+                serverStateSnapshotPath,
+                serverStateSnapshotFlushMs,
+                serverPostgresDsn,
+                "primary",
+                [this](int64_t snapshotTs) {
+                    std::lock_guard<std::mutex> lock(dataMutex);
+                    return buildServerStateSnapshotLocked(snapshotTs);
+                }
+        });
+        {
+            std::lock_guard<std::mutex> lock(dataMutex);
+            const nlohmann::json restoredServerState = serverStateStore->loadSnapshot();
+            if (restoredServerState.is_object()) {
+                restoreServerStateSnapshotLocked(restoredServerState);
+            }
+        }
+
+        const char* traceyStateRootEnv = envOr("NMC_TRACEY_STATE_ROOT", "NM_TRACEY_STATE_ROOT");
+        std::filesystem::path traceyStateSnapshotPath;
+        if (traceyStateRootEnv && !trim(traceyStateRootEnv).empty()) {
+            traceyStateSnapshotPath = std::filesystem::path(trim(traceyStateRootEnv)) / "tracey_state_snapshot.json";
+        }
+        std::string traceyPostgresDsn;
+        if (const char* traceyDsnEnv = envOr("NMC_TRACEY_POSTGRES_DSN", "NM_TRACEY_POSTGRES_DSN")) {
+            traceyPostgresDsn = trim(traceyDsnEnv);
+        }
+        if (traceyPostgresDsn.empty()) {
+            if (const char* genericPostgresEnv = envOr("NMC_POSTGRES_DSN", "NM_POSTGRES_DSN")) {
+                traceyPostgresDsn = trim(genericPostgresEnv);
+            }
+        }
+        if (traceyPostgresDsn.empty()) {
+            if (const char* postgresUrlEnv = envOr("NMC_POSTGRES_URL", "NM_POSTGRES_URL")) {
+                traceyPostgresDsn = trim(postgresUrlEnv);
+            }
+        }
+        if (traceyPostgresDsn.empty()) {
+            const char* databaseUrlEnv = std::getenv("DATABASE_URL");
+            traceyPostgresDsn = databaseUrlEnv ? trim(databaseUrlEnv) : "";
+        }
+        const int64_t traceyStateSnapshotFlushMs = parseInt64Value(
+                envOr("NMC_TRACEY_PERSIST_FLUSH_MS", "NM_TRACEY_PERSIST_FLUSH_MS"),
+                5000,
+                250,
+                60000
+        );
+        traceyStateStore = std::make_unique<TraceyStateStore>(TraceyStateStore::Config{
+                traceyStateSnapshotPath,
+                traceyStateSnapshotFlushMs,
+                traceyPostgresDsn,
+                [this](int64_t snapshotTs) {
+                    std::lock_guard<std::mutex> lock(dataMutex);
+                    return buildTraceyStateSnapshotLocked(snapshotTs);
+                }
+        });
+        {
+            std::lock_guard<std::mutex> lock(dataMutex);
+            const nlohmann::json restoredTraceyState = traceyStateStore->loadSnapshot();
+            if (restoredTraceyState.is_object()) {
+                restoreTraceyStateSnapshotLocked(restoredTraceyState);
+            }
+        }
+
         const bool traceyBootstrapLocalAgent = parseBoolValue(
                 envOr("NMC_TRACEY_BOOTSTRAP_LOCAL_AGENT", "NM_TRACEY_BOOTSTRAP_LOCAL_AGENT"),
                 true
@@ -3087,6 +3297,14 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
             if (localTraceyStatusAddr.empty()) {
                 localAgent.lastError = "Bootstrap Tracey sidecar is required but no local status_addr is configured.";
             }
+            scheduleTraceyStateSnapshotLocked(nowMs);
+        }
+        if (serverStateStore) {
+            serverStateStore->start();
+            scheduleServerStateSnapshot(nowEpochMs());
+        }
+        if (traceyStateStore) {
+            traceyStateStore->start();
         }
 
         if (authMode == "oidc") {
@@ -3170,6 +3388,9 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                 },
                 [this](httplib::Response& res, int status, const std::string& message) {
                     sendErrorResponse(res, status, message);
+                },
+                [this](int64_t snapshotTs) {
+                    scheduleServerStateSnapshot(snapshotTs);
                 }
         );
 
@@ -3312,32 +3533,31 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
         // GET /connections/status
         svr.Get("/connections/status", [this, guard](const httplib::Request& req, httplib::Response& res) {
             if (!guard(req, res)) return;
-            ConnectionHandlers::handleGetConnectionStatus(req, res);
+            handleGetConnectionStatus(req, res);
         });
 
         // POST /connections/make
         svr.Post("/connections/make", [this, guard](const httplib::Request& req, httplib::Response& res) {
             if (!guard(req, res)) return;
-            ConnectionHandlers::handleMakeConnection(req, res);
+            handleMakeConnection(req, res);
         });
 
         // DELETE /connections/:name
-        // svr.Delete(R"(/connections/(?P<name>[^/]+))", ConnectionHandlers::handleDropConnection);
         svr.Delete(R"(^/connections/([^/]+)$)",  [this, guard](const httplib::Request& req, httplib::Response& res) {
             if (!guard(req, res)) return;
-            ConnectionHandlers::handleDropConnection(req, res);
+            handleDropConnection(req, res);
         });
 
         // GET /connections
         svr.Get("/connections", [this, guard](const httplib::Request& req, httplib::Response& res) {
             if (!guard(req, res)) return;
-            ConnectionHandlers::handleListConnections(req, res);
+            handleListConnections(req, res);
         });
 
         // POST /connections/select
         svr.Post("/connections/select", [this, guard](const httplib::Request& req, httplib::Response& res) {
             if (!guard(req, res)) return;
-            ConnectionHandlers::handleSelectConnection(req, res);
+            handleSelectConnection(req, res);
         });
 
         std::cout << "Connection API routes registered." << std::endl;
@@ -3730,6 +3950,12 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
         }
         if (aarnnDiscoveryThread.joinable()) {
             aarnnDiscoveryThread.join();
+        }
+        if (serverStateStore) {
+            serverStateStore->stop();
+        }
+        if (traceyStateStore) {
+            traceyStateStore->stop();
         }
     }
 
@@ -4965,6 +5191,250 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
         return body.substr(0, maxLogBodyBytes) + "...(truncated)";
     }
 
+// --- Connection Handlers ---
+
+    void APIRoutes::handleGetConnectionStatus(const httplib::Request& req, httplib::Response& res) {
+        (void)req;
+
+        Models::CloudResponse apiResponse;
+        apiResponse.success = true;
+        apiResponse.message = "Current connection status.";
+
+        nlohmann::json responseData;
+        {
+            std::lock_guard<std::mutex> lock(dataMutex);
+            normalizeConnectionRegistry(connections, currentConnectionName);
+
+            auto it = currentConnectionName.empty()
+                      ? connections.end()
+                      : std::find_if(
+                              connections.begin(),
+                              connections.end(),
+                              [&](const Models::Connection& connection) {
+                                  return connection.name == currentConnectionName;
+                              }
+                      );
+
+            if (it != connections.end()) {
+                it->healthStatus = simulateConnectionHealthCheck(it->endpoint);
+                responseData = it->toJsonString();
+            } else {
+                apiResponse.message = "No active cloud connection. Local Kubernetes mode is available.";
+                responseData = nlohmann::json{
+                        {"name", ""},
+                        {"endpoint", ""},
+                        {"isActive", false},
+                        {"status", "local_only"},
+                        {"mode", "local"}
+                };
+            }
+        }
+
+        apiResponse.data = std::move(responseData);
+        sendJsonResponse(res, apiResponse);
+    }
+
+    void APIRoutes::handleMakeConnection(const httplib::Request& req, httplib::Response& res) {
+        Models::CloudResponse apiResponse;
+        bool created = false;
+        int64_t mutationTs = 0;
+
+        try {
+            const nlohmann::json params = parseJsonBodyStrict(req.body);
+
+            std::string name;
+            if (params.contains("name") && params["name"].is_string()) {
+                name = params["name"].get<std::string>();
+            } else {
+                return sendErrorResponse(res, 400, "Connection name is required and must be a string.");
+            }
+
+            std::string endpoint;
+            if (params.contains("endpoint") && params["endpoint"].is_string()) {
+                endpoint = params["endpoint"].get<std::string>();
+            } else {
+                return sendErrorResponse(res, 400, "Endpoint is required and must be a string.");
+            }
+
+            bool setDefault = false;
+            if (params.contains("setDefault")) {
+                if (params["setDefault"].is_boolean()) {
+                    setDefault = params["setDefault"].get<bool>();
+                } else if (params["setDefault"].is_string()) {
+                    const std::string setDefaultStr = params["setDefault"].get<std::string>();
+                    setDefault = (setDefaultStr == "true");
+                }
+            }
+
+            if (trim(name).empty() || trim(endpoint).empty()) {
+                return sendErrorResponse(res, 400, "Connection name and endpoint cannot be empty.");
+            }
+
+            nlohmann::json responseData;
+            {
+                std::lock_guard<std::mutex> lock(dataMutex);
+                auto it = std::find_if(
+                        connections.begin(),
+                        connections.end(),
+                        [&](const Models::Connection& connection) { return connection.name == name; }
+                );
+                if (it != connections.end()) {
+                    return sendErrorResponse(res, 409, "Connection with name '" + name + "' already exists.");
+                }
+
+                Models::Connection newConnection(
+                        name,
+                        endpoint,
+                        setDefault,
+                        simulateConnectionHealthCheck(endpoint)
+                );
+                connections.push_back(newConnection);
+                if (setDefault) {
+                    currentConnectionName = name;
+                }
+                normalizeConnectionRegistry(connections, currentConnectionName);
+
+                auto stored = std::find_if(
+                        connections.begin(),
+                        connections.end(),
+                        [&](const Models::Connection& connection) { return connection.name == name; }
+                );
+                responseData = stored != connections.end() ? stored->toJsonString() : newConnection.toJsonString();
+                apiResponse.success = true;
+                apiResponse.message = setDefault
+                                      ? "Connection '" + name + "' created and set as default."
+                                      : "Connection '" + name + "' created.";
+                apiResponse.data = std::move(responseData);
+                created = true;
+                mutationTs = nowEpochMs();
+            }
+        } catch (const std::runtime_error& error) {
+            return sendErrorResponse(res, 400, std::string("Error processing request: ") + error.what());
+        } catch (const std::exception& error) {
+            return sendErrorResponse(res, 500, std::string("An unexpected error occurred: ") + error.what());
+        }
+
+        if (created) {
+            scheduleServerStateSnapshot(mutationTs);
+        }
+        sendJsonResponse(res, apiResponse);
+        if (created) {
+            res.status = 201;
+        }
+    }
+
+    void APIRoutes::handleDropConnection(const httplib::Request& req, httplib::Response& res) {
+        std::string name;
+        if (req.matches.size() > 1) {
+            name = req.matches[1];
+        }
+        if (trim(name).empty()) {
+            return sendErrorResponse(res, 400, "Connection name missing or empty in URL path.");
+        }
+
+        Models::CloudResponse apiResponse;
+        bool removed = false;
+        int64_t mutationTs = 0;
+
+        {
+            std::lock_guard<std::mutex> lock(dataMutex);
+            const auto initialSize = connections.size();
+            connections.erase(
+                    std::remove_if(
+                            connections.begin(),
+                            connections.end(),
+                            [&](const Models::Connection& connection) { return connection.name == name; }
+                    ),
+                    connections.end()
+            );
+
+            if (connections.size() == initialSize) {
+                return sendErrorResponse(res, 404, "Connection with name '" + name + "' not found.");
+            }
+
+            if (currentConnectionName == name) {
+                currentConnectionName.clear();
+            }
+            normalizeConnectionRegistry(connections, currentConnectionName);
+
+            apiResponse.success = true;
+            apiResponse.message = currentConnectionName.empty()
+                                  ? "Connection '" + name + "' dropped. No active connection now."
+                                  : "Connection '" + name + "' dropped.";
+            removed = true;
+            mutationTs = nowEpochMs();
+        }
+
+        if (removed) {
+            scheduleServerStateSnapshot(mutationTs);
+        }
+        sendJsonResponse(res, apiResponse);
+    }
+
+    void APIRoutes::handleListConnections(const httplib::Request& req, httplib::Response& res) {
+        (void)req;
+
+        Models::CloudResponse apiResponse;
+        apiResponse.success = true;
+        apiResponse.message = "Connections listed successfully.";
+
+        nlohmann::json connectionsJson = nlohmann::json::array();
+        {
+            std::lock_guard<std::mutex> lock(dataMutex);
+            normalizeConnectionRegistry(connections, currentConnectionName);
+            for (auto& connection : connections) {
+                connection.healthStatus = simulateConnectionHealthCheck(connection.endpoint);
+                connectionsJson.push_back(connection.toJsonString());
+            }
+        }
+
+        apiResponse.data = std::move(connectionsJson);
+        sendJsonResponse(res, apiResponse);
+    }
+
+    void APIRoutes::handleSelectConnection(const httplib::Request& req, httplib::Response& res) {
+        Models::CloudResponse apiResponse;
+        int64_t mutationTs = 0;
+
+        try {
+            const nlohmann::json params = parseJsonBodyStrict(req.body);
+            if (!params.contains("name") || !params["name"].is_string()) {
+                return sendErrorResponse(res, 400, "Connection name is required and must be a string.");
+            }
+
+            const std::string name = trim(params["name"].get<std::string>());
+            if (name.empty()) {
+                return sendErrorResponse(res, 400, "Connection name cannot be empty.");
+            }
+
+            {
+                std::lock_guard<std::mutex> lock(dataMutex);
+                auto it = std::find_if(
+                        connections.begin(),
+                        connections.end(),
+                        [&](const Models::Connection& connection) { return connection.name == name; }
+                );
+                if (it == connections.end()) {
+                    return sendErrorResponse(res, 404, "Connection with name '" + name + "' not found.");
+                }
+
+                currentConnectionName = name;
+                normalizeConnectionRegistry(connections, currentConnectionName);
+
+                apiResponse.success = true;
+                apiResponse.message = "Connection '" + name + "' selected as default.";
+                mutationTs = nowEpochMs();
+            }
+        } catch (const std::runtime_error& error) {
+            return sendErrorResponse(res, 400, std::string("Error processing request: ") + error.what());
+        } catch (const std::exception& error) {
+            return sendErrorResponse(res, 500, std::string("An unexpected error occurred: ") + error.what());
+        }
+
+        scheduleServerStateSnapshot(mutationTs);
+        sendJsonResponse(res, apiResponse);
+    }
+
 // --- Bucket Handlers ---
 
     /**
@@ -4983,6 +5453,7 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
             std::string name = json_body.value("name", "");
             std::string location = json_body.value("location", "");
             std::string type = json_body.value("type", "");
+            int64_t mutationTs = 0;
 
             if (name.empty() || location.empty() || type.empty()) {
                 return sendErrorResponse(res, 400, "Missing required parameters: name, location, or type.");
@@ -5002,11 +5473,13 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
             newBucket.type = type;
             newBucket.status = "Active";
             buckets.push_back(newBucket);
+            mutationTs = nowEpochMs();
 
             Models::CloudResponse apiResponse;
             apiResponse.success = true;
             apiResponse.message = "Bucket '" + name + "' created successfully.";
             apiResponse.data = newBucket.toJsonString();
+            scheduleServerStateSnapshot(mutationTs);
             sendJsonResponse(res, apiResponse);
 
         } catch (const nlohmann::json::parse_error& e) {
@@ -5028,6 +5501,7 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
      */
     void APIRoutes::handleDeleteBucket(const httplib::Request& req, httplib::Response& res) {
         std::string name = req.matches[1]; // Get name from regex capture
+        int64_t mutationTs = 0;
 
         std::lock_guard<std::mutex> lock(dataMutex);
         auto initial_size = buckets.size();
@@ -5036,9 +5510,11 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                           buckets.end());
 
         if (buckets.size() < initial_size) {
+            mutationTs = nowEpochMs();
             Models::CloudResponse apiResponse;
             apiResponse.success = true;
             apiResponse.message = "Bucket '" + name + "' deleted successfully.";
+            scheduleServerStateSnapshot(mutationTs);
             sendJsonResponse(res, apiResponse);
         } else {
             sendErrorResponse(res, 404, "Bucket '" + name + "' not found.");
@@ -5460,6 +5936,7 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
         if (agent.linkState.empty()) {
             agent.linkState = "required";
         }
+        scheduleTraceyStateSnapshotLocked(nowMs);
     }
 
     void APIRoutes::removeTraceyRequirementLocked(const std::string& resourceType, const std::string& resourceName) {
@@ -5468,21 +5945,521 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
             return;
         }
 
+        bool removed = false;
+
         const std::string directKey = resourceType + ":" + normalized;
         auto direct = traceyRequirements.find(directKey);
         if (direct != traceyRequirements.end()) {
             traceyRequirements.erase(direct);
+            removed = true;
+        } else {
+            for (auto it = traceyRequirements.begin(); it != traceyRequirements.end();) {
+                if (it->second.resourceType == resourceType &&
+                    toLower(trim(it->second.resourceName)) == normalized) {
+                    it = traceyRequirements.erase(it);
+                    removed = true;
+                } else {
+                    ++it;
+                }
+            }
+        }
+        if (removed) {
+            scheduleTraceyStateSnapshotLocked(nowEpochMs());
+        }
+    }
+
+    nlohmann::json APIRoutes::buildServerStateSnapshotLocked(int64_t nowMs) const {
+        std::vector<Models::Bucket> sortedBuckets = buckets;
+        std::sort(
+                sortedBuckets.begin(),
+                sortedBuckets.end(),
+                [](const Models::Bucket& left, const Models::Bucket& right) {
+                    return std::tie(left.name, left.location, left.type, left.status) <
+                           std::tie(right.name, right.location, right.type, right.status);
+                }
+        );
+
+        std::vector<Models::Connection> sortedConnections = connections;
+        std::sort(
+                sortedConnections.begin(),
+                sortedConnections.end(),
+                [](const Models::Connection& left, const Models::Connection& right) {
+                    return std::tie(left.name, left.endpoint, left.isActive, left.healthStatus) <
+                           std::tie(right.name, right.endpoint, right.isActive, right.healthStatus);
+                }
+        );
+
+        std::vector<Models::VM> sortedVms = vms;
+        std::sort(
+                sortedVms.begin(),
+                sortedVms.end(),
+                [](const Models::VM& left, const Models::VM& right) {
+                    return std::tie(left.id, left.name, left.region) <
+                           std::tie(right.id, right.name, right.region);
+                }
+        );
+
+        std::vector<std::string> vclusterIds;
+        vclusterIds.reserve(vclusterConfigs.size());
+        for (const auto& entry : vclusterConfigs) {
+            vclusterIds.push_back(entry.first);
+        }
+        std::sort(vclusterIds.begin(), vclusterIds.end());
+
+        nlohmann::json bucketPayload = nlohmann::json::array();
+        for (const auto& bucket : sortedBuckets) {
+            bucketPayload.push_back(bucket.toJsonString());
+        }
+
+        nlohmann::json connectionPayload = nlohmann::json::array();
+        for (const auto& connection : sortedConnections) {
+            connectionPayload.push_back(connectionSnapshotToJson(connection));
+        }
+
+        nlohmann::json vmPayload = nlohmann::json::array();
+        for (const auto& vm : sortedVms) {
+            vmPayload.push_back(vmSnapshotToJson(vm));
+        }
+
+        nlohmann::json vclusterPayload = nlohmann::json::array();
+        for (const auto& configId : vclusterIds) {
+            const auto it = vclusterConfigs.find(configId);
+            if (it == vclusterConfigs.end()) {
+                continue;
+            }
+            nlohmann::json configPayload = vclusterConfigSnapshotToJson(it->second);
+            configPayload["id"] = it->second.id.empty() ? configId : it->second.id;
+            vclusterPayload.push_back(std::move(configPayload));
+        }
+
+        return {
+                {"schema_version", 1},
+                {"generated_epoch_ms", nowMs > 0 ? nowMs : nowEpochMs()},
+                {"current_connection_name", currentConnectionName},
+                {"buckets", std::move(bucketPayload)},
+                {"connections", std::move(connectionPayload)},
+                {"vms", std::move(vmPayload)},
+                {"vcluster_configs", std::move(vclusterPayload)}
+        };
+    }
+
+    void APIRoutes::restoreServerStateSnapshotLocked(const nlohmann::json& snapshot) {
+        if (!snapshot.is_object()) {
             return;
         }
 
-        for (auto it = traceyRequirements.begin(); it != traceyRequirements.end();) {
-            if (it->second.resourceType == resourceType &&
-                toLower(trim(it->second.resourceName)) == normalized) {
-                it = traceyRequirements.erase(it);
-            } else {
-                ++it;
+        buckets.clear();
+        connections.clear();
+        vms.clear();
+        vclusterConfigs.clear();
+        currentConnectionName.clear();
+
+        for (const auto& bucketPayload : snapshot.value("buckets", nlohmann::json::array())) {
+            if (!bucketPayload.is_object()) {
+                continue;
+            }
+            Models::Bucket bucket = Models::Bucket::fromJson(bucketPayload);
+            if (!trim(bucket.name).empty()) {
+                buckets.push_back(std::move(bucket));
             }
         }
+
+        for (const auto& connectionPayload : snapshot.value("connections", nlohmann::json::array())) {
+            Models::Connection connection = connectionSnapshotFromJson(connectionPayload);
+            if (!trim(connection.name).empty()) {
+                connections.push_back(std::move(connection));
+            }
+        }
+        currentConnectionName = snapshot.value("current_connection_name", "");
+        normalizeConnectionRegistry(connections, currentConnectionName);
+
+        for (const auto& vmPayload : snapshot.value("vms", nlohmann::json::array())) {
+            Models::VM vm = vmSnapshotFromJson(vmPayload);
+            if (!trim(vm.id).empty() || !trim(vm.name).empty()) {
+                vms.push_back(std::move(vm));
+            }
+        }
+
+        for (const auto& configPayload : snapshot.value("vcluster_configs", nlohmann::json::array())) {
+            if (!configPayload.is_object()) {
+                continue;
+            }
+            Models::VClusterConfig config = Models::VClusterConfig::fromJson(configPayload);
+            if (config.id.empty()) {
+                config.id = configPayload.value("id", "");
+            }
+            if (!config.id.empty()) {
+                vclusterConfigs[config.id] = std::move(config);
+            }
+        }
+    }
+
+    void APIRoutes::scheduleServerStateSnapshot(int64_t nowMs) {
+        if (!serverStateStore) {
+            return;
+        }
+        const int64_t snapshotTs = nowMs > 0 ? nowMs : nowEpochMs();
+        serverStateStore->scheduleSnapshot(snapshotTs);
+    }
+
+    nlohmann::json APIRoutes::traceyAgentToJson(const TraceyAgent& agent) const {
+        return {
+                {"agent_id", agent.agentId},
+                {"cluster", agent.cluster},
+                {"status", agent.status},
+                {"version", agent.version},
+                {"host", agent.host},
+                {"source", agent.source},
+                {"announce_addr", agent.announceAddr},
+                {"status_addr", agent.statusAddr},
+                {"link_state", agent.linkState},
+                {"link_security", agent.linkSecurity},
+                {"last_error", agent.lastError},
+                {"metrics", agent.metrics.is_null() ? nlohmann::json::object() : agent.metrics},
+                {"capabilities", agent.capabilities.is_null() ? nlohmann::json::object() : agent.capabilities},
+                {"last_seen_epoch_ms", agent.lastSeenEpochMs},
+                {"last_announcement_epoch_ms", agent.lastAnnouncementEpochMs},
+                {"last_query_epoch_ms", agent.lastQueryEpochMs},
+                {"next_query_epoch_ms", agent.nextQueryEpochMs},
+                {"query_failures", agent.queryFailures},
+                {"stale", agent.stale},
+                {"status_reachable", agent.statusReachable},
+                {"signature_present", agent.signaturePresent},
+                {"coordinator", agent.coordinator},
+                {"coordinator_epoch", agent.coordinatorEpoch},
+                {"score", agent.score}
+        };
+    }
+
+    nlohmann::json APIRoutes::traceyRequirementToJson(const TraceyRequirement& requirement) const {
+        return {
+                {"key", requirement.key},
+                {"resource_type", requirement.resourceType},
+                {"resource_name", requirement.resourceName},
+                {"region", requirement.region},
+                {"expected_agent_id", requirement.expectedAgentId},
+                {"expected_status_addr", requirement.expectedStatusAddr},
+                {"created_epoch_ms", requirement.createdEpochMs}
+        };
+    }
+
+    nlohmann::json APIRoutes::traceyStatusSampleToJson(const TraceyStatusSample& sample) const {
+        return {
+                {"ts_ms", sample.tsMs},
+                {"status", sample.status},
+                {"stale", sample.stale},
+                {"status_reachable", sample.statusReachable},
+                {"query_failures", sample.queryFailures},
+                {"coordinator", sample.coordinator},
+                {"score", sample.score},
+                {"tracey_guard_probe_failures", sample.tracey_guardProbeFailures},
+                {"tracey_guard_probe_errors", sample.tracey_guardProbeErrors},
+                {"tracey_guard_quarantined", sample.tracey_guardQuarantined},
+                {"tracey_guard_remote_faults", sample.tracey_guardRemoteFaults},
+                {"loader_threat_local_providers", sample.loaderThreatLocalProviders},
+                {"loader_threat_local_artifacts", sample.loaderThreatLocalArtifacts},
+                {"loader_threat_blocked_providers", sample.loaderThreatBlockedProviders},
+                {"loader_threat_blocked_artifacts", sample.loaderThreatBlockedArtifacts},
+                {"loader_threat_remote_reporters", sample.loaderThreatRemoteReporters},
+                {"network_collector_backend", sample.networkCollectorBackend},
+                {"network_attributed_total_bps", sample.networkAttributedTotalBps},
+                {"network_cross_network_bps", sample.networkCrossNetworkBps},
+                {"network_active_flows", sample.networkActiveFlows},
+                {"network_listeners", sample.networkListeners},
+                {"network_estimated_flows", sample.networkEstimatedFlows},
+                {"network_udp_active_flows", sample.networkUdpActiveFlows},
+                {"network_udp_drop_delta", sample.networkUdpDropDelta},
+                {"network_udp_estimated_total_bps", sample.networkUdpEstimatedTotalBps},
+                {"network_attribution_confidence", sample.networkAttributionConfidence},
+                {"network_latency_pressure", sample.networkLatencyPressure},
+                {"network_queue_pressure", sample.networkQueuePressure},
+                {"network_traffic_growth_pct_per_min", sample.networkTrafficGrowthPctPerMin},
+                {"network_cross_growth_pct_per_min", sample.networkCrossGrowthPctPerMin},
+                {"network_flow_growth_pct_per_min", sample.networkFlowGrowthPctPerMin},
+                {"projected_total_bps_5m", sample.projectedTotalBps5m},
+                {"projected_total_bps_15m", sample.projectedTotalBps15m},
+                {"projected_cross_network_bps_5m", sample.projectedCrossNetworkBps5m},
+                {"projected_cross_network_bps_15m", sample.projectedCrossNetworkBps15m},
+                {"projected_active_flows_5m", sample.projectedActiveFlows5m},
+                {"projected_active_flows_15m", sample.projectedActiveFlows15m},
+                {"estimated_network_bps", sample.estimatedNetworkBps},
+                {"estimated_power_w", sample.estimatedPowerW},
+                {"source", sample.source}
+        };
+    }
+
+    nlohmann::json APIRoutes::traceyAgentLogToJson(const TraceyAgentLogEntry& entry) const {
+        return {
+                {"ts_ms", entry.tsMs},
+                {"level", entry.level},
+                {"category", entry.category},
+                {"message", entry.message},
+                {"context", entry.context.is_null() ? nlohmann::json::object() : entry.context}
+        };
+    }
+
+    APIRoutes::TraceyAgent APIRoutes::traceyAgentFromJson(const nlohmann::json& payload) const {
+        TraceyAgent agent;
+        if (!payload.is_object()) {
+            return agent;
+        }
+        agent.agentId = payload.value("agent_id", "");
+        agent.cluster = payload.value("cluster", "");
+        agent.status = payload.value("status", "");
+        agent.version = payload.value("version", "");
+        agent.host = payload.value("host", "");
+        agent.source = payload.value("source", "");
+        agent.announceAddr = payload.value("announce_addr", "");
+        agent.statusAddr = payload.value("status_addr", "");
+        agent.linkState = payload.value("link_state", "");
+        agent.linkSecurity = payload.value("link_security", "");
+        agent.lastError = payload.value("last_error", "");
+        agent.metrics = payload.contains("metrics") ? payload["metrics"] : nlohmann::json::object();
+        agent.capabilities = payload.contains("capabilities") ? payload["capabilities"] : nlohmann::json::object();
+        agent.lastSeenEpochMs = payload.value("last_seen_epoch_ms", 0LL);
+        agent.lastAnnouncementEpochMs = payload.value("last_announcement_epoch_ms", 0LL);
+        agent.lastQueryEpochMs = payload.value("last_query_epoch_ms", 0LL);
+        agent.nextQueryEpochMs = payload.value("next_query_epoch_ms", 0LL);
+        agent.queryFailures = std::max(0, payload.value("query_failures", 0));
+        agent.stale = payload.value("stale", false);
+        agent.statusReachable = payload.value("status_reachable", false);
+        agent.signaturePresent = payload.value("signature_present", false);
+        agent.coordinator = payload.value("coordinator", false);
+        agent.coordinatorEpoch = payload.value("coordinator_epoch", 0LL);
+        agent.score = payload.value("score", 0LL);
+        return agent;
+    }
+
+    APIRoutes::TraceyRequirement APIRoutes::traceyRequirementFromJson(const nlohmann::json& payload) const {
+        TraceyRequirement requirement;
+        if (!payload.is_object()) {
+            return requirement;
+        }
+        requirement.key = payload.value("key", "");
+        requirement.resourceType = payload.value("resource_type", "");
+        requirement.resourceName = payload.value("resource_name", "");
+        requirement.region = payload.value("region", "");
+        requirement.expectedAgentId = payload.value("expected_agent_id", "");
+        requirement.expectedStatusAddr = payload.value("expected_status_addr", "");
+        requirement.createdEpochMs = payload.value("created_epoch_ms", 0LL);
+        return requirement;
+    }
+
+    APIRoutes::TraceyStatusSample APIRoutes::traceyStatusSampleFromJson(const nlohmann::json& payload) const {
+        TraceyStatusSample sample;
+        if (!payload.is_object()) {
+            return sample;
+        }
+        sample.tsMs = payload.value("ts_ms", 0LL);
+        sample.status = payload.value("status", "");
+        sample.stale = payload.value("stale", false);
+        sample.statusReachable = payload.value("status_reachable", false);
+        sample.queryFailures = std::max(0, payload.value("query_failures", 0));
+        sample.coordinator = payload.value("coordinator", false);
+        sample.score = payload.value("score", 0LL);
+        sample.tracey_guardProbeFailures = std::max(0, payload.value("tracey_guard_probe_failures", 0));
+        sample.tracey_guardProbeErrors = std::max(0, payload.value("tracey_guard_probe_errors", 0));
+        sample.tracey_guardQuarantined = std::max(0, payload.value("tracey_guard_quarantined", 0));
+        sample.tracey_guardRemoteFaults = std::max(0, payload.value("tracey_guard_remote_faults", 0));
+        sample.loaderThreatLocalProviders = std::max(0, payload.value("loader_threat_local_providers", 0));
+        sample.loaderThreatLocalArtifacts = std::max(0, payload.value("loader_threat_local_artifacts", 0));
+        sample.loaderThreatBlockedProviders = std::max(0, payload.value("loader_threat_blocked_providers", 0));
+        sample.loaderThreatBlockedArtifacts = std::max(0, payload.value("loader_threat_blocked_artifacts", 0));
+        sample.loaderThreatRemoteReporters = std::max(0, payload.value("loader_threat_remote_reporters", 0));
+        sample.networkCollectorBackend = payload.value("network_collector_backend", "");
+        sample.networkAttributedTotalBps = std::max(0.0, payload.value("network_attributed_total_bps", 0.0));
+        sample.networkCrossNetworkBps = std::max(0.0, payload.value("network_cross_network_bps", 0.0));
+        sample.networkActiveFlows = std::max(0, payload.value("network_active_flows", 0));
+        sample.networkListeners = std::max(0, payload.value("network_listeners", 0));
+        sample.networkEstimatedFlows = std::max(0, payload.value("network_estimated_flows", 0));
+        sample.networkUdpActiveFlows = std::max(0, payload.value("network_udp_active_flows", 0));
+        sample.networkUdpDropDelta = std::max<int64_t>(0, payload.value("network_udp_drop_delta", 0LL));
+        sample.networkUdpEstimatedTotalBps = std::max(0.0, payload.value("network_udp_estimated_total_bps", 0.0));
+        sample.networkAttributionConfidence = std::max(0.0, payload.value("network_attribution_confidence", 0.0));
+        sample.networkLatencyPressure = std::max(0.0, payload.value("network_latency_pressure", 0.0));
+        sample.networkQueuePressure = std::max(0.0, payload.value("network_queue_pressure", 0.0));
+        sample.networkTrafficGrowthPctPerMin = payload.value("network_traffic_growth_pct_per_min", 0.0);
+        sample.networkCrossGrowthPctPerMin = payload.value("network_cross_growth_pct_per_min", 0.0);
+        sample.networkFlowGrowthPctPerMin = payload.value("network_flow_growth_pct_per_min", 0.0);
+        sample.projectedTotalBps5m = std::max(0.0, payload.value("projected_total_bps_5m", 0.0));
+        sample.projectedTotalBps15m = std::max(0.0, payload.value("projected_total_bps_15m", 0.0));
+        sample.projectedCrossNetworkBps5m = std::max(0.0, payload.value("projected_cross_network_bps_5m", 0.0));
+        sample.projectedCrossNetworkBps15m = std::max(0.0, payload.value("projected_cross_network_bps_15m", 0.0));
+        sample.projectedActiveFlows5m = std::max(0.0, payload.value("projected_active_flows_5m", 0.0));
+        sample.projectedActiveFlows15m = std::max(0.0, payload.value("projected_active_flows_15m", 0.0));
+        sample.estimatedNetworkBps = std::max(0.0, payload.value("estimated_network_bps", 0.0));
+        sample.estimatedPowerW = std::max(0.0, payload.value("estimated_power_w", 0.0));
+        sample.source = payload.value("source", "");
+        return sample;
+    }
+
+    APIRoutes::TraceyAgentLogEntry APIRoutes::traceyAgentLogFromJson(const nlohmann::json& payload) const {
+        TraceyAgentLogEntry entry;
+        if (!payload.is_object()) {
+            return entry;
+        }
+        entry.tsMs = payload.value("ts_ms", 0LL);
+        entry.level = payload.value("level", "");
+        entry.category = payload.value("category", "");
+        entry.message = payload.value("message", "");
+        entry.context = payload.contains("context") ? payload["context"] : nlohmann::json::object();
+        return entry;
+    }
+
+    nlohmann::json APIRoutes::buildTraceyStateSnapshotLocked(int64_t nowMs) const {
+        std::vector<std::string> agentIds;
+        agentIds.reserve(traceyAgents.size());
+        for (const auto& entry : traceyAgents) {
+            agentIds.push_back(entry.first);
+        }
+        std::sort(agentIds.begin(), agentIds.end());
+
+        nlohmann::json agents = nlohmann::json::array();
+        nlohmann::json history = nlohmann::json::array();
+        nlohmann::json logs = nlohmann::json::array();
+        for (const auto& agentId : agentIds) {
+            const auto agentIt = traceyAgents.find(agentId);
+            if (agentIt != traceyAgents.end()) {
+                agents.push_back(traceyAgentToJson(agentIt->second));
+            }
+            const auto historyIt = traceyAgentHistory.find(agentId);
+            if (historyIt != traceyAgentHistory.end()) {
+                nlohmann::json samples = nlohmann::json::array();
+                for (const auto& sample : historyIt->second) {
+                    samples.push_back(traceyStatusSampleToJson(sample));
+                }
+                history.push_back({
+                        {"agent_id", agentId},
+                        {"samples", std::move(samples)}
+                });
+            }
+            const auto logsIt = traceyAgentLogs.find(agentId);
+            if (logsIt != traceyAgentLogs.end()) {
+                nlohmann::json entries = nlohmann::json::array();
+                for (const auto& entry : logsIt->second) {
+                    entries.push_back(traceyAgentLogToJson(entry));
+                }
+                logs.push_back({
+                        {"agent_id", agentId},
+                        {"entries", std::move(entries)}
+                });
+            }
+        }
+
+        std::vector<std::string> requirementKeys;
+        requirementKeys.reserve(traceyRequirements.size());
+        for (const auto& entry : traceyRequirements) {
+            requirementKeys.push_back(entry.first);
+        }
+        std::sort(requirementKeys.begin(), requirementKeys.end());
+        nlohmann::json requirements = nlohmann::json::array();
+        for (const auto& key : requirementKeys) {
+            const auto it = traceyRequirements.find(key);
+            if (it != traceyRequirements.end()) {
+                requirements.push_back(traceyRequirementToJson(it->second));
+            }
+        }
+
+        return {
+                {"schema_version", 1},
+                {"generated_epoch_ms", nowMs > 0 ? nowMs : nowEpochMs()},
+                {"tracey_history_max_samples", traceyHistoryMaxSamples},
+                {"tracey_agent_log_max_entries", traceyAgentLogMaxEntries},
+                {"tracey_agents", std::move(agents)},
+                {"tracey_requirements", std::move(requirements)},
+                {"tracey_agent_history", std::move(history)},
+                {"tracey_agent_logs", std::move(logs)}
+        };
+    }
+
+    void APIRoutes::restoreTraceyStateSnapshotLocked(const nlohmann::json& snapshot) {
+        if (!snapshot.is_object()) {
+            return;
+        }
+
+        traceyAgents.clear();
+        traceyRequirements.clear();
+        traceyAgentHistory.clear();
+        traceyAgentLogs.clear();
+
+        for (const auto& agentPayload : snapshot.value("tracey_agents", nlohmann::json::array())) {
+            TraceyAgent agent = traceyAgentFromJson(agentPayload);
+            if (!agent.agentId.empty()) {
+                traceyAgents[agent.agentId] = std::move(agent);
+            }
+        }
+        for (const auto& requirementPayload : snapshot.value("tracey_requirements", nlohmann::json::array())) {
+            TraceyRequirement requirement = traceyRequirementFromJson(requirementPayload);
+            if (!requirement.key.empty()) {
+                traceyRequirements[requirement.key] = std::move(requirement);
+            }
+        }
+        for (const auto& historyPayload : snapshot.value("tracey_agent_history", nlohmann::json::array())) {
+            if (!historyPayload.is_object()) {
+                continue;
+            }
+            const std::string agentId = historyPayload.value("agent_id", "");
+            if (agentId.empty()) {
+                continue;
+            }
+            std::vector<TraceyStatusSample> samples;
+            for (const auto& samplePayload : historyPayload.value("samples", nlohmann::json::array())) {
+                TraceyStatusSample sample = traceyStatusSampleFromJson(samplePayload);
+                if (sample.tsMs > 0) {
+                    samples.push_back(std::move(sample));
+                }
+            }
+            std::sort(samples.begin(), samples.end(), [](const TraceyStatusSample& left, const TraceyStatusSample& right) {
+                return left.tsMs < right.tsMs;
+            });
+            std::deque<TraceyStatusSample> dequeSamples;
+            for (const auto& sample : samples) {
+                dequeSamples.push_back(sample);
+                while (dequeSamples.size() > traceyHistoryMaxSamples) {
+                    dequeSamples.pop_front();
+                }
+            }
+            if (!dequeSamples.empty()) {
+                traceyAgentHistory[agentId] = std::move(dequeSamples);
+            }
+        }
+        for (const auto& logPayload : snapshot.value("tracey_agent_logs", nlohmann::json::array())) {
+            if (!logPayload.is_object()) {
+                continue;
+            }
+            const std::string agentId = logPayload.value("agent_id", "");
+            if (agentId.empty()) {
+                continue;
+            }
+            std::vector<TraceyAgentLogEntry> entries;
+            for (const auto& entryPayload : logPayload.value("entries", nlohmann::json::array())) {
+                TraceyAgentLogEntry entry = traceyAgentLogFromJson(entryPayload);
+                if (entry.tsMs > 0) {
+                    entries.push_back(std::move(entry));
+                }
+            }
+            std::sort(entries.begin(), entries.end(), [](const TraceyAgentLogEntry& left, const TraceyAgentLogEntry& right) {
+                return left.tsMs < right.tsMs;
+            });
+            std::deque<TraceyAgentLogEntry> dequeEntries;
+            for (const auto& entry : entries) {
+                dequeEntries.push_back(entry);
+                while (dequeEntries.size() > traceyAgentLogMaxEntries) {
+                    dequeEntries.pop_front();
+                }
+            }
+            if (!dequeEntries.empty()) {
+                traceyAgentLogs[agentId] = std::move(dequeEntries);
+            }
+        }
+    }
+
+    void APIRoutes::scheduleTraceyStateSnapshotLocked(int64_t nowMs) {
+        if (!traceyStateStore) {
+            return;
+        }
+        const int64_t snapshotTs = nowMs > 0 ? nowMs : nowEpochMs();
+        traceyStateStore->scheduleSnapshot(snapshotTs);
     }
 
 // --- VM Handlers ---
@@ -5510,6 +6487,7 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
             std::string traceyAgentId;
             std::string traceyStatusAddr;
             std::string traceyReason;
+            int64_t mutationTs = 0;
 
             if (name.empty() || sku.empty() || region.empty() || osImage.empty() || publicKeyId.empty()) {
                 return sendErrorResponse(res, 400, "Missing required parameters: name, sku, region, osImage, or publicKeyId.");
@@ -5543,7 +6521,8 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
             newVM.initScript = initScript;
             newVM.status = "Creating";
             vms.push_back(newVM);
-            upsertTraceyRequirementLocked("vm", name, region, traceyAgentId, traceyStatusAddr, nowEpochMs());
+            mutationTs = nowEpochMs();
+            upsertTraceyRequirementLocked("vm", name, region, traceyAgentId, traceyStatusAddr, mutationTs);
 
             Models::CloudResponse apiResponse;
             apiResponse.success = true;
@@ -5562,6 +6541,7 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                         {"required", traceyEnforceManagedResources}
                 };
             }
+            scheduleServerStateSnapshot(mutationTs);
             sendJsonResponse(res, apiResponse);
 
         } catch (const nlohmann::json::parse_error& e) {
@@ -5583,6 +6563,7 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
      */
     void APIRoutes::handleDeleteVM(const httplib::Request& req, httplib::Response& res) {
         std::string id = req.matches[1];
+        int64_t mutationTs = 0;
 
         std::lock_guard<std::mutex> lock(dataMutex);
         auto initial_size = vms.size();
@@ -5598,10 +6579,12 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                       vms.end());
 
         if (vms.size() < initial_size) {
+            mutationTs = nowEpochMs();
             removeTraceyRequirementLocked("vm", removedVmName);
             Models::CloudResponse apiResponse;
             apiResponse.success = true;
             apiResponse.message = "VM '" + id + "' deleted successfully.";
+            scheduleServerStateSnapshot(mutationTs);
             sendJsonResponse(res, apiResponse);
         } else {
             sendErrorResponse(res, 404, "VM '" + id + "' not found.");
@@ -5837,6 +6820,7 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
 
         if (it != vms.end()) {
             it->status = "Restarting"; // Change status
+            scheduleServerStateSnapshot(nowEpochMs());
             Models::CloudResponse apiResponse;
             apiResponse.success = true;
             apiResponse.message = "VM '" + id + "' is restarting.";
@@ -5866,6 +6850,7 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
 
         if (it != vms.end()) {
             it->status = "Running"; // Change status
+            scheduleServerStateSnapshot(nowEpochMs());
             Models::CloudResponse apiResponse;
             apiResponse.success = true;
             apiResponse.message = "VM '" + id + "' resumed successfully.";
@@ -5895,6 +6880,7 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
 
         if (it != vms.end()) {
             it->status = "Suspended"; // Change status
+            scheduleServerStateSnapshot(nowEpochMs());
             Models::CloudResponse apiResponse;
             apiResponse.success = true;
             apiResponse.message = "VM '" + id + "' suspended successfully.";
@@ -6935,6 +7921,11 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
         while (history.size() > traceyHistoryMaxSamples) {
             history.pop_front();
         }
+        const auto& persistedSample = history.back();
+        if (traceyStateStore) {
+            traceyStateStore->recordStatusSample(agent.agentId, traceyStatusSampleToJson(persistedSample));
+        }
+        scheduleTraceyStateSnapshotLocked(persistedSample.tsMs);
     }
 
     void APIRoutes::appendTraceyAgentLogLocked(const std::string& agentId,
@@ -6964,6 +7955,11 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
         while (logs.size() > traceyAgentLogMaxEntries) {
             logs.pop_front();
         }
+        const auto& persistedEntry = logs.back();
+        if (traceyStateStore) {
+            traceyStateStore->recordAgentLog(agentId, traceyAgentLogToJson(persistedEntry));
+        }
+        scheduleTraceyStateSnapshotLocked(persistedEntry.tsMs);
     }
 
     void APIRoutes::ingestTraceyDiscoveryAnnouncement(const nlohmann::json& payload,
@@ -10381,6 +11377,7 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                             {"control_path", controlPath}
                     }
             );
+            scheduleTraceyStateSnapshotLocked(nowEpochMs());
         }
 
         Models::CloudResponse apiResponse;
@@ -10486,6 +11483,7 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                             {"deep_dive_path", deepDivePath}
                     }
             );
+            scheduleTraceyStateSnapshotLocked(nowEpochMs());
         }
 
         Models::CloudResponse apiResponse;

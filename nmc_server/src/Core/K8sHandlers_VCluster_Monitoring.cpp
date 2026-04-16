@@ -4,6 +4,7 @@
 #include "K8sHandlers.h"
 #include "../Models/VClusterConfig.h"
 #include "Utils.h"
+#include <ctime>
 #include <sstream>
 
 namespace NMC {
@@ -550,6 +551,9 @@ namespace NMC {
                 {
                     std::lock_guard<std::mutex> lock(dataMutex);
                     vclusterConfigsRef[config_id] = new_config;
+                }
+                if (scheduleStateSnapshot) {
+                    scheduleStateSnapshot(static_cast<int64_t>(std::time(nullptr)) * 1000);
                 }
 
                 // TODO: Apply configuration changes to running vcluster

@@ -71,6 +71,11 @@
         traceyDeepDiveRefresh: document.getElementById("traceyDeepDiveRefresh"),
         traceyFleetMeta: document.getElementById("traceyFleetMeta"),
         traceyFleetSummaryCards: document.getElementById("traceyFleetSummaryCards"),
+        traceyFleetTopologyForecast: document.getElementById("traceyFleetTopologyForecast"),
+        traceyFleetTalkerMode: document.getElementById("traceyFleetTalkerMode"),
+        traceyFleetTopologyChart: document.getElementById("traceyFleetTopologyChart"),
+        traceyFleetTopologyLegend: document.getElementById("traceyFleetTopologyLegend"),
+        traceyFleetTalkerRows: document.getElementById("traceyFleetTalkerRows"),
         traceyFleetZoneRows: document.getElementById("traceyFleetZoneRows"),
         traceyFleetActionRows: document.getElementById("traceyFleetActionRows"),
         traceyFleetAssessmentSearch: document.getElementById("traceyFleetAssessmentSearch"),
@@ -83,6 +88,11 @@
         traceyRackDetailMeta: document.getElementById("traceyRackDetailMeta"),
         traceyRackSummaryCards: document.getElementById("traceyRackSummaryCards"),
         traceyRackGpuHeatmap: document.getElementById("traceyRackGpuHeatmap"),
+        traceyRackTopologyForecast: document.getElementById("traceyRackTopologyForecast"),
+        traceyRackTalkerMode: document.getElementById("traceyRackTalkerMode"),
+        traceyRackTopologyChart: document.getElementById("traceyRackTopologyChart"),
+        traceyRackTopologyLegend: document.getElementById("traceyRackTopologyLegend"),
+        traceyRackTalkerRows: document.getElementById("traceyRackTalkerRows"),
         traceyRackAssessmentSearch: document.getElementById("traceyRackAssessmentSearch"),
         traceyRackAssessmentFilter: document.getElementById("traceyRackAssessmentFilter"),
         traceyRackAssessmentSort: document.getElementById("traceyRackAssessmentSort"),
@@ -99,6 +109,13 @@
         traceyServerForecastFacts: document.getElementById("traceyServerForecastFacts"),
         traceyServerForecastAdvice: document.getElementById("traceyServerForecastAdvice"),
         traceyServerGuardFacts: document.getElementById("traceyServerGuardFacts"),
+        traceyServerTopologyForecast: document.getElementById("traceyServerTopologyForecast"),
+        traceyServerTalkerMode: document.getElementById("traceyServerTalkerMode"),
+        traceyServerTopologyChart: document.getElementById("traceyServerTopologyChart"),
+        traceyServerTopologyLegend: document.getElementById("traceyServerTopologyLegend"),
+        traceyServerTalkerBars: document.getElementById("traceyServerTalkerBars"),
+        traceyServerTopologyFocus: document.getElementById("traceyServerTopologyFocus"),
+        traceyServerTopologyClear: document.getElementById("traceyServerTopologyClear"),
         traceyServerFlowRows: document.getElementById("traceyServerFlowRows"),
         traceyServerListenerRows: document.getElementById("traceyServerListenerRows"),
         traceyServerPortRows: document.getElementById("traceyServerPortRows"),
@@ -121,6 +138,8 @@
         traceyDeepDiveFacts: document.getElementById("traceyDeepDiveFacts"),
         traceyStatusChart: document.getElementById("traceyStatusChart"),
         traceyStatusLegend: document.getElementById("traceyStatusLegend"),
+        traceyNetworkChart: document.getElementById("traceyNetworkChart"),
+        traceyNetworkLegend: document.getElementById("traceyNetworkLegend"),
         traceyLogChart: document.getElementById("traceyLogChart"),
         traceyLogLegend: document.getElementById("traceyLogLegend"),
         traceyAnalyticsAgentRows: document.getElementById("traceyAnalyticsAgentRows"),
@@ -128,6 +147,8 @@
         traceyAgentDrilldownMeta: document.getElementById("traceyAgentDrilldownMeta"),
         traceyAgentStatusChart: document.getElementById("traceyAgentStatusChart"),
         traceyAgentStatusLegend: document.getElementById("traceyAgentStatusLegend"),
+        traceyAgentNetworkChart: document.getElementById("traceyAgentNetworkChart"),
+        traceyAgentNetworkLegend: document.getElementById("traceyAgentNetworkLegend"),
         traceyAgentFacts: document.getElementById("traceyAgentFacts"),
         traceyAgentLogLevel: document.getElementById("traceyAgentLogLevel"),
         traceyAgentLogCategory: document.getElementById("traceyAgentLogCategory"),
@@ -161,11 +182,166 @@
         selectedGpuTelemetry: null,
         selectedAgentAnalysis: null,
         selectedAgentLogs: [],
-        selectedDeepDive: null
+        selectedDeepDive: null,
+        serverTopologyFocus: null
     };
+    const TRACEY_URL_PARAM_KEYS = [
+        "tracey",
+        "tracey_agent",
+        "tracey_rack",
+        "tracey_gpu",
+        "tracey_policy",
+        "tracey_window",
+        "tracey_bucket",
+        "tracey_focus"
+    ];
+    let traceyUrlStateMuted = false;
 
     function nowIsoTime() {
         return new Date().toLocaleTimeString();
+    }
+
+    function withTraceyUrlStateMuted(callback) {
+        const previous = traceyUrlStateMuted;
+        traceyUrlStateMuted = true;
+        try {
+            return callback();
+        } finally {
+            traceyUrlStateMuted = previous;
+        }
+    }
+
+    function isTraceyInsightsModalOpen() {
+        return Boolean(nodes.traceyInsightsModal && !nodes.traceyInsightsModal.hidden);
+    }
+
+    function serializeTraceyServerTopologyFocus(focus) {
+        const normalized = buildTraceyServerTopologyFocus(focus);
+        if (!normalized) {
+            return "";
+        }
+        return JSON.stringify({
+            kind: normalized.kind,
+            label: normalized.label,
+            subtitle: normalized.subtitle,
+            process: normalized.process,
+            pid: normalized.pid,
+            localPort: normalized.localPort,
+            protocol: normalized.protocol,
+            remoteIp: normalized.remoteIp,
+            remotePort: normalized.remotePort,
+            activeLocalId: normalized.activeLocalId,
+            activeRemoteId: normalized.activeRemoteId,
+            activeLinkId: normalized.activeLinkId
+        });
+    }
+
+    function parseTraceyUrlTopologyFocus(rawValue) {
+        const raw = String(rawValue || "").trim();
+        if (!raw) {
+            return null;
+        }
+        try {
+            return buildTraceyServerTopologyFocus(JSON.parse(raw));
+        } catch (_error) {
+            return null;
+        }
+    }
+
+    function parseTraceyUrlInteger(rawValue, fallback, minValue, maxValue) {
+        const value = Math.round(parseNumber(rawValue, fallback));
+        if (!Number.isFinite(value)) {
+            return fallback;
+        }
+        return Math.max(minValue, Math.min(maxValue, value));
+    }
+
+    function readTraceyUrlState() {
+        const params = new URLSearchParams(window.location.search);
+        const hasTraceyState = TRACEY_URL_PARAM_KEYS.some((key) => params.has(key));
+        if (!hasTraceyState) {
+            return null;
+        }
+        const agentId = String(params.get("tracey_agent") || "").trim();
+        const rackId = String(params.get("tracey_rack") || "").trim();
+        const gpuId = String(params.get("tracey_gpu") || "").trim();
+        const policy = normalizeTraceyAdaptivePolicy(params.get("tracey_policy") || traceyState.adaptivePolicy);
+        return {
+            open: params.get("tracey") !== "0",
+            agentId,
+            rackId,
+            gpuId,
+            policy,
+            windowSeconds: parseTraceyUrlInteger(params.get("tracey_window"), 3600, 300, 604800),
+            bucketSeconds: parseTraceyUrlInteger(params.get("tracey_bucket"), 60, 10, 3600),
+            focus: parseTraceyUrlTopologyFocus(params.get("tracey_focus") || "")
+        };
+    }
+
+    function syncTraceyUrlState() {
+        if (traceyUrlStateMuted || !window.history || typeof window.history.replaceState !== "function") {
+            return;
+        }
+        const params = new URLSearchParams(window.location.search);
+        TRACEY_URL_PARAM_KEYS.forEach((key) => {
+            params.delete(key);
+        });
+        if (isTraceyInsightsModalOpen()) {
+            params.set("tracey", "1");
+            if (traceyState.selectedAgentId) {
+                params.set("tracey_agent", traceyState.selectedAgentId);
+            }
+            if (traceyState.selectedRack) {
+                params.set("tracey_rack", traceyState.selectedRack);
+            }
+            if (traceyState.selectedGpuId) {
+                params.set("tracey_gpu", traceyState.selectedGpuId);
+            }
+            params.set("tracey_policy", normalizeTraceyAdaptivePolicy(traceyState.adaptivePolicy));
+            params.set("tracey_window", String(traceyWindowSeconds()));
+            params.set("tracey_bucket", String(traceyBucketSeconds()));
+            const serializedFocus = serializeTraceyServerTopologyFocus(traceyState.serverTopologyFocus);
+            if (serializedFocus) {
+                params.set("tracey_focus", serializedFocus);
+            }
+        }
+        const nextQuery = params.toString();
+        const nextUrl = `${window.location.pathname}${nextQuery ? `?${nextQuery}` : ""}${window.location.hash}`;
+        const currentUrl = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+        if (nextUrl !== currentUrl) {
+            window.history.replaceState(window.history.state, "", nextUrl);
+        }
+    }
+
+    async function applyTraceyUrlState(state = readTraceyUrlState()) {
+        if (!state) {
+            return;
+        }
+        withTraceyUrlStateMuted(() => {
+            if (nodes.traceyWindowSelect) {
+                nodes.traceyWindowSelect.value = String(state.windowSeconds);
+            }
+            if (nodes.traceyBucketSelect) {
+                nodes.traceyBucketSelect.value = String(state.bucketSeconds);
+            }
+            saveTraceyAdaptivePolicy(state.policy);
+            traceyState.selectedRack = state.rackId;
+            traceyState.selectedAgentId = state.agentId;
+            traceyState.selectedGpuId = state.gpuId;
+        });
+        if (!state.open) {
+            if (isTraceyInsightsModalOpen()) {
+                closeTraceyInsightsModal();
+            }
+            return;
+        }
+        await openTraceyInsightsModal(state.agentId);
+        if (state.focus) {
+            setTraceyServerTopologyFocus(state.focus);
+        } else {
+            clearTraceyServerTopologyFocus();
+        }
+        syncTraceyUrlState();
     }
 
     function escapeHtml(value) {
@@ -251,6 +427,7 @@
         if (nodes.traceyAdaptivePolicySelect && nodes.traceyAdaptivePolicySelect.value !== normalized) {
             nodes.traceyAdaptivePolicySelect.value = normalized;
         }
+        syncTraceyUrlState();
         return normalized;
     }
 
@@ -490,6 +667,7 @@
         traceyServerRequestSeq += 1;
         traceyGpuRequestSeq += 1;
         setTraceyInsightsModalOpen(false);
+        syncTraceyUrlState();
     }
 
     function traceyWindowSeconds() {
@@ -1712,12 +1890,1586 @@
         }
     }
 
+    function normalizeTraceyTopologyForecastMode(value) {
+        const normalized = String(value || "").trim().toLowerCase();
+        if (["current", "projected_5m", "projected_15m", "simulation"].includes(normalized)) {
+            return normalized;
+        }
+        return "current";
+    }
+
+    function normalizeTraceyTalkerMode(value) {
+        const normalized = String(value || "").trim().toLowerCase();
+        if (["applications", "ports", "remotes"].includes(normalized)) {
+            return normalized;
+        }
+        return "applications";
+    }
+
+    function traceyTopologyForecastLabel(value) {
+        const normalized = normalizeTraceyTopologyForecastMode(value);
+        if (normalized === "projected_5m") {
+            return "5m";
+        }
+        if (normalized === "projected_15m") {
+            return "15m";
+        }
+        if (normalized === "simulation") {
+            return "Sim";
+        }
+        return "Current";
+    }
+
+    function readTraceyTopologyForecast(node) {
+        return normalizeTraceyTopologyForecastMode(node ? node.value : "current");
+    }
+
+    function readTraceyTalkerMode(node) {
+        return normalizeTraceyTalkerMode(node ? node.value : "applications");
+    }
+
+    function traceyText(value, fallback = "") {
+        const text = String(value || "").trim();
+        return text || fallback;
+    }
+
+    function traceyJoin(values, separator = " • ") {
+        return values
+            .map((value) => String(value || "").trim())
+            .filter(Boolean)
+            .join(separator);
+    }
+
+    function traceyTrimLabel(value, limit = 26) {
+        const text = traceyText(value, "");
+        if (!text || text.length <= limit) {
+            return text;
+        }
+        return `${text.slice(0, Math.max(0, limit - 3))}...`;
+    }
+
+    function traceyTonePriority(tone) {
+        if (tone === "tracey-tone-bad") {
+            return 3;
+        }
+        if (tone === "tracey-tone-warn") {
+            return 2;
+        }
+        if (tone === "tracey-tone-ok") {
+            return 1;
+        }
+        return 0;
+    }
+
+    function strongerTraceyTone(currentTone, candidateTone) {
+        return traceyTonePriority(candidateTone) > traceyTonePriority(currentTone)
+            ? candidateTone
+            : currentTone;
+    }
+
+    function traceyToneColors(tone) {
+        if (tone === "tracey-tone-bad") {
+            return {
+                stroke: "#ef4444",
+                fill: "rgba(239, 68, 68, 0.14)"
+            };
+        }
+        if (tone === "tracey-tone-warn") {
+            return {
+                stroke: "#f59e0b",
+                fill: "rgba(245, 158, 11, 0.14)"
+            };
+        }
+        if (tone === "tracey-tone-ok") {
+            return {
+                stroke: "#22c55e",
+                fill: "rgba(34, 197, 94, 0.14)"
+            };
+        }
+        return {
+            stroke: "#94a3b8",
+            fill: "rgba(148, 163, 184, 0.14)"
+        };
+    }
+
+    function traceyItemTone(item) {
+        return toneClassFromStatus(item && item.status ? item.status : "unknown");
+    }
+
+    function traceyFlowTone(flow) {
+        if (flow && flow.anomaly) {
+            return "tracey-tone-bad";
+        }
+        const severityTone = toneClassFromSeverity(flow && flow.severity ? flow.severity : "normal");
+        if (severityTone !== "tracey-tone-neutral") {
+            return severityTone;
+        }
+        if (flow && flow.same_lan) {
+            return "tracey-tone-ok";
+        }
+        if (flow && flow.cross_network) {
+            return "tracey-tone-warn";
+        }
+        return "tracey-tone-neutral";
+    }
+
+    function traceyProcessTone(process) {
+        return toneClassFromSeverity(process && process.severity ? process.severity : "normal");
+    }
+
+    function traceyFlowCurrentBps(flow) {
+        const totalBps = parseNumber(flow && flow.total_bps, NaN);
+        if (Number.isFinite(totalBps) && totalBps > 0) {
+            return totalBps;
+        }
+        return Math.max(0, parseNumber(flow && flow.rx_bps, 0) + parseNumber(flow && flow.tx_bps, 0));
+    }
+
+    function traceyLinkMetric(currentBps, forecastBps, forecastMode) {
+        return normalizeTraceyTopologyForecastMode(forecastMode) === "current"
+            ? currentBps
+            : forecastBps;
+    }
+
+    function traceyRemoteIdentity(flow, includePort = false) {
+        const remoteIp = traceyText(flow && flow.remote_ip, "");
+        const remoteMac = traceyText(flow && flow.remote_mac, "");
+        const remotePort = Math.max(0, Math.round(parseNumber(flow && flow.remote_port, 0)));
+        const remoteLabel = remoteIp || remoteMac || "unresolved";
+        const key = includePort && remoteIp
+            ? `${remoteIp}:${remotePort > 0 ? remotePort : 0}`
+            : (remoteIp || remoteMac || `unresolved:${traceyText(flow && flow.protocol, "net")}`);
+        const label = includePort && remoteIp && remotePort > 0
+            ? `${remoteIp}:${remotePort}`
+            : remoteLabel;
+        return {
+            key,
+            label,
+            ip: remoteIp,
+            mac: remoteMac,
+            port: remotePort > 0 ? remotePort : 0,
+            subtitle: traceyJoin([
+                remoteIp && remoteMac ? remoteMac : "",
+                remotePort > 0 ? `port ${remotePort}` : "",
+                flow && flow.cross_network ? "cross-network" : "",
+                flow && flow.same_lan ? "same-lan" : "",
+                flow && flow.local_host ? "local" : ""
+            ]) || "remote endpoint"
+        };
+    }
+
+    function traceyPortLabel(protocol, port) {
+        const normalizedProto = traceyText(protocol, "net").toLowerCase();
+        const normalizedPort = Math.max(0, Math.round(parseNumber(port, 0)));
+        return normalizedPort > 0 ? `${normalizedProto}/${normalizedPort}` : normalizedProto;
+    }
+
+    function extractTraceyNetworkPayload(source) {
+        if (source && source.network && typeof source.network === "object") {
+            return source.network;
+        }
+        if (source && source.server && source.server.network && typeof source.server.network === "object") {
+            return source.server.network;
+        }
+        return {};
+    }
+
+    function extractTraceyNetworkSummary(source) {
+        const network = extractTraceyNetworkPayload(source);
+        if (network.summary && typeof network.summary === "object") {
+            return network.summary;
+        }
+        if (source && source.summary && typeof source.summary === "object") {
+            return source.summary;
+        }
+        return {};
+    }
+
+    function extractTraceyResourceForecast(source) {
+        if (source && source.resource_forecast && typeof source.resource_forecast === "object") {
+            return source.resource_forecast;
+        }
+        return {};
+    }
+
+    function extractTraceySimulation(source) {
+        const forecast = extractTraceyResourceForecast(source);
+        return forecast.simulation && typeof forecast.simulation === "object"
+            ? forecast.simulation
+            : {};
+    }
+
+    // Per-flow projections stay client-side by scaling current flow records with the host forecast ratio.
+    function traceyForecastScale(source, forecastMode) {
+        const mode = normalizeTraceyTopologyForecastMode(forecastMode);
+        if (mode === "current") {
+            return 1;
+        }
+        const summary = extractTraceyNetworkSummary(source);
+        const forecast = extractTraceyResourceForecast(source);
+        const simulation = extractTraceySimulation(source);
+        const baseline = Math.max(0, parseNumber(
+            summary.attributed_total_bps,
+            parseNumber(source && source.attributed_total_bps, 0)
+        ));
+        let target = baseline;
+        if (mode === "projected_5m") {
+            target = Math.max(0, parseNumber(forecast.projected_total_bps_5m, baseline));
+        } else if (mode === "projected_15m") {
+            target = Math.max(0, parseNumber(forecast.projected_total_bps_15m, baseline));
+        } else if (mode === "simulation") {
+            target = Math.max(0, parseNumber(simulation.estimated_network_bps, baseline));
+        }
+        if (baseline > 0 && target >= 0) {
+            return Math.max(0.15, Math.min(12, target / baseline));
+        }
+        return 1;
+    }
+
+    function buildTraceyScopedTopology(items, forecastMode, options = {}) {
+        const mode = normalizeTraceyTopologyForecastMode(forecastMode);
+        const linksByKey = new Map();
+        const backendCounts = new Map();
+        const allLocalKeys = new Set();
+        const allRemoteKeys = new Set();
+        const stats = {
+            currentTotal: 0,
+            forecastTotal: 0,
+            avgConfidenceSum: 0,
+            confidenceCount: 0,
+            activeFlows: 0,
+            estimatedFlows: 0,
+            udpDrops: 0,
+            scaleMax: 1
+        };
+
+        for (const item of Array.isArray(items) ? items : []) {
+            const network = extractTraceyNetworkPayload(item);
+            const summary = extractTraceyNetworkSummary(item);
+            const flows = Array.isArray(network.top_flows) ? network.top_flows : [];
+            const scale = traceyForecastScale(item, mode);
+            const localKey = traceyText(options.localKey ? options.localKey(item) : "", "local");
+            const localLabel = traceyText(options.localLabel ? options.localLabel(item) : localKey, localKey);
+            const localSubtitle = traceyText(options.localSubtitle ? options.localSubtitle(item) : "", "");
+            const localTone = traceyText(options.localTone ? options.localTone(item) : traceyItemTone(item), "tracey-tone-neutral");
+            const confidence = parseNumber(
+                summary.attribution_confidence,
+                parseNumber(item && item.network_attribution_confidence, NaN)
+            );
+            const backend = traceyText(
+                summary.collector_backend,
+                traceyText(item && item.network_collector_backend, "")
+            );
+
+            allLocalKeys.add(localKey);
+            stats.scaleMax = Math.max(stats.scaleMax, scale);
+            stats.activeFlows += Math.max(0, parseNumber(summary.active_flows, parseNumber(item && item.network_active_flows, 0)));
+            stats.estimatedFlows += Math.max(0, parseNumber(summary.estimated_flows, parseNumber(item && item.network_estimated_flows, 0)));
+            stats.udpDrops += Math.max(0, parseNumber(summary.udp_drop_delta, parseNumber(item && item.network_udp_drop_delta, 0)));
+            if (Number.isFinite(confidence) && confidence >= 0) {
+                stats.avgConfidenceSum += confidence;
+                stats.confidenceCount += 1;
+            }
+            if (backend) {
+                backendCounts.set(backend, (backendCounts.get(backend) || 0) + 1);
+            }
+
+            for (const flow of flows) {
+                const currentBps = traceyFlowCurrentBps(flow);
+                if (currentBps <= 0) {
+                    continue;
+                }
+                const forecastBps = currentBps * scale;
+                const remote = traceyRemoteIdentity(flow, Boolean(options.includeRemotePort));
+                const linkKey = `${localKey}=>${remote.key}`;
+                const flowTone = traceyFlowTone(flow);
+                allRemoteKeys.add(remote.key);
+                stats.currentTotal += currentBps;
+                stats.forecastTotal += forecastBps;
+                if (!linksByKey.has(linkKey)) {
+                    linksByKey.set(linkKey, {
+                        id: linkKey,
+                        localId: localKey,
+                        localLabel,
+                        localSubtitle,
+                        localTone,
+                        remoteId: remote.key,
+                        remoteLabel: remote.label,
+                        remoteIp: remote.ip,
+                        remotePort: remote.port,
+                        remoteMac: remote.mac,
+                        remoteSubtitle: remote.subtitle,
+                        remoteTone: flowTone,
+                        currentBps: 0,
+                        forecastBps: 0,
+                        flowCount: 0,
+                        tone: flowTone,
+                        crossNetwork: false,
+                        sameLan: false,
+                        localHost: false,
+                        localPorts: new Set(),
+                        remotePorts: new Set(),
+                        localMacs: new Set(),
+                        remoteMacs: new Set()
+                    });
+                }
+                const entry = linksByKey.get(linkKey);
+                entry.currentBps += currentBps;
+                entry.forecastBps += forecastBps;
+                entry.flowCount += 1;
+                entry.crossNetwork = entry.crossNetwork || Boolean(flow && flow.cross_network);
+                entry.sameLan = entry.sameLan || Boolean(flow && flow.same_lan);
+                entry.localHost = entry.localHost || Boolean(flow && flow.local_host);
+                entry.localTone = strongerTraceyTone(entry.localTone, localTone);
+                entry.remoteTone = strongerTraceyTone(entry.remoteTone, flowTone);
+                entry.tone = strongerTraceyTone(entry.tone, flowTone);
+                if (parseNumber(flow && flow.local_port, 0) > 0) {
+                    entry.localPorts.add(traceyPortLabel(flow.protocol, flow.local_port));
+                }
+                if (parseNumber(flow && flow.remote_port, 0) > 0) {
+                    entry.remotePorts.add(traceyPortLabel(flow.protocol, flow.remote_port));
+                }
+                if (traceyText(flow && flow.local_mac, "")) {
+                    entry.localMacs.add(traceyText(flow.local_mac, ""));
+                }
+                if (traceyText(flow && flow.remote_mac, "")) {
+                    entry.remoteMacs.add(traceyText(flow.remote_mac, ""));
+                }
+            }
+        }
+
+        const allLinks = Array.from(linksByKey.values())
+            .map((link) => ({
+                ...link,
+                localPorts: Array.from(link.localPorts.values()),
+                remotePorts: Array.from(link.remotePorts.values()),
+                localMacs: Array.from(link.localMacs.values()),
+                remoteMacs: Array.from(link.remoteMacs.values())
+            }))
+            .sort((left, right) => traceyLinkMetric(right.currentBps, right.forecastBps, mode) - traceyLinkMetric(left.currentBps, left.forecastBps, mode));
+        const maxLinks = Math.max(1, parseNumber(options.maxLinks, 18));
+        const maxNodesPerSide = Math.max(2, parseNumber(options.maxNodesPerSide, 7));
+        const localMetrics = new Map();
+        const remoteMetrics = new Map();
+        for (const link of allLinks) {
+            const metric = traceyLinkMetric(link.currentBps, link.forecastBps, mode);
+            localMetrics.set(link.localId, (localMetrics.get(link.localId) || 0) + metric);
+            remoteMetrics.set(link.remoteId, (remoteMetrics.get(link.remoteId) || 0) + metric);
+        }
+        const visibleLocalKeys = new Set(
+            Array.from(localMetrics.entries())
+                .sort((left, right) => right[1] - left[1])
+                .slice(0, maxNodesPerSide)
+                .map(([key]) => key)
+        );
+        const visibleRemoteKeys = new Set(
+            Array.from(remoteMetrics.entries())
+                .sort((left, right) => right[1] - left[1])
+                .slice(0, maxNodesPerSide)
+                .map(([key]) => key)
+        );
+        const visibleLinks = allLinks
+            .filter((link) => visibleLocalKeys.has(link.localId) && visibleRemoteKeys.has(link.remoteId))
+            .slice(0, maxLinks);
+        if (!visibleLinks.length && allLinks.length) {
+            visibleLinks.push(...allLinks.slice(0, maxLinks));
+        }
+        const localNodes = new Map();
+        const remoteNodes = new Map();
+        for (const link of visibleLinks) {
+            if (!localNodes.has(link.localId)) {
+                localNodes.set(link.localId, {
+                        id: link.localId,
+                        label: link.localLabel,
+                        subtitle: link.localSubtitle,
+                        tone: link.localTone,
+                        currentBps: 0,
+                        forecastBps: 0,
+                        flowCount: 0
+                    });
+                }
+                if (!remoteNodes.has(link.remoteId)) {
+                    remoteNodes.set(link.remoteId, {
+                        id: link.remoteId,
+                        label: link.remoteLabel,
+                        subtitle: traceyJoin([
+                            link.remoteSubtitle,
+                            link.remoteMacs.length ? link.remoteMacs[0] : ""
+                        ]),
+                        remoteIp: traceyText(link.remoteIp, ""),
+                        remotePort: Math.max(0, parseNumber(link.remotePort, 0)),
+                        remoteMac: traceyText(link.remoteMac, link.remoteMacs.length ? link.remoteMacs[0] : ""),
+                        tone: link.remoteTone,
+                        currentBps: 0,
+                        forecastBps: 0,
+                        flowCount: 0
+                    });
+            }
+            const localNode = localNodes.get(link.localId);
+            localNode.currentBps += link.currentBps;
+            localNode.forecastBps += link.forecastBps;
+            localNode.flowCount += link.flowCount;
+            localNode.tone = strongerTraceyTone(localNode.tone, link.localTone);
+            const remoteNode = remoteNodes.get(link.remoteId);
+            remoteNode.currentBps += link.currentBps;
+            remoteNode.forecastBps += link.forecastBps;
+            remoteNode.flowCount += link.flowCount;
+            remoteNode.tone = strongerTraceyTone(remoteNode.tone, link.remoteTone);
+        }
+
+        let dominantBackend = "";
+        let dominantBackendCount = -1;
+        for (const [backend, count] of backendCounts.entries()) {
+            if (count > dominantBackendCount) {
+                dominantBackend = backend;
+                dominantBackendCount = count;
+            }
+        }
+
+        return {
+            forecastMode: mode,
+            localNodes: Array.from(localNodes.values()).sort((left, right) => traceyLinkMetric(right.currentBps, right.forecastBps, mode) - traceyLinkMetric(left.currentBps, left.forecastBps, mode)),
+            remoteNodes: Array.from(remoteNodes.values()).sort((left, right) => traceyLinkMetric(right.currentBps, right.forecastBps, mode) - traceyLinkMetric(left.currentBps, left.forecastBps, mode)),
+            links: visibleLinks,
+            stats: {
+                currentTotal: stats.currentTotal,
+                forecastTotal: stats.forecastTotal,
+                activeFlows: stats.activeFlows,
+                estimatedFlows: stats.estimatedFlows,
+                udpDrops: stats.udpDrops,
+                avgConfidence: stats.confidenceCount > 0 ? stats.avgConfidenceSum / stats.confidenceCount : NaN,
+                hiddenLinks: Math.max(0, allLinks.length - visibleLinks.length),
+                hiddenLocalNodes: Math.max(0, allLocalKeys.size - localNodes.size),
+                hiddenRemoteNodes: Math.max(0, allRemoteKeys.size - remoteNodes.size),
+                backend: dominantBackend,
+                scaleMax: stats.scaleMax
+            }
+        };
+    }
+
+    function buildTraceyServerTopology(data, forecastMode, talkerMode) {
+        const mode = normalizeTraceyTopologyForecastMode(forecastMode);
+        const network = extractTraceyNetworkPayload(data);
+        const summary = extractTraceyNetworkSummary(data);
+        const resourceForecast = extractTraceyResourceForecast(data);
+        const simulation = extractTraceySimulation(data);
+        const hostLabel = traceyText(data && (data.host || data.agent_id), "server");
+        const hostSubtitle = traceyJoin([
+            traceyText(data && data.rack, ""),
+            traceyText(data && data.zone, "")
+        ]);
+        const linksByKey = new Map();
+        const allLocalKeys = new Set();
+        const allRemoteKeys = new Set();
+        const scale = traceyForecastScale(data, mode);
+        const normalizedTalkerMode = normalizeTraceyTalkerMode(talkerMode);
+
+        for (const flow of Array.isArray(network.top_flows) ? network.top_flows : []) {
+            const currentBps = traceyFlowCurrentBps(flow);
+            if (currentBps <= 0) {
+                continue;
+            }
+            const forecastBps = currentBps * scale;
+            const remote = traceyRemoteIdentity(flow, true);
+            let localId = `server:${hostLabel}`;
+            let localLabel = hostLabel;
+            let localSubtitle = hostSubtitle;
+            let localKind = "server";
+            let localProcess = "";
+            let localPid = 0;
+            let localProtocol = traceyText(flow && flow.protocol, "");
+            let localPort = Math.max(0, Math.round(parseNumber(flow && flow.local_port, 0)));
+            if (normalizedTalkerMode === "applications") {
+                localId = `proc:${parseNumber(flow.pid, 0)}:${traceyText(flow.process, "unknown")}`;
+                localLabel = traceyText(flow.process, "unknown");
+                localSubtitle = traceyJoin([
+                    parseNumber(flow.pid, 0) > 0 ? `pid ${Math.round(parseNumber(flow.pid, 0))}` : "",
+                    parseNumber(flow.local_port, 0) > 0 ? traceyPortLabel(flow.protocol, flow.local_port) : ""
+                ]);
+                localKind = "process";
+                localProcess = traceyText(flow.process, "");
+                localPid = Math.max(0, Math.round(parseNumber(flow.pid, 0)));
+            } else if (normalizedTalkerMode === "ports") {
+                localId = `port:${traceyPortLabel(flow.protocol, flow.local_port)}`;
+                localLabel = traceyPortLabel(flow.protocol, flow.local_port);
+                localSubtitle = traceyText(flow.process, hostLabel);
+                localKind = "port";
+                localProcess = traceyText(flow.process, "");
+            }
+            const linkKey = `${localId}=>${remote.key}`;
+            const flowTone = traceyFlowTone(flow);
+            allLocalKeys.add(localId);
+            allRemoteKeys.add(remote.key);
+            if (!linksByKey.has(linkKey)) {
+                linksByKey.set(linkKey, {
+                        id: linkKey,
+                        localId,
+                        localLabel,
+                        localSubtitle,
+                        localKind,
+                        localProcess,
+                        localPid,
+                        localProtocol,
+                        localPort,
+                        localTone: strongerTraceyTone(traceyItemTone(data), flowTone),
+                        remoteId: remote.key,
+                        remoteLabel: remote.label,
+                        remoteIp: remote.ip,
+                        remotePort: remote.port,
+                        remoteMac: remote.mac,
+                        remoteSubtitle: traceyJoin([
+                            remote.subtitle,
+                            traceyText(flow && flow.remote_mac, "")
+                        ]),
+                    remoteTone: flowTone,
+                    currentBps: 0,
+                    forecastBps: 0,
+                    flowCount: 0,
+                    tone: flowTone,
+                    crossNetwork: false,
+                    sameLan: false,
+                    localHost: false
+                });
+            }
+            const entry = linksByKey.get(linkKey);
+            entry.currentBps += currentBps;
+            entry.forecastBps += forecastBps;
+            entry.flowCount += 1;
+            entry.crossNetwork = entry.crossNetwork || Boolean(flow && flow.cross_network);
+            entry.sameLan = entry.sameLan || Boolean(flow && flow.same_lan);
+            entry.localHost = entry.localHost || Boolean(flow && flow.local_host);
+            entry.localTone = strongerTraceyTone(entry.localTone, flowTone);
+            entry.remoteTone = strongerTraceyTone(entry.remoteTone, flowTone);
+            entry.tone = strongerTraceyTone(entry.tone, flowTone);
+        }
+
+        const allLinks = Array.from(linksByKey.values())
+            .sort((left, right) => traceyLinkMetric(right.currentBps, right.forecastBps, mode) - traceyLinkMetric(left.currentBps, left.forecastBps, mode));
+        const localMetrics = new Map();
+        const remoteMetrics = new Map();
+        for (const link of allLinks) {
+            const metric = traceyLinkMetric(link.currentBps, link.forecastBps, mode);
+            localMetrics.set(link.localId, (localMetrics.get(link.localId) || 0) + metric);
+            remoteMetrics.set(link.remoteId, (remoteMetrics.get(link.remoteId) || 0) + metric);
+        }
+        const visibleLocalKeys = new Set(
+            Array.from(localMetrics.entries())
+                .sort((left, right) => right[1] - left[1])
+                .slice(0, 6)
+                .map(([key]) => key)
+        );
+        const visibleRemoteKeys = new Set(
+            Array.from(remoteMetrics.entries())
+                .sort((left, right) => right[1] - left[1])
+                .slice(0, 7)
+                .map(([key]) => key)
+        );
+        const visibleLinks = allLinks
+            .filter((link) => visibleLocalKeys.has(link.localId) && visibleRemoteKeys.has(link.remoteId))
+            .slice(0, 18);
+        if (!visibleLinks.length && allLinks.length) {
+            visibleLinks.push(...allLinks.slice(0, 18));
+        }
+        const localNodes = new Map();
+        const remoteNodes = new Map();
+        for (const link of visibleLinks) {
+            if (!localNodes.has(link.localId)) {
+                localNodes.set(link.localId, {
+                    id: link.localId,
+                    label: link.localLabel,
+                    subtitle: link.localSubtitle,
+                    localKind: link.localKind,
+                    localProcess: link.localProcess,
+                    localPid: link.localPid,
+                    localProtocol: link.localProtocol,
+                    localPort: link.localPort,
+                    tone: link.localTone,
+                    currentBps: 0,
+                    forecastBps: 0,
+                    flowCount: 0
+                });
+            }
+            if (!remoteNodes.has(link.remoteId)) {
+                remoteNodes.set(link.remoteId, {
+                    id: link.remoteId,
+                    label: link.remoteLabel,
+                    subtitle: link.remoteSubtitle,
+                    remoteIp: traceyText(link.remoteIp, ""),
+                    remotePort: Math.max(0, parseNumber(link.remotePort, 0)),
+                    remoteMac: traceyText(link.remoteMac, ""),
+                    tone: link.remoteTone,
+                    currentBps: 0,
+                    forecastBps: 0,
+                    flowCount: 0
+                });
+            }
+            const localNode = localNodes.get(link.localId);
+            localNode.currentBps += link.currentBps;
+            localNode.forecastBps += link.forecastBps;
+            localNode.flowCount += link.flowCount;
+            const remoteNode = remoteNodes.get(link.remoteId);
+            remoteNode.currentBps += link.currentBps;
+            remoteNode.forecastBps += link.forecastBps;
+            remoteNode.flowCount += link.flowCount;
+        }
+
+        return {
+            forecastMode: mode,
+            localNodes: Array.from(localNodes.values()).sort((left, right) => traceyLinkMetric(right.currentBps, right.forecastBps, mode) - traceyLinkMetric(left.currentBps, left.forecastBps, mode)),
+            remoteNodes: Array.from(remoteNodes.values()).sort((left, right) => traceyLinkMetric(right.currentBps, right.forecastBps, mode) - traceyLinkMetric(left.currentBps, left.forecastBps, mode)),
+            links: visibleLinks,
+            stats: {
+                currentTotal: Math.max(0, parseNumber(summary.attributed_total_bps, 0)),
+                forecastTotal: mode === "current"
+                    ? Math.max(0, parseNumber(summary.attributed_total_bps, 0))
+                    : (mode === "projected_5m"
+                        ? Math.max(0, parseNumber(resourceForecast.projected_total_bps_5m, parseNumber(summary.attributed_total_bps, 0)))
+                        : (mode === "projected_15m"
+                            ? Math.max(0, parseNumber(resourceForecast.projected_total_bps_15m, parseNumber(summary.attributed_total_bps, 0)))
+                            : Math.max(0, parseNumber(simulation.estimated_network_bps, parseNumber(summary.attributed_total_bps, 0))))),
+                activeFlows: Math.max(0, parseNumber(summary.active_flows, 0)),
+                estimatedFlows: Math.max(0, parseNumber(summary.estimated_flows, 0)),
+                udpDrops: Math.max(0, parseNumber(summary.udp_drop_delta, 0)),
+                avgConfidence: parseNumber(summary.attribution_confidence, NaN),
+                hiddenLinks: Math.max(0, allLinks.length - visibleLinks.length),
+                hiddenLocalNodes: Math.max(0, allLocalKeys.size - localNodes.size),
+                hiddenRemoteNodes: Math.max(0, allRemoteKeys.size - remoteNodes.size),
+                backend: traceyText(summary.collector_backend, ""),
+                scaleMax: scale,
+                simulationFocus: traceyText(simulation.dominant_process, traceyText(simulation.dominant_remote_ip, ""))
+            }
+        };
+    }
+
+    function buildTraceyScopedTalkers(items, forecastMode, talkerMode, options = {}) {
+        const mode = normalizeTraceyTopologyForecastMode(forecastMode);
+        const normalizedTalkerMode = normalizeTraceyTalkerMode(talkerMode);
+        const talkers = new Map();
+        for (const item of Array.isArray(items) ? items : []) {
+            const network = extractTraceyNetworkPayload(item);
+            const scale = traceyForecastScale(item, mode);
+            const scopeLabel = traceyText(options.scopeLabel ? options.scopeLabel(item) : "", traceyText(item && (item.host || item.agent_id || item.rack), "node"));
+            if (normalizedTalkerMode === "applications") {
+                for (const process of Array.isArray(network.top_processes) ? network.top_processes : []) {
+                    const label = traceyText(process.name, traceyText(process.exe_path, "unknown"));
+                    const currentBps = Math.max(0, parseNumber(process.total_bps, 0));
+                    if (!label || currentBps <= 0) {
+                        continue;
+                    }
+                    const key = `app:${label.toLowerCase()}`;
+                    if (!talkers.has(key)) {
+                        talkers.set(key, {
+                            key,
+                            label,
+                            detail: "",
+                            tone: traceyProcessTone(process),
+                            currentBps: 0,
+                            forecastBps: 0,
+                            flowCount: 0,
+                            listenerCount: 0,
+                            scopeNodes: new Set(),
+                            remotes: new Set()
+                        });
+                    }
+                    const entry = talkers.get(key);
+                    entry.currentBps += currentBps;
+                    entry.forecastBps += currentBps * scale;
+                    entry.flowCount += Math.max(0, parseNumber(process.flow_count, 0));
+                    entry.listenerCount += Math.max(0, parseNumber(process.listener_count, 0));
+                    entry.scopeNodes.add(scopeLabel);
+                    if (traceyText(process.dominant_remote_ip, "")) {
+                        entry.remotes.add(traceyText(process.dominant_remote_ip, ""));
+                    }
+                    entry.tone = strongerTraceyTone(entry.tone, traceyProcessTone(process));
+                    entry.detail = traceyJoin([
+                        entry.remotes.size ? Array.from(entry.remotes.values()).slice(0, 2).join(", ") : "",
+                        process.cgroup ? `cg ${process.cgroup}` : ""
+                    ]);
+                }
+            } else {
+                for (const flow of Array.isArray(network.top_flows) ? network.top_flows : []) {
+                    const currentBps = traceyFlowCurrentBps(flow);
+                    if (currentBps <= 0) {
+                        continue;
+                    }
+                    const remote = traceyRemoteIdentity(flow, true);
+                    const key = normalizedTalkerMode === "ports"
+                        ? `port:${traceyPortLabel(flow.protocol, flow.local_port)}`
+                        : `remote:${remote.key}`;
+                    if (!talkers.has(key)) {
+                        talkers.set(key, {
+                            key,
+                            label: normalizedTalkerMode === "ports" ? traceyPortLabel(flow.protocol, flow.local_port) : remote.label,
+                            detail: "",
+                            tone: traceyFlowTone(flow),
+                            currentBps: 0,
+                            forecastBps: 0,
+                            flowCount: 0,
+                            listenerCount: 0,
+                            scopeNodes: new Set(),
+                            remotes: new Set(),
+                            processes: new Set()
+                        });
+                    }
+                    const entry = talkers.get(key);
+                    entry.currentBps += currentBps;
+                    entry.forecastBps += currentBps * scale;
+                    entry.flowCount += 1;
+                    entry.scopeNodes.add(scopeLabel);
+                    if (traceyText(flow.process, "")) {
+                        entry.processes.add(traceyText(flow.process, ""));
+                    }
+                    if (remote.label) {
+                        entry.remotes.add(remote.label);
+                    }
+                    entry.tone = strongerTraceyTone(entry.tone, traceyFlowTone(flow));
+                    entry.detail = normalizedTalkerMode === "ports"
+                        ? traceyJoin([
+                            entry.processes.size ? Array.from(entry.processes.values()).slice(0, 2).join(", ") : "",
+                            entry.remotes.size ? `${entry.remotes.size} remotes` : ""
+                        ])
+                        : traceyJoin([
+                            entry.processes.size ? Array.from(entry.processes.values()).slice(0, 2).join(", ") : "",
+                            remote.subtitle
+                        ]);
+                }
+            }
+        }
+
+        return Array.from(talkers.values())
+            .map((entry) => ({
+                ...entry,
+                scopeLabel: `${entry.scopeNodes.size} nodes • ${formatCount(entry.flowCount, "0")} flows`
+            }))
+            .sort((left, right) => traceyLinkMetric(right.currentBps, right.forecastBps, mode) - traceyLinkMetric(left.currentBps, left.forecastBps, mode));
+    }
+
+    function buildTraceyTopologyLegendEntries(dataset, forecastMode, extraEntries = []) {
+        const stats = dataset && dataset.stats ? dataset.stats : {};
+        const entries = [
+            { label: "Current", color: "#38bdf8", value: formatBytesRate(stats.currentTotal) },
+            { label: traceyTopologyForecastLabel(forecastMode), color: "#f59e0b", value: formatBytesRate(stats.forecastTotal) },
+            { label: "Active Flows", color: "#22c55e", value: formatCount(stats.activeFlows, "0") },
+            { label: "Estimated", color: "#06b6d4", value: formatCount(stats.estimatedFlows, "0") },
+            { label: "Confidence", color: "#94a3b8", value: formatRatioPercent(stats.avgConfidence, 0, "-") },
+            { label: "UDP Drops", color: "#ef4444", value: formatCount(stats.udpDrops, "0") }
+        ];
+        if (stats.backend) {
+            entries.push({ label: "Backend", color: "#94a3b8", value: stats.backend });
+        }
+        if (stats.hiddenLinks > 0 || stats.hiddenRemoteNodes > 0 || stats.hiddenLocalNodes > 0) {
+            entries.push({
+                label: "Hidden",
+                color: "#94a3b8",
+                value: `${formatCount(stats.hiddenLinks, "0")} links • ${formatCount(stats.hiddenRemoteNodes, "0")} remotes`
+            });
+        }
+        return entries.concat(extraEntries).slice(0, 7);
+    }
+
+    // The topology stays deterministic and light-weight by laying visible local and remote nodes in two columns.
+    function renderTraceyTopologySvg(svg, dataset, emptyMessage = "No network map available.", resolver = {}) {
+        if (!svg) {
+            return;
+        }
+        clearSvg(svg);
+        const width = 900;
+        const height = 280;
+        svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+        if (!dataset || !dataset.links.length || !dataset.localNodes.length || !dataset.remoteNodes.length) {
+            svg.appendChild(createSvgNode("text", {
+                x: width / 2,
+                y: height / 2,
+                "text-anchor": "middle",
+                class: "tracey-chart-empty"
+            })).textContent = emptyMessage;
+            return;
+        }
+
+        const localNodes = dataset.localNodes;
+        const remoteNodes = dataset.remoteNodes;
+        const visibleCount = Math.max(localNodes.length, remoteNodes.length);
+        const boxWidth = 210;
+        const boxHeight = Math.max(22, Math.min(48, ((height - 54) / Math.max(visibleCount, 1)) - 8));
+        const leftX = 40;
+        const rightX = width - boxWidth - 40;
+        const topY = 30;
+        const contentHeight = height - topY - 18;
+        const positionMap = new Map();
+
+        const assignPositions = (nodesToPlace, x) => {
+            const step = nodesToPlace.length > 1
+                ? (contentHeight - boxHeight) / (nodesToPlace.length - 1)
+                : 0;
+            nodesToPlace.forEach((node, index) => {
+                const y = nodesToPlace.length > 1
+                    ? topY + (step * index)
+                    : topY + ((contentHeight - boxHeight) / 2);
+                positionMap.set(node.id, { x, y });
+            });
+        };
+
+        assignPositions(localNodes, leftX);
+        assignPositions(remoteNodes, rightX);
+
+        svg.appendChild(createSvgNode("text", {
+            x: leftX,
+            y: 16,
+            class: "tracey-topology-caption"
+        })).textContent = "Observed";
+        svg.appendChild(createSvgNode("text", {
+            x: rightX + boxWidth,
+            y: 16,
+            "text-anchor": "end",
+            class: "tracey-topology-caption"
+        })).textContent = "Remote";
+
+        const maxMetric = Math.max(1, ...dataset.links.map((link) => traceyLinkMetric(link.currentBps, link.forecastBps, dataset.forecastMode)));
+        for (const link of dataset.links) {
+            const from = positionMap.get(link.localId);
+            const to = positionMap.get(link.remoteId);
+            if (!from || !to) {
+                continue;
+            }
+            const metric = traceyLinkMetric(link.currentBps, link.forecastBps, dataset.forecastMode);
+            const strokeWidth = 1.5 + (metric / maxMetric) * 6;
+            const colors = traceyToneColors(link.tone);
+            const interaction = typeof resolver.resolveLinkInteraction === "function"
+                ? resolver.resolveLinkInteraction(link)
+                : null;
+            const interactiveClass = interaction ? " is-interactive" : "";
+            const activeClass = typeof resolver.isLinkActive === "function" && resolver.isLinkActive(link) ? " is-active" : "";
+            const pathAttrs = {
+                d: `M${from.x + boxWidth},${from.y + boxHeight / 2} C ${from.x + boxWidth + 90},${from.y + boxHeight / 2} ${to.x - 90},${to.y + boxHeight / 2} ${to.x},${to.y + boxHeight / 2}`,
+                class: `tracey-topology-link${interactiveClass}${activeClass}`,
+                stroke: colors.stroke,
+                "stroke-width": strokeWidth
+            };
+            if (interaction) {
+                pathAttrs["data-tracey-topology-interaction"] = JSON.stringify(interaction);
+                pathAttrs.tabindex = 0;
+                pathAttrs.role = "button";
+                pathAttrs["focusable"] = "true";
+                pathAttrs["aria-label"] = traceyText(interaction.ariaLabel, `${link.localLabel} to ${link.remoteLabel}`);
+            }
+            const path = createSvgNode("path", pathAttrs);
+            path.appendChild(createSvgNode("title")).textContent = traceyJoin([
+                `${link.localLabel} -> ${link.remoteLabel}`,
+                `Now ${formatBytesRate(link.currentBps)}`,
+                `${traceyTopologyForecastLabel(dataset.forecastMode)} ${formatBytesRate(link.forecastBps)}`,
+                `${formatCount(link.flowCount, "0")} flows`,
+                link.localPorts.length ? `Local ${link.localPorts.join(", ")}` : "",
+                link.remotePorts.length ? `Remote ${link.remotePorts.join(", ")}` : ""
+            ], "\n");
+            svg.appendChild(path);
+        }
+
+        const drawNode = (node, side) => {
+            const position = positionMap.get(node.id);
+            if (!position) {
+                return;
+            }
+            const palette = traceyToneColors(node.tone);
+            const interaction = typeof resolver.resolveNodeInteraction === "function"
+                ? resolver.resolveNodeInteraction(node, side)
+                : null;
+            const interactiveClass = interaction ? " is-interactive" : "";
+            const activeClass = typeof resolver.isNodeActive === "function" && resolver.isNodeActive(node, side) ? " is-active" : "";
+            const groupAttrs = {
+                class: `tracey-topology-node tracey-topology-node-${side}${interactiveClass}${activeClass}`
+            };
+            if (interaction) {
+                groupAttrs["data-tracey-topology-interaction"] = JSON.stringify(interaction);
+                groupAttrs.tabindex = 0;
+                groupAttrs.role = "button";
+                groupAttrs["focusable"] = "true";
+                groupAttrs["aria-label"] = traceyText(interaction.ariaLabel, node.label);
+            }
+            const group = createSvgNode("g", groupAttrs);
+            const rect = createSvgNode("rect", {
+                x: position.x,
+                y: position.y,
+                width: boxWidth,
+                height: boxHeight,
+                rx: 12,
+                fill: palette.fill,
+                stroke: palette.stroke,
+                "stroke-width": 1.2
+            });
+            group.appendChild(rect);
+            const title = createSvgNode("title");
+            title.textContent = traceyJoin([
+                node.label,
+                node.subtitle,
+                `Now ${formatBytesRate(node.currentBps)}`,
+                `${traceyTopologyForecastLabel(dataset.forecastMode)} ${formatBytesRate(node.forecastBps)}`,
+                `${formatCount(node.flowCount, "0")} flows`
+            ], "\n");
+            group.appendChild(title);
+            const compactNode = boxHeight < 34;
+            const labelY = position.y + (compactNode ? (boxHeight / 2) + 4 : 17);
+            const label = createSvgNode("text", {
+                x: position.x + 12,
+                y: labelY,
+                class: "tracey-topology-label"
+            });
+            label.textContent = traceyTrimLabel(node.label, 26);
+            group.appendChild(label);
+            const metric = createSvgNode("text", {
+                x: position.x + boxWidth - 12,
+                y: labelY,
+                "text-anchor": "end",
+                class: "tracey-topology-metric"
+            });
+            metric.textContent = traceyTrimLabel(formatBytesRate(traceyLinkMetric(node.currentBps, node.forecastBps, dataset.forecastMode)), 16);
+            group.appendChild(metric);
+            if (!compactNode) {
+                const subtitle = createSvgNode("text", {
+                    x: position.x + 12,
+                    y: position.y + boxHeight - 10,
+                    class: "tracey-topology-subtitle"
+                });
+                subtitle.textContent = traceyTrimLabel(node.subtitle || `${formatCount(node.flowCount, "0")} flows`, 30);
+                group.appendChild(subtitle);
+            }
+            svg.appendChild(group);
+        };
+
+        localNodes.forEach((node) => {
+            drawNode(node, "local");
+        });
+        remoteNodes.forEach((node) => {
+            drawNode(node, "remote");
+        });
+    }
+
+    function renderTraceyTalkerTable(tbody, talkers, forecastMode, emptyMessage) {
+        const rows = Array.isArray(talkers) ? talkers.slice(0, 12).map((talker) => {
+            const forecastLabel = traceyTopologyForecastLabel(forecastMode);
+            const scaleRatio = talker.currentBps > 0 ? talker.forecastBps / talker.currentBps : 1;
+            return `<tr><td><div class="tracey-cell-stack ${escapeHtml(talker.tone)}"><strong>${escapeHtml(talker.label)}</strong><div class="empty">${escapeHtml(talker.detail || "No detail")}</div></div></td><td>${escapeHtml(talker.scopeLabel)}</td><td><div class="tracey-cell-stack"><strong>${escapeHtml(formatBytesRate(talker.currentBps))}</strong><div class="empty">${escapeHtml(`${formatCount(talker.flowCount, "0")} flows`)}</div></div></td><td><div class="tracey-cell-stack"><strong>${escapeHtml(`${forecastLabel} ${formatBytesRate(talker.forecastBps)}`)}</strong><div class="empty">${escapeHtml(`x${formatFixed(scaleRatio, 2, "1.00")}`)}</div></div></td></tr>`;
+        }) : [];
+        renderRows(tbody, rows, emptyMessage, 4);
+    }
+
+    function renderTraceyTalkerBars(node, talkers, forecastMode, emptyMessage) {
+        if (!node) {
+            return;
+        }
+        const visibleTalkers = Array.isArray(talkers) ? talkers.slice(0, 8) : [];
+        if (!visibleTalkers.length) {
+            node.innerHTML = `<p class="empty">${escapeHtml(emptyMessage)}</p>`;
+            return;
+        }
+        const maxMetric = Math.max(1, ...visibleTalkers.map((talker) => Math.max(talker.currentBps, talker.forecastBps)));
+        const forecastLabel = traceyTopologyForecastLabel(forecastMode);
+        node.innerHTML = visibleTalkers.map((talker) => {
+            const currentWidth = Math.max(4, (talker.currentBps / maxMetric) * 100);
+            const forecastWidth = Math.max(4, (talker.forecastBps / maxMetric) * 100);
+            return `<div class="tracey-talker-row ${escapeHtml(talker.tone)}"><div class="tracey-talker-copy"><strong>${escapeHtml(talker.label)}</strong><span>${escapeHtml(talker.detail || talker.scopeLabel)}</span></div><div class="tracey-talker-meters"><div class="tracey-talker-meter"><span class="tracey-talker-fill tracey-talker-fill-current" style="width:${escapeHtml(formatFixed(currentWidth, 1, "0"))}%"></span></div><div class="tracey-talker-meter tracey-talker-meter-forecast"><span class="tracey-talker-fill tracey-talker-fill-forecast" style="width:${escapeHtml(formatFixed(forecastWidth, 1, "0"))}%"></span></div></div><div class="tracey-talker-values"><span>Now ${escapeHtml(formatBytesRate(talker.currentBps))}</span><strong>${escapeHtml(`${forecastLabel} ${formatBytesRate(talker.forecastBps)}`)}</strong></div></div>`;
+        }).join("");
+    }
+
+    function renderTraceyNetworkTimeline(svg, legendNode, rows, seriesDefs, legendEntries) {
+        renderLineChart(svg, Array.isArray(rows) ? rows : [], seriesDefs);
+        renderLegend(legendNode, legendEntries);
+    }
+
+    function traceyTextEquals(left, right) {
+        return traceyText(left, "").toLowerCase() === traceyText(right, "").toLowerCase();
+    }
+
+    function buildTraceyServerTopologyFocus(spec = {}) {
+        const pid = Math.max(0, Math.round(parseNumber(spec.pid, 0)));
+        const localPort = Math.max(0, Math.round(parseNumber(spec.localPort, 0)));
+        const remotePort = Math.max(0, Math.round(parseNumber(spec.remotePort, 0)));
+        const process = traceyText(spec.process, "");
+        const protocol = traceyText(spec.protocol, "").toLowerCase();
+        const remoteIp = traceyText(spec.remoteIp, "");
+        const kind = traceyText(spec.kind, "");
+        if (!kind && pid <= 0 && !process && localPort <= 0 && !remoteIp) {
+            return null;
+        }
+        return {
+            kind: kind || (remoteIp ? "remote" : (localPort > 0 ? "port" : "process")),
+            label: traceyText(spec.label, "Network focus"),
+            subtitle: traceyText(spec.subtitle, ""),
+            process,
+            pid,
+            localPort,
+            protocol,
+            remoteIp,
+            remotePort,
+            activeLocalId: traceyText(spec.activeLocalId, ""),
+            activeRemoteId: traceyText(spec.activeRemoteId, ""),
+            activeLinkId: traceyText(spec.activeLinkId, "")
+        };
+    }
+
+    function traceyServerTopologyFocusKey(focus) {
+        if (!focus) {
+            return "";
+        }
+        return [
+            traceyText(focus.kind, ""),
+            Math.max(0, parseNumber(focus.pid, 0)),
+            traceyText(focus.process, "").toLowerCase(),
+            Math.max(0, parseNumber(focus.localPort, 0)),
+            traceyText(focus.protocol, "").toLowerCase(),
+            traceyText(focus.remoteIp, "").toLowerCase(),
+            Math.max(0, parseNumber(focus.remotePort, 0)),
+            traceyText(focus.activeLocalId, ""),
+            traceyText(focus.activeRemoteId, ""),
+            traceyText(focus.activeLinkId, "")
+        ].join("|");
+    }
+
+    function sameTraceyServerTopologyFocus(left, right) {
+        return traceyServerTopologyFocusKey(left) === traceyServerTopologyFocusKey(right);
+    }
+
+    function renderTraceyServerTopologyFocusBar(focus, summary = null) {
+        if (!nodes.traceyServerTopologyFocus) {
+            return;
+        }
+        if (!focus) {
+            nodes.traceyServerTopologyFocus.innerHTML = `<span class="empty">Click topology nodes or links to select racks, servers, or filter network tables.</span>`;
+            if (nodes.traceyServerTopologyClear) {
+                nodes.traceyServerTopologyClear.disabled = true;
+            }
+            return;
+        }
+        const summaryParts = summary && typeof summary === "object"
+            ? [
+                `${formatCount(summary.flowCount, "0")} flows`,
+                `${formatCount(summary.listenerCount, "0")} listeners`,
+                `${formatCount(summary.processCount, "0")} mappings`
+            ]
+            : [];
+        nodes.traceyServerTopologyFocus.innerHTML = `<strong>${escapeHtml(focus.label)}</strong><span>${escapeHtml(traceyJoin([
+            focus.subtitle,
+            summaryParts.join(" • ")
+        ]))}</span>`;
+        if (nodes.traceyServerTopologyClear) {
+            nodes.traceyServerTopologyClear.disabled = false;
+        }
+    }
+
+    function clearTraceyServerTopologyFocus(options = {}) {
+        traceyState.serverTopologyFocus = null;
+        if (options.rerender === false) {
+            renderTraceyServerTopologyFocusBar(null);
+            syncTraceyUrlState();
+            return;
+        }
+        if (traceyState.selectedServerTelemetry) {
+            renderTraceyServerTelemetry(traceyState.selectedServerTelemetry);
+        } else {
+            renderTraceyServerTopologyFocusBar(null);
+        }
+        syncTraceyUrlState();
+    }
+
+    function setTraceyServerTopologyFocus(focus, options = {}) {
+        const normalized = buildTraceyServerTopologyFocus(focus);
+        if (!normalized) {
+            clearTraceyServerTopologyFocus(options);
+            return;
+        }
+        const toggle = options.toggle !== false;
+        if (toggle && sameTraceyServerTopologyFocus(traceyState.serverTopologyFocus, normalized)) {
+            clearTraceyServerTopologyFocus(options);
+            return;
+        }
+        traceyState.serverTopologyFocus = normalized;
+        if (options.rerender === false) {
+            renderTraceyServerTopologyFocusBar(normalized);
+            syncTraceyUrlState();
+            return;
+        }
+        if (traceyState.selectedServerTelemetry) {
+            renderTraceyServerTelemetry(traceyState.selectedServerTelemetry);
+        } else {
+            renderTraceyServerTopologyFocusBar(normalized);
+        }
+        syncTraceyUrlState();
+    }
+
+    function flowMatchesTraceyServerTopologyFocus(flow, focus) {
+        if (!focus) {
+            return true;
+        }
+        if (focus.pid > 0 && Math.round(parseNumber(flow && flow.pid, 0)) !== focus.pid) {
+            return false;
+        }
+        if (focus.process && !traceyTextEquals(flow && flow.process, focus.process)) {
+            return false;
+        }
+        if (focus.localPort > 0 && Math.round(parseNumber(flow && flow.local_port, 0)) !== focus.localPort) {
+            return false;
+        }
+        if (focus.protocol && !traceyTextEquals(flow && flow.protocol, focus.protocol)) {
+            return false;
+        }
+        if (focus.remoteIp && !traceyTextEquals(flow && flow.remote_ip, focus.remoteIp)) {
+            return false;
+        }
+        if (focus.remotePort > 0 && Math.round(parseNumber(flow && flow.remote_port, 0)) !== focus.remotePort) {
+            return false;
+        }
+        return true;
+    }
+
+    function listenerMatchesTraceyServerTopologyFocus(listener, focus) {
+        if (!focus) {
+            return true;
+        }
+        if (focus.remoteIp && focus.pid <= 0 && !focus.process && focus.localPort <= 0) {
+            return false;
+        }
+        if (focus.pid > 0 && Math.round(parseNumber(listener && listener.pid, 0)) !== focus.pid) {
+            return false;
+        }
+        if (focus.process && !traceyTextEquals(listener && listener.process, focus.process)) {
+            return false;
+        }
+        if (focus.localPort > 0 && Math.round(parseNumber(listener && listener.local_port, 0)) !== focus.localPort) {
+            return false;
+        }
+        if (focus.protocol && !traceyTextEquals(listener && listener.protocol, focus.protocol)) {
+            return false;
+        }
+        return true;
+    }
+
+    function processMatchesTraceyServerTopologyFocus(process, focus, matchingFlowPids) {
+        if (!focus) {
+            return true;
+        }
+        const pid = Math.round(parseNumber(process && process.pid, 0));
+        if (focus.pid > 0 && pid !== focus.pid) {
+            return false;
+        }
+        if (focus.process && !traceyTextEquals(process && process.name, focus.process)) {
+            return false;
+        }
+        if (focus.localPort > 0) {
+            const localPorts = Array.isArray(process && process.local_ports) ? process.local_ports : [];
+            const hasLocalPort = localPorts.some((port) => Math.round(parseNumber(port, 0)) === focus.localPort);
+            if (!hasLocalPort) {
+                return false;
+            }
+        }
+        if (focus.remoteIp) {
+            if (matchingFlowPids && matchingFlowPids.size > 0) {
+                return matchingFlowPids.has(pid);
+            }
+            return traceyTextEquals(process && process.dominant_remote_ip, focus.remoteIp);
+        }
+        return true;
+    }
+
+    function traceyServerTopologyEmptyMessage(focus, subject, fallback) {
+        if (!focus) {
+            return fallback;
+        }
+        return `No ${subject} match ${traceyText(focus.label, "the active topology focus")}.`;
+    }
+
+    function buildTraceyServerFocusFromLocalNode(node) {
+        const localKind = traceyText(node && node.localKind, "server");
+        if (localKind === "process") {
+            return buildTraceyServerTopologyFocus({
+                kind: "process",
+                label: `Application • ${traceyText(node && node.label, "unknown")}`,
+                subtitle: traceyText(node && node.subtitle, ""),
+                pid: parseNumber(node && node.localPid, 0),
+                process: traceyText(node && (node.localProcess || node.label), ""),
+                activeLocalId: traceyText(node && node.id, "")
+            });
+        }
+        if (localKind === "port") {
+            return buildTraceyServerTopologyFocus({
+                kind: "port",
+                label: `Port • ${traceyText(node && node.label, "port")}`,
+                subtitle: traceyText(node && node.subtitle, ""),
+                localPort: parseNumber(node && node.localPort, 0),
+                protocol: traceyText(node && node.localProtocol, ""),
+                process: traceyText(node && node.localProcess, ""),
+                activeLocalId: traceyText(node && node.id, "")
+            });
+        }
+        return null;
+    }
+
+    function buildTraceyServerFocusFromRemoteNode(node) {
+        return buildTraceyServerTopologyFocus({
+            kind: "remote",
+            label: `Remote • ${traceyText(node && node.label, "endpoint")}`,
+            subtitle: traceyText(node && node.subtitle, ""),
+            remoteIp: traceyText(node && node.remoteIp, traceyText(node && node.label, "")),
+            remotePort: parseNumber(node && node.remotePort, 0),
+            activeRemoteId: traceyText(node && node.id, "")
+        });
+    }
+
+    function buildTraceyServerFocusFromLink(link) {
+        return buildTraceyServerTopologyFocus({
+            kind: "link",
+            label: `Path • ${traceyText(link && link.localLabel, "local")} -> ${traceyText(link && link.remoteLabel, "remote")}`,
+            subtitle: traceyJoin([
+                `${formatCount(link && link.flowCount, "0")} flows`,
+                `now ${formatBytesRate(link && link.currentBps)}`
+            ]),
+            pid: traceyText(link && link.localKind, "") === "process" ? parseNumber(link && link.localPid, 0) : 0,
+            process: traceyText(link && link.localKind, "") === "process"
+                ? traceyText(link && (link.localProcess || link.localLabel), "")
+                : "",
+            localPort: parseNumber(link && link.localPort, 0),
+            protocol: traceyText(link && link.localProtocol, ""),
+            remoteIp: traceyText(link && link.remoteIp, ""),
+            remotePort: parseNumber(link && link.remotePort, 0),
+            activeLocalId: traceyText(link && link.localId, ""),
+            activeRemoteId: traceyText(link && link.remoteId, ""),
+            activeLinkId: traceyText(link && link.id, "")
+        });
+    }
+
+    function traceyServerTopologyNodeIsActive(node, side) {
+        const focus = traceyState.serverTopologyFocus;
+        if (!focus) {
+            return false;
+        }
+        if (side === "remote") {
+            return focus.activeRemoteId && focus.activeRemoteId === traceyText(node && node.id, "");
+        }
+        return focus.activeLocalId && focus.activeLocalId === traceyText(node && node.id, "");
+    }
+
+    function traceyServerTopologyLinkIsActive(link) {
+        const focus = traceyState.serverTopologyFocus;
+        return Boolean(focus && focus.activeLinkId && focus.activeLinkId === traceyText(link && link.id, ""));
+    }
+
+    function parseTraceyTopologyInteractionEventTarget(target) {
+        if (!target || typeof target.closest !== "function") {
+            return null;
+        }
+        const trigger = target.closest("[data-tracey-topology-interaction]");
+        if (!trigger) {
+            return null;
+        }
+        try {
+            const raw = String(trigger.getAttribute("data-tracey-topology-interaction") || "").trim();
+            return raw ? JSON.parse(raw) : null;
+        } catch (_error) {
+            return null;
+        }
+    }
+
+    function findBestTraceyFlowMatch(items, focus, predicate = null) {
+        let best = null;
+        for (const item of Array.isArray(items) ? items : []) {
+            if (predicate && !predicate(item)) {
+                continue;
+            }
+            const flows = Array.isArray(extractTraceyNetworkPayload(item).top_flows)
+                ? extractTraceyNetworkPayload(item).top_flows
+                : [];
+            for (const flow of flows) {
+                if (!flowMatchesTraceyServerTopologyFocus(flow, focus)) {
+                    continue;
+                }
+                const score = traceyFlowCurrentBps(flow);
+                if (!best || score > best.score) {
+                    best = { item, flow, score };
+                }
+            }
+        }
+        return best;
+    }
+
+    async function handleTraceyTopologyInteraction(interaction) {
+        if (!interaction || typeof interaction !== "object") {
+            return;
+        }
+        const scope = traceyText(interaction.scope, "");
+        const type = traceyText(interaction.type, "");
+        if (scope === "fleet") {
+            if (type === "rack" && interaction.rackId) {
+                clearTraceyServerTopologyFocus({ rerender: false });
+                await fetchTraceyRackDetail(interaction.rackId);
+                return;
+            }
+            const remoteFocus = buildTraceyServerTopologyFocus({
+                kind: "remote",
+                label: `Remote • ${traceyText(interaction.remoteLabel, "endpoint")}`,
+                subtitle: traceyText(interaction.remoteSubtitle, ""),
+                remoteIp: traceyText(interaction.remoteIp, ""),
+                remotePort: parseNumber(interaction.remotePort, 0)
+            });
+            const bestMatch = findBestTraceyFlowMatch(
+                traceyState.fleet && Array.isArray(traceyState.fleet.agents) ? traceyState.fleet.agents : [],
+                remoteFocus,
+                (item) => {
+                    if (type === "link" && interaction.rackId) {
+                        return traceyTextEquals(item && item.rack, interaction.rackId);
+                    }
+                    return true;
+                }
+            );
+            if (bestMatch && bestMatch.item && bestMatch.item.agent_id) {
+                await selectTraceyAgent(bestMatch.item.agent_id);
+                setTraceyServerTopologyFocus(remoteFocus);
+            }
+            return;
+        }
+        if (scope === "rack") {
+            if (type === "server" && interaction.agentId) {
+                clearTraceyServerTopologyFocus({ rerender: false });
+                await selectTraceyAgent(interaction.agentId);
+                return;
+            }
+            const remoteFocus = buildTraceyServerTopologyFocus({
+                kind: "remote",
+                label: `Remote • ${traceyText(interaction.remoteLabel, "endpoint")}`,
+                subtitle: traceyText(interaction.remoteSubtitle, ""),
+                remoteIp: traceyText(interaction.remoteIp, ""),
+                remotePort: parseNumber(interaction.remotePort, 0)
+            });
+            const servers = traceyState.selectedRackDetail && Array.isArray(traceyState.selectedRackDetail.servers)
+                ? traceyState.selectedRackDetail.servers
+                : [];
+            const bestMatch = findBestTraceyFlowMatch(
+                servers,
+                remoteFocus,
+                (item) => {
+                    if (type === "link" && interaction.agentId) {
+                        return traceyTextEquals(item && item.agent_id, interaction.agentId);
+                    }
+                    return true;
+                }
+            );
+            const targetAgentId = bestMatch && bestMatch.item
+                ? traceyText(bestMatch.item.agent_id, "")
+                : traceyText(interaction.agentId, "");
+            if (targetAgentId) {
+                await selectTraceyAgent(targetAgentId);
+                setTraceyServerTopologyFocus(remoteFocus);
+            }
+            return;
+        }
+        if (scope === "server") {
+            if (type === "clear") {
+                clearTraceyServerTopologyFocus();
+                return;
+            }
+            if (type === "local_node") {
+                setTraceyServerTopologyFocus(buildTraceyServerFocusFromLocalNode(interaction.node || {}));
+                return;
+            }
+            if (type === "remote_node") {
+                setTraceyServerTopologyFocus(buildTraceyServerFocusFromRemoteNode(interaction.node || {}));
+                return;
+            }
+            if (type === "link") {
+                setTraceyServerTopologyFocus(buildTraceyServerFocusFromLink(interaction.link || {}));
+            }
+        }
+    }
+
+    // Delegate events from the SVG root so rerendered nodes and links remain interactive.
+    function bindTraceyTopologyInteractions(node) {
+        if (!node) {
+            return;
+        }
+        const invokeInteraction = (event) => {
+            const interaction = parseTraceyTopologyInteractionEventTarget(event.target);
+            if (!interaction) {
+                return;
+            }
+            event.preventDefault();
+            void handleTraceyTopologyInteraction(interaction);
+        };
+        node.addEventListener("click", invokeInteraction);
+        node.addEventListener("keydown", (event) => {
+            if (event.key !== "Enter" && event.key !== " " && event.key !== "Spacebar") {
+                return;
+            }
+            invokeInteraction(event);
+        });
+    }
+
+    function renderTraceyFleetNetworkSection(data) {
+        const items = Array.isArray(data && data.agents) ? data.agents : [];
+        const forecastMode = readTraceyTopologyForecast(nodes.traceyFleetTopologyForecast);
+        const talkerMode = readTraceyTalkerMode(nodes.traceyFleetTalkerMode);
+        const dataset = buildTraceyScopedTopology(items, forecastMode, {
+            localKey: (item) => traceyText(item && item.rack, "unassigned"),
+            localLabel: (item) => traceyText(item && item.rack, "unassigned"),
+            localSubtitle: (item) => traceyText(item && item.zone, "unassigned"),
+            localTone: (item) => traceyItemTone(item),
+            maxLinks: 18,
+            maxNodesPerSide: 6
+        });
+        renderTraceyTopologySvg(nodes.traceyFleetTopologyChart, dataset, "No fleet network map available.", {
+            resolveNodeInteraction: (node, side) => {
+                if (side === "local") {
+                    return {
+                        scope: "fleet",
+                        type: "rack",
+                        rackId: traceyText(node && node.id, ""),
+                        ariaLabel: `Open rack ${traceyText(node && node.label, "rack")}`
+                    };
+                }
+                return {
+                    scope: "fleet",
+                    type: "remote",
+                    remoteIp: traceyText(node && node.remoteIp, ""),
+                    remotePort: parseNumber(node && node.remotePort, 0),
+                    remoteLabel: traceyText(node && node.label, ""),
+                    remoteSubtitle: traceyText(node && node.subtitle, ""),
+                    ariaLabel: `Select busiest server for remote ${traceyText(node && node.label, "endpoint")}`
+                };
+            },
+            resolveLinkInteraction: (link) => ({
+                scope: "fleet",
+                type: "link",
+                rackId: traceyText(link && link.localId, ""),
+                remoteIp: traceyText(link && link.remoteIp, ""),
+                remotePort: parseNumber(link && link.remotePort, 0),
+                remoteLabel: traceyText(link && link.remoteLabel, ""),
+                remoteSubtitle: traceyText(link && link.remoteSubtitle, ""),
+                ariaLabel: `Open rack ${traceyText(link && link.localLabel, "rack")} and filter remote ${traceyText(link && link.remoteLabel, "endpoint")}`
+            })
+        });
+        renderLegend(nodes.traceyFleetTopologyLegend, buildTraceyTopologyLegendEntries(dataset, forecastMode));
+        renderTraceyTalkerTable(
+            nodes.traceyFleetTalkerRows,
+            buildTraceyScopedTalkers(items, forecastMode, talkerMode, {
+                scopeLabel: (item) => traceyText(item && (item.host || item.agent_id), "agent")
+            }),
+            forecastMode,
+            "No fleet talkers visible in the current telemetry window."
+        );
+    }
+
+    function renderTraceyRackNetworkSection(detail) {
+        const items = Array.isArray(detail && detail.servers) ? detail.servers : [];
+        const forecastMode = readTraceyTopologyForecast(nodes.traceyRackTopologyForecast);
+        const talkerMode = readTraceyTalkerMode(nodes.traceyRackTalkerMode);
+        const dataset = buildTraceyScopedTopology(items, forecastMode, {
+            localKey: (item) => traceyText(item && (item.agent_id || item.host), "server"),
+            localLabel: (item) => traceyText(item && (item.host || item.agent_id), "server"),
+            localSubtitle: (item) => traceyJoin([
+                traceyText(item && item.status, ""),
+                traceyText(item && item.agent_id, "")
+            ]),
+            localTone: (item) => traceyItemTone(item),
+            maxLinks: 20,
+            maxNodesPerSide: 7
+        });
+        renderTraceyTopologySvg(nodes.traceyRackTopologyChart, dataset, "Select a rack to load its network map.", {
+            resolveNodeInteraction: (node, side) => {
+                if (side === "local") {
+                    return {
+                        scope: "rack",
+                        type: "server",
+                        agentId: traceyText(node && node.id, ""),
+                        ariaLabel: `Open server ${traceyText(node && node.label, "server")}`
+                    };
+                }
+                return {
+                    scope: "rack",
+                    type: "remote",
+                    remoteIp: traceyText(node && node.remoteIp, ""),
+                    remotePort: parseNumber(node && node.remotePort, 0),
+                    remoteLabel: traceyText(node && node.label, ""),
+                    remoteSubtitle: traceyText(node && node.subtitle, ""),
+                    ariaLabel: `Select busiest server for remote ${traceyText(node && node.label, "endpoint")}`
+                };
+            },
+            resolveLinkInteraction: (link) => ({
+                scope: "rack",
+                type: "link",
+                agentId: traceyText(link && link.localId, ""),
+                remoteIp: traceyText(link && link.remoteIp, ""),
+                remotePort: parseNumber(link && link.remotePort, 0),
+                remoteLabel: traceyText(link && link.remoteLabel, ""),
+                remoteSubtitle: traceyText(link && link.remoteSubtitle, ""),
+                ariaLabel: `Open server ${traceyText(link && link.localLabel, "server")} and filter remote ${traceyText(link && link.remoteLabel, "endpoint")}`
+            })
+        });
+        renderLegend(nodes.traceyRackTopologyLegend, buildTraceyTopologyLegendEntries(dataset, forecastMode));
+        renderTraceyTalkerTable(
+            nodes.traceyRackTalkerRows,
+            buildTraceyScopedTalkers(items, forecastMode, talkerMode, {
+                scopeLabel: (item) => traceyText(item && (item.host || item.agent_id), "server")
+            }),
+            forecastMode,
+            "No rack talkers visible in the current telemetry window."
+        );
+    }
+
+    function renderTraceyServerNetworkSection(data) {
+        const forecastMode = readTraceyTopologyForecast(nodes.traceyServerTopologyForecast);
+        const talkerMode = readTraceyTalkerMode(nodes.traceyServerTalkerMode);
+        const dataset = buildTraceyServerTopology(data, forecastMode, talkerMode);
+        const extraLegendEntries = [];
+        if (dataset && dataset.stats && dataset.stats.simulationFocus) {
+            extraLegendEntries.push({
+                label: "Sim Focus",
+                color: "#06b6d4",
+                value: traceyTrimLabel(dataset.stats.simulationFocus, 18)
+            });
+        }
+        renderTraceyTopologySvg(nodes.traceyServerTopologyChart, dataset, "No server topology is available for the selected talker mode.", {
+            resolveNodeInteraction: (node, side) => {
+                if (side === "remote") {
+                    return {
+                        scope: "server",
+                        type: "remote_node",
+                        node,
+                        ariaLabel: `Filter server tables by remote ${traceyText(node && node.label, "endpoint")}`
+                    };
+                }
+                return {
+                    scope: "server",
+                    type: buildTraceyServerFocusFromLocalNode(node) ? "local_node" : "clear",
+                    node,
+                    ariaLabel: buildTraceyServerFocusFromLocalNode(node)
+                        ? `Filter server tables by ${traceyText(node && node.label, "local node")}`
+                        : "Clear server network focus"
+                };
+            },
+            resolveLinkInteraction: (link) => ({
+                scope: "server",
+                type: "link",
+                link,
+                ariaLabel: `Filter server tables by path ${traceyText(link && link.localLabel, "local")} to ${traceyText(link && link.remoteLabel, "remote")}`
+            }),
+            isNodeActive: (node, side) => traceyServerTopologyNodeIsActive(node, side),
+            isLinkActive: (link) => traceyServerTopologyLinkIsActive(link)
+        });
+        renderLegend(nodes.traceyServerTopologyLegend, buildTraceyTopologyLegendEntries(dataset, forecastMode, extraLegendEntries));
+        renderTraceyTalkerBars(
+            nodes.traceyServerTalkerBars,
+            buildTraceyScopedTalkers([data], forecastMode, talkerMode, {
+                scopeLabel: () => traceyText(data && (data.host || data.agent_id), "server")
+            }),
+            forecastMode,
+            "No server talkers available for the current filters."
+        );
+    }
+
     function renderTraceyAnalyticsOverview(data) {
         if (!data) {
             renderRows(nodes.traceyAnalyticsAgentRows, [], "No Tracey analytics data available.", 6);
             renderLineChart(nodes.traceyStatusChart, [], []);
+            renderLineChart(nodes.traceyNetworkChart, [], []);
             renderLineChart(nodes.traceyLogChart, [], []);
             renderLegend(nodes.traceyStatusLegend, []);
+            renderLegend(nodes.traceyNetworkLegend, []);
             renderLegend(nodes.traceyLogLegend, []);
             return;
         }
@@ -1735,6 +3487,21 @@
             { label: "Degraded", color: "#f59e0b", value: parseNumber(latestStatus.degraded, 0) },
             { label: "Offline", color: "#ef4444", value: parseNumber(latestStatus.offline, 0) },
             { label: "Sampled Agents", color: "#94a3b8", value: parseNumber(latestStatus.sampled_agents, 0) }
+        ]);
+
+        const latestNetwork = timeline.length ? timeline[timeline.length - 1] : {};
+        renderTraceyNetworkTimeline(nodes.traceyNetworkChart, nodes.traceyNetworkLegend, timeline, [
+            { key: "network_attributed_total_bps", color: "#38bdf8" },
+            { key: "network_cross_network_bps", color: "#22c55e" },
+            { key: "network_projected_total_bps_15m", color: "#f59e0b" },
+            { key: "network_projected_cross_network_bps_15m", color: "#ef4444" }
+        ], [
+            { label: "Attributed", color: "#38bdf8", value: formatBytesRate(latestNetwork.network_attributed_total_bps) },
+            { label: "Cross", color: "#22c55e", value: formatBytesRate(latestNetwork.network_cross_network_bps) },
+            { label: "15m", color: "#f59e0b", value: formatBytesRate(latestNetwork.network_projected_total_bps_15m) },
+            { label: "Flows", color: "#06b6d4", value: formatCount(latestNetwork.network_active_flows, "0") },
+            { label: "Confidence", color: "#94a3b8", value: formatRatioPercent(latestNetwork.avg_network_attribution_confidence, 0, "-") },
+            { label: "UDP Drops", color: "#ef4444", value: formatCount(latestNetwork.network_udp_drop_delta, "0") }
         ]);
 
         renderLineChart(nodes.traceyLogChart, timeline, [
@@ -1879,7 +3646,9 @@
         if (!analysis || typeof analysis !== "object") {
             renderTraceyAgentFacts(null);
             renderLineChart(nodes.traceyAgentStatusChart, [], []);
+            renderLineChart(nodes.traceyAgentNetworkChart, [], []);
             renderLegend(nodes.traceyAgentStatusLegend, []);
+            renderLegend(nodes.traceyAgentNetworkLegend, []);
             renderRows(nodes.traceyAgentLogRows, [], "No agent selected.", 4);
             if (nodes.traceyAgentDrilldownTitle) {
                 nodes.traceyAgentDrilldownTitle.textContent = "Agent Drilldown";
@@ -1914,6 +3683,19 @@
             { label: "Offline", color: "#ef4444", value: parseNumber(latest.offline, 0) },
             { label: "Avg Query Failures", color: "#94a3b8", value: parseNumber(latest.avg_query_failures, 0).toFixed(2) },
             { label: "Avg Tracey Failures", color: "#c2410c", value: parseNumber(latest.avg_tracey_guard_failures, 0).toFixed(2) }
+        ]);
+        renderTraceyNetworkTimeline(nodes.traceyAgentNetworkChart, nodes.traceyAgentNetworkLegend, series, [
+            { key: "avg_network_attributed_total_bps", color: "#38bdf8" },
+            { key: "avg_network_cross_network_bps", color: "#22c55e" },
+            { key: "avg_projected_total_bps_15m", color: "#f59e0b" },
+            { key: "avg_projected_cross_network_bps_15m", color: "#ef4444" }
+        ], [
+            { label: "Attributed", color: "#38bdf8", value: formatBytesRate(latest.avg_network_attributed_total_bps) },
+            { label: "Cross", color: "#22c55e", value: formatBytesRate(latest.avg_network_cross_network_bps) },
+            { label: "15m", color: "#f59e0b", value: formatBytesRate(latest.avg_projected_total_bps_15m) },
+            { label: "Flows", color: "#06b6d4", value: formatCount(latest.avg_network_active_flows, "0") },
+            { label: "Confidence", color: "#94a3b8", value: formatRatioPercent(latest.avg_network_attribution_confidence, 0, "-") },
+            { label: "UDP Drops", color: "#ef4444", value: formatCount(latest.avg_network_udp_drop_delta, "0") }
         ]);
         renderTraceyAgentFacts(analysis);
         traceyState.selectedAgentLogs = Array.isArray(analysis.logs) ? analysis.logs : [];
@@ -2246,6 +4028,7 @@
                 }).join("");
             }
         }
+        renderTraceyFleetNetworkSection(fleetData);
         renderTraceyFleetAssessmentRows();
         updateTraceyInsightsSubtitle();
     }
@@ -2262,6 +4045,7 @@
             if (nodes.traceyRackGpuHeatmap) {
                 nodes.traceyRackGpuHeatmap.innerHTML = `<p class="empty">Select a rack to load its GPU slot map.</p>`;
             }
+            renderTraceyRackNetworkSection(null);
             renderRows(nodes.traceyRackServerRows, [], "Select a rack to inspect its servers.", 8);
             return;
         }
@@ -2345,6 +4129,7 @@
             servers.length ? "No servers match current assessment filters." : "No servers reported for this rack.",
             8
         );
+        renderTraceyRackNetworkSection(detail);
     }
 
     function renderTraceyServerTelemetry(data) {
@@ -2365,10 +4150,12 @@
             renderMetricList(nodes.traceyServerForecastFacts, [], "No growth forecast loaded.");
             renderMetricList(nodes.traceyServerForecastAdvice, [], "No AI advisory available.");
             renderMetricList(nodes.traceyServerGuardFacts, [], "No TraceyGuard summary loaded.");
+            renderTraceyServerTopologyFocusBar(null);
             renderRows(nodes.traceyServerFlowRows, [], "No attributed flows loaded.", 5);
             renderRows(nodes.traceyServerListenerRows, [], "No listeners loaded.", 5);
             renderRows(nodes.traceyServerPortRows, [], "No process-port map loaded.", 5);
             renderMetricList(nodes.traceyServerAssessmentFacts, [], "No assessment snapshot loaded.");
+            renderTraceyServerNetworkSection(null);
             if (nodes.traceyServerGpuTiles) {
                 nodes.traceyServerGpuTiles.innerHTML = `<p class="empty">No GPU inventory available.</p>`;
             }
@@ -2637,21 +4424,49 @@
         }
         renderMetricList(nodes.traceyServerForecastAdvice, adviceRows, "No AI advisory available.");
 
-        const flowRows = (Array.isArray(network.top_flows) ? network.top_flows : []).map((flow) => {
+        const topologyFocus = traceyState.serverTopologyFocus;
+        const filteredFlows = (Array.isArray(network.top_flows) ? network.top_flows : [])
+            .filter((flow) => flowMatchesTraceyServerTopologyFocus(flow, topologyFocus));
+        const matchingFlowPids = new Set(
+            filteredFlows
+                .map((flow) => Math.round(parseNumber(flow && flow.pid, 0)))
+                .filter((pid) => pid > 0)
+        );
+        const filteredListeners = (Array.isArray(network.top_listeners) ? network.top_listeners : [])
+            .filter((listener) => listenerMatchesTraceyServerTopologyFocus(listener, topologyFocus));
+        const filteredProcesses = (Array.isArray(network.top_processes) ? network.top_processes : [])
+            .filter((process) => processMatchesTraceyServerTopologyFocus(process, topologyFocus, matchingFlowPids));
+        renderTraceyServerTopologyFocusBar(topologyFocus, {
+            flowCount: filteredFlows.length,
+            listenerCount: filteredListeners.length,
+            processCount: filteredProcesses.length
+        });
+
+        const flowRows = filteredFlows.map((flow) => {
             const severity = String(flow.severity || (flow.anomaly ? "warning" : "ok"));
             const remote = formatEndpoint(flow.remote_ip, flow.remote_port, "-");
             const topology = flow.cross_network ? "cross-network" : (flow.same_lan ? "same-lan" : (flow.local_host ? "localhost" : "mixed"));
             const macLine = [flow.local_mac, flow.remote_mac].filter(Boolean).join(" / ") || "-";
             return `<tr><td>${statusBadge(severity)}<div><strong>${escapeHtml(String(flow.process || "unknown"))}</strong><div>pid ${escapeHtml(String(flow.pid || "-"))}</div></div></td><td><strong>${escapeHtml(formatEndpoint(flow.local_ip, flow.local_port, "-"))}</strong><div>${escapeHtml(remote)}</div></td><td><strong>${escapeHtml(formatBytesRate(flow.total_bps))}</strong><div>rx ${escapeHtml(formatBytesRate(flow.rx_bps))} • tx ${escapeHtml(formatBytesRate(flow.tx_bps))}</div></td><td><strong>${escapeHtml(topology)}</strong><div>${escapeHtml(String(flow.iface || "-"))} • ${escapeHtml(macLine)}</div></td><td><strong>${escapeHtml(formatDurationMs(flow.rtt_ms))}</strong><div>${escapeHtml(`queue ${formatBytes(flow.queue_bytes)} • ${flow.anomaly ? "anomaly" : "normal"}`)}</div></td></tr>`;
         });
-        renderRows(nodes.traceyServerFlowRows, flowRows, "No attributed flows loaded.", 5);
+        renderRows(
+            nodes.traceyServerFlowRows,
+            flowRows,
+            traceyServerTopologyEmptyMessage(topologyFocus, "attributed flows", "No attributed flows loaded."),
+            5
+        );
 
-        const listenerRows = (Array.isArray(network.top_listeners) ? network.top_listeners : []).map((listener) => {
+        const listenerRows = filteredListeners.map((listener) => {
             return `<tr><td><strong>${escapeHtml(String(listener.process || "unknown"))}</strong><div>pid ${escapeHtml(String(listener.pid || "-"))} • ${escapeHtml(String(listener.socket_state || "-"))}</div></td><td>${escapeHtml(String(listener.protocol || "-"))}</td><td><strong>${escapeHtml(formatEndpoint(listener.local_ip, listener.local_port, "-"))}</strong><div>${escapeHtml(String(listener.iface || "-"))}</div></td><td><strong>${escapeHtml(formatBytes(listener.queue_bytes))}</strong><div>${escapeHtml(String(listener.severity || "low"))}</div></td><td>${escapeHtml(String(listener.local_mac || "-"))}</td></tr>`;
         });
-        renderRows(nodes.traceyServerListenerRows, listenerRows, "No listeners loaded.", 5);
+        renderRows(
+            nodes.traceyServerListenerRows,
+            listenerRows,
+            traceyServerTopologyEmptyMessage(topologyFocus, "listeners", "No listeners loaded."),
+            5
+        );
 
-        const processPortRows = (Array.isArray(network.top_processes) ? network.top_processes : []).map((process) => {
+        const processPortRows = filteredProcesses.map((process) => {
             const signals = [
                 `${formatCount(process.flow_count, "0")} flows`,
                 `${formatCount(process.listener_count, "0")} listeners`,
@@ -2663,7 +4478,12 @@
             ].filter(Boolean).join(" • ");
             return `<tr><td>${statusBadge(process.severity || "low")}<div><strong>${escapeHtml(String(process.name || "unknown"))}</strong><div>pid ${escapeHtml(String(process.pid || "-"))}</div></div></td><td><strong>${escapeHtml(formatPortList(process.local_ports))}</strong><div>remote ${escapeHtml(formatPortList(process.remote_ports))}</div></td><td>${escapeHtml(remoteFocus || "-")}</td><td><strong>${escapeHtml(formatBytesRate(process.total_bps))}</strong><div>rx ${escapeHtml(formatBytesRate(process.rx_bps))} • tx ${escapeHtml(formatBytesRate(process.tx_bps))}</div></td><td><strong>${escapeHtml(signals)}</strong><div>rtt ${escapeHtml(formatDurationMs(process.max_rtt_ms))} • q ${escapeHtml(formatBytes(process.queue_bytes))}</div></td></tr>`;
         });
-        renderRows(nodes.traceyServerPortRows, processPortRows, "No process-port map loaded.", 5);
+        renderRows(
+            nodes.traceyServerPortRows,
+            processPortRows,
+            traceyServerTopologyEmptyMessage(topologyFocus, "process-port mappings", "No process-port map loaded."),
+            5
+        );
 
         const filteredAssessmentMetrics = filteredAndSortedServerAssessmentMetricRows(
             buildAssessmentMetricRows(assessmentSummary, assessmentCommunication, assessmentProgress)
@@ -2683,6 +4503,7 @@
                 }).join("")
                 : `<p class="empty">No GPU inventory available.</p>`;
         }
+        renderTraceyServerNetworkSection(data);
     }
 
     function renderTraceyGpuTelemetry(data) {
@@ -2908,10 +4729,12 @@
             renderTraceyServerTelemetry(null);
             renderTraceyGpuTelemetry(null);
             renderTraceyAgentFacts(traceyState.selectedAgentAnalysis);
+            syncTraceyUrlState();
             return;
         }
 
         traceyState.selectedRack = normalizedRack;
+        syncTraceyUrlState();
         renderTraceyFleetOverview(traceyState.fleet);
         const requestSeq = ++traceyRackRequestSeq;
         if (nodes.traceyRackDetailMeta) {
@@ -2929,6 +4752,7 @@
             renderTraceyServerTelemetry(null);
             renderTraceyGpuTelemetry(null);
             renderTraceyAgentFacts(traceyState.selectedAgentAnalysis);
+            syncTraceyUrlState();
             return;
         }
 
@@ -2948,6 +4772,7 @@
             renderTraceyServerTelemetry(null);
             renderTraceyGpuTelemetry(null);
             renderTraceyAgentFacts(traceyState.selectedAgentAnalysis);
+            syncTraceyUrlState();
             return;
         }
 
@@ -2968,10 +4793,16 @@
             renderTraceyServerTelemetry(null);
             renderTraceyGpuTelemetry(null);
             renderTraceyAgentFacts(traceyState.selectedAgentAnalysis);
+            syncTraceyUrlState();
             return;
         }
 
+        const currentServerId = traceyText(traceyState.selectedServerTelemetry && traceyState.selectedServerTelemetry.agent_id, "");
+        if (currentServerId && !traceyTextEquals(currentServerId, normalizedId)) {
+            clearTraceyServerTopologyFocus({ rerender: false });
+        }
         traceyState.selectedAgentId = normalizedId;
+        syncTraceyUrlState();
         syncControlAgentInput();
         if (traceyState.selectedRackDetail) {
             renderTraceyRackDetail(traceyState.selectedRackDetail);
@@ -2990,6 +4821,7 @@
             renderTraceyServerTelemetry(null);
             renderTraceyGpuTelemetry(null);
             renderTraceyAgentFacts(traceyState.selectedAgentAnalysis);
+            syncTraceyUrlState();
             return;
         }
 
@@ -3005,12 +4837,14 @@
         renderTraceyServerTelemetry(data);
         renderTraceyAgentFacts(traceyState.selectedAgentAnalysis);
         updateTraceyInsightsSubtitle();
+        syncTraceyUrlState();
 
         const gpus = Array.isArray(data.gpus) ? data.gpus : [];
         if (!gpus.length) {
             traceyState.selectedGpuId = "";
             traceyState.selectedGpuTelemetry = null;
             renderTraceyGpuTelemetry(null);
+            syncTraceyUrlState();
             return;
         }
 
@@ -3030,10 +4864,12 @@
             traceyState.selectedGpuId = "";
             traceyState.selectedGpuTelemetry = null;
             renderTraceyGpuTelemetry(null);
+            syncTraceyUrlState();
             return;
         }
 
         traceyState.selectedGpuId = normalizedGpuId;
+        syncTraceyUrlState();
         if (traceyState.selectedRackDetail) {
             renderTraceyRackDetail(traceyState.selectedRackDetail);
         }
@@ -3051,12 +4887,14 @@
         if (!response.ok) {
             traceyState.selectedGpuTelemetry = null;
             renderTraceyGpuTelemetry(null);
+            syncTraceyUrlState();
             return;
         }
 
         const data = responseData(response.payload) || {};
         traceyState.selectedGpuTelemetry = data;
         renderTraceyGpuTelemetry(data);
+        syncTraceyUrlState();
     }
 
     async function selectTraceyAgent(agentId, preferredGpuId = "") {
@@ -3273,15 +5111,23 @@
         }
         syncControlAgentInput();
         setTraceyInsightsModalOpen(true);
+        syncTraceyUrlState();
         await refreshTraceyInsights();
+        syncTraceyUrlState();
     }
 
     function initializeTraceyInsightsUi() {
         const rerenderFleetAssessment = () => {
             renderTraceyFleetAssessmentRows();
         };
+        const rerenderFleetNetwork = () => {
+            renderTraceyFleetNetworkSection(traceyState.fleet);
+        };
         const rerenderRackAssessment = () => {
             renderTraceyRackDetail(traceyState.selectedRackDetail);
+        };
+        const rerenderRackNetwork = () => {
+            renderTraceyRackNetworkSection(traceyState.selectedRackDetail);
         };
         const rerenderServerAssessment = () => {
             if (traceyState.selectedServerTelemetry) {
@@ -3302,6 +5148,9 @@
                 return;
             }
             renderMetricList(nodes.traceyServerAssessmentFacts, [], "No assessment snapshot loaded.");
+        };
+        const rerenderServerNetwork = () => {
+            renderTraceyServerNetworkSection(traceyState.selectedServerTelemetry);
         };
         if (nodes.openTraceyInsightsBtn) {
             nodes.openTraceyInsightsBtn.addEventListener("click", () => {
@@ -3470,12 +5319,47 @@
         }
         if (nodes.traceyWindowSelect) {
             nodes.traceyWindowSelect.addEventListener("change", () => {
+                syncTraceyUrlState();
                 refreshTraceyInsights();
             });
         }
         if (nodes.traceyBucketSelect) {
             nodes.traceyBucketSelect.addEventListener("change", () => {
+                syncTraceyUrlState();
                 refreshTraceyInsights();
+            });
+        }
+        if (nodes.traceyFleetTopologyForecast) {
+            nodes.traceyFleetTopologyForecast.value = normalizeTraceyTopologyForecastMode(nodes.traceyFleetTopologyForecast.value);
+            nodes.traceyFleetTopologyForecast.addEventListener("change", rerenderFleetNetwork);
+        }
+        if (nodes.traceyFleetTalkerMode) {
+            nodes.traceyFleetTalkerMode.value = normalizeTraceyTalkerMode(nodes.traceyFleetTalkerMode.value);
+            nodes.traceyFleetTalkerMode.addEventListener("change", rerenderFleetNetwork);
+        }
+        if (nodes.traceyRackTopologyForecast) {
+            nodes.traceyRackTopologyForecast.value = normalizeTraceyTopologyForecastMode(nodes.traceyRackTopologyForecast.value);
+            nodes.traceyRackTopologyForecast.addEventListener("change", rerenderRackNetwork);
+        }
+        if (nodes.traceyRackTalkerMode) {
+            nodes.traceyRackTalkerMode.value = normalizeTraceyTalkerMode(nodes.traceyRackTalkerMode.value);
+            nodes.traceyRackTalkerMode.addEventListener("change", rerenderRackNetwork);
+        }
+        if (nodes.traceyServerTopologyForecast) {
+            nodes.traceyServerTopologyForecast.value = normalizeTraceyTopologyForecastMode(nodes.traceyServerTopologyForecast.value);
+            nodes.traceyServerTopologyForecast.addEventListener("change", rerenderServerNetwork);
+        }
+        if (nodes.traceyServerTalkerMode) {
+            nodes.traceyServerTalkerMode.value = normalizeTraceyTalkerMode(nodes.traceyServerTalkerMode.value);
+            nodes.traceyServerTalkerMode.addEventListener("change", rerenderServerNetwork);
+        }
+        bindTraceyTopologyInteractions(nodes.traceyFleetTopologyChart);
+        bindTraceyTopologyInteractions(nodes.traceyRackTopologyChart);
+        bindTraceyTopologyInteractions(nodes.traceyServerTopologyChart);
+        if (nodes.traceyServerTopologyClear) {
+            nodes.traceyServerTopologyClear.disabled = true;
+            nodes.traceyServerTopologyClear.addEventListener("click", () => {
+                clearTraceyServerTopologyFocus();
             });
         }
         if (nodes.traceyAgentLogLevel) {
@@ -3802,6 +5686,16 @@
                 closeTraceyInsightsModal();
             }
         });
+        window.addEventListener("popstate", () => {
+            const state = readTraceyUrlState();
+            if (!state) {
+                if (isTraceyInsightsModalOpen()) {
+                    closeTraceyInsightsModal();
+                }
+                return;
+            }
+            void applyTraceyUrlState(state);
+        });
     }
 
     function redirectToLogin(reason) {
@@ -4064,6 +5958,6 @@
     renderTraceyGpuTelemetry(null);
     renderTraceyAgentDrilldown(null);
     renderTraceyDeepDive(null);
-    refreshDashboard();
+    void refreshDashboard().then(() => applyTraceyUrlState());
     window.setInterval(refreshDashboard, REFRESH_INTERVAL_MS);
 })();

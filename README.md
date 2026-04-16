@@ -17,7 +17,7 @@ Together they provide connection management, Kubernetes and virtual-cluster oper
 | Kubernetes | `k8s` | Cluster create/get/get-config/list/list-locations/health/resume/suspend over the server API and Kubernetes client integration. |
 | Virtual clusters | `vcluster` | Create/delete/get/get-config/list plus pause/resume/backup/restore/upgrade/config-get/config-update/metrics/health/resources. Advanced create configuration exists on the server API via a `config` JSON payload; the CLI create command currently exposes `name` and optional `namespace`. |
 | Provider portals | `openshift`, `openstack`, `proxmox` | Capacity listing, cluster listing, cluster request, and polling status workflows against external portal APIs. |
-| Tracey | `tracey` | Heartbeat ingestion, fleet inventory, analytics, the adaptive plan/ramp/optimise/repeat loop, operator-selectable placement policies, CVE status, compromise assessment, per-agent assessment plan/report flows, rack views, agent telemetry, control, and deep-dive diagnostics. |
+| Tracey | `tracey` | Heartbeat ingestion, fleet inventory, analytics, the adaptive plan/ramp/optimise/repeat loop, operator-selectable placement policies, CVE status, compromise assessment, per-agent assessment plan/report flows, rack views, agent telemetry, control, deep-dive diagnostics, debounced snapshot persistence, and optional PostgreSQL history storage. |
 | Node onboarding | `node recruit` | API mode through `POST /node/recruit` or direct SSH/SCP execution from the CLI host, with optional post-recruit Ansible auto-configuration. |
 | Refiner | `refiner` | Local `kubectl` deploy/status/scale/logs/remove workflows; `status` and `scale` can also use the server API via `--server`. |
 | Deployment | `deploy.sh`, `ansible/deploy.yml` | Ubuntu/systemd deployment automation with optional Kubernetes bootstrap, GPU tooling, auto-update timer, and local Tracey sidecar setup. |
@@ -46,7 +46,7 @@ cmake --build nmc_client/build -j4
 
 ### Server (`nmc_server`)
 
-The server build pulls several dependencies with CMake `FetchContent` and also expects system packages such as OpenSSL, `spdlog`, `libwebsockets`, autotools, and standard build tooling.
+The server build pulls several dependencies with CMake `FetchContent` and also expects system packages such as OpenSSL, `spdlog`, `libwebsockets`, `libpq`/`libpqxx` for PostgreSQL-backed Tracey persistence, autotools, and standard build tooling.
 
 ```bash
 cmake -S nmc_server -B nmc_server/build

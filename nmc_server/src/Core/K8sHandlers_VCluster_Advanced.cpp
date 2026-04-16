@@ -5,6 +5,7 @@
 #include "K8sHandlers.h"
 #include "../Models/VClusterConfig.h"
 #include "Utils.h"
+#include <ctime>
 #include <sstream>
 
 namespace NMC {
@@ -428,12 +429,6 @@ namespace NMC {
                     config.security.service_account_name = name;
                 }
 
-                // Store config
-                {
-                    std::lock_guard<std::mutex> lock(dataMutex);
-                    vclusterConfigsRef[config.id] = config;
-                }
-
                 // Step 1: Create namespace
                 nlohmann::json namespaceObj = {
                     {"apiVersion", "v1"},
@@ -531,6 +526,14 @@ namespace NMC {
                 vcluster.parent_cluster = basePath ? std::string(basePath) : "local";
                 vcluster.vcluster_namespace = vcluster_namespace;
                 vcluster.config_id = config.id;
+
+                {
+                    std::lock_guard<std::mutex> lock(dataMutex);
+                    vclusterConfigsRef[config.id] = config;
+                }
+                if (scheduleStateSnapshot) {
+                    scheduleStateSnapshot(static_cast<int64_t>(std::time(nullptr)) * 1000);
+                }
 
                 Models::CloudResponse apiResponse;
                 apiResponse.success = true;

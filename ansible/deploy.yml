@@ -76,6 +76,10 @@
     nmc_tracey_config_path: "/etc/tracey/tracey-continuum-local.json"
     nmc_tracey_state_dir: "/var/lib/tracey"
     nmc_tracey_cve_root: "/var/lib/nmc/tracey_cve"
+    nmc_tracey_state_root: "/var/lib/nmc/tracey-state"
+    nmc_tracey_persist_flush_ms: 5000
+    nmc_tracey_postgres_dsn: ""
+    nmc_postgres_dsn: ""
     nmc_tracey_auth_mode: "off"
     nmc_tracey_auth_protect_status: false
     nmc_tracey_auth_protect_otlp_http: false
@@ -93,6 +97,8 @@
       - libssl-dev
       - libspdlog-dev
       - libwebsockets-dev
+      - libpq-dev
+      - libpqxx-dev
       - autoconf
       - automake
       - libtool
@@ -783,6 +789,14 @@
         path: /etc/nmc
         state: directory
         mode: "0755"
+
+    - name: Ensure Tracey state root exists
+      ansible.builtin.file:
+        path: "{{ nmc_tracey_state_root }}"
+        state: directory
+        owner: "{{ nmc_run_user }}"
+        group: "{{ nmc_run_group }}"
+        mode: "0750"
 
     - name: Install kubeconfig for nmc_server
       ansible.builtin.copy:

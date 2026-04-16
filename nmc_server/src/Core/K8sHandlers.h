@@ -3,6 +3,7 @@
 
 #include <httplib.h>
 #include <nlohmann/json.hpp>
+#include <cstdint>
 #include <vector>
 #include <mutex>
 #include <functional> // For std::function
@@ -55,7 +56,8 @@ namespace NMC {
                     std::mutex& mutex_ref,
                     std::unordered_map<std::string, Models::VClusterConfig>& vcluster_configs_ref,
                     std::function<void(httplib::Response&, const Models::CloudResponse&)> send_json_cb,
-            std::function<void(httplib::Response&, int, const std::string&)> send_error_cb
+                    std::function<void(httplib::Response&, int, const std::string&)> send_error_cb,
+                    std::function<void(int64_t)> state_snapshot_cb
             );
 
             ~K8sHandlers();
@@ -136,6 +138,8 @@ namespace NMC {
             // Callbacks for sending responses, provided by APIRoutes
             std::function<void(httplib::Response&, const Models::CloudResponse&)> sendJsonResponse;
             std::function<void(httplib::Response&, int, const std::string&)> sendErrorResponse;
+            // Fire-and-forget callback used to debounce durable registry snapshots.
+            std::function<void(int64_t)> scheduleStateSnapshot;
 
             // CRD Group, Version, Plural for our hypothetical K8sCluster
             const std::string K8S_CLUSTER_CRD_GROUP = "aarnn.network";

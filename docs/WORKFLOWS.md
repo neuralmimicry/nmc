@@ -121,6 +121,7 @@ Server-side advanced workflow:
 1. `tracey heartbeat` submits an agent heartbeat payload to `/tracey/agents/heartbeat`.
 2. `tracey agents`, `tracey fleet`, `tracey racks`, and `tracey rack` inspect the server's fleet view.
 3. The server can bootstrap a required local Tracey sidecar entry using `NMC_TRACEY_BOOTSTRAP_LOCAL_AGENT`, `NMC_TRACEY_LOCAL_AGENT_ID`, and `NMC_TRACEY_LOCAL_STATUS_ADDR`.
+4. The server debounces full-state snapshot writes to `NMC_TRACEY_STATE_ROOT` and, when configured, mirrors snapshots plus samples/logs into PostgreSQL using `NMC_TRACEY_POSTGRES_DSN` or `NMC_POSTGRES_DSN`.
 
 ### 6.2 Adaptive plan/ramp/optimise/repeat workflow
 

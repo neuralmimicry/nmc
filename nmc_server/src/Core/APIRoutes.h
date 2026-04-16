@@ -23,7 +23,9 @@
 #include "OpenShiftClient.h"
 #include "ProxmoxClient.h"
 #include "OIDCValidator.h"
+#include "ServerStateStore.h"
 #include "TraceyCVEIntel.h"
+#include "TraceyStateStore.h"
 
 // Forward declaration for K8sHandlers to avoid circular includes
 
@@ -66,6 +68,7 @@ namespace NMC::Server {
         std::vector<Models::SSHKey> sshKeys;
         std::vector<Models::VM> vms;
         std::vector<Models::Connection> connections;
+        std::string currentConnectionName;
         std::unordered_map<std::string, Models::VClusterConfig> vclusterConfigs; // config_id -> VClusterConfig
         struct TraceyAgent {
             std::string agentId;
@@ -200,6 +203,8 @@ namespace NMC::Server {
         std::thread traceyDiscoveryThread;
         std::atomic<bool> stopTraceyDiscovery;
         TraceyCVEIntel traceyCveIntel;
+        std::unique_ptr<ServerStateStore> serverStateStore;
+        std::unique_ptr<TraceyStateStore> traceyStateStore;
         bool aarnnDiscoveryEnabled;
         bool aarnnAllowPublicAddr;
         std::string aarnnDiscoveryBindAddr;
@@ -255,6 +260,12 @@ namespace NMC::Server {
          * @param message The error message.
          */
         void sendErrorResponse(httplib::Response& res, int status, const std::string& message) const;
+
+        void handleGetConnectionStatus(const httplib::Request& req, httplib::Response& res);
+        void handleMakeConnection(const httplib::Request& req, httplib::Response& res);
+        void handleDropConnection(const httplib::Request& req, httplib::Response& res);
+        void handleListConnections(const httplib::Request& req, httplib::Response& res);
+        void handleSelectConnection(const httplib::Request& req, httplib::Response& res);
 
         // Security helpers (optional auth, request ID, and payload limits)
         void ensureRequestId(const httplib::Request& req, httplib::Response& res) const;
@@ -379,6 +390,20 @@ namespace NMC::Server {
                                            const std::string& statusAddr,
                                            int64_t nowMs);
         void removeTraceyRequirementLocked(const std::string& resourceType, const std::string& resourceName);
+        nlohmann::json buildServerStateSnapshotLocked(int64_t nowMs) const;
+        void restoreServerStateSnapshotLocked(const nlohmann::json& snapshot);
+        void scheduleServerStateSnapshot(int64_t nowMs);
+        nlohmann::json buildTraceyStateSnapshotLocked(int64_t nowMs) const;
+        void restoreTraceyStateSnapshotLocked(const nlohmann::json& snapshot);
+        void scheduleTraceyStateSnapshotLocked(int64_t nowMs);
+        nlohmann::json traceyAgentToJson(const TraceyAgent& agent) const;
+        nlohmann::json traceyRequirementToJson(const TraceyRequirement& requirement) const;
+        nlohmann::json traceyStatusSampleToJson(const TraceyStatusSample& sample) const;
+        nlohmann::json traceyAgentLogToJson(const TraceyAgentLogEntry& entry) const;
+        TraceyAgent traceyAgentFromJson(const nlohmann::json& payload) const;
+        TraceyRequirement traceyRequirementFromJson(const nlohmann::json& payload) const;
+        TraceyStatusSample traceyStatusSampleFromJson(const nlohmann::json& payload) const;
+        TraceyAgentLogEntry traceyAgentLogFromJson(const nlohmann::json& payload) const;
 
         // Declare an instance of K8sHandlers
         std::unique_ptr<K8sHandlers> k8sHandlers;

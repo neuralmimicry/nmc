@@ -3,6 +3,7 @@
 #include "Utils.h" // For Utils::generateUniqueId
 #include <algorithm> // Not as much needed now, but keeping for general utility
 #include <cctype>
+#include <ctime>
 #include <cstring>
 #include <iostream>
 #include <stdexcept>
@@ -316,12 +317,14 @@ namespace NMC {
                 std::mutex &mutex_ref,
                 std::unordered_map<std::string, Models::VClusterConfig>& vcluster_configs_ref,
                 std::function<void(httplib::Response&, const Models::CloudResponse&)> send_json_cb,
-        std::function<void(httplib::Response&, int, const std::string&)> send_error_cb
+                std::function<void(httplib::Response&, int, const std::string&)> send_error_cb,
+                std::function<void(int64_t)> state_snapshot_cb
         ) :
         dataMutex(mutex_ref),
         vclusterConfigsRef(vcluster_configs_ref),
         sendJsonResponse(send_json_cb),
         sendErrorResponse(send_error_cb),
+        scheduleStateSnapshot(std::move(state_snapshot_cb)),
         apiClient(nullptr), // Initialize to nullptr
         basePath(nullptr),
         sslConfig(nullptr),
@@ -2036,6 +2039,27 @@ users:
                 );
                 if (ns_delete_str) free(ns_delete_str);
                 genericClient_free(namespaceClient);
+
+                bool removedConfig = false;
+                {
+                    std::lock_guard<std::mutex> lock(dataMutex);
+                    auto directIt = vclusterConfigsRef.find(id);
+                    if (directIt != vclusterConfigsRef.end()) {
+                        vclusterConfigsRef.erase(directIt);
+                        removedConfig = true;
+                    } else {
+                        for (auto it = vclusterConfigsRef.begin(); it != vclusterConfigsRef.end(); ++it) {
+                            if (it->second.vcluster_name == id) {
+                                vclusterConfigsRef.erase(it);
+                                removedConfig = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+                if (removedConfig && scheduleStateSnapshot) {
+                    scheduleStateSnapshot(static_cast<int64_t>(std::time(nullptr)) * 1000);
+                }
 
                 Models::CloudResponse apiResponse;
                 apiResponse.success = true;

@@ -60,7 +60,7 @@ Primary modules:
 | OpenShift portal | `nmc openshift *` | `/openshift/*` + `OpenShiftClient` | proxied to external portal |
 | OpenStack portal | `nmc openstack *` | `/openstack/*` + `OpenStackClient` | proxied to external portal |
 | Proxmox portal | `nmc proxmox *` | `/proxmox/*` + `ProxmoxClient` | proxied to external portal |
-| Tracey | `nmc tracey *` | `/tracey/*` routes | in-memory server state with discovery, status polling, adaptive-loop synthesis, and assessment handoff |
+| Tracey | `nmc tracey *` | `/tracey/*` routes | in-memory server state with debounced snapshot persistence, optional PostgreSQL history storage, discovery, status polling, adaptive-loop synthesis, and assessment handoff |
 | Refiner | `nmc refiner *` | local `kubectl` plus limited `/k8s/refiner/*` routes | local cluster operations or server passthrough |
 | Node recruitment | `nmc node recruit` | direct SSH/SCP or `POST /node/recruit` | imperative execution with optional Ansible follow-up |
 
@@ -161,11 +161,13 @@ Persisted:
 - CLI connection profiles and connection-scoped tokens in `~/.nmc/config.json`
 - Kubernetes resources created in the target cluster
 - vcluster backup ConfigMaps in the cluster
+- Tracey CVE mirror state on disk
+- Tracey snapshot state on disk (`NMC_TRACEY_STATE_ROOT`, defaulting under the server state directory)
+- Tracey samples/logs and latest snapshot in PostgreSQL when `NMC_TRACEY_POSTGRES_DSN` or `NMC_POSTGRES_DSN` is configured
 
 Non-persistent inside this repo's server process:
 - bucket, SSH, VM, and several other CRUD-style resource collections
 - server-side connection registry
-- Tracey in-memory agent/requirement caches
 - vcluster configuration registry (`vclusterConfigsRef`)
 
 This means a server restart can drop some control-plane metadata even when underlying Kubernetes resources continue to exist.
