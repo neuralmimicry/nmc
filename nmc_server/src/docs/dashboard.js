@@ -95,7 +95,13 @@
         traceyServerPower: document.getElementById("traceyServerPower"),
         traceyServerDisks: document.getElementById("traceyServerDisks"),
         traceyServerProcesses: document.getElementById("traceyServerProcesses"),
+        traceyServerNetworkFacts: document.getElementById("traceyServerNetworkFacts"),
+        traceyServerForecastFacts: document.getElementById("traceyServerForecastFacts"),
+        traceyServerForecastAdvice: document.getElementById("traceyServerForecastAdvice"),
         traceyServerGuardFacts: document.getElementById("traceyServerGuardFacts"),
+        traceyServerFlowRows: document.getElementById("traceyServerFlowRows"),
+        traceyServerListenerRows: document.getElementById("traceyServerListenerRows"),
+        traceyServerPortRows: document.getElementById("traceyServerPortRows"),
         traceyServerAssessmentSearch: document.getElementById("traceyServerAssessmentSearch"),
         traceyServerAssessmentFilter: document.getElementById("traceyServerAssessmentFilter"),
         traceyServerAssessmentSort: document.getElementById("traceyServerAssessmentSort"),
@@ -562,6 +568,37 @@
             return fallback;
         }
         return `${(parsed * 100).toFixed(digits)}%`;
+    }
+
+    function formatSignedPercentValue(value, digits = 0, fallback = "-") {
+        const parsed = Number(value);
+        if (!Number.isFinite(parsed)) {
+            return fallback;
+        }
+        const prefix = parsed > 0 ? "+" : "";
+        return `${prefix}${parsed.toFixed(digits)}%`;
+    }
+
+    function formatEndpoint(ip, port, fallback = "-") {
+        const host = String(ip || "").trim();
+        const parsedPort = Number(port);
+        if (!host) {
+            return fallback;
+        }
+        if (Number.isFinite(parsedPort) && parsedPort > 0) {
+            return `${host}:${Math.round(parsedPort)}`;
+        }
+        return host;
+    }
+
+    function formatPortList(values, fallback = "-") {
+        const ports = (Array.isArray(values) ? values : [])
+            .map((value) => parseNumber(value, 0))
+            .filter((value) => Number.isFinite(value) && value > 0);
+        if (!ports.length) {
+            return fallback;
+        }
+        return ports.map((value) => Math.round(value)).join(", ");
     }
 
     function hasObjectContent(value) {
@@ -1173,6 +1210,20 @@
             return "tracey-tone-ok";
         }
         return "tracey-tone-neutral";
+    }
+
+    function toneClassFromPressure(value) {
+        const parsed = parseNumber(value, 0);
+        if (parsed >= 0.85) {
+            return "tracey-tone-bad";
+        }
+        if (parsed >= 0.55) {
+            return "tracey-tone-warn";
+        }
+        if (parsed > 0) {
+            return "tracey-tone-neutral";
+        }
+        return "tracey-tone-ok";
     }
 
     function toneClassForGpu(gpu) {
@@ -2082,6 +2133,20 @@
                     tone: "tracey-tone-neutral"
                 },
                 {
+                    label: "Attributed Traffic",
+                    value: formatBytesRate(summary.attributed_total_bps),
+                    meta: `cross ${formatBytesRate(summary.cross_network_bps)} • ${formatCount(summary.network_active_flows, "0")} flows`,
+                    tone: parseNumber(summary.cross_network_bps, 0) > 0 ? "tracey-tone-neutral" : "tracey-tone-ok"
+                },
+                {
+                    label: "15m Projection",
+                    value: formatBytesRate(summary.projected_total_bps_15m),
+                    meta: `${formatCount(summary.forecast_agents, "0")} forecast agents • ${formatSignedPercentValue(summary.network_traffic_growth_pct_per_min_max, 0)} / min`,
+                    tone: parseNumber(summary.projected_total_bps_15m, 0) > parseNumber(summary.attributed_total_bps, 0)
+                        ? "tracey-tone-warn"
+                        : "tracey-tone-neutral"
+                },
+                {
                     label: "Thermals / Fans",
                     value: `${formatCount(summary.thermal_alerts, "0")} / ${formatCount(summary.fan_alerts, "0")}`,
                     meta: "alerts",
@@ -2296,7 +2361,13 @@
             renderSensorList(nodes.traceyServerPower, [], "No power telemetry loaded.");
             renderSensorList(nodes.traceyServerDisks, [], "No disk telemetry loaded.");
             renderSensorList(nodes.traceyServerProcesses, [], "No process telemetry loaded.");
+            renderMetricList(nodes.traceyServerNetworkFacts, [], "No attributed network telemetry loaded.");
+            renderMetricList(nodes.traceyServerForecastFacts, [], "No growth forecast loaded.");
+            renderMetricList(nodes.traceyServerForecastAdvice, [], "No AI advisory available.");
             renderMetricList(nodes.traceyServerGuardFacts, [], "No TraceyGuard summary loaded.");
+            renderRows(nodes.traceyServerFlowRows, [], "No attributed flows loaded.", 5);
+            renderRows(nodes.traceyServerListenerRows, [], "No listeners loaded.", 5);
+            renderRows(nodes.traceyServerPortRows, [], "No process-port map loaded.", 5);
             renderMetricList(nodes.traceyServerAssessmentFacts, [], "No assessment snapshot loaded.");
             if (nodes.traceyServerGpuTiles) {
                 nodes.traceyServerGpuTiles.innerHTML = `<p class="empty">No GPU inventory available.</p>`;
@@ -2306,6 +2377,17 @@
 
         const server = data.server && typeof data.server === "object" ? data.server : {};
         const ecc = server.ecc && typeof server.ecc === "object" ? server.ecc : {};
+        const network = server.network && typeof server.network === "object" ? server.network : {};
+        const networkSummary = network.summary && typeof network.summary === "object" ? network.summary : {};
+        const resourceForecast = data.resource_forecast && typeof data.resource_forecast === "object"
+            ? data.resource_forecast
+            : {};
+        const forecastSimulation = resourceForecast.simulation && typeof resourceForecast.simulation === "object"
+            ? resourceForecast.simulation
+            : {};
+        const forecastAdvice = resourceForecast.ai_advice && typeof resourceForecast.ai_advice === "object"
+            ? resourceForecast.ai_advice
+            : {};
         const guard = data.tracey_guard_summary && typeof data.tracey_guard_summary === "object"
             ? data.tracey_guard_summary
             : {};
@@ -2329,12 +2411,45 @@
             { label: "Memory", value: formatPercentValue(server.mem_used_pct, 0), meta: `apps ${formatPercentValue(server.mem_app_used_pct, 0)}`, tone: "tracey-tone-neutral" },
             { label: "Swap", value: formatPercentValue(server.swap_used_pct, 0), meta: "system swap", tone: parseNumber(server.swap_used_pct, 0) >= 50 ? "tracey-tone-warn" : "tracey-tone-neutral" },
             { label: "Network RX", value: formatBytesRate(server.net_rx_bps), meta: `tx ${formatBytesRate(server.net_tx_bps)}`, tone: "tracey-tone-neutral" },
+            {
+                label: "Attributed Traffic",
+                value: formatBytesRate(networkSummary.attributed_total_bps),
+                meta: `cross ${formatBytesRate(networkSummary.cross_network_bps)} • ${formatCount(networkSummary.active_flows, "0")} flows`,
+                tone: parseNumber(networkSummary.cross_network_flows, 0) > 0 ? "tracey-tone-neutral" : "tracey-tone-ok"
+            },
+            {
+                label: "Network Pressure",
+                value: formatRatioPercent(networkSummary.latency_pressure, 0, "-"),
+                meta: `queue ${formatRatioPercent(networkSummary.queue_pressure, 0, "-")} • ${formatCount(networkSummary.listeners, "0")} listeners`,
+                tone: toneClassFromPressure(Math.max(
+                    parseNumber(networkSummary.latency_pressure, 0),
+                    parseNumber(networkSummary.queue_pressure, 0)
+                ))
+            },
             { label: "GPU Util", value: formatPercentValue(server.gpu_utilization_avg_pct, 0), meta: `${formatCount(gpus.length, "0")} GPUs`, tone: "tracey-tone-ok" },
             { label: "Max Temp", value: formatTemperature(server.gpu_temperature_max_c), meta: formatPower(server.gpu_power_total_w), tone: parseNumber(server.gpu_temperature_max_c, 0) >= 80 ? "tracey-tone-warn" : "tracey-tone-neutral" },
             { label: "ECC", value: `${formatCount(ecc.corrected_total, "0")} / ${formatCount(ecc.uncorrected_total, "0")}`, meta: "corr / uncorr", tone: parseNumber(ecc.uncorrected_total, 0) > 0 ? "tracey-tone-warn" : "tracey-tone-neutral" },
             { label: "Autonomy", value: formatRatioPercent(server.autonomy_risk, 0), meta: server.autonomy_action ? formatActionLabel(server.autonomy_action) : "No action", tone: parseNumber(server.autonomy_risk, 0) >= 0.5 ? "tracey-tone-warn" : "tracey-tone-ok" },
             { label: "Guard", value: formatCount(guard.quarantined_devices, "0"), meta: `${formatCount(guard.total_failures, "0")} fail / ${formatCount(guard.total_errors, "0")} err`, tone: parseNumber(guard.quarantined_devices, 0) > 0 ? "tracey-tone-warn" : "tracey-tone-neutral" }
         ];
+        if (Object.keys(resourceForecast).length) {
+            summaryCards.push(
+                {
+                    label: "Forecast 15m",
+                    value: formatBytesRate(resourceForecast.projected_total_bps_15m),
+                    meta: `${formatCount(resourceForecast.projected_active_flows_15m, "0")} flows • ${String(resourceForecast.status || "disabled")}`,
+                    tone: parseNumber(resourceForecast.projected_total_bps_15m, 0) > parseNumber(networkSummary.attributed_total_bps, 0)
+                        ? "tracey-tone-warn"
+                        : "tracey-tone-neutral"
+                },
+                {
+                    label: "Simulation Fit",
+                    value: `${formatFixed(forecastSimulation.estimated_cpu_cores, 1, "-")} cores`,
+                    meta: `${formatBytes(forecastSimulation.estimated_memory_working_set_bytes)} • ${formatPower(forecastSimulation.estimated_power_w)}`,
+                    tone: "tracey-tone-neutral"
+                }
+            );
+        }
         if (hasAssessmentTelemetry(assessmentSummary, assessmentCommunication, assessmentProgress)) {
             summaryCards.push(
                 {
@@ -2388,12 +2503,168 @@
             tone: parseNumber(process.cpu_pct, 0) >= 70 ? "tracey-tone-warn" : "tracey-tone-neutral"
         })), "No process telemetry loaded.");
 
+        renderMetricList(nodes.traceyServerNetworkFacts, [
+            {
+                label: "Attributed Total",
+                value: formatBytesRate(networkSummary.attributed_total_bps),
+                subtitle: `rx ${formatBytesRate(networkSummary.attributed_rx_bps)} • tx ${formatBytesRate(networkSummary.attributed_tx_bps)}`,
+                tone: "tracey-tone-neutral"
+            },
+            {
+                label: "Cross-Network",
+                value: formatBytesRate(networkSummary.cross_network_bps),
+                subtitle: `${formatCount(networkSummary.cross_network_flows, "0")} cross • ${formatCount(networkSummary.lan_flows, "0")} lan • ${formatCount(networkSummary.local_host_flows, "0")} local`,
+                tone: parseNumber(networkSummary.cross_network_flows, 0) > 0 ? "tracey-tone-neutral" : "tracey-tone-ok"
+            },
+            {
+                label: "Flow State",
+                value: `${formatCount(networkSummary.active_flows, "0")} active / ${formatCount(networkSummary.established_flows, "0")} est`,
+                subtitle: `${formatCount(networkSummary.listeners, "0")} listeners • ${formatCount(networkSummary.remote_endpoints, "0")} remotes`,
+                tone: "tracey-tone-neutral"
+            },
+            {
+                label: "Pressure",
+                value: `${formatRatioPercent(networkSummary.latency_pressure, 0, "-")} / ${formatRatioPercent(networkSummary.queue_pressure, 0, "-")}`,
+                subtitle: `latency / queue • rtt ${formatDurationMs(networkSummary.rtt_ms_max)} • q ${formatBytes(networkSummary.queue_bytes)}`,
+                tone: toneClassFromPressure(Math.max(
+                    parseNumber(networkSummary.latency_pressure, 0),
+                    parseNumber(networkSummary.queue_pressure, 0)
+                ))
+            },
+            {
+                label: "Growth",
+                value: `${formatSignedPercentValue(networkSummary.traffic_growth_pct_per_min, 0)} / min`,
+                subtitle: `cross ${formatSignedPercentValue(networkSummary.cross_network_growth_pct_per_min, 0)} • flows ${formatSignedPercentValue(networkSummary.flow_growth_pct_per_min, 0)}`,
+                tone: parseNumber(networkSummary.traffic_growth_pct_per_min, 0) > 0 ? "tracey-tone-warn" : "tracey-tone-neutral"
+            },
+            {
+                label: "Attribution Gaps",
+                value: `${formatCount(networkSummary.owner_misses, "0")} owner misses`,
+                subtitle: `${formatCount(networkSummary.unknown_remote_mac_flows, "0")} unresolved MACs • ${formatCount(networkSummary.window_ms, "0")} ms window`,
+                tone: parseNumber(networkSummary.owner_misses, 0) > 0 || parseNumber(networkSummary.unknown_remote_mac_flows, 0) > 0
+                    ? "tracey-tone-warn"
+                    : "tracey-tone-ok"
+            }
+        ], "No attributed network telemetry loaded.");
+
+        renderMetricList(nodes.traceyServerForecastFacts, [
+            {
+                label: "Status",
+                value: String(resourceForecast.status || "disabled"),
+                subtitle: `${formatCount(resourceForecast.sample_count, "0")} samples • ${formatEpochMs(resourceForecast.ts_ms)}`,
+                tone: String(resourceForecast.enabled || "").toLowerCase() === "true" || resourceForecast.enabled === true
+                    ? "tracey-tone-ok"
+                    : "tracey-tone-neutral"
+            },
+            {
+                label: "5m Projection",
+                value: formatBytesRate(resourceForecast.projected_total_bps_5m),
+                subtitle: `cross ${formatBytesRate(resourceForecast.projected_cross_network_bps_5m)} • ${formatCount(resourceForecast.projected_active_flows_5m, "0")} flows`,
+                tone: "tracey-tone-neutral"
+            },
+            {
+                label: "15m Projection",
+                value: formatBytesRate(resourceForecast.projected_total_bps_15m),
+                subtitle: `cross ${formatBytesRate(resourceForecast.projected_cross_network_bps_15m)} • ${formatCount(resourceForecast.projected_active_flows_15m, "0")} flows`,
+                tone: parseNumber(resourceForecast.projected_total_bps_15m, 0) > parseNumber(networkSummary.attributed_total_bps, 0)
+                    ? "tracey-tone-warn"
+                    : "tracey-tone-neutral"
+            },
+            {
+                label: "CPU Estimate",
+                value: `${formatFixed(forecastSimulation.estimated_cpu_cores, 1, "-")} cores`,
+                subtitle: `x${formatFixed(forecastSimulation.cpu_scale_factor, 2, "-")} scale • latency ${formatRatioPercent(forecastSimulation.latency_pressure, 0, "-")}`,
+                tone: "tracey-tone-neutral"
+            },
+            {
+                label: "Memory Estimate",
+                value: formatBytes(forecastSimulation.estimated_memory_working_set_bytes),
+                subtitle: `x${formatFixed(forecastSimulation.memory_scale_factor, 2, "-")} scale • queue ${formatRatioPercent(forecastSimulation.queue_pressure, 0, "-")}`,
+                tone: "tracey-tone-neutral"
+            },
+            {
+                label: "Network / Power",
+                value: `${formatBytesRate(forecastSimulation.estimated_network_bps)} • ${formatPower(forecastSimulation.estimated_power_w)}`,
+                subtitle: `x${formatFixed(forecastSimulation.power_scale_factor, 2, "-")} power • ${formatCount(forecastSimulation.cross_network_flows, "0")} cross flows`,
+                tone: "tracey-tone-neutral"
+            },
+            {
+                label: "Simulation Focus",
+                value: String(forecastSimulation.dominant_process || "-"),
+                subtitle: `remote ${String(forecastSimulation.dominant_remote_ip || "-")}`,
+                tone: "tracey-tone-neutral"
+            }
+        ], "No growth forecast loaded.");
+
         renderMetricList(nodes.traceyServerGuardFacts, [
             { label: "Enabled", value: guard.enabled === true ? "yes" : "no", subtitle: `deep dive ${guard.deep_dive === true ? "on" : "off"}`, tone: guard.enabled === true ? "tracey-tone-ok" : "tracey-tone-neutral" },
             { label: "Quarantined", value: formatCount(guard.quarantined_devices, "0"), subtitle: `${formatCount(guard.healthy_devices, "0")} healthy / ${formatCount(guard.suspect_devices, "0")} suspect`, tone: parseNumber(guard.quarantined_devices, 0) > 0 ? "tracey-tone-warn" : "tracey-tone-neutral" },
             { label: "Failures", value: formatCount(guard.total_failures, "0"), subtitle: `${formatCount(guard.total_errors, "0")} errors / ${formatCount(guard.total_timeouts, "0")} timeouts`, tone: parseNumber(guard.total_failures, 0) > 0 || parseNumber(guard.total_errors, 0) > 0 || parseNumber(guard.total_timeouts, 0) > 0 ? "tracey-tone-warn" : "tracey-tone-neutral" },
             { label: "Remote Support", value: formatCount(guard.remote_fault_support, "0"), subtitle: `${formatFixed(guard.overhead_budget_pct, 1, "-")}% budget`, tone: "tracey-tone-neutral" }
         ], "No TraceyGuard summary loaded.");
+
+        const adviceRows = [];
+        if (String(forecastAdvice.summary || "").trim()) {
+            adviceRows.push({
+                label: "Summary",
+                value: String(forecastAdvice.summary || ""),
+                subtitle: [forecastAdvice.provider, forecastAdvice.model].filter(Boolean).join(" • ") || "Local heuristic baseline",
+                tone: String(forecastAdvice.last_error || "").trim() ? "tracey-tone-warn" : "tracey-tone-neutral"
+            });
+        }
+        if (String(forecastAdvice.latency_focus || "").trim()) {
+            adviceRows.push({ label: "Latency", value: String(forecastAdvice.latency_focus || ""), subtitle: "Tail-latency reduction focus", tone: "tracey-tone-neutral" });
+        }
+        if (String(forecastAdvice.cpu_focus || "").trim()) {
+            adviceRows.push({ label: "CPU", value: String(forecastAdvice.cpu_focus || ""), subtitle: "Host scheduling focus", tone: "tracey-tone-neutral" });
+        }
+        if (String(forecastAdvice.memory_focus || "").trim()) {
+            adviceRows.push({ label: "Memory", value: String(forecastAdvice.memory_focus || ""), subtitle: "Working-set focus", tone: "tracey-tone-neutral" });
+        }
+        if (String(forecastAdvice.power_focus || "").trim()) {
+            adviceRows.push({ label: "Power", value: String(forecastAdvice.power_focus || ""), subtitle: "Power-efficiency focus", tone: "tracey-tone-neutral" });
+        }
+        if (String(forecastAdvice.simulation_focus || "").trim()) {
+            adviceRows.push({ label: "Simulation", value: String(forecastAdvice.simulation_focus || ""), subtitle: `confidence ${formatFixed(forecastAdvice.confidence, 2, "-")}`, tone: "tracey-tone-neutral" });
+        }
+        if (!adviceRows.length && String(forecastAdvice.last_error || "").trim()) {
+            adviceRows.push({
+                label: "AI Status",
+                value: "Advisory unavailable",
+                subtitle: String(forecastAdvice.last_error || ""),
+                tone: "tracey-tone-warn"
+            });
+        }
+        renderMetricList(nodes.traceyServerForecastAdvice, adviceRows, "No AI advisory available.");
+
+        const flowRows = (Array.isArray(network.top_flows) ? network.top_flows : []).map((flow) => {
+            const severity = String(flow.severity || (flow.anomaly ? "warning" : "ok"));
+            const remote = formatEndpoint(flow.remote_ip, flow.remote_port, "-");
+            const topology = flow.cross_network ? "cross-network" : (flow.same_lan ? "same-lan" : (flow.local_host ? "localhost" : "mixed"));
+            const macLine = [flow.local_mac, flow.remote_mac].filter(Boolean).join(" / ") || "-";
+            return `<tr><td>${statusBadge(severity)}<div><strong>${escapeHtml(String(flow.process || "unknown"))}</strong><div>pid ${escapeHtml(String(flow.pid || "-"))}</div></div></td><td><strong>${escapeHtml(formatEndpoint(flow.local_ip, flow.local_port, "-"))}</strong><div>${escapeHtml(remote)}</div></td><td><strong>${escapeHtml(formatBytesRate(flow.total_bps))}</strong><div>rx ${escapeHtml(formatBytesRate(flow.rx_bps))} • tx ${escapeHtml(formatBytesRate(flow.tx_bps))}</div></td><td><strong>${escapeHtml(topology)}</strong><div>${escapeHtml(String(flow.iface || "-"))} • ${escapeHtml(macLine)}</div></td><td><strong>${escapeHtml(formatDurationMs(flow.rtt_ms))}</strong><div>${escapeHtml(`queue ${formatBytes(flow.queue_bytes)} • ${flow.anomaly ? "anomaly" : "normal"}`)}</div></td></tr>`;
+        });
+        renderRows(nodes.traceyServerFlowRows, flowRows, "No attributed flows loaded.", 5);
+
+        const listenerRows = (Array.isArray(network.top_listeners) ? network.top_listeners : []).map((listener) => {
+            return `<tr><td><strong>${escapeHtml(String(listener.process || "unknown"))}</strong><div>pid ${escapeHtml(String(listener.pid || "-"))} • ${escapeHtml(String(listener.socket_state || "-"))}</div></td><td>${escapeHtml(String(listener.protocol || "-"))}</td><td><strong>${escapeHtml(formatEndpoint(listener.local_ip, listener.local_port, "-"))}</strong><div>${escapeHtml(String(listener.iface || "-"))}</div></td><td><strong>${escapeHtml(formatBytes(listener.queue_bytes))}</strong><div>${escapeHtml(String(listener.severity || "low"))}</div></td><td>${escapeHtml(String(listener.local_mac || "-"))}</td></tr>`;
+        });
+        renderRows(nodes.traceyServerListenerRows, listenerRows, "No listeners loaded.", 5);
+
+        const processPortRows = (Array.isArray(network.top_processes) ? network.top_processes : []).map((process) => {
+            const signals = [
+                `${formatCount(process.flow_count, "0")} flows`,
+                `${formatCount(process.listener_count, "0")} listeners`,
+                `${formatCount(process.cross_network_flows, "0")} cross`
+            ].join(" • ");
+            const remoteFocus = [
+                String(process.dominant_remote_ip || "-"),
+                process.cgroup ? `cg ${process.cgroup}` : ""
+            ].filter(Boolean).join(" • ");
+            return `<tr><td>${statusBadge(process.severity || "low")}<div><strong>${escapeHtml(String(process.name || "unknown"))}</strong><div>pid ${escapeHtml(String(process.pid || "-"))}</div></div></td><td><strong>${escapeHtml(formatPortList(process.local_ports))}</strong><div>remote ${escapeHtml(formatPortList(process.remote_ports))}</div></td><td>${escapeHtml(remoteFocus || "-")}</td><td><strong>${escapeHtml(formatBytesRate(process.total_bps))}</strong><div>rx ${escapeHtml(formatBytesRate(process.rx_bps))} • tx ${escapeHtml(formatBytesRate(process.tx_bps))}</div></td><td><strong>${escapeHtml(signals)}</strong><div>rtt ${escapeHtml(formatDurationMs(process.max_rtt_ms))} • q ${escapeHtml(formatBytes(process.queue_bytes))}</div></td></tr>`;
+        });
+        renderRows(nodes.traceyServerPortRows, processPortRows, "No process-port map loaded.", 5);
+
         const filteredAssessmentMetrics = filteredAndSortedServerAssessmentMetricRows(
             buildAssessmentMetricRows(assessmentSummary, assessmentCommunication, assessmentProgress)
         );

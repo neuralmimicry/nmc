@@ -483,6 +483,47 @@
                 <div id="traceyFleetSummaryCards" class="tracey-stat-grid">
                     <p class="empty">Loading fleet telemetry...</p>
                 </div>
+                <section class="detail-card">
+                    <div class="panel-title-row">
+                        <h4>Fleet Network Map</h4>
+                        <div class="panel-actions">
+                            <label class="panel-select" for="traceyFleetTopologyForecast">
+                                <span>Forecast</span>
+                                <select id="traceyFleetTopologyForecast">
+                                    <option value="current" selected>Current</option>
+                                    <option value="projected_5m">5m</option>
+                                    <option value="projected_15m">15m</option>
+                                    <option value="simulation">Simulation</option>
+                                </select>
+                            </label>
+                            <label class="panel-select" for="traceyFleetTalkerMode">
+                                <span>Top Talkers</span>
+                                <select id="traceyFleetTalkerMode">
+                                    <option value="applications" selected>Applications</option>
+                                    <option value="ports">Ports</option>
+                                    <option value="remotes">Remotes</option>
+                                </select>
+                            </label>
+                        </div>
+                    </div>
+                    <svg id="traceyFleetTopologyChart" class="tracey-topology" viewBox="0 0 900 280" preserveAspectRatio="none"></svg>
+                    <div id="traceyFleetTopologyLegend" class="tracey-legend"></div>
+                    <div class="table-wrap">
+                        <table class="detail-table">
+                            <thead>
+                            <tr>
+                                <th>Talker</th>
+                                <th>Scope</th>
+                                <th>Traffic</th>
+                                <th>Forecast</th>
+                            </tr>
+                            </thead>
+                            <tbody id="traceyFleetTalkerRows">
+                            <tr><td colspan="4" class="empty">Loading fleet network map...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </section>
                 <div class="tracey-operator-grid">
                     <section class="detail-card">
                         <h4>Zone Breakdown</h4>
@@ -589,6 +630,47 @@
                 <div id="traceyRackGpuHeatmap" class="tracey-slot-grid">
                     <p class="empty">Select a rack to load its GPU slot map.</p>
                 </div>
+                <section class="detail-card">
+                    <div class="panel-title-row">
+                        <h4>Rack Network Map</h4>
+                        <div class="panel-actions">
+                            <label class="panel-select" for="traceyRackTopologyForecast">
+                                <span>Forecast</span>
+                                <select id="traceyRackTopologyForecast">
+                                    <option value="current" selected>Current</option>
+                                    <option value="projected_5m">5m</option>
+                                    <option value="projected_15m">15m</option>
+                                    <option value="simulation">Simulation</option>
+                                </select>
+                            </label>
+                            <label class="panel-select" for="traceyRackTalkerMode">
+                                <span>Top Talkers</span>
+                                <select id="traceyRackTalkerMode">
+                                    <option value="applications" selected>Applications</option>
+                                    <option value="ports">Ports</option>
+                                    <option value="remotes">Remotes</option>
+                                </select>
+                            </label>
+                        </div>
+                    </div>
+                    <svg id="traceyRackTopologyChart" class="tracey-topology" viewBox="0 0 900 280" preserveAspectRatio="none"></svg>
+                    <div id="traceyRackTopologyLegend" class="tracey-legend"></div>
+                    <div class="table-wrap">
+                        <table class="detail-table">
+                            <thead>
+                            <tr>
+                                <th>Talker</th>
+                                <th>Scope</th>
+                                <th>Traffic</th>
+                                <th>Forecast</th>
+                            </tr>
+                            </thead>
+                            <tbody id="traceyRackTalkerRows">
+                            <tr><td colspan="4" class="empty">Select a rack to load its network map.</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </section>
                 <div class="tracey-controls tracey-section-controls">
                     <label class="tracey-control tracey-control-wide">
                         <span>Search</span>
@@ -675,9 +757,59 @@
                         </div>
                     </section>
                     <section class="detail-card">
+                        <h4>Attributed Network</h4>
+                        <div id="traceyServerNetworkFacts" class="tracey-metric-list">
+                            <p class="empty">No attributed network telemetry loaded.</p>
+                        </div>
+                    </section>
+                    <section class="detail-card">
+                        <h4>Growth Forecast</h4>
+                        <div id="traceyServerForecastFacts" class="tracey-metric-list">
+                            <p class="empty">No growth forecast loaded.</p>
+                        </div>
+                    </section>
+                    <section class="detail-card">
                         <h4>Tracey Guard</h4>
                         <div id="traceyServerGuardFacts" class="tracey-metric-list">
                             <p class="empty">No TraceyGuard summary loaded.</p>
+                        </div>
+                    </section>
+                    <section class="detail-card">
+                        <h4>AI Guidance</h4>
+                        <div id="traceyServerForecastAdvice" class="tracey-metric-list">
+                            <p class="empty">No AI advisory available.</p>
+                        </div>
+                    </section>
+                    <section class="detail-card">
+                        <div class="panel-title-row">
+                            <h4>Network Diagram</h4>
+                            <div class="panel-actions">
+                                <label class="panel-select" for="traceyServerTopologyForecast">
+                                    <span>Forecast</span>
+                                    <select id="traceyServerTopologyForecast">
+                                        <option value="current" selected>Current</option>
+                                        <option value="projected_5m">5m</option>
+                                        <option value="projected_15m">15m</option>
+                                        <option value="simulation">Simulation</option>
+                                    </select>
+                                </label>
+                                <label class="panel-select" for="traceyServerTalkerMode">
+                                    <span>Talkers</span>
+                                    <select id="traceyServerTalkerMode">
+                                        <option value="applications" selected>Applications</option>
+                                        <option value="ports">Ports</option>
+                                        <option value="remotes">Remotes</option>
+                                    </select>
+                                </label>
+                            </div>
+                        </div>
+                        <svg id="traceyServerTopologyChart" class="tracey-topology" viewBox="0 0 900 280" preserveAspectRatio="none"></svg>
+                        <div id="traceyServerTopologyLegend" class="tracey-legend"></div>
+                    </section>
+                    <section class="detail-card">
+                        <h4>Talker Forecast</h4>
+                        <div id="traceyServerTalkerBars" class="tracey-talker-list">
+                            <p class="empty">No server selected.</p>
                         </div>
                     </section>
                     <section class="detail-card">
@@ -712,6 +844,65 @@
                         </div>
                     </section>
                 </div>
+                <div class="tracey-operator-grid">
+                    <section class="detail-card">
+                        <h4>Top Attributed Flows</h4>
+                        <div class="table-wrap">
+                            <table class="detail-table">
+                                <thead>
+                                <tr>
+                                    <th>Process</th>
+                                    <th>Flow</th>
+                                    <th>Traffic</th>
+                                    <th>Path</th>
+                                    <th>Latency</th>
+                                </tr>
+                                </thead>
+                                <tbody id="traceyServerFlowRows">
+                                <tr><td colspan="5" class="empty">No attributed flows loaded.</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </section>
+                    <section class="detail-card">
+                        <h4>Listening Sockets</h4>
+                        <div class="table-wrap">
+                            <table class="detail-table">
+                                <thead>
+                                <tr>
+                                    <th>Process</th>
+                                    <th>Protocol</th>
+                                    <th>Bind</th>
+                                    <th>Queue</th>
+                                    <th>MAC</th>
+                                </tr>
+                                </thead>
+                                <tbody id="traceyServerListenerRows">
+                                <tr><td colspan="5" class="empty">No listeners loaded.</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </section>
+                </div>
+                <section class="detail-card">
+                    <h4>Process-Port Mapping</h4>
+                    <div class="table-wrap">
+                        <table class="detail-table">
+                            <thead>
+                            <tr>
+                                <th>Process</th>
+                                <th>Ports</th>
+                                <th>Remote Focus</th>
+                                <th>Traffic</th>
+                                <th>Signals</th>
+                            </tr>
+                            </thead>
+                            <tbody id="traceyServerPortRows">
+                            <tr><td colspan="5" class="empty">No process-port map loaded.</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </section>
                 <section class="detail-card">
                     <h4>GPU Inventory</h4>
                     <div id="traceyServerGpuTiles" class="tracey-slot-grid">
@@ -818,6 +1009,11 @@
                     <svg id="traceyLogChart" class="tracey-chart" viewBox="0 0 700 220" preserveAspectRatio="none"></svg>
                     <div id="traceyLogLegend" class="tracey-legend"></div>
                 </section>
+                <section class="detail-card">
+                    <h4>Network Load Timeline</h4>
+                    <svg id="traceyNetworkChart" class="tracey-chart" viewBox="0 0 700 220" preserveAspectRatio="none"></svg>
+                    <div id="traceyNetworkLegend" class="tracey-legend"></div>
+                </section>
             </div>
 
             <section class="detail-card">
@@ -860,6 +1056,11 @@
                         <h4>Status Mix Timeline</h4>
                         <svg id="traceyAgentStatusChart" class="tracey-chart" viewBox="0 0 700 220" preserveAspectRatio="none"></svg>
                         <div id="traceyAgentStatusLegend" class="tracey-legend"></div>
+                    </section>
+                    <section class="detail-card">
+                        <h4>Agent Network Timeline</h4>
+                        <svg id="traceyAgentNetworkChart" class="tracey-chart" viewBox="0 0 700 220" preserveAspectRatio="none"></svg>
+                        <div id="traceyAgentNetworkLegend" class="tracey-legend"></div>
                     </section>
                     <section class="detail-card">
                         <h4>Agent Health Snapshot</h4>

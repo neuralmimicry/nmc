@@ -515,11 +515,18 @@ namespace NMC::Server {
                 int thermalAlerts{0};
                 int fanAlerts{0};
                 int autonomyActions{0};
+                int activeFlows{0};
+                int listeners{0};
                 double gpuUtilSum{0.0};
                 int gpuUtilCount{0};
                 double gpuPowerTotal{0.0};
                 double netRxBps{0.0};
                 double netTxBps{0.0};
+                double attributedTotalBps{0.0};
+                double crossNetworkBps{0.0};
+                double projectedTotalBps15m{0.0};
+                double projectedCrossNetworkBps15m{0.0};
+                double projectedActiveFlows15m{0.0};
                 double autonomyRiskMax{0.0};
                 bool hasAutonomyRisk{false};
                 double gpuTempMax{0.0};
@@ -542,10 +549,15 @@ namespace NMC::Server {
                 int thermalAlerts{0};
                 int fanAlerts{0};
                 int autonomyActions{0};
+                int activeFlows{0};
+                int listeners{0};
                 int traceyGuardQuarantined{0};
                 double gpuUtilSum{0.0};
                 int gpuUtilCount{0};
                 double gpuPowerTotal{0.0};
+                double attributedTotalBps{0.0};
+                double crossNetworkBps{0.0};
+                double projectedTotalBps15m{0.0};
                 double gpuTempMax{0.0};
                 bool hasGpuTempMax{false};
                 std::set<std::string> racks;
@@ -569,9 +581,18 @@ namespace NMC::Server {
             int compromisedAgents = 0;
             int totalCveMatches = 0;
             int totalKevMatches = 0;
+            int activeFlows = 0;
+            int listeners = 0;
+            int forecastAgents = 0;
             double gpuUtilSum = 0.0;
             int gpuUtilCount = 0;
             double gpuPowerTotal = 0.0;
+            double attributedTotalBps = 0.0;
+            double crossNetworkBps = 0.0;
+            double projectedTotalBps15m = 0.0;
+            double projectedCrossNetworkBps15m = 0.0;
+            double projectedActiveFlows15m = 0.0;
+            double maxTrafficGrowthPctPerMin = 0.0;
             double autonomyRiskMax = 0.0;
             bool hasAutonomyRisk = false;
             double highestCompromiseRisk = 0.0;
@@ -613,6 +634,7 @@ namespace NMC::Server {
                 const nlohmann::json assessmentSummary = firstObjectValue(agentView, {"continuum_assessment_summary"}) != nullptr
                                                          ? *firstObjectValue(agentView, {"continuum_assessment_summary"})
                                                          : nlohmann::json::object();
+                const auto* serverNode = firstObjectValue(agentView, {"server"});
                 const auto* gpus = firstArrayValue(agentView, {"gpus"});
                 const auto* actions = firstArrayValue(agentView, {"recent_actions"});
 
@@ -712,6 +734,40 @@ namespace NMC::Server {
                 }
                 if (agentNetTx > 0.0) {
                     rackAgg.netTxBps += agentNetTx;
+                }
+
+                const double agentAttributedTotal = std::max(0.0, firstDoubleValue(summary, {"attributed_total_bps"}, 0.0));
+                const double agentCrossNetworkBps = std::max(0.0, firstDoubleValue(summary, {"cross_network_bps"}, 0.0));
+                const int agentActiveFlows = std::max(0, static_cast<int>(firstInt64Value(summary, {"network_active_flows"}, 0)));
+                const int agentListeners = std::max(0, static_cast<int>(firstInt64Value(summary, {"network_listeners"}, 0)));
+                const double agentProjectedTotalBps15m = std::max(0.0, firstDoubleValue(summary, {"projected_total_bps_15m"}, 0.0));
+                const double agentProjectedCrossBps15m = std::max(0.0, firstDoubleValue(summary, {"projected_cross_network_bps_15m"}, 0.0));
+                const double agentProjectedActiveFlows15m = std::max(0.0, firstDoubleValue(summary, {"projected_active_flows_15m"}, 0.0));
+                const double agentTrafficGrowthPctPerMin = std::max(0.0, firstDoubleValue(summary, {"network_traffic_growth_pct_per_min"}, 0.0));
+                const std::string forecastStatus = toLower(firstStringValue(summary, {"forecast_status"}, "disabled"));
+
+                rackAgg.attributedTotalBps += agentAttributedTotal;
+                rackAgg.crossNetworkBps += agentCrossNetworkBps;
+                rackAgg.activeFlows += agentActiveFlows;
+                rackAgg.listeners += agentListeners;
+                rackAgg.projectedTotalBps15m += agentProjectedTotalBps15m;
+                rackAgg.projectedCrossNetworkBps15m += agentProjectedCrossBps15m;
+                rackAgg.projectedActiveFlows15m += agentProjectedActiveFlows15m;
+                zoneAgg.attributedTotalBps += agentAttributedTotal;
+                zoneAgg.crossNetworkBps += agentCrossNetworkBps;
+                zoneAgg.activeFlows += agentActiveFlows;
+                zoneAgg.listeners += agentListeners;
+                zoneAgg.projectedTotalBps15m += agentProjectedTotalBps15m;
+                attributedTotalBps += agentAttributedTotal;
+                crossNetworkBps += agentCrossNetworkBps;
+                activeFlows += agentActiveFlows;
+                listeners += agentListeners;
+                projectedTotalBps15m += agentProjectedTotalBps15m;
+                projectedCrossNetworkBps15m += agentProjectedCrossBps15m;
+                projectedActiveFlows15m += agentProjectedActiveFlows15m;
+                maxTrafficGrowthPctPerMin = std::max(maxTrafficGrowthPctPerMin, agentTrafficGrowthPctPerMin);
+                if (forecastStatus == "forecasting" || forecastStatus == "collecting") {
+                    forecastAgents++;
                 }
 
                 const double agentTempMax = firstDoubleValue(summary, {"gpu_temperature_max_c"}, -1.0);
@@ -826,6 +882,25 @@ namespace NMC::Server {
                         {"kev_matches", agentKevMatches},
                         {"assessment_status", firstStringValue(assessmentSummary, {"status"}, "unknown")},
                         {"assessment_action", firstStringValue(assessmentSummary, {"recommended_action", "recommendedAction"})},
+                        {"attributed_total_bps", agentAttributedTotal},
+                        {"cross_network_bps", agentCrossNetworkBps},
+                        {"network_active_flows", agentActiveFlows},
+                        {"network_listeners", agentListeners},
+                        {"network_estimated_flows", std::max(0, static_cast<int>(firstInt64Value(summary, {"network_estimated_flows"}, 0)))},
+                        {"network_udp_active_flows", std::max(0, static_cast<int>(firstInt64Value(summary, {"network_udp_active_flows"}, 0)))},
+                        {"network_udp_drop_delta", std::max<int64_t>(0, firstInt64Value(summary, {"network_udp_drop_delta"}, 0))},
+                        {"network_attribution_confidence", std::max(0.0, firstDoubleValue(summary, {"network_attribution_confidence"}, 0.0))},
+                        {"network_collector_backend", firstStringValue(summary, {"network_collector_backend"})},
+                        {"projected_total_bps_5m", std::max(0.0, firstDoubleValue(summary, {"projected_total_bps_5m"}, 0.0))},
+                        {"projected_total_bps_15m", agentProjectedTotalBps15m},
+                        {"projected_cross_network_bps_5m", std::max(0.0, firstDoubleValue(summary, {"projected_cross_network_bps_5m"}, 0.0))},
+                        {"projected_cross_network_bps_15m", std::max(0.0, firstDoubleValue(summary, {"projected_cross_network_bps_15m"}, 0.0))},
+                        {"projected_active_flows_5m", std::max(0.0, firstDoubleValue(summary, {"projected_active_flows_5m"}, 0.0))},
+                        {"projected_active_flows_15m", std::max(0.0, firstDoubleValue(summary, {"projected_active_flows_15m"}, 0.0))},
+                        {"estimated_network_bps", std::max(0.0, firstDoubleValue(summary, {"estimated_network_bps"}, 0.0))},
+                        {"forecast_status", forecastStatus},
+                        {"network", serverNode != nullptr ? serverNode->value("network", nlohmann::json::object()) : nlohmann::json::object()},
+                        {"resource_forecast", agentView.value("resource_forecast", nlohmann::json::object())},
                         {"recent_action_count", std::max(0, static_cast<int>(firstInt64Value(summary, {"recent_action_count"}, 0)))},
                         {"last_seen_seconds_ago", std::max<int64_t>(0, firstInt64Value(agentView, {"last_seen_seconds_ago"}, 0))}
                 });
@@ -847,6 +922,11 @@ namespace NMC::Server {
                         {"gpu_utilization_avg_pct", agg.gpuUtilCount > 0 ? agg.gpuUtilSum / static_cast<double>(agg.gpuUtilCount) : 0.0},
                         {"gpu_temperature_max_c", agg.hasGpuTempMax ? agg.gpuTempMax : 0.0},
                         {"gpu_power_total_w", agg.gpuPowerTotal},
+                        {"attributed_total_bps", agg.attributedTotalBps},
+                        {"cross_network_bps", agg.crossNetworkBps},
+                        {"network_active_flows", agg.activeFlows},
+                        {"network_listeners", agg.listeners},
+                        {"projected_total_bps_15m", agg.projectedTotalBps15m},
                         {"thermal_alerts", agg.thermalAlerts},
                         {"fan_alerts", agg.fanAlerts},
                         {"tracey_guard_quarantined", agg.traceyGuardQuarantined},
@@ -871,6 +951,13 @@ namespace NMC::Server {
                         {"gpu_power_total_w", agg.gpuPowerTotal},
                         {"net_rx_bps", agg.netRxBps},
                         {"net_tx_bps", agg.netTxBps},
+                        {"attributed_total_bps", agg.attributedTotalBps},
+                        {"cross_network_bps", agg.crossNetworkBps},
+                        {"network_active_flows", agg.activeFlows},
+                        {"network_listeners", agg.listeners},
+                        {"projected_total_bps_15m", agg.projectedTotalBps15m},
+                        {"projected_cross_network_bps_15m", agg.projectedCrossNetworkBps15m},
+                        {"projected_active_flows_15m", agg.projectedActiveFlows15m},
                         {"thermal_alerts", agg.thermalAlerts},
                         {"fan_alerts", agg.fanAlerts},
                         {"ecc_corrected_total", agg.eccCorrectedTotal},
@@ -903,6 +990,15 @@ namespace NMC::Server {
                             {"gpu_utilization_avg_pct", gpuUtilCount > 0 ? gpuUtilSum / static_cast<double>(gpuUtilCount) : 0.0},
                             {"gpu_temperature_max_c", hasGpuTempMax ? gpuTempMax : 0.0},
                             {"gpu_power_total_w", gpuPowerTotal},
+                            {"attributed_total_bps", attributedTotalBps},
+                            {"cross_network_bps", crossNetworkBps},
+                            {"network_active_flows", activeFlows},
+                            {"network_listeners", listeners},
+                            {"projected_total_bps_15m", projectedTotalBps15m},
+                            {"projected_cross_network_bps_15m", projectedCrossNetworkBps15m},
+                            {"projected_active_flows_15m", projectedActiveFlows15m},
+                            {"forecast_agents", forecastAgents},
+                            {"network_traffic_growth_pct_per_min_max", maxTrafficGrowthPctPerMin},
                             {"thermal_alerts", thermalAlerts},
                             {"fan_alerts", fanAlerts},
                             {"ecc_corrected_total", eccCorrectedTotal},
@@ -6608,9 +6704,32 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
         sample.loaderThreatBlockedProviders = 0;
         sample.loaderThreatBlockedArtifacts = 0;
         sample.loaderThreatRemoteReporters = 0;
+        sample.networkCollectorBackend = "";
+        sample.networkAttributedTotalBps = 0.0;
+        sample.networkCrossNetworkBps = 0.0;
+        sample.networkActiveFlows = 0;
+        sample.networkListeners = 0;
+        sample.networkEstimatedFlows = 0;
+        sample.networkUdpActiveFlows = 0;
+        sample.networkUdpDropDelta = 0;
+        sample.networkUdpEstimatedTotalBps = 0.0;
+        sample.networkAttributionConfidence = 0.0;
+        sample.networkLatencyPressure = 0.0;
+        sample.networkQueuePressure = 0.0;
+        sample.networkTrafficGrowthPctPerMin = 0.0;
+        sample.networkCrossGrowthPctPerMin = 0.0;
+        sample.networkFlowGrowthPctPerMin = 0.0;
+        sample.projectedTotalBps5m = 0.0;
+        sample.projectedTotalBps15m = 0.0;
+        sample.projectedCrossNetworkBps5m = 0.0;
+        sample.projectedCrossNetworkBps15m = 0.0;
+        sample.projectedActiveFlows5m = 0.0;
+        sample.projectedActiveFlows15m = 0.0;
+        sample.estimatedNetworkBps = 0.0;
+        sample.estimatedPowerW = 0.0;
         if (agent.metrics.is_object()) {
-            const auto statusIt = agent.metrics.find("status_snapshot");
-            if (statusIt != agent.metrics.end() && statusIt->is_object()) {
+            const auto* statusIt = extractTraceyStatusSnapshotNode(agent.metrics);
+            if (statusIt != nullptr) {
                 const auto tracey_guardIt = statusIt->find("tracey_guard");
                 if (tracey_guardIt != statusIt->end() && tracey_guardIt->is_object()) {
                     const auto summaryIt = tracey_guardIt->find("summary");
@@ -6628,6 +6747,138 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                     sample.loaderThreatBlockedProviders = std::max(0, loaderThreatSummary.value("blocked_provider_count", 0));
                     sample.loaderThreatBlockedArtifacts = std::max(0, loaderThreatSummary.value("blocked_artifact_count", 0));
                     sample.loaderThreatRemoteReporters = std::max(0, loaderThreatSummary.value("remote_reporters", 0));
+                }
+
+                const auto* continuum = extractContinuumTelemetryNode(agent.metrics);
+                const auto* serverNode = continuum != nullptr ? firstObjectValue(*continuum, {"server"}) : nullptr;
+                const auto* networkNode = serverNode != nullptr ? firstObjectValue(*serverNode, {"network"}) : nullptr;
+                const auto* networkSummary = networkNode != nullptr ? firstObjectValue(*networkNode, {"summary"}) : nullptr;
+                const auto* forecastNode = firstObjectValue(
+                        *statusIt,
+                        {"resource_forecast", "resourceForecast", "forecast"}
+                );
+                const auto* forecastSimulation = forecastNode != nullptr
+                                                 ? firstObjectValue(*forecastNode, {"simulation"})
+                                                 : nullptr;
+                if (networkSummary != nullptr) {
+                    sample.networkCollectorBackend = firstStringValue(
+                            *networkSummary,
+                            {"collector_backend", "collectorBackend"}
+                    );
+                    sample.networkAttributedTotalBps = std::max(0.0, firstDoubleValue(
+                            *networkSummary,
+                            {"attributed_total_bps", "attributedTotalBps"},
+                            0.0
+                    ));
+                    sample.networkCrossNetworkBps = std::max(0.0, firstDoubleValue(
+                            *networkSummary,
+                            {"cross_network_bps", "crossNetworkBps"},
+                            0.0
+                    ));
+                    sample.networkActiveFlows = std::max(0, static_cast<int>(firstInt64Value(
+                            *networkSummary,
+                            {"active_flows", "activeFlows"},
+                            0
+                    )));
+                    sample.networkListeners = std::max(0, static_cast<int>(firstInt64Value(
+                            *networkSummary,
+                            {"listeners"},
+                            0
+                    )));
+                    sample.networkEstimatedFlows = std::max(0, static_cast<int>(firstInt64Value(
+                            *networkSummary,
+                            {"estimated_flows", "estimatedFlows"},
+                            0
+                    )));
+                    sample.networkUdpActiveFlows = std::max(0, static_cast<int>(firstInt64Value(
+                            *networkSummary,
+                            {"udp_active_flows", "udpActiveFlows"},
+                            0
+                    )));
+                    sample.networkUdpDropDelta = std::max<int64_t>(0, firstInt64Value(
+                            *networkSummary,
+                            {"udp_drop_delta", "udpDropDelta"},
+                            0
+                    ));
+                    sample.networkUdpEstimatedTotalBps = std::max(0.0, firstDoubleValue(
+                            *networkSummary,
+                            {"udp_estimated_total_bps", "udpEstimatedTotalBps"},
+                            0.0
+                    ));
+                    sample.networkAttributionConfidence = std::max(0.0, firstDoubleValue(
+                            *networkSummary,
+                            {"attribution_confidence", "attributionConfidence"},
+                            0.0
+                    ));
+                    sample.networkLatencyPressure = std::max(0.0, firstDoubleValue(
+                            *networkSummary,
+                            {"latency_pressure", "latencyPressure"},
+                            0.0
+                    ));
+                    sample.networkQueuePressure = std::max(0.0, firstDoubleValue(
+                            *networkSummary,
+                            {"queue_pressure", "queuePressure"},
+                            0.0
+                    ));
+                    sample.networkTrafficGrowthPctPerMin = firstDoubleValue(
+                            *networkSummary,
+                            {"traffic_growth_pct_per_min", "trafficGrowthPctPerMin"},
+                            0.0
+                    );
+                    sample.networkCrossGrowthPctPerMin = firstDoubleValue(
+                            *networkSummary,
+                            {"cross_network_growth_pct_per_min", "crossNetworkGrowthPctPerMin"},
+                            0.0
+                    );
+                    sample.networkFlowGrowthPctPerMin = firstDoubleValue(
+                            *networkSummary,
+                            {"flow_growth_pct_per_min", "flowGrowthPctPerMin"},
+                            0.0
+                    );
+                }
+                if (forecastNode != nullptr) {
+                    sample.projectedTotalBps5m = std::max(0.0, firstDoubleValue(
+                            *forecastNode,
+                            {"projected_total_bps_5m", "projectedTotalBps5m"},
+                            0.0
+                    ));
+                    sample.projectedTotalBps15m = std::max(0.0, firstDoubleValue(
+                            *forecastNode,
+                            {"projected_total_bps_15m", "projectedTotalBps15m"},
+                            0.0
+                    ));
+                    sample.projectedCrossNetworkBps5m = std::max(0.0, firstDoubleValue(
+                            *forecastNode,
+                            {"projected_cross_network_bps_5m", "projectedCrossNetworkBps5m"},
+                            0.0
+                    ));
+                    sample.projectedCrossNetworkBps15m = std::max(0.0, firstDoubleValue(
+                            *forecastNode,
+                            {"projected_cross_network_bps_15m", "projectedCrossNetworkBps15m"},
+                            0.0
+                    ));
+                    sample.projectedActiveFlows5m = std::max(0.0, firstDoubleValue(
+                            *forecastNode,
+                            {"projected_active_flows_5m", "projectedActiveFlows5m"},
+                            0.0
+                    ));
+                    sample.projectedActiveFlows15m = std::max(0.0, firstDoubleValue(
+                            *forecastNode,
+                            {"projected_active_flows_15m", "projectedActiveFlows15m"},
+                            0.0
+                    ));
+                }
+                if (forecastSimulation != nullptr) {
+                    sample.estimatedNetworkBps = std::max(0.0, firstDoubleValue(
+                            *forecastSimulation,
+                            {"estimated_network_bps", "estimatedNetworkBps"},
+                            0.0
+                    ));
+                    sample.estimatedPowerW = std::max(0.0, firstDoubleValue(
+                            *forecastSimulation,
+                            {"estimated_power_w", "estimatedPowerW"},
+                            0.0
+                    ));
                 }
             }
         }
@@ -6652,6 +6903,29 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                 last.loaderThreatBlockedProviders == sample.loaderThreatBlockedProviders &&
                 last.loaderThreatBlockedArtifacts == sample.loaderThreatBlockedArtifacts &&
                 last.loaderThreatRemoteReporters == sample.loaderThreatRemoteReporters &&
+                last.networkCollectorBackend == sample.networkCollectorBackend &&
+                last.networkAttributedTotalBps == sample.networkAttributedTotalBps &&
+                last.networkCrossNetworkBps == sample.networkCrossNetworkBps &&
+                last.networkActiveFlows == sample.networkActiveFlows &&
+                last.networkListeners == sample.networkListeners &&
+                last.networkEstimatedFlows == sample.networkEstimatedFlows &&
+                last.networkUdpActiveFlows == sample.networkUdpActiveFlows &&
+                last.networkUdpDropDelta == sample.networkUdpDropDelta &&
+                last.networkUdpEstimatedTotalBps == sample.networkUdpEstimatedTotalBps &&
+                last.networkAttributionConfidence == sample.networkAttributionConfidence &&
+                last.networkLatencyPressure == sample.networkLatencyPressure &&
+                last.networkQueuePressure == sample.networkQueuePressure &&
+                last.networkTrafficGrowthPctPerMin == sample.networkTrafficGrowthPctPerMin &&
+                last.networkCrossGrowthPctPerMin == sample.networkCrossGrowthPctPerMin &&
+                last.networkFlowGrowthPctPerMin == sample.networkFlowGrowthPctPerMin &&
+                last.projectedTotalBps5m == sample.projectedTotalBps5m &&
+                last.projectedTotalBps15m == sample.projectedTotalBps15m &&
+                last.projectedCrossNetworkBps5m == sample.projectedCrossNetworkBps5m &&
+                last.projectedCrossNetworkBps15m == sample.projectedCrossNetworkBps15m &&
+                last.projectedActiveFlows5m == sample.projectedActiveFlows5m &&
+                last.projectedActiveFlows15m == sample.projectedActiveFlows15m &&
+                last.estimatedNetworkBps == sample.estimatedNetworkBps &&
+                last.estimatedPowerW == sample.estimatedPowerW &&
                 last.source == sample.source) {
                 return;
             }
@@ -7174,6 +7448,8 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
         const auto* continuum = extractContinuumTelemetryNode(agent.metrics);
         const auto* identity = continuum != nullptr ? firstObjectValue(*continuum, {"identity"}) : nullptr;
         const auto* serverNode = continuum != nullptr ? firstObjectValue(*continuum, {"server"}) : nullptr;
+        const auto* networkNode = serverNode != nullptr ? firstObjectValue(*serverNode, {"network"}) : nullptr;
+        const auto* networkSummary = networkNode != nullptr ? firstObjectValue(*networkNode, {"summary"}) : nullptr;
         const auto* gpuArray = continuum != nullptr ? firstArrayValue(*continuum, {"gpus"}) : nullptr;
         const auto* recentActionsArray = continuum != nullptr ? firstArrayValue(*continuum, {"recent_actions", "recentActions"}) : nullptr;
         const auto* traceyGuard = extractTraceyGuardNode(agent.metrics);
@@ -7191,6 +7467,15 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                                           : nullptr;
         const auto* continuumAssessment = extractContinuumAssessmentNode(agent.metrics);
         const auto* continuumAssessmentSummary = extractContinuumAssessmentSummaryNode(agent.metrics);
+        const auto* resourceForecast = statusSnapshot != nullptr
+                                       ? firstObjectValue(
+                                               *statusSnapshot,
+                                               {"resource_forecast", "resourceForecast", "forecast"}
+                                       )
+                                       : nullptr;
+        const auto* resourceSimulation = resourceForecast != nullptr
+                                         ? firstObjectValue(*resourceForecast, {"simulation"})
+                                         : nullptr;
         const auto* continuumLoop = statusSnapshot != nullptr
                                     ? firstObjectValue(
                                             *statusSnapshot,
@@ -7318,6 +7603,7 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                 {"continuum_assessment", continuumAssessment != nullptr ? *continuumAssessment : nlohmann::json::object()},
                 {"continuum_assessment_summary", continuumAssessmentSummary != nullptr ? *continuumAssessmentSummary : nlohmann::json::object()},
                 {"continuum_autoscaler", continuumAutoscaler != nullptr ? *continuumAutoscaler : nlohmann::json::object()},
+                {"resource_forecast", resourceForecast != nullptr ? *resourceForecast : nlohmann::json::object()},
                 {"continuum_loop", continuumLoop != nullptr ? *continuumLoop : nlohmann::json::object()},
                 {"loader_threats", loaderThreats},
                 {"summary", {
@@ -7344,6 +7630,33 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                         {"kev_matches", continuumAssessmentSummary != nullptr ? std::max<int64_t>(0, firstInt64Value(*continuumAssessmentSummary, {"kev_matches", "kevMatches"}, 0)) : 0},
                         {"assessment_status", continuumAssessmentSummary != nullptr ? firstStringValue(*continuumAssessmentSummary, {"status"}, "unknown") : "unknown"},
                         {"assessment_action", continuumAssessmentSummary != nullptr ? firstStringValue(*continuumAssessmentSummary, {"recommended_action", "recommendedAction"}) : ""},
+                        {"attributed_total_bps", networkSummary != nullptr ? std::max(0.0, firstDoubleValue(*networkSummary, {"attributed_total_bps", "attributedTotalBps"}, 0.0)) : 0.0},
+                        {"cross_network_bps", networkSummary != nullptr ? std::max(0.0, firstDoubleValue(*networkSummary, {"cross_network_bps", "crossNetworkBps"}, 0.0)) : 0.0},
+                        {"network_collector_backend", networkSummary != nullptr ? firstStringValue(*networkSummary, {"collector_backend", "collectorBackend"}) : ""},
+                        {"network_attribution_confidence", networkSummary != nullptr ? std::max(0.0, firstDoubleValue(*networkSummary, {"attribution_confidence", "attributionConfidence"}, 0.0)) : 0.0},
+                        {"network_active_flows", networkSummary != nullptr ? std::max<int64_t>(0, firstInt64Value(*networkSummary, {"active_flows", "activeFlows"}, 0)) : 0},
+                        {"network_listeners", networkSummary != nullptr ? std::max<int64_t>(0, firstInt64Value(*networkSummary, {"listeners"}, 0)) : 0},
+                        {"network_cross_flows", networkSummary != nullptr ? std::max<int64_t>(0, firstInt64Value(*networkSummary, {"cross_network_flows", "crossNetworkFlows"}, 0)) : 0},
+                        {"network_estimated_flows", networkSummary != nullptr ? std::max<int64_t>(0, firstInt64Value(*networkSummary, {"estimated_flows", "estimatedFlows"}, 0)) : 0},
+                        {"network_udp_active_flows", networkSummary != nullptr ? std::max<int64_t>(0, firstInt64Value(*networkSummary, {"udp_active_flows", "udpActiveFlows"}, 0)) : 0},
+                        {"network_udp_drop_delta", networkSummary != nullptr ? std::max<int64_t>(0, firstInt64Value(*networkSummary, {"udp_drop_delta", "udpDropDelta"}, 0)) : 0},
+                        {"network_udp_estimated_total_bps", networkSummary != nullptr ? std::max(0.0, firstDoubleValue(*networkSummary, {"udp_estimated_total_bps", "udpEstimatedTotalBps"}, 0.0)) : 0.0},
+                        {"network_latency_pressure", networkSummary != nullptr ? std::max(0.0, firstDoubleValue(*networkSummary, {"latency_pressure", "latencyPressure"}, 0.0)) : 0.0},
+                        {"network_queue_pressure", networkSummary != nullptr ? std::max(0.0, firstDoubleValue(*networkSummary, {"queue_pressure", "queuePressure"}, 0.0)) : 0.0},
+                        {"network_traffic_growth_pct_per_min", networkSummary != nullptr ? firstDoubleValue(*networkSummary, {"traffic_growth_pct_per_min", "trafficGrowthPctPerMin"}, 0.0) : 0.0},
+                        {"network_cross_network_growth_pct_per_min", networkSummary != nullptr ? firstDoubleValue(*networkSummary, {"cross_network_growth_pct_per_min", "crossNetworkGrowthPctPerMin"}, 0.0) : 0.0},
+                        {"network_flow_growth_pct_per_min", networkSummary != nullptr ? firstDoubleValue(*networkSummary, {"flow_growth_pct_per_min", "flowGrowthPctPerMin"}, 0.0) : 0.0},
+                        {"forecast_status", resourceForecast != nullptr ? firstStringValue(*resourceForecast, {"status"}, "disabled") : "disabled"},
+                        {"projected_total_bps_5m", resourceForecast != nullptr ? std::max(0.0, firstDoubleValue(*resourceForecast, {"projected_total_bps_5m", "projectedTotalBps5m"}, 0.0)) : 0.0},
+                        {"projected_total_bps_15m", resourceForecast != nullptr ? std::max(0.0, firstDoubleValue(*resourceForecast, {"projected_total_bps_15m", "projectedTotalBps15m"}, 0.0)) : 0.0},
+                        {"projected_cross_network_bps_5m", resourceForecast != nullptr ? std::max(0.0, firstDoubleValue(*resourceForecast, {"projected_cross_network_bps_5m", "projectedCrossNetworkBps5m"}, 0.0)) : 0.0},
+                        {"projected_cross_network_bps_15m", resourceForecast != nullptr ? std::max(0.0, firstDoubleValue(*resourceForecast, {"projected_cross_network_bps_15m", "projectedCrossNetworkBps15m"}, 0.0)) : 0.0},
+                        {"projected_active_flows_5m", resourceForecast != nullptr ? std::max(0.0, firstDoubleValue(*resourceForecast, {"projected_active_flows_5m", "projectedActiveFlows5m"}, 0.0)) : 0.0},
+                        {"projected_active_flows_15m", resourceForecast != nullptr ? std::max(0.0, firstDoubleValue(*resourceForecast, {"projected_active_flows_15m", "projectedActiveFlows15m"}, 0.0)) : 0.0},
+                        {"estimated_cpu_cores", resourceSimulation != nullptr ? std::max(0.0, firstDoubleValue(*resourceSimulation, {"estimated_cpu_cores", "estimatedCpuCores"}, 0.0)) : 0.0},
+                        {"estimated_memory_working_set_bytes", resourceSimulation != nullptr ? std::max(0.0, firstDoubleValue(*resourceSimulation, {"estimated_memory_working_set_bytes", "estimatedMemoryWorkingSetBytes"}, 0.0)) : 0.0},
+                        {"estimated_network_bps", resourceSimulation != nullptr ? std::max(0.0, firstDoubleValue(*resourceSimulation, {"estimated_network_bps", "estimatedNetworkBps"}, 0.0)) : 0.0},
+                        {"estimated_power_w", resourceSimulation != nullptr ? std::max(0.0, firstDoubleValue(*resourceSimulation, {"estimated_power_w", "estimatedPowerW"}, 0.0)) : 0.0},
                         {"adaptive_mode", continuumLoop != nullptr ? firstStringValue(*continuumLoop, {"mode"}, "disabled") : "disabled"},
                         {"adaptive_overall_score", continuumLoop != nullptr ? std::max(0.0, firstDoubleValue(*continuumLoop, {"overall_score", "overallScore"}, 0.0)) : 0.0},
                         {"adaptive_placement_score", continuumLoop != nullptr ? std::max(0.0, firstDoubleValue(*continuumLoop, {"placement_score", "placementScore"}, 0.0)) : 0.0}
@@ -7735,6 +8048,21 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
             int64_t loaderThreatBlockedArtifactSum{0};
             int64_t loaderThreatRemoteReporterSum{0};
             int loaderThreatSamples{0};
+            double networkAttributedTotalBpsSum{0.0};
+            double networkCrossNetworkBpsSum{0.0};
+            int64_t networkActiveFlowsSum{0};
+            int64_t networkListenersSum{0};
+            int64_t networkEstimatedFlowsSum{0};
+            int64_t networkUdpActiveFlowsSum{0};
+            int64_t networkUdpDropDeltaSum{0};
+            double networkUdpEstimatedTotalBpsSum{0.0};
+            double networkAttributionConfidenceSum{0.0};
+            double networkLatencyPressureSum{0.0};
+            double networkQueuePressureSum{0.0};
+            double networkProjectedTotalBps15mSum{0.0};
+            double networkProjectedCrossBps15mSum{0.0};
+            double networkProjectedActiveFlows15mSum{0.0};
+            int networkSamples{0};
         };
         std::vector<BucketAgg> buckets(bucketCount);
         for (size_t i = 0; i < bucketCount; ++i) {
@@ -7904,6 +8232,21 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                 bucket.loaderThreatBlockedArtifactSum += std::max(0, sample.loaderThreatBlockedArtifacts);
                 bucket.loaderThreatRemoteReporterSum += std::max(0, sample.loaderThreatRemoteReporters);
                 bucket.loaderThreatSamples++;
+                bucket.networkAttributedTotalBpsSum += std::max(0.0, sample.networkAttributedTotalBps);
+                bucket.networkCrossNetworkBpsSum += std::max(0.0, sample.networkCrossNetworkBps);
+                bucket.networkActiveFlowsSum += std::max(0, sample.networkActiveFlows);
+                bucket.networkListenersSum += std::max(0, sample.networkListeners);
+                bucket.networkEstimatedFlowsSum += std::max(0, sample.networkEstimatedFlows);
+                bucket.networkUdpActiveFlowsSum += std::max(0, sample.networkUdpActiveFlows);
+                bucket.networkUdpDropDeltaSum += std::max<int64_t>(0, sample.networkUdpDropDelta);
+                bucket.networkUdpEstimatedTotalBpsSum += std::max(0.0, sample.networkUdpEstimatedTotalBps);
+                bucket.networkAttributionConfidenceSum += std::max(0.0, sample.networkAttributionConfidence);
+                bucket.networkLatencyPressureSum += std::max(0.0, sample.networkLatencyPressure);
+                bucket.networkQueuePressureSum += std::max(0.0, sample.networkQueuePressure);
+                bucket.networkProjectedTotalBps15mSum += std::max(0.0, sample.projectedTotalBps15m);
+                bucket.networkProjectedCrossBps15mSum += std::max(0.0, sample.projectedCrossNetworkBps15m);
+                bucket.networkProjectedActiveFlows15mSum += std::max(0.0, sample.projectedActiveFlows15m);
+                bucket.networkSamples++;
             }
             (void)agentId;
         }
@@ -7972,6 +8315,15 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
             const double avgLoaderThreatRemoteReporters = bucket.loaderThreatSamples > 0
                                                           ? static_cast<double>(bucket.loaderThreatRemoteReporterSum) / static_cast<double>(bucket.loaderThreatSamples)
                                                           : 0.0;
+            const double avgNetworkAttributionConfidence = bucket.networkSamples > 0
+                                                           ? bucket.networkAttributionConfidenceSum / static_cast<double>(bucket.networkSamples)
+                                                           : 0.0;
+            const double avgNetworkLatencyPressure = bucket.networkSamples > 0
+                                                     ? bucket.networkLatencyPressureSum / static_cast<double>(bucket.networkSamples)
+                                                     : 0.0;
+            const double avgNetworkQueuePressure = bucket.networkSamples > 0
+                                                   ? bucket.networkQueuePressureSum / static_cast<double>(bucket.networkSamples)
+                                                   : 0.0;
             timeline.push_back({
                     {"bucket_start_epoch_ms", bucket.bucketStartMs},
                     {"sampled_agents", bucket.sampledAgents},
@@ -7995,7 +8347,21 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                     {"avg_loader_threat_artifacts", avgLoaderThreatArtifacts},
                     {"avg_loader_threat_blocked_providers", avgLoaderThreatBlockedProviders},
                     {"avg_loader_threat_blocked_artifacts", avgLoaderThreatBlockedArtifacts},
-                    {"avg_loader_threat_remote_reporters", avgLoaderThreatRemoteReporters}
+                    {"avg_loader_threat_remote_reporters", avgLoaderThreatRemoteReporters},
+                    {"network_attributed_total_bps", bucket.networkAttributedTotalBpsSum},
+                    {"network_cross_network_bps", bucket.networkCrossNetworkBpsSum},
+                    {"network_active_flows", bucket.networkActiveFlowsSum},
+                    {"network_listeners", bucket.networkListenersSum},
+                    {"network_estimated_flows", bucket.networkEstimatedFlowsSum},
+                    {"network_udp_active_flows", bucket.networkUdpActiveFlowsSum},
+                    {"network_udp_drop_delta", bucket.networkUdpDropDeltaSum},
+                    {"network_udp_estimated_total_bps", bucket.networkUdpEstimatedTotalBpsSum},
+                    {"avg_network_attribution_confidence", avgNetworkAttributionConfidence},
+                    {"avg_network_latency_pressure", avgNetworkLatencyPressure},
+                    {"avg_network_queue_pressure", avgNetworkQueuePressure},
+                    {"network_projected_total_bps_15m", bucket.networkProjectedTotalBps15mSum},
+                    {"network_projected_cross_network_bps_15m", bucket.networkProjectedCrossBps15mSum},
+                    {"network_projected_active_flows_15m", bucket.networkProjectedActiveFlows15mSum}
             });
         }
 
@@ -8040,6 +8406,21 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
             int64_t loaderThreatBlockedProviderSum = 0;
             int64_t loaderThreatBlockedArtifactSum = 0;
             int64_t loaderThreatRemoteReporterSum = 0;
+            double networkAttributedTotalBpsSum = 0.0;
+            double networkCrossNetworkBpsSum = 0.0;
+            int64_t networkActiveFlowsSum = 0;
+            int64_t networkListenersSum = 0;
+            int64_t networkEstimatedFlowsSum = 0;
+            int64_t networkUdpActiveFlowsSum = 0;
+            int64_t networkUdpDropDeltaSum = 0;
+            double networkUdpEstimatedTotalBpsSum = 0.0;
+            double networkAttributionConfidenceSum = 0.0;
+            double networkLatencyPressureSum = 0.0;
+            double networkQueuePressureSum = 0.0;
+            double projectedTotalBps15mSum = 0.0;
+            double projectedCrossNetworkBps15mSum = 0.0;
+            double projectedActiveFlows15mSum = 0.0;
+            int networkSamples = 0;
 
             if (historyIt != histories.end()) {
                 for (const auto& sample : historyIt->second) {
@@ -8068,6 +8449,21 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                     loaderThreatBlockedProviderSum += std::max(0, sample.loaderThreatBlockedProviders);
                     loaderThreatBlockedArtifactSum += std::max(0, sample.loaderThreatBlockedArtifacts);
                     loaderThreatRemoteReporterSum += std::max(0, sample.loaderThreatRemoteReporters);
+                    networkAttributedTotalBpsSum += std::max(0.0, sample.networkAttributedTotalBps);
+                    networkCrossNetworkBpsSum += std::max(0.0, sample.networkCrossNetworkBps);
+                    networkActiveFlowsSum += std::max(0, sample.networkActiveFlows);
+                    networkListenersSum += std::max(0, sample.networkListeners);
+                    networkEstimatedFlowsSum += std::max(0, sample.networkEstimatedFlows);
+                    networkUdpActiveFlowsSum += std::max(0, sample.networkUdpActiveFlows);
+                    networkUdpDropDeltaSum += std::max<int64_t>(0, sample.networkUdpDropDelta);
+                    networkUdpEstimatedTotalBpsSum += std::max(0.0, sample.networkUdpEstimatedTotalBps);
+                    networkAttributionConfidenceSum += std::max(0.0, sample.networkAttributionConfidence);
+                    networkLatencyPressureSum += std::max(0.0, sample.networkLatencyPressure);
+                    networkQueuePressureSum += std::max(0.0, sample.networkQueuePressure);
+                    projectedTotalBps15mSum += std::max(0.0, sample.projectedTotalBps15m);
+                    projectedCrossNetworkBps15mSum += std::max(0.0, sample.projectedCrossNetworkBps15m);
+                    projectedActiveFlows15mSum += std::max(0.0, sample.projectedActiveFlows15m);
+                    networkSamples++;
                 }
             }
 
@@ -8120,6 +8516,20 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                     {"avg_loader_threat_blocked_providers", sampleCount > 0 ? static_cast<double>(loaderThreatBlockedProviderSum) / static_cast<double>(sampleCount) : 0.0},
                     {"avg_loader_threat_blocked_artifacts", sampleCount > 0 ? static_cast<double>(loaderThreatBlockedArtifactSum) / static_cast<double>(sampleCount) : 0.0},
                     {"avg_loader_threat_remote_reporters", sampleCount > 0 ? static_cast<double>(loaderThreatRemoteReporterSum) / static_cast<double>(sampleCount) : 0.0},
+                    {"avg_network_attributed_total_bps", networkSamples > 0 ? networkAttributedTotalBpsSum / static_cast<double>(networkSamples) : 0.0},
+                    {"avg_network_cross_network_bps", networkSamples > 0 ? networkCrossNetworkBpsSum / static_cast<double>(networkSamples) : 0.0},
+                    {"avg_network_active_flows", networkSamples > 0 ? static_cast<double>(networkActiveFlowsSum) / static_cast<double>(networkSamples) : 0.0},
+                    {"avg_network_listeners", networkSamples > 0 ? static_cast<double>(networkListenersSum) / static_cast<double>(networkSamples) : 0.0},
+                    {"avg_network_estimated_flows", networkSamples > 0 ? static_cast<double>(networkEstimatedFlowsSum) / static_cast<double>(networkSamples) : 0.0},
+                    {"avg_network_udp_active_flows", networkSamples > 0 ? static_cast<double>(networkUdpActiveFlowsSum) / static_cast<double>(networkSamples) : 0.0},
+                    {"avg_network_udp_drop_delta", networkSamples > 0 ? static_cast<double>(networkUdpDropDeltaSum) / static_cast<double>(networkSamples) : 0.0},
+                    {"avg_network_udp_estimated_total_bps", networkSamples > 0 ? networkUdpEstimatedTotalBpsSum / static_cast<double>(networkSamples) : 0.0},
+                    {"avg_network_attribution_confidence", networkSamples > 0 ? networkAttributionConfidenceSum / static_cast<double>(networkSamples) : 0.0},
+                    {"avg_network_latency_pressure", networkSamples > 0 ? networkLatencyPressureSum / static_cast<double>(networkSamples) : 0.0},
+                    {"avg_network_queue_pressure", networkSamples > 0 ? networkQueuePressureSum / static_cast<double>(networkSamples) : 0.0},
+                    {"avg_projected_total_bps_15m", networkSamples > 0 ? projectedTotalBps15mSum / static_cast<double>(networkSamples) : 0.0},
+                    {"avg_projected_cross_network_bps_15m", networkSamples > 0 ? projectedCrossNetworkBps15mSum / static_cast<double>(networkSamples) : 0.0},
+                    {"avg_projected_active_flows_15m", networkSamples > 0 ? projectedActiveFlows15mSum / static_cast<double>(networkSamples) : 0.0},
                     {"log_info", infoLogs},
                     {"log_warn", warnLogs},
                     {"log_error", errorLogs},
@@ -9236,6 +9646,8 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                     {"last_seen_seconds_ago", std::max<int64_t>(0, firstInt64Value(view, {"last_seen_seconds_ago"}, 0))},
                     {"query_failures", std::max<int64_t>(0, firstInt64Value(view, {"query_failures"}, 0))},
                     {"summary", view.value("summary", nlohmann::json::object())},
+                    {"network", view.value("server", nlohmann::json::object()).value("network", nlohmann::json::object())},
+                    {"resource_forecast", view.value("resource_forecast", nlohmann::json::object())},
                     {"gpus", view.value("gpus", nlohmann::json::array())},
                     {"recent_actions", limitedJsonArray(view.value("recent_actions", nlohmann::json::array()), 12)},
                     {"continuum_assessment", view.value("continuum_assessment", nlohmann::json::object())},
@@ -9304,6 +9716,7 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                 {"remote_faults", view.value("remote_faults", nlohmann::json::array())},
                 {"continuum_assessment", view.value("continuum_assessment", nlohmann::json::object())},
                 {"continuum_assessment_summary", view.value("continuum_assessment_summary", nlohmann::json::object())},
+                {"resource_forecast", view.value("resource_forecast", nlohmann::json::object())},
                 {"tracey_guard_summary", view.value("tracey_guard_summary", nlohmann::json::object())},
                 {"loader_threats", view.value("loader_threats", nlohmann::json::object())}
         };
@@ -9570,6 +9983,20 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
             int64_t loaderThreatBlockedProviderSum{0};
             int64_t loaderThreatBlockedArtifactSum{0};
             int64_t loaderThreatRemoteReporterSum{0};
+            double networkAttributedTotalBpsSum{0.0};
+            double networkCrossNetworkBpsSum{0.0};
+            int64_t networkActiveFlowsSum{0};
+            int64_t networkListenersSum{0};
+            int64_t networkEstimatedFlowsSum{0};
+            int64_t networkUdpActiveFlowsSum{0};
+            int64_t networkUdpDropDeltaSum{0};
+            double networkUdpEstimatedTotalBpsSum{0.0};
+            double networkAttributionConfidenceSum{0.0};
+            double networkLatencyPressureSum{0.0};
+            double networkQueuePressureSum{0.0};
+            double projectedTotalBps15mSum{0.0};
+            double projectedCrossNetworkBps15mSum{0.0};
+            double projectedActiveFlows15mSum{0.0};
         };
         std::vector<AgentBucketAgg> buckets(bucketCount);
         for (size_t i = 0; i < bucketCount; ++i) {
@@ -9625,6 +10052,20 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
             bucket.loaderThreatBlockedProviderSum += std::max(0, sample.loaderThreatBlockedProviders);
             bucket.loaderThreatBlockedArtifactSum += std::max(0, sample.loaderThreatBlockedArtifacts);
             bucket.loaderThreatRemoteReporterSum += std::max(0, sample.loaderThreatRemoteReporters);
+            bucket.networkAttributedTotalBpsSum += std::max(0.0, sample.networkAttributedTotalBps);
+            bucket.networkCrossNetworkBpsSum += std::max(0.0, sample.networkCrossNetworkBps);
+            bucket.networkActiveFlowsSum += std::max(0, sample.networkActiveFlows);
+            bucket.networkListenersSum += std::max(0, sample.networkListeners);
+            bucket.networkEstimatedFlowsSum += std::max(0, sample.networkEstimatedFlows);
+            bucket.networkUdpActiveFlowsSum += std::max(0, sample.networkUdpActiveFlows);
+            bucket.networkUdpDropDeltaSum += std::max<int64_t>(0, sample.networkUdpDropDelta);
+            bucket.networkUdpEstimatedTotalBpsSum += std::max(0.0, sample.networkUdpEstimatedTotalBps);
+            bucket.networkAttributionConfidenceSum += std::max(0.0, sample.networkAttributionConfidence);
+            bucket.networkLatencyPressureSum += std::max(0.0, sample.networkLatencyPressure);
+            bucket.networkQueuePressureSum += std::max(0.0, sample.networkQueuePressure);
+            bucket.projectedTotalBps15mSum += std::max(0.0, sample.projectedTotalBps15m);
+            bucket.projectedCrossNetworkBps15mSum += std::max(0.0, sample.projectedCrossNetworkBps15m);
+            bucket.projectedActiveFlows15mSum += std::max(0.0, sample.projectedActiveFlows15m);
         }
 
         nlohmann::json transitions = nlohmann::json::array();
@@ -9681,6 +10122,48 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
             const double avgLoaderThreatRemoteReporters = bucket.sampleCount > 0
                                                           ? static_cast<double>(bucket.loaderThreatRemoteReporterSum) / static_cast<double>(bucket.sampleCount)
                                                           : 0.0;
+            const double avgNetworkAttributedTotalBps = bucket.sampleCount > 0
+                                                        ? bucket.networkAttributedTotalBpsSum / static_cast<double>(bucket.sampleCount)
+                                                        : 0.0;
+            const double avgNetworkCrossNetworkBps = bucket.sampleCount > 0
+                                                     ? bucket.networkCrossNetworkBpsSum / static_cast<double>(bucket.sampleCount)
+                                                     : 0.0;
+            const double avgNetworkActiveFlows = bucket.sampleCount > 0
+                                                 ? static_cast<double>(bucket.networkActiveFlowsSum) / static_cast<double>(bucket.sampleCount)
+                                                 : 0.0;
+            const double avgNetworkListeners = bucket.sampleCount > 0
+                                               ? static_cast<double>(bucket.networkListenersSum) / static_cast<double>(bucket.sampleCount)
+                                               : 0.0;
+            const double avgNetworkEstimatedFlows = bucket.sampleCount > 0
+                                                    ? static_cast<double>(bucket.networkEstimatedFlowsSum) / static_cast<double>(bucket.sampleCount)
+                                                    : 0.0;
+            const double avgNetworkUdpActiveFlows = bucket.sampleCount > 0
+                                                    ? static_cast<double>(bucket.networkUdpActiveFlowsSum) / static_cast<double>(bucket.sampleCount)
+                                                    : 0.0;
+            const double avgNetworkUdpDropDelta = bucket.sampleCount > 0
+                                                  ? static_cast<double>(bucket.networkUdpDropDeltaSum) / static_cast<double>(bucket.sampleCount)
+                                                  : 0.0;
+            const double avgNetworkUdpEstimatedTotalBps = bucket.sampleCount > 0
+                                                          ? bucket.networkUdpEstimatedTotalBpsSum / static_cast<double>(bucket.sampleCount)
+                                                          : 0.0;
+            const double avgNetworkAttributionConfidence = bucket.sampleCount > 0
+                                                           ? bucket.networkAttributionConfidenceSum / static_cast<double>(bucket.sampleCount)
+                                                           : 0.0;
+            const double avgNetworkLatencyPressure = bucket.sampleCount > 0
+                                                     ? bucket.networkLatencyPressureSum / static_cast<double>(bucket.sampleCount)
+                                                     : 0.0;
+            const double avgNetworkQueuePressure = bucket.sampleCount > 0
+                                                   ? bucket.networkQueuePressureSum / static_cast<double>(bucket.sampleCount)
+                                                   : 0.0;
+            const double avgProjectedTotalBps15m = bucket.sampleCount > 0
+                                                   ? bucket.projectedTotalBps15mSum / static_cast<double>(bucket.sampleCount)
+                                                   : 0.0;
+            const double avgProjectedCrossNetworkBps15m = bucket.sampleCount > 0
+                                                          ? bucket.projectedCrossNetworkBps15mSum / static_cast<double>(bucket.sampleCount)
+                                                          : 0.0;
+            const double avgProjectedActiveFlows15m = bucket.sampleCount > 0
+                                                      ? bucket.projectedActiveFlows15mSum / static_cast<double>(bucket.sampleCount)
+                                                      : 0.0;
             series.push_back({
                     {"bucket_start_epoch_ms", bucket.bucketStartMs},
                     {"sample_count", bucket.sampleCount},
@@ -9701,7 +10184,21 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                     {"avg_loader_threat_artifacts", avgLoaderThreatArtifacts},
                     {"avg_loader_threat_blocked_providers", avgLoaderThreatBlockedProviders},
                     {"avg_loader_threat_blocked_artifacts", avgLoaderThreatBlockedArtifacts},
-                    {"avg_loader_threat_remote_reporters", avgLoaderThreatRemoteReporters}
+                    {"avg_loader_threat_remote_reporters", avgLoaderThreatRemoteReporters},
+                    {"avg_network_attributed_total_bps", avgNetworkAttributedTotalBps},
+                    {"avg_network_cross_network_bps", avgNetworkCrossNetworkBps},
+                    {"avg_network_active_flows", avgNetworkActiveFlows},
+                    {"avg_network_listeners", avgNetworkListeners},
+                    {"avg_network_estimated_flows", avgNetworkEstimatedFlows},
+                    {"avg_network_udp_active_flows", avgNetworkUdpActiveFlows},
+                    {"avg_network_udp_drop_delta", avgNetworkUdpDropDelta},
+                    {"avg_network_udp_estimated_total_bps", avgNetworkUdpEstimatedTotalBps},
+                    {"avg_network_attribution_confidence", avgNetworkAttributionConfidence},
+                    {"avg_network_latency_pressure", avgNetworkLatencyPressure},
+                    {"avg_network_queue_pressure", avgNetworkQueuePressure},
+                    {"avg_projected_total_bps_15m", avgProjectedTotalBps15m},
+                    {"avg_projected_cross_network_bps_15m", avgProjectedCrossNetworkBps15m},
+                    {"avg_projected_active_flows_15m", avgProjectedActiveFlows15m}
             });
         }
 
