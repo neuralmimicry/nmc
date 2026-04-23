@@ -95,6 +95,8 @@ namespace NMC::Server {
             bool coordinator{false};
             int64_t coordinatorEpoch{0};
             int64_t score{0};
+            int64_t lastProbeAlertTsMs{0};
+            std::string lastProbeAlertFingerprint;
         };
         struct TraceyRequirement {
             std::string key;
@@ -113,6 +115,15 @@ namespace NMC::Server {
             int queryFailures{0};
             bool coordinator{false};
             int64_t score{0};
+            int probeWatchTotalObservations{0};
+            int probeWatchTotalAlerts{0};
+            int probeWatchDistinctSources{0};
+            int probeWatchRecentAlerts{0};
+            int probeWatchHighAlerts{0};
+            int probeWatchMediumAlerts{0};
+            int probeWatchUnauthorizedControlAlerts{0};
+            int probeWatchCooperativeAlerts{0};
+            int probeWatchAlertedSurfaces{0};
             int tracey_guardProbeFailures{0};
             int tracey_guardProbeErrors{0};
             int tracey_guardQuarantined{0};
@@ -373,6 +384,7 @@ namespace NMC::Server {
         void pollTraceyStatus(const std::string& agentId, const std::string& statusAddr, int64_t nowMs);
         void markTraceyStaleAgents(int64_t nowMs);
         void appendTraceyStatusSampleLocked(const TraceyAgent& agent, int64_t tsMs, const std::string& source);
+        void appendTraceyProbeWatchLogsLocked(TraceyAgent& agent, int64_t nowMs);
         void appendTraceyAgentLogLocked(const std::string& agentId,
                                         int64_t tsMs,
                                         const std::string& level,

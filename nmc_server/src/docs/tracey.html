@@ -95,9 +95,11 @@
         <h3>Managed Resource Compliance</h3>
         <p>The response also includes:</p>
         <ul>
+            <li><code>probe_watch_summary</code> - fleet totals for Tracey-detected probe alerts, high-severity hits, and alerted surfaces.</li>
             <li><code>tracey_policy</code> - enforcement and grace settings.</li>
             <li><code>requirement_summary</code> - totals for <code>compliant</code>, <code>pending</code>, and <code>noncompliant</code> managed resources.</li>
             <li><code>requirements</code> - per-resource Tracey requirement state keyed by resource type/name.</li>
+            <li><code>agents[].probe_watch</code> - per-agent probe-watch summary including recent alerts, latest surface, and classification.</li>
         </ul>
         <p>Continuum bootstraps a default local requirement for its own server process (resource type <code>continuum_server</code>) so the first Tracey sidecar is expected to run alongside <code>nmc_server</code>.</p>
         <p>Bootstrap controls: <code>NMC_TRACEY_BOOTSTRAP_LOCAL_AGENT</code>, <code>NMC_TRACEY_LOCAL_AGENT_ID</code>, <code>NMC_TRACEY_LOCAL_STATUS_ADDR</code>.</p>
@@ -108,10 +110,22 @@
         <p>Builds the fleet-wide Continuum operator view from cached Tracey status snapshots.</p>
         <ul>
             <li><code>summary</code> - agent, rack, zone, GPU, ECC, thermal, autonomy, and TraceyGuard rollups.</li>
+            <li><code>summary.probe_alerts</code>, <code>summary.probe_high_alerts</code>, <code>summary.probe_alerted_surfaces</code> - fleet-wide network probing rollups sourced from Tracey probe-watch.</li>
             <li><code>zone_breakdown</code> - per-zone health and alert summaries.</li>
             <li><code>racks</code> - rack summaries used by the rack explorer.</li>
             <li><code>gpu_heatmap</code> - rack-grouped GPU tiles for fleet heatmap previews.</li>
             <li><code>recent_actions</code> - bounded autonomous action log across the fleet.</li>
+        </ul>
+    </section>
+
+    <section class="endpoint-section">
+        <h2>GET /tracey/agents/{agent_id}/analysis</h2>
+        <p>Returns per-agent operational and security trend analysis for the Continuum Tracey dashboard.</p>
+        <ul>
+            <li><code>current.probe_watch</code> - latest Tracey probe-watch summary for the selected agent.</li>
+            <li><code>security_summary</code> - probe-watch summary plus the count of synthetic Continuum security logs generated from new Tracey alerts.</li>
+            <li><code>series</code> - bucketed averages for probe alerts, high-severity alerts, unauthorized control probes, and other operational counters.</li>
+            <li><code>logs</code> - includes <code>security</code> category entries when Tracey reports fresh probe-watch alerts.</li>
         </ul>
     </section>
 

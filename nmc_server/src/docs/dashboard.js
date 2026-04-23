@@ -3539,6 +3539,7 @@
             return;
         }
         const current = analysis.current;
+        const probe_watch = current.probe_watch && typeof current.probe_watch === "object" ? current.probe_watch : {};
         const tracey_guard = current.tracey_guard && typeof current.tracey_guard === "object" ? current.tracey_guard : {};
         const loader_threats = current.loader_threats && typeof current.loader_threats === "object" ? current.loader_threats : {};
         const facts = [
@@ -3554,6 +3555,10 @@
             { key: "Score", value: String(parseNumber(current.score, 0)) },
             { key: "Last Seen", value: formatAge(current.last_seen_seconds_ago) },
             { key: "Last Error", value: current.last_error || "-" },
+            { key: "Probe Alerts", value: String(parseNumber(probe_watch.total_alerts, 0)) },
+            { key: "Probe High Alerts", value: String(parseNumber(probe_watch.high_severity_alerts, 0)) },
+            { key: "Probe Surfaces", value: String(parseNumber(probe_watch.alerted_surface_count, 0)) },
+            { key: "Probe Latest", value: `${String(probe_watch.latest_surface || "-")} • ${String(probe_watch.latest_classification || "-")}` },
             { key: "Tracey Enabled", value: tracey_guard.enabled === true ? "yes" : "no" },
             { key: "Tracey Quarantined", value: String(parseNumber(tracey_guard.quarantined_devices, 0)) },
             { key: "Tracey Failures", value: String(parseNumber(tracey_guard.total_failures, 0)) },
@@ -3939,6 +3944,14 @@
                     value: `${formatCount(summary.ecc_corrected_total, "0")} / ${formatCount(summary.ecc_uncorrected_total, "0")}`,
                     meta: "corr / uncorr",
                     tone: parseNumber(summary.ecc_uncorrected_total, 0) > 0 ? "tracey-tone-warn" : "tracey-tone-neutral"
+                },
+                {
+                    label: "Security Probes",
+                    value: `${formatCount(summary.probe_alerts, "0")} / ${formatCount(summary.probe_high_alerts, "0")}`,
+                    meta: `${formatCount(summary.probe_alerted_surfaces, "0")} alerted surfaces`,
+                    tone: parseNumber(summary.probe_high_alerts, 0) > 0
+                        ? "tracey-tone-warn"
+                        : (parseNumber(summary.probe_alerts, 0) > 0 ? "tracey-tone-neutral" : "tracey-tone-ok")
                 },
                 {
                     label: "Guard Isolation",
@@ -5859,6 +5872,7 @@
         const traceyData = responseData(traceyAgentsRes.payload) || {};
         const traceyAgents = Array.isArray(traceyData.agents) ? traceyData.agents : [];
         const traceySummary = traceyData.summary || {};
+        const probeWatchSummary = traceyData.probe_watch_summary || {};
         const tracey_guardSummary = traceyData.tracey_guard_summary || {};
         const loaderThreatSummary = traceyData.loader_threat_summary || {};
         const requirementSummary = traceyData.requirement_summary || {};
@@ -5914,15 +5928,18 @@
         const managedResources = Number(requirementSummary.total || 0);
         const tracey_guardQuarantined = Number(tracey_guardSummary.quarantined_devices || 0);
         const tracey_guardFailures = Number(tracey_guardSummary.total_failures || 0);
+        const probeAlerts = Number(probeWatchSummary.total_alerts || 0);
+        const probeHighAlerts = Number(probeWatchSummary.high_severity_alerts || 0);
+        const probeAlertAgents = Number(probeWatchSummary.agents_with_alerts || 0);
         const blockedLoaderProviders = Number(loaderThreatSummary.blocked_provider_count || 0);
         const blockedLoaderArtifacts = Number(loaderThreatSummary.blocked_artifact_count || 0);
         const traceyTone = !traceyAgentsRes.ok
             ? "#ef4444"
-            : (nonCompliantResources > 0 || tracey_guardQuarantined > 0 || tracey_guardFailures > 0 || blockedLoaderProviders > 0 || blockedLoaderArtifacts > 0 ? "#f59e0b" : "#22c55e");
+            : (nonCompliantResources > 0 || probeHighAlerts > 0 || tracey_guardQuarantined > 0 || tracey_guardFailures > 0 || blockedLoaderProviders > 0 || blockedLoaderArtifacts > 0 ? "#f59e0b" : "#22c55e");
         setCheck(
             nodes.traceyStatus,
             traceyAgentsRes.ok
-                ? `${traceyAgents.length} detected (${reachableTracey} reachable, ${discoveredTracey} discovered, ${nonCompliantResources}/${managedResources} non-compliant, ${tracey_guardQuarantined} quarantined, ${tracey_guardFailures} probe failures, ${blockedLoaderProviders} blocked providers, ${blockedLoaderArtifacts} blocked artifacts)`
+                ? `${traceyAgents.length} detected (${reachableTracey} reachable, ${discoveredTracey} discovered, ${nonCompliantResources}/${managedResources} non-compliant, ${probeAlerts} probe alerts on ${probeAlertAgents} agents, ${tracey_guardQuarantined} quarantined, ${tracey_guardFailures} probe failures, ${blockedLoaderProviders} blocked providers, ${blockedLoaderArtifacts} blocked artifacts)`
                 : "Unavailable",
             traceyTone
         );

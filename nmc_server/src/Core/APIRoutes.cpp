@@ -492,6 +492,151 @@ namespace NMC::Server {
             };
         }
 
+        nlohmann::json sanitizeTraceyProbeWatchAlert(const nlohmann::json& alert) {
+            if (!alert.is_object()) {
+                return nlohmann::json::object();
+            }
+            const auto* authorizedNode = firstValue(alert, {"authorized"});
+            const auto* knownRouteNode = firstValue(alert, {"known_route", "knownRoute"});
+            return {
+                    {"ts_ms", std::max<int64_t>(0, firstInt64Value(alert, {"ts_ms", "tsMs"}, 0))},
+                    {"surface", firstStringValue(alert, {"surface"})},
+                    {"source", firstStringValue(alert, {"source", "source_ip", "sourceIp"})},
+                    {"method", firstStringValue(alert, {"method"})},
+                    {"path", firstStringValue(alert, {"path"})},
+                    {"status_code", std::max<int64_t>(0, firstInt64Value(alert, {"status_code", "statusCode"}, 0))},
+                    {"classification", firstStringValue(alert, {"classification"})},
+                    {"severity", toLower(firstStringValue(alert, {"severity"}, "unknown"))},
+                    {"signal", std::max(0.0, firstDoubleValue(alert, {"signal"}, 0.0))},
+                    {"reason", firstStringValue(alert, {"reason"})},
+                    {"run_id", firstStringValue(alert, {"run_id", "runId"})},
+                    {"authorized", authorizedNode != nullptr ? jsonBoolValue(*authorizedNode, false) : false},
+                    {"known_route", knownRouteNode != nullptr ? jsonBoolValue(*knownRouteNode, false) : false}
+            };
+        }
+
+        nlohmann::json extractTraceyProbeWatchSummary(const nlohmann::json& statusSnapshot) {
+            if (!statusSnapshot.is_object()) {
+                return nlohmann::json::object();
+            }
+
+            const nlohmann::json* probeWatchNode = firstObjectValue(
+                    statusSnapshot,
+                    {"probe_watch", "probeWatch"}
+            );
+            if (probeWatchNode == nullptr) {
+                return nlohmann::json::object();
+            }
+
+            const auto readInt = [&](std::initializer_list<const char*> keys) -> int64_t {
+                return std::max<int64_t>(0, firstInt64Value(*probeWatchNode, keys, 0));
+            };
+
+            nlohmann::json recentAlerts = nlohmann::json::array();
+            int64_t highSeverityAlerts = 0;
+            int64_t mediumSeverityAlerts = 0;
+            int64_t unauthorizedControlAlerts = 0;
+            int64_t cooperativeAlerts = 0;
+            int64_t latestAlertMs = 0;
+            std::string latestSurface;
+            std::string latestClassification;
+            std::string latestSeverity;
+
+            const auto* recentAlertsNode = firstArrayValue(*probeWatchNode, {"recent_alerts", "recentAlerts"});
+            if (recentAlertsNode != nullptr) {
+                for (const auto& alert : *recentAlertsNode) {
+                    if (!alert.is_object()) {
+                        continue;
+                    }
+                    const nlohmann::json sanitized = sanitizeTraceyProbeWatchAlert(alert);
+                    if (recentAlerts.size() < 12) {
+                        recentAlerts.push_back(sanitized);
+                    }
+                    const std::string severity = toLower(firstStringValue(alert, {"severity"}, "unknown"));
+                    const std::string classification = firstStringValue(alert, {"classification"});
+                    const int64_t tsMs = std::max<int64_t>(0, firstInt64Value(alert, {"ts_ms", "tsMs"}, 0));
+                    if (severity == "high" || severity == "critical") {
+                        highSeverityAlerts++;
+                    } else if (severity == "medium") {
+                        mediumSeverityAlerts++;
+                    }
+                    if (classification == "unauthorized_control_probe") {
+                        unauthorizedControlAlerts++;
+                    }
+                    if (classification == "cooperative_probe") {
+                        cooperativeAlerts++;
+                    }
+                    if (tsMs >= latestAlertMs) {
+                        latestAlertMs = tsMs;
+                        latestSurface = firstStringValue(alert, {"surface"});
+                        latestClassification = classification;
+                        latestSeverity = severity;
+                    }
+                }
+            }
+
+            nlohmann::json surfaces = nlohmann::json::array();
+            int64_t alertedSurfaceCount = 0;
+            int64_t surfaceCount = 0;
+            const auto* surfacesNode = firstArrayValue(*probeWatchNode, {"surfaces"});
+            if (surfacesNode != nullptr) {
+                for (const auto& surface : *surfacesNode) {
+                    if (!surface.is_object()) {
+                        continue;
+                    }
+                    surfaceCount++;
+                    const int64_t totalAlerts = std::max<int64_t>(
+                            0,
+                            firstInt64Value(surface, {"total_alerts", "totalAlerts"}, 0)
+                    );
+                    if (totalAlerts > 0) {
+                        alertedSurfaceCount++;
+                    }
+                    if (surfaces.size() < 8) {
+                        surfaces.push_back({
+                                {"surface", firstStringValue(surface, {"surface"})},
+                                {"total_observations", std::max<int64_t>(0, firstInt64Value(
+                                        surface,
+                                        {"total_observations", "totalObservations"},
+                                        0
+                                ))},
+                                {"total_alerts", totalAlerts},
+                                {"distinct_sources", std::max<int64_t>(0, firstInt64Value(
+                                        surface,
+                                        {"distinct_sources", "distinctSources"},
+                                        0
+                                ))}
+                        });
+                    }
+                }
+            }
+            if (surfaceCount == 0 && readInt({"total_alerts", "totalAlerts"}) > 0) {
+                alertedSurfaceCount = 1;
+            }
+
+            return {
+                    {"enabled", firstValue(*probeWatchNode, {"enabled"}) != nullptr
+                                        ? jsonBoolValue(*firstValue(*probeWatchNode, {"enabled"}), false)
+                                        : false},
+                    {"total_observations", readInt({"total_observations", "totalObservations"})},
+                    {"total_alerts", readInt({"total_alerts", "totalAlerts"})},
+                    {"distinct_sources", readInt({"distinct_sources", "distinctSources"})},
+                    {"surface_count", surfaceCount},
+                    {"alerted_surface_count", alertedSurfaceCount},
+                    {"recent_alert_count", static_cast<int64_t>(recentAlerts.size())},
+                    {"high_severity_alerts", highSeverityAlerts},
+                    {"medium_severity_alerts", mediumSeverityAlerts},
+                    {"unauthorized_control_alerts", unauthorizedControlAlerts},
+                    {"cooperative_alerts", cooperativeAlerts},
+                    {"latest_alert_ms", latestAlertMs},
+                    {"latest_surface", latestSurface},
+                    {"latest_classification", latestClassification},
+                    {"latest_severity", latestSeverity},
+                    {"recent_alerts", recentAlerts},
+                    {"surfaces", surfaces}
+            };
+        }
+
         const nlohmann::json* extractTraceyStatusSnapshotNode(const nlohmann::json& metricsNode) {
             return firstObjectValue(metricsNode, {"status_snapshot", "statusSnapshot"});
         }
@@ -645,6 +790,9 @@ namespace NMC::Server {
                 int unknown{0};
                 int reachable{0};
                 int gpuCount{0};
+                int probeAlerts{0};
+                int probeHighAlerts{0};
+                int probeAlertedSurfaces{0};
                 int traceyGuardQuarantined{0};
                 int blockedLoaderProviders{0};
                 int blockedLoaderArtifacts{0};
@@ -682,6 +830,9 @@ namespace NMC::Server {
                 int reachable{0};
                 int gpuCount{0};
                 int rackCount{0};
+                int probeAlerts{0};
+                int probeHighAlerts{0};
+                int probeAlertedSurfaces{0};
                 int thermalAlerts{0};
                 int fanAlerts{0};
                 int autonomyActions{0};
@@ -705,6 +856,9 @@ namespace NMC::Server {
             int unknown = 0;
             int reachable = 0;
             int gpuCount = 0;
+            int probeAlertCount = 0;
+            int probeHighAlertCount = 0;
+            int probeAlertedSurfaceCount = 0;
             int thermalAlerts = 0;
             int fanAlerts = 0;
             int traceyGuardQuarantined = 0;
@@ -812,6 +966,19 @@ namespace NMC::Server {
                 rackAgg.gpuCount += agentGpuCount;
                 zoneAgg.gpuCount += agentGpuCount;
                 gpuCount += agentGpuCount;
+
+                const int agentProbeAlerts = std::max(0, static_cast<int>(firstInt64Value(summary, {"probe_alerts"}, 0)));
+                const int agentProbeHighAlerts = std::max(0, static_cast<int>(firstInt64Value(summary, {"probe_high_alerts"}, 0)));
+                const int agentProbeAlertedSurfaces = std::max(0, static_cast<int>(firstInt64Value(summary, {"probe_alerted_surfaces"}, 0)));
+                rackAgg.probeAlerts += agentProbeAlerts;
+                rackAgg.probeHighAlerts += agentProbeHighAlerts;
+                rackAgg.probeAlertedSurfaces += agentProbeAlertedSurfaces;
+                zoneAgg.probeAlerts += agentProbeAlerts;
+                zoneAgg.probeHighAlerts += agentProbeHighAlerts;
+                zoneAgg.probeAlertedSurfaces += agentProbeAlertedSurfaces;
+                probeAlertCount += agentProbeAlerts;
+                probeHighAlertCount += agentProbeHighAlerts;
+                probeAlertedSurfaceCount += agentProbeAlertedSurfaces;
 
                 const int agentThermalAlerts = std::max(0, static_cast<int>(firstInt64Value(summary, {"thermal_alerts"}, 0)));
                 const int agentFanAlerts = std::max(0, static_cast<int>(firstInt64Value(summary, {"fan_alerts"}, 0)));
@@ -1057,6 +1224,9 @@ namespace NMC::Server {
                         {"gpu_utilization_avg_pct", agg.gpuUtilCount > 0 ? agg.gpuUtilSum / static_cast<double>(agg.gpuUtilCount) : 0.0},
                         {"gpu_temperature_max_c", agg.hasGpuTempMax ? agg.gpuTempMax : 0.0},
                         {"gpu_power_total_w", agg.gpuPowerTotal},
+                        {"probe_alerts", agg.probeAlerts},
+                        {"probe_high_alerts", agg.probeHighAlerts},
+                        {"probe_alerted_surfaces", agg.probeAlertedSurfaces},
                         {"attributed_total_bps", agg.attributedTotalBps},
                         {"cross_network_bps", agg.crossNetworkBps},
                         {"network_active_flows", agg.activeFlows},
@@ -1086,6 +1256,9 @@ namespace NMC::Server {
                         {"gpu_power_total_w", agg.gpuPowerTotal},
                         {"net_rx_bps", agg.netRxBps},
                         {"net_tx_bps", agg.netTxBps},
+                        {"probe_alerts", agg.probeAlerts},
+                        {"probe_high_alerts", agg.probeHighAlerts},
+                        {"probe_alerted_surfaces", agg.probeAlertedSurfaces},
                         {"attributed_total_bps", agg.attributedTotalBps},
                         {"cross_network_bps", agg.crossNetworkBps},
                         {"network_active_flows", agg.activeFlows},
@@ -1122,6 +1295,9 @@ namespace NMC::Server {
                             {"racks_total", static_cast<int>(rackAggs.size())},
                             {"zones_total", static_cast<int>(zoneAggs.size())},
                             {"gpu_total", gpuCount},
+                            {"probe_alerts", probeAlertCount},
+                            {"probe_high_alerts", probeHighAlertCount},
+                            {"probe_alerted_surfaces", probeAlertedSurfaceCount},
                             {"gpu_utilization_avg_pct", gpuUtilCount > 0 ? gpuUtilSum / static_cast<double>(gpuUtilCount) : 0.0},
                             {"gpu_temperature_max_c", hasGpuTempMax ? gpuTempMax : 0.0},
                             {"gpu_power_total_w", gpuPowerTotal},
@@ -6304,6 +6480,15 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                 {"query_failures", sample.queryFailures},
                 {"coordinator", sample.coordinator},
                 {"score", sample.score},
+                {"probe_watch_total_observations", sample.probeWatchTotalObservations},
+                {"probe_watch_total_alerts", sample.probeWatchTotalAlerts},
+                {"probe_watch_distinct_sources", sample.probeWatchDistinctSources},
+                {"probe_watch_recent_alerts", sample.probeWatchRecentAlerts},
+                {"probe_watch_high_alerts", sample.probeWatchHighAlerts},
+                {"probe_watch_medium_alerts", sample.probeWatchMediumAlerts},
+                {"probe_watch_unauthorized_control_alerts", sample.probeWatchUnauthorizedControlAlerts},
+                {"probe_watch_cooperative_alerts", sample.probeWatchCooperativeAlerts},
+                {"probe_watch_alerted_surfaces", sample.probeWatchAlertedSurfaces},
                 {"tracey_guard_probe_failures", sample.tracey_guardProbeFailures},
                 {"tracey_guard_probe_errors", sample.tracey_guardProbeErrors},
                 {"tracey_guard_quarantined", sample.tracey_guardQuarantined},
@@ -6409,6 +6594,15 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
         sample.queryFailures = std::max(0, payload.value("query_failures", 0));
         sample.coordinator = payload.value("coordinator", false);
         sample.score = payload.value("score", 0LL);
+        sample.probeWatchTotalObservations = std::max(0, payload.value("probe_watch_total_observations", 0));
+        sample.probeWatchTotalAlerts = std::max(0, payload.value("probe_watch_total_alerts", 0));
+        sample.probeWatchDistinctSources = std::max(0, payload.value("probe_watch_distinct_sources", 0));
+        sample.probeWatchRecentAlerts = std::max(0, payload.value("probe_watch_recent_alerts", 0));
+        sample.probeWatchHighAlerts = std::max(0, payload.value("probe_watch_high_alerts", 0));
+        sample.probeWatchMediumAlerts = std::max(0, payload.value("probe_watch_medium_alerts", 0));
+        sample.probeWatchUnauthorizedControlAlerts = std::max(0, payload.value("probe_watch_unauthorized_control_alerts", 0));
+        sample.probeWatchCooperativeAlerts = std::max(0, payload.value("probe_watch_cooperative_alerts", 0));
+        sample.probeWatchAlertedSurfaces = std::max(0, payload.value("probe_watch_alerted_surfaces", 0));
         sample.tracey_guardProbeFailures = std::max(0, payload.value("tracey_guard_probe_failures", 0));
         sample.tracey_guardProbeErrors = std::max(0, payload.value("tracey_guard_probe_errors", 0));
         sample.tracey_guardQuarantined = std::max(0, payload.value("tracey_guard_quarantined", 0));
@@ -7885,6 +8079,15 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
         sample.queryFailures = std::max(0, agent.queryFailures);
         sample.coordinator = agent.coordinator;
         sample.score = agent.score;
+        sample.probeWatchTotalObservations = 0;
+        sample.probeWatchTotalAlerts = 0;
+        sample.probeWatchDistinctSources = 0;
+        sample.probeWatchRecentAlerts = 0;
+        sample.probeWatchHighAlerts = 0;
+        sample.probeWatchMediumAlerts = 0;
+        sample.probeWatchUnauthorizedControlAlerts = 0;
+        sample.probeWatchCooperativeAlerts = 0;
+        sample.probeWatchAlertedSurfaces = 0;
         sample.tracey_guardProbeFailures = 0;
         sample.tracey_guardProbeErrors = 0;
         sample.tracey_guardQuarantined = 0;
@@ -7920,6 +8123,18 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
         if (agent.metrics.is_object()) {
             const auto* statusIt = extractTraceyStatusSnapshotNode(agent.metrics);
             if (statusIt != nullptr) {
+                const auto probeWatchSummary = extractTraceyProbeWatchSummary(*statusIt);
+                if (probeWatchSummary.is_object()) {
+                    sample.probeWatchTotalObservations = std::max(0, probeWatchSummary.value("total_observations", 0));
+                    sample.probeWatchTotalAlerts = std::max(0, probeWatchSummary.value("total_alerts", 0));
+                    sample.probeWatchDistinctSources = std::max(0, probeWatchSummary.value("distinct_sources", 0));
+                    sample.probeWatchRecentAlerts = std::max(0, probeWatchSummary.value("recent_alert_count", 0));
+                    sample.probeWatchHighAlerts = std::max(0, probeWatchSummary.value("high_severity_alerts", 0));
+                    sample.probeWatchMediumAlerts = std::max(0, probeWatchSummary.value("medium_severity_alerts", 0));
+                    sample.probeWatchUnauthorizedControlAlerts = std::max(0, probeWatchSummary.value("unauthorized_control_alerts", 0));
+                    sample.probeWatchCooperativeAlerts = std::max(0, probeWatchSummary.value("cooperative_alerts", 0));
+                    sample.probeWatchAlertedSurfaces = std::max(0, probeWatchSummary.value("alerted_surface_count", 0));
+                }
                 const auto tracey_guardIt = statusIt->find("tracey_guard");
                 if (tracey_guardIt != statusIt->end() && tracey_guardIt->is_object()) {
                     const auto summaryIt = tracey_guardIt->find("summary");
@@ -8084,6 +8299,15 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                 last.queryFailures == sample.queryFailures &&
                 last.coordinator == sample.coordinator &&
                 last.score == sample.score &&
+                last.probeWatchTotalObservations == sample.probeWatchTotalObservations &&
+                last.probeWatchTotalAlerts == sample.probeWatchTotalAlerts &&
+                last.probeWatchDistinctSources == sample.probeWatchDistinctSources &&
+                last.probeWatchRecentAlerts == sample.probeWatchRecentAlerts &&
+                last.probeWatchHighAlerts == sample.probeWatchHighAlerts &&
+                last.probeWatchMediumAlerts == sample.probeWatchMediumAlerts &&
+                last.probeWatchUnauthorizedControlAlerts == sample.probeWatchUnauthorizedControlAlerts &&
+                last.probeWatchCooperativeAlerts == sample.probeWatchCooperativeAlerts &&
+                last.probeWatchAlertedSurfaces == sample.probeWatchAlertedSurfaces &&
                 last.tracey_guardProbeFailures == sample.tracey_guardProbeFailures &&
                 last.tracey_guardProbeErrors == sample.tracey_guardProbeErrors &&
                 last.tracey_guardQuarantined == sample.tracey_guardQuarantined &&
@@ -8130,6 +8354,102 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
             traceyStateStore->recordStatusSample(agent.agentId, traceyStatusSampleToJson(persistedSample));
         }
         scheduleTraceyStateSnapshotLocked(persistedSample.tsMs);
+    }
+
+    void APIRoutes::appendTraceyProbeWatchLogsLocked(TraceyAgent& agent, int64_t nowMs) {
+        if (agent.agentId.empty() || !agent.metrics.is_object()) {
+            return;
+        }
+        const auto* statusSnapshot = extractTraceyStatusSnapshotNode(agent.metrics);
+        if (statusSnapshot == nullptr) {
+            return;
+        }
+        const auto probeWatchSummary = extractTraceyProbeWatchSummary(*statusSnapshot);
+        if (!probeWatchSummary.is_object()) {
+            return;
+        }
+        const auto alertsIt = probeWatchSummary.find("recent_alerts");
+        if (alertsIt == probeWatchSummary.end() || !alertsIt->is_array()) {
+            return;
+        }
+
+        struct PendingProbeAlert {
+            int64_t tsMs{0};
+            std::string fingerprint;
+            nlohmann::json alert;
+        };
+        std::vector<PendingProbeAlert> pending;
+        for (const auto& alert : *alertsIt) {
+            if (!alert.is_object()) {
+                continue;
+            }
+            const int64_t tsMs = std::max<int64_t>(0, firstInt64Value(alert, {"ts_ms", "tsMs"}, 0));
+            const std::string fingerprint = firstStringValue(alert, {"surface"}) + "|" +
+                                            firstStringValue(alert, {"classification"}) + "|" +
+                                            firstStringValue(alert, {"source"}) + "|" +
+                                            firstStringValue(alert, {"path"}) + "|" +
+                                            std::to_string(tsMs);
+            if (tsMs < agent.lastProbeAlertTsMs) {
+                continue;
+            }
+            if (tsMs == agent.lastProbeAlertTsMs && fingerprint == agent.lastProbeAlertFingerprint) {
+                continue;
+            }
+            pending.push_back({tsMs, fingerprint, alert});
+        }
+        std::sort(pending.begin(), pending.end(), [](const PendingProbeAlert& a, const PendingProbeAlert& b) {
+            if (a.tsMs == b.tsMs) {
+                return a.fingerprint < b.fingerprint;
+            }
+            return a.tsMs < b.tsMs;
+        });
+
+        for (const auto& entry : pending) {
+            const auto& alert = entry.alert;
+            const std::string surface = firstStringValue(alert, {"surface"});
+            const std::string classification = firstStringValue(alert, {"classification"});
+            const std::string severity = toLower(firstStringValue(alert, {"severity"}, "info"));
+            const std::string source = firstStringValue(alert, {"source"});
+            const std::string path = firstStringValue(alert, {"path"});
+            const std::string reason = firstStringValue(alert, {"reason"});
+            const std::string runId = firstStringValue(alert, {"run_id", "runId"});
+            const int64_t statusCode = std::max<int64_t>(0, firstInt64Value(alert, {"status_code", "statusCode"}, 0));
+            const double signal = std::max(0.0, firstDoubleValue(alert, {"signal"}, 0.0));
+            const bool authorized = firstValue(alert, {"authorized"}) != nullptr
+                                    ? jsonBoolValue(*firstValue(alert, {"authorized"}), false)
+                                    : false;
+            const std::string level = classification == "cooperative_probe"
+                                      ? "info"
+                                      : ((severity == "high" || severity == "critical") ? "warn" : "info");
+            const std::string message = !surface.empty()
+                                        ? "Tracey detected network probe activity on " + surface + "."
+                                        : "Tracey detected network probe activity.";
+            appendTraceyAgentLogLocked(
+                    agent.agentId,
+                    entry.tsMs > 0 ? entry.tsMs : nowMs,
+                    level,
+                    "security",
+                    message,
+                    {
+                            {"surface", surface},
+                            {"classification", classification},
+                            {"severity", severity},
+                            {"source", source},
+                            {"path", path},
+                            {"status_code", statusCode},
+                            {"signal", signal},
+                            {"authorized", authorized},
+                            {"reason", reason},
+                            {"run_id", runId}
+                    }
+            );
+            if (entry.tsMs > agent.lastProbeAlertTsMs ||
+                (entry.tsMs == agent.lastProbeAlertTsMs &&
+                 entry.fingerprint != agent.lastProbeAlertFingerprint)) {
+                agent.lastProbeAlertTsMs = entry.tsMs;
+                agent.lastProbeAlertFingerprint = entry.fingerprint;
+            }
+        }
     }
 
     void APIRoutes::appendTraceyAgentLogLocked(const std::string& agentId,
@@ -8448,6 +8768,7 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                     }
             );
         }
+        appendTraceyProbeWatchLogsLocked(agent, nowMs);
         appendTraceyStatusSampleLocked(agent, nowMs, "status_poll");
     }
 
@@ -8603,6 +8924,7 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                         }
                 );
             }
+            appendTraceyProbeWatchLogsLocked(agent, nowMs);
             appendTraceyStatusSampleLocked(agent, nowMs, "heartbeat");
 
             nlohmann::json payload = {
@@ -8682,6 +9004,9 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                                             {"continuum_loop", "continuumLoop", "adaptive_loop", "adaptiveLoop"}
                                     )
                                     : nullptr;
+        const nlohmann::json probeWatch = statusSnapshot != nullptr
+                                          ? extractTraceyProbeWatchSummary(*statusSnapshot)
+                                          : nlohmann::json::object();
         const nlohmann::json loaderThreats = statusSnapshot != nullptr
                                              ? extractTraceyLoaderThreatSummary(*statusSnapshot)
                                              : nlohmann::json::object();
@@ -8795,6 +9120,7 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                 {"server", serverNode != nullptr ? *serverNode : nlohmann::json::object()},
                 {"gpus", gpus},
                 {"recent_actions", recentActions},
+                {"probe_watch", probeWatch},
                 {"tracey_guard", traceyGuard != nullptr ? *traceyGuard : nlohmann::json::object()},
                 {"tracey_guard_summary", traceyGuardSummary != nullptr ? *traceyGuardSummary : nlohmann::json::object()},
                 {"recent_executions", traceyGuardRecentExecutions != nullptr ? *traceyGuardRecentExecutions : nlohmann::json::array()},
@@ -8822,6 +9148,11 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                         {"recent_action_count", std::max<int64_t>(0, firstInt64Value(server, {"recent_action_count", "recentActionCount"}, static_cast<int64_t>(recentActions.size())))},
                         {"autonomy_risk", autonomyRisk >= 0.0 ? autonomyRisk : 0.0},
                         {"autonomy_action", firstStringValue(server, {"autonomy_action", "autonomyAction"})},
+                        {"probe_alerts", std::max<int64_t>(0, probeWatch.value("total_alerts", 0))},
+                        {"probe_high_alerts", std::max<int64_t>(0, probeWatch.value("high_severity_alerts", 0))},
+                        {"probe_alerted_surfaces", std::max<int64_t>(0, probeWatch.value("alerted_surface_count", 0))},
+                        {"probe_latest_surface", probeWatch.value("latest_surface", "")},
+                        {"probe_latest_classification", probeWatch.value("latest_classification", "")},
                         {"ecc_corrected_total", eccNode != nullptr ? std::max<int64_t>(0, firstInt64Value(*eccNode, {"corrected_total", "correctedTotal"}, 0)) : 0},
                         {"ecc_uncorrected_total", eccNode != nullptr ? std::max<int64_t>(0, firstInt64Value(*eccNode, {"uncorrected_total", "uncorrectedTotal"}, 0)) : 0},
                         {"compromise_risk", continuumAssessmentSummary != nullptr ? std::max(0.0, firstDoubleValue(*continuumAssessmentSummary, {"compromise_risk", "compromiseRisk"}, 0.0)) : 0.0},
@@ -8903,6 +9234,12 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
         int reachable = 0;
         int secureLinks = 0;
         int signedAnnouncements = 0;
+        int probeWatchAgentsWithAlerts = 0;
+        int probeWatchTotalAlerts = 0;
+        int probeWatchHighAlertsTotal = 0;
+        int probeWatchUnauthorizedControlTotal = 0;
+        int probeWatchCooperativeTotal = 0;
+        int probeWatchAlertedSurfacesTotal = 0;
         int tracey_guardEnabledAgents = 0;
         int tracey_guardQuarantinedTotal = 0;
         int tracey_guardFailuresTotal = 0;
@@ -8970,12 +9307,25 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                 signedAnnouncements++;
             }
 
+            nlohmann::json probeWatchSummary = nlohmann::json::object();
             nlohmann::json tracey_guardSummary = nlohmann::json::object();
             nlohmann::json loaderThreatSummary = nlohmann::json::object();
             nlohmann::json continuumAssessmentSummary = nlohmann::json::object();
             if (agent.metrics.is_object()) {
                 auto statusIt = agent.metrics.find("status_snapshot");
                 if (statusIt != agent.metrics.end() && statusIt->is_object()) {
+                    probeWatchSummary = extractTraceyProbeWatchSummary(*statusIt);
+                    if (probeWatchSummary.is_object()) {
+                        const int totalAlerts = std::max(0, probeWatchSummary.value("total_alerts", 0));
+                        if (totalAlerts > 0) {
+                            probeWatchAgentsWithAlerts++;
+                        }
+                        probeWatchTotalAlerts += totalAlerts;
+                        probeWatchHighAlertsTotal += std::max(0, probeWatchSummary.value("high_severity_alerts", 0));
+                        probeWatchUnauthorizedControlTotal += std::max(0, probeWatchSummary.value("unauthorized_control_alerts", 0));
+                        probeWatchCooperativeTotal += std::max(0, probeWatchSummary.value("cooperative_alerts", 0));
+                        probeWatchAlertedSurfacesTotal += std::max(0, probeWatchSummary.value("alerted_surface_count", 0));
+                    }
                     auto tracey_guardIt = statusIt->find("tracey_guard");
                     if (tracey_guardIt != statusIt->end() && tracey_guardIt->is_object()) {
                         auto summaryIt = tracey_guardIt->find("summary");
@@ -9054,6 +9404,7 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                     {"is_coordinator", agent.coordinator},
                     {"coordinator_epoch", agent.coordinatorEpoch},
                     {"score", agent.score},
+                    {"probe_watch", probeWatchSummary},
                     {"continuum_assessment", continuumAssessmentSummary},
                     {"tracey_guard", tracey_guardSummary},
                     {"loader_threats", loaderThreatSummary},
@@ -9157,6 +9508,14 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                         {"reachable", reachable},
                         {"secure_links", secureLinks},
                         {"signed_announcements", signedAnnouncements}
+                }},
+                {"probe_watch_summary", {
+                        {"agents_with_alerts", probeWatchAgentsWithAlerts},
+                        {"total_alerts", probeWatchTotalAlerts},
+                        {"high_severity_alerts", probeWatchHighAlertsTotal},
+                        {"unauthorized_control_alerts", probeWatchUnauthorizedControlTotal},
+                        {"cooperative_alerts", probeWatchCooperativeTotal},
+                        {"alerted_surfaces", probeWatchAlertedSurfacesTotal}
                 }},
                 {"tracey_guard_summary", {
                         {"enabled_agents", tracey_guardEnabledAgents},
@@ -11174,6 +11533,15 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
             int coordinator{0};
             int64_t queryFailureSum{0};
             int64_t scoreSum{0};
+            int64_t probeWatchObservationSum{0};
+            int64_t probeWatchAlertSum{0};
+            int64_t probeWatchDistinctSourceSum{0};
+            int64_t probeWatchRecentAlertSum{0};
+            int64_t probeWatchHighAlertSum{0};
+            int64_t probeWatchMediumAlertSum{0};
+            int64_t probeWatchUnauthorizedControlSum{0};
+            int64_t probeWatchCooperativeSum{0};
+            int64_t probeWatchAlertedSurfaceSum{0};
             int64_t tracey_guardFailureSum{0};
             int64_t tracey_guardErrorSum{0};
             int64_t tracey_guardQuarantineSum{0};
@@ -11243,6 +11611,15 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
             }
             bucket.queryFailureSum += std::max(0, sample.queryFailures);
             bucket.scoreSum += sample.score;
+            bucket.probeWatchObservationSum += std::max(0, sample.probeWatchTotalObservations);
+            bucket.probeWatchAlertSum += std::max(0, sample.probeWatchTotalAlerts);
+            bucket.probeWatchDistinctSourceSum += std::max(0, sample.probeWatchDistinctSources);
+            bucket.probeWatchRecentAlertSum += std::max(0, sample.probeWatchRecentAlerts);
+            bucket.probeWatchHighAlertSum += std::max(0, sample.probeWatchHighAlerts);
+            bucket.probeWatchMediumAlertSum += std::max(0, sample.probeWatchMediumAlerts);
+            bucket.probeWatchUnauthorizedControlSum += std::max(0, sample.probeWatchUnauthorizedControlAlerts);
+            bucket.probeWatchCooperativeSum += std::max(0, sample.probeWatchCooperativeAlerts);
+            bucket.probeWatchAlertedSurfaceSum += std::max(0, sample.probeWatchAlertedSurfaces);
             bucket.tracey_guardFailureSum += std::max(0, sample.tracey_guardProbeFailures);
             bucket.tracey_guardErrorSum += std::max(0, sample.tracey_guardProbeErrors);
             bucket.tracey_guardQuarantineSum += std::max(0, sample.tracey_guardQuarantined);
@@ -11295,6 +11672,33 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
             const double avgScore = bucket.sampleCount > 0
                                     ? static_cast<double>(bucket.scoreSum) / static_cast<double>(bucket.sampleCount)
                                     : 0.0;
+            const double avgProbeWatchObservations = bucket.sampleCount > 0
+                                                     ? static_cast<double>(bucket.probeWatchObservationSum) / static_cast<double>(bucket.sampleCount)
+                                                     : 0.0;
+            const double avgProbeWatchAlerts = bucket.sampleCount > 0
+                                               ? static_cast<double>(bucket.probeWatchAlertSum) / static_cast<double>(bucket.sampleCount)
+                                               : 0.0;
+            const double avgProbeWatchDistinctSources = bucket.sampleCount > 0
+                                                        ? static_cast<double>(bucket.probeWatchDistinctSourceSum) / static_cast<double>(bucket.sampleCount)
+                                                        : 0.0;
+            const double avgProbeWatchRecentAlerts = bucket.sampleCount > 0
+                                                     ? static_cast<double>(bucket.probeWatchRecentAlertSum) / static_cast<double>(bucket.sampleCount)
+                                                     : 0.0;
+            const double avgProbeWatchHighAlerts = bucket.sampleCount > 0
+                                                   ? static_cast<double>(bucket.probeWatchHighAlertSum) / static_cast<double>(bucket.sampleCount)
+                                                   : 0.0;
+            const double avgProbeWatchMediumAlerts = bucket.sampleCount > 0
+                                                     ? static_cast<double>(bucket.probeWatchMediumAlertSum) / static_cast<double>(bucket.sampleCount)
+                                                     : 0.0;
+            const double avgProbeWatchUnauthorized = bucket.sampleCount > 0
+                                                     ? static_cast<double>(bucket.probeWatchUnauthorizedControlSum) / static_cast<double>(bucket.sampleCount)
+                                                     : 0.0;
+            const double avgProbeWatchCooperative = bucket.sampleCount > 0
+                                                    ? static_cast<double>(bucket.probeWatchCooperativeSum) / static_cast<double>(bucket.sampleCount)
+                                                    : 0.0;
+            const double avgProbeWatchAlertedSurfaces = bucket.sampleCount > 0
+                                                        ? static_cast<double>(bucket.probeWatchAlertedSurfaceSum) / static_cast<double>(bucket.sampleCount)
+                                                        : 0.0;
             const double avgTraceyGuardFailures = bucket.sampleCount > 0
                                                ? static_cast<double>(bucket.tracey_guardFailureSum) / static_cast<double>(bucket.sampleCount)
                                                : 0.0;
@@ -11376,6 +11780,15 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                     {"coordinator", bucket.coordinator},
                     {"avg_query_failures", avgQueryFailures},
                     {"avg_score", avgScore},
+                    {"avg_probe_watch_observations", avgProbeWatchObservations},
+                    {"avg_probe_watch_alerts", avgProbeWatchAlerts},
+                    {"avg_probe_watch_distinct_sources", avgProbeWatchDistinctSources},
+                    {"avg_probe_watch_recent_alerts", avgProbeWatchRecentAlerts},
+                    {"avg_probe_watch_high_alerts", avgProbeWatchHighAlerts},
+                    {"avg_probe_watch_medium_alerts", avgProbeWatchMediumAlerts},
+                    {"avg_probe_watch_unauthorized_control_alerts", avgProbeWatchUnauthorized},
+                    {"avg_probe_watch_cooperative_alerts", avgProbeWatchCooperative},
+                    {"avg_probe_watch_alerted_surfaces", avgProbeWatchAlertedSurfaces},
                     {"avg_tracey_guard_failures", avgTraceyGuardFailures},
                     {"avg_tracey_guard_errors", avgTraceyGuardErrors},
                     {"avg_tracey_guard_quarantined", avgTraceyGuardQuarantine},
@@ -11421,11 +11834,13 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
         const bool stale = agent.stale || (lastSignalMs > 0 && nowMs > lastSignalMs &&
                                            (nowMs - lastSignalMs) > (traceyStaleAfterSeconds * 1000));
         const std::string currentStatus = stale ? "offline" : normalizeTraceyStatus(agent.status);
+        nlohmann::json probeWatchSummary = nlohmann::json::object();
         nlohmann::json tracey_guardSummary = nlohmann::json::object();
         nlohmann::json loaderThreatSummary = nlohmann::json::object();
         if (agent.metrics.is_object()) {
             auto statusIt = agent.metrics.find("status_snapshot");
             if (statusIt != agent.metrics.end() && statusIt->is_object()) {
+                probeWatchSummary = extractTraceyProbeWatchSummary(*statusIt);
                 auto tracey_guardIt = statusIt->find("tracey_guard");
                 if (tracey_guardIt != statusIt->end() && tracey_guardIt->is_object()) {
                     auto summaryIt = tracey_guardIt->find("summary");
@@ -11470,8 +11885,19 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                         {"next_query_epoch_ms", agent.nextQueryEpochMs},
                         {"metrics", agent.metrics.is_null() ? nlohmann::json::object() : agent.metrics},
                         {"capabilities", agent.capabilities.is_null() ? nlohmann::json::object() : agent.capabilities},
+                        {"probe_watch", probeWatchSummary},
                         {"tracey_guard", tracey_guardSummary},
                         {"loader_threats", loaderThreatSummary}
+                }},
+                {"security_summary", {
+                        {"probe_watch", probeWatchSummary},
+                        {"security_log_count", static_cast<int64_t>(std::count_if(
+                                logs.begin(),
+                                logs.end(),
+                                [](const TraceyAgentLogEntry& entry) {
+                                    return toLower(entry.category) == "security";
+                                }
+                        ))}
                 }},
                 {"series", series},
                 {"status_transitions", transitions},
