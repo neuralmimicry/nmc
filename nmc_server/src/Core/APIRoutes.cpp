@@ -15,6 +15,7 @@
 #include <sstream>
 #include <iostream>
 #include <algorithm> // For std::remove_if, std::find_if
+#include <cmath>
 #include <map>
 #include <set>       // For unique locations/types
 #include <chrono>
@@ -441,6 +442,1243 @@ namespace NMC::Server {
                                 double fallback) {
             const auto* value = firstValue(objectNode, keys);
             return value != nullptr ? jsonDoubleValue(*value, fallback) : fallback;
+        }
+
+        double clampValue(double value, double minValue, double maxValue) {
+            return std::max(minValue, std::min(maxValue, value));
+        }
+
+        double safeRatio(double numerator, double denominator, double fallback = 0.0) {
+            if (denominator <= 0.0) {
+                return fallback;
+            }
+            return numerator / denominator;
+        }
+
+        double traceyScenarioGrowthScale(double growthPctPerMin, double minutes) {
+            return clampValue(1.0 + ((growthPctPerMin / 100.0) * minutes), 0.40, 8.0);
+        }
+
+        std::string traceyDominantProcess(const nlohmann::json& serverNode,
+                                          const nlohmann::json* simulationNode) {
+            if (simulationNode != nullptr) {
+                const std::string existing = firstStringValue(
+                        *simulationNode,
+                        {"dominant_process", "dominantProcess"}
+                );
+                if (!existing.empty()) {
+                    return existing;
+                }
+            }
+
+            const auto* networkNode = firstObjectValue(serverNode, {"network"});
+            const auto* topProcesses = networkNode != nullptr ? firstArrayValue(*networkNode, {"top_processes", "topProcesses"}) : nullptr;
+            if (topProcesses == nullptr) {
+                return "";
+            }
+
+            double bestBps = -1.0;
+            std::string bestProcess;
+            for (const auto& process : *topProcesses) {
+                if (!process.is_object()) {
+                    continue;
+                }
+                const std::string name = firstStringValue(process, {"name", "exe_path", "exePath"});
+                const double totalBps = std::max(0.0, firstDoubleValue(process, {"total_bps", "totalBps"}, 0.0));
+                if (!name.empty() && totalBps >= bestBps) {
+                    bestBps = totalBps;
+                    bestProcess = name;
+                }
+            }
+            return bestProcess;
+        }
+
+        std::string traceyDominantRemoteIp(const nlohmann::json& serverNode,
+                                           const nlohmann::json* simulationNode) {
+            if (simulationNode != nullptr) {
+                const std::string existing = firstStringValue(
+                        *simulationNode,
+                        {"dominant_remote_ip", "dominantRemoteIp"}
+                );
+                if (!existing.empty()) {
+                    return existing;
+                }
+            }
+
+            const auto* networkNode = firstObjectValue(serverNode, {"network"});
+            const auto* topFlows = networkNode != nullptr ? firstArrayValue(*networkNode, {"top_flows", "topFlows"}) : nullptr;
+            if (topFlows == nullptr) {
+                return "";
+            }
+
+            double bestBps = -1.0;
+            std::string bestRemote;
+            for (const auto& flow : *topFlows) {
+                if (!flow.is_object()) {
+                    continue;
+                }
+                const double totalBps = std::max(
+                        0.0,
+                        firstDoubleValue(
+                                flow,
+                                {"total_bps", "totalBps"},
+                                firstDoubleValue(flow, {"rx_bps", "rxBps"}, 0.0) +
+                                firstDoubleValue(flow, {"tx_bps", "txBps"}, 0.0)
+                        )
+                );
+                const std::string remoteIp = firstStringValue(flow, {"remote_ip", "remoteIp"});
+                if (!remoteIp.empty() && totalBps >= bestBps) {
+                    bestBps = totalBps;
+                    bestRemote = remoteIp;
+                }
+            }
+            return bestRemote;
+        }
+
+        double traceyObservedCpuCoreEstimate(const nlohmann::json& serverNode,
+                                             const nlohmann::json* simulationNode,
+                                             int gpuCount) {
+            double estimate = simulationNode != nullptr
+                              ? std::max(0.0, firstDoubleValue(*simulationNode, {"estimated_cpu_cores", "estimatedCpuCores"}, 0.0))
+                              : 0.0;
+
+            const auto* processes = firstArrayValue(serverNode, {"processes"});
+            if (processes != nullptr) {
+                double processCpuCores = 0.0;
+                for (const auto& process : *processes) {
+                    if (!process.is_object()) {
+                        continue;
+                    }
+                    processCpuCores += std::max(0.0, firstDoubleValue(process, {"cpu_pct", "cpuPct"}, 0.0)) / 100.0;
+                }
+                estimate = std::max(estimate, processCpuCores);
+            }
+
+            const double cpuUsagePct = std::max(0.0, firstDoubleValue(serverNode, {"cpu_usage_pct", "cpuUsagePct"}, 0.0));
+            estimate = std::max(estimate, cpuUsagePct / 12.5);
+            estimate = std::max(estimate, static_cast<double>(std::max(1, gpuCount)) * 1.5);
+            return std::max(1.0, estimate);
+        }
+
+        std::string normalizeTraceySimulationStrategy(std::string strategy) {
+            strategy = toLower(trim(strategy));
+            if (strategy == "throughput" || strategy == "collective") {
+                return strategy;
+            }
+            return "balanced";
+        }
+
+        std::string inferTraceyExpansionTopology(int targetNodes,
+                                                 int targetGpus,
+                                                 double crossNetworkShare,
+                                                 double latencyPressure,
+                                                 double queuePressure) {
+            if (targetNodes <= 1 && targetGpus <= 8) {
+                return "Switch";
+            }
+            if (targetNodes >= 8 || crossNetworkShare >= 0.58 || latencyPressure >= 0.48) {
+                return "Switch + DoubleBinaryTree";
+            }
+            if (targetGpus >= 8 || queuePressure >= 0.40 || crossNetworkShare >= 0.32) {
+                return "Switch + Ring";
+            }
+            return "Switch";
+        }
+
+        std::string inferTraceyExpansionCollective(int targetNodes,
+                                                   int targetGpus,
+                                                   double crossNetworkShare,
+                                                   double latencyPressure,
+                                                   double queuePressure) {
+            if (targetNodes >= 8 || crossNetworkShare >= 0.60 || latencyPressure >= 0.50) {
+                return "DoubleBinaryTree";
+            }
+            if (targetGpus >= 8 || crossNetworkShare >= 0.35 || queuePressure >= 0.35) {
+                return "Ring";
+            }
+            return "SwitchLocal";
+        }
+
+        struct TraceyExpansionEstimate {
+            double networkBps{0.0};
+            double crossNetworkBps{0.0};
+            double activeFlows{0.0};
+            double gpuUtilizationPct{0.0};
+            double cpuUsagePct{0.0};
+            double memoryBytes{0.0};
+            double powerW{0.0};
+            double latencyPressure{0.0};
+            double queuePressure{0.0};
+            double collectivePenalty{0.0};
+            double crossNetworkShare{0.0};
+            double confidence{0.0};
+            std::string strategy{"balanced"};
+            std::string topology{"Switch"};
+            std::string recommendedCollective{"Ring"};
+            std::string dominantProcess;
+            std::string dominantRemoteIp;
+            std::string simulationFocus{"Heuristic fabric"};
+        };
+
+        TraceyExpansionEstimate estimateTraceyExpansionScenario(const nlohmann::json& baseline,
+                                                                const nlohmann::json& heuristics,
+                                                                int targetNodes,
+                                                                int targetGpus,
+                                                                double targetCpuCores,
+                                                                const std::string& strategy = "balanced") {
+            TraceyExpansionEstimate estimate;
+            const std::string normalizedStrategy = normalizeTraceySimulationStrategy(strategy);
+            estimate.strategy = normalizedStrategy;
+
+            const double strategyNetworkBias = normalizedStrategy == "throughput"
+                                               ? 1.12
+                                               : (normalizedStrategy == "collective" ? 0.96 : 1.0);
+            const double strategyCrossBias = normalizedStrategy == "throughput"
+                                             ? 1.08
+                                             : (normalizedStrategy == "collective" ? 1.16 : 1.0);
+            const double strategyGpuBias = normalizedStrategy == "throughput"
+                                           ? 1.08
+                                           : (normalizedStrategy == "collective" ? 1.02 : 1.0);
+            const double strategyCpuBias = normalizedStrategy == "throughput"
+                                           ? 1.05
+                                           : (normalizedStrategy == "collective" ? 1.10 : 1.0);
+            const double strategyCollectiveBias = normalizedStrategy == "throughput"
+                                                  ? 1.05
+                                                  : (normalizedStrategy == "collective" ? 1.18 : 1.0);
+
+            const int baselineNodes = std::max(1, static_cast<int>(firstInt64Value(baseline, {"node_count", "nodeCount"}, 1)));
+            const int baselineGpus = std::max(1, static_cast<int>(firstInt64Value(baseline, {"gpu_count", "gpuCount"}, 1)));
+            const double baselineCpuCores = std::max(1.0, firstDoubleValue(baseline, {"cpu_core_estimate", "cpuCoreEstimate"}, 1.0));
+            const double baselineNetworkBps = std::max(0.0, firstDoubleValue(baseline, {"attributed_total_bps", "attributedTotalBps"}, 0.0));
+            const double baselineCrossNetworkBps = std::max(0.0, firstDoubleValue(baseline, {"cross_network_bps", "crossNetworkBps"}, 0.0));
+            const double baselineActiveFlows = std::max(0.0, firstDoubleValue(baseline, {"active_flows", "activeFlows"}, 0.0));
+            const double baselineGpuUtilPct = clampValue(firstDoubleValue(baseline, {"gpu_utilization_avg_pct", "gpuUtilizationAvgPct"}, 0.0), 0.0, 100.0);
+            const double baselineCpuUsagePct = clampValue(firstDoubleValue(baseline, {"cpu_usage_pct", "cpuUsagePct"}, 0.0), 0.0, 100.0);
+            const double baselineMemoryBytes = std::max(0.0, firstDoubleValue(baseline, {"memory_working_set_bytes", "memoryWorkingSetBytes"}, 0.0));
+            const double baselinePowerW = std::max(0.0, firstDoubleValue(baseline, {"power_w", "powerW"}, 0.0));
+            const double baselineLatencyPressure = clampValue(firstDoubleValue(baseline, {"latency_pressure", "latencyPressure"}, 0.0), 0.0, 1.0);
+            const double baselineQueuePressure = clampValue(firstDoubleValue(baseline, {"queue_pressure", "queuePressure"}, 0.0), 0.0, 1.0);
+            const double growthPctPerMin = firstDoubleValue(heuristics, {"traffic_growth_pct_per_min", "trafficGrowthPctPerMin"}, 0.0);
+
+            const double nodeRatio = std::max(1.0, static_cast<double>(std::max(targetNodes, baselineNodes)) / static_cast<double>(baselineNodes));
+            const double gpuRatio = std::max(1.0, static_cast<double>(std::max(targetGpus, baselineGpus)) / static_cast<double>(baselineGpus));
+            const double cpuRatio = std::max(1.0, std::max(targetCpuCores, baselineCpuCores) / baselineCpuCores);
+
+            const double nodeScaleExponent = clampValue(
+                    firstDoubleValue(heuristics, {"node_scale_exponent", "nodeScaleExponent"}, 1.08) * strategyNetworkBias,
+                    0.70,
+                    2.00
+            );
+            const double gpuScaleExponent = clampValue(
+                    firstDoubleValue(heuristics, {"gpu_scale_exponent", "gpuScaleExponent"}, 0.82) * strategyGpuBias,
+                    0.60,
+                    1.50
+            );
+            const double cpuScaleExponent = clampValue(
+                    firstDoubleValue(heuristics, {"cpu_scale_exponent", "cpuScaleExponent"}, 0.74) * strategyCpuBias,
+                    0.50,
+                    1.40
+            );
+            const double collectiveScaleExponent = clampValue(
+                    firstDoubleValue(heuristics, {"collective_scale_exponent", "collectiveScaleExponent"}, 0.18) * strategyCollectiveBias,
+                    0.05,
+                    1.40
+            );
+            const double crossNetworkBias = clampValue(
+                    firstDoubleValue(heuristics, {"cross_network_bias", "crossNetworkBias"}, 0.70) * strategyCrossBias,
+                    0.05,
+                    2.50
+            );
+            const double latencyPenalty = clampValue(firstDoubleValue(heuristics, {"latency_penalty", "latencyPenalty"}, 0.10), 0.0, 1.50);
+            const double queuePenalty = clampValue(firstDoubleValue(heuristics, {"queue_penalty", "queuePenalty"}, 0.10), 0.0, 1.50);
+            const double baseCrossNetworkShare = clampValue(
+                    firstDoubleValue(
+                            baseline,
+                            {"cross_network_share", "crossNetworkShare"},
+                            safeRatio(baselineCrossNetworkBps, baselineNetworkBps, 0.0)
+                    ),
+                    0.0,
+                    1.0
+            );
+
+            const double collectiveFactor = 1.0 + (collectiveScaleExponent * std::log2(std::max(1.0, nodeRatio)));
+            const double weightedScale = (0.46 * std::pow(nodeRatio, nodeScaleExponent)) +
+                                         (0.36 * std::pow(gpuRatio, gpuScaleExponent)) +
+                                         (0.18 * std::pow(cpuRatio, cpuScaleExponent));
+            const double growthScale = traceyScenarioGrowthScale(growthPctPerMin, 12.0);
+            const double pressureScale = 1.0 +
+                                         (latencyPenalty * std::max(0.0, nodeRatio - 1.0) * 0.08) +
+                                         (queuePenalty * std::max(0.0, gpuRatio - 1.0) * 0.05);
+
+            estimate.networkBps = baselineNetworkBps > 0.0
+                                  ? baselineNetworkBps * weightedScale * collectiveFactor * growthScale * pressureScale * strategyNetworkBias
+                                  : 0.0;
+            estimate.crossNetworkShare = clampValue(
+                    baseCrossNetworkShare +
+                    (crossNetworkBias * std::max(0.0, nodeRatio - 1.0) * 0.09) +
+                    (std::max(0.0, gpuRatio - 1.0) * 0.03),
+                    0.02,
+                    0.97
+            );
+            estimate.crossNetworkBps = estimate.networkBps * estimate.crossNetworkShare;
+            estimate.activeFlows = baselineActiveFlows > 0.0
+                                   ? baselineActiveFlows *
+                                     ((0.40 * nodeRatio) + (0.35 * gpuRatio) + (0.25 * cpuRatio)) *
+                                     (1.0 + (estimate.crossNetworkShare * 0.20))
+                                   : 0.0;
+            estimate.gpuUtilizationPct = clampValue(
+                    baselineGpuUtilPct * (0.84 + (std::max(0.0, gpuRatio - 1.0) * 0.12) + ((collectiveFactor - 1.0) * 0.18)),
+                    4.0,
+                    99.0
+            );
+            estimate.cpuUsagePct = clampValue(
+                    (baselineCpuUsagePct * (0.78 + (std::max(0.0, cpuRatio - 1.0) * 0.22))) +
+                    (std::max(0.0, nodeRatio - 1.0) * 6.0) +
+                    (std::max(0.0, gpuRatio - 1.0) * 3.0),
+                    3.0,
+                    99.0
+            );
+            estimate.memoryBytes = baselineMemoryBytes > 0.0
+                                   ? baselineMemoryBytes * std::max(1.0, (0.55 * gpuRatio) + (0.45 * cpuRatio))
+                                   : 0.0;
+            estimate.powerW = baselinePowerW > 0.0
+                              ? baselinePowerW *
+                                std::max(1.0, (0.48 * gpuRatio) + (0.24 * nodeRatio) +
+                                                 (0.28 * safeRatio(estimate.gpuUtilizationPct, std::max(1.0, baselineGpuUtilPct), 1.0)))
+                              : 0.0;
+            estimate.latencyPressure = clampValue(
+                    baselineLatencyPressure +
+                    (std::log2(std::max(1.0, nodeRatio)) * 0.12) +
+                    (estimate.crossNetworkShare * 0.10) +
+                    (std::max(0.0, gpuRatio - 1.0) * 0.02),
+                    0.0,
+                    1.0
+            );
+            estimate.queuePressure = clampValue(
+                    baselineQueuePressure +
+                    (std::log2(std::max(1.0, std::max(gpuRatio, cpuRatio))) * 0.10) +
+                    (estimate.crossNetworkShare * 0.06),
+                    0.0,
+                    1.0
+            );
+            estimate.collectivePenalty = std::max(0.0, collectiveFactor - 1.0);
+            estimate.topology = inferTraceyExpansionTopology(
+                    std::max(targetNodes, baselineNodes),
+                    std::max(targetGpus, baselineGpus),
+                    estimate.crossNetworkShare,
+                    estimate.latencyPressure,
+                    estimate.queuePressure
+            );
+            estimate.recommendedCollective = normalizedStrategy == "collective"
+                                            ? "DoubleBinaryTree"
+                                            : inferTraceyExpansionCollective(
+                                                    std::max(targetNodes, baselineNodes),
+                                                    std::max(targetGpus, baselineGpus),
+                                                    estimate.crossNetworkShare,
+                                                    estimate.latencyPressure,
+                                                    estimate.queuePressure
+                                            );
+            estimate.confidence = clampValue(
+                    firstDoubleValue(
+                            heuristics,
+                            {"confidence", "attribution_confidence", "attributionConfidence"},
+                            0.50
+                    ) * (normalizedStrategy == "collective" ? 0.96 : 1.0),
+                    0.10,
+                    0.99
+            );
+            estimate.dominantProcess = firstStringValue(heuristics, {"dominant_process", "dominantProcess"});
+            estimate.dominantRemoteIp = firstStringValue(heuristics, {"dominant_remote_ip", "dominantRemoteIp"});
+            if (!estimate.dominantProcess.empty()) {
+                estimate.simulationFocus = estimate.dominantProcess + " driving " + estimate.topology;
+            } else if (!estimate.dominantRemoteIp.empty()) {
+                estimate.simulationFocus = estimate.dominantRemoteIp + " on " + estimate.recommendedCollective;
+            } else {
+                estimate.simulationFocus = estimate.topology + " fabric";
+            }
+            return estimate;
+        }
+
+        void mergeJsonObjectDefaults(nlohmann::json& target, const nlohmann::json& defaults) {
+            if (!defaults.is_object()) {
+                return;
+            }
+            if (!target.is_object()) {
+                target = nlohmann::json::object();
+            }
+
+            for (auto it = defaults.begin(); it != defaults.end(); ++it) {
+                const std::string key = it.key();
+                if (!target.contains(key) || target[key].is_null()) {
+                    target[key] = it.value();
+                    continue;
+                }
+                if (target[key].is_object() && it.value().is_object()) {
+                    mergeJsonObjectDefaults(target[key], it.value());
+                    continue;
+                }
+                if (target[key].is_string()) {
+                    const std::string current = trim(target[key].get<std::string>());
+                    if (current.empty()) {
+                        target[key] = it.value();
+                    }
+                }
+            }
+        }
+
+        void enrichTraceyResourceForecastView(const nlohmann::json& serverNode,
+                                              const nlohmann::json* networkSummary,
+                                              const nlohmann::json& gpus,
+                                              nlohmann::json& resourceForecast,
+                                              int64_t nowMs) {
+            if (!resourceForecast.is_object()) {
+                resourceForecast = nlohmann::json::object();
+            }
+
+            nlohmann::json simulationView = firstObjectValue(resourceForecast, {"simulation"}) != nullptr
+                                           ? *firstObjectValue(resourceForecast, {"simulation"})
+                                           : nlohmann::json::object();
+
+            const double attributedTotalBps = networkSummary != nullptr
+                                              ? std::max(0.0, firstDoubleValue(*networkSummary, {"attributed_total_bps", "attributedTotalBps"}, 0.0))
+                                              : 0.0;
+            const double crossNetworkBps = networkSummary != nullptr
+                                           ? std::max(0.0, firstDoubleValue(*networkSummary, {"cross_network_bps", "crossNetworkBps"}, 0.0))
+                                           : 0.0;
+            const double activeFlows = networkSummary != nullptr
+                                       ? std::max(0.0, firstDoubleValue(*networkSummary, {"active_flows", "activeFlows"}, 0.0))
+                                       : 0.0;
+            const double crossNetworkShare = attributedTotalBps > 0.0
+                                             ? clampValue(crossNetworkBps / attributedTotalBps, 0.0, 1.0)
+                                             : 0.0;
+            const double attributionConfidence = networkSummary != nullptr
+                                                 ? clampValue(firstDoubleValue(*networkSummary, {"attribution_confidence", "attributionConfidence"}, 0.0), 0.0, 1.0)
+                                                 : 0.0;
+            const double latencyPressure = networkSummary != nullptr
+                                           ? clampValue(firstDoubleValue(*networkSummary, {"latency_pressure", "latencyPressure"}, 0.0), 0.0, 1.0)
+                                           : 0.0;
+            const double queuePressure = networkSummary != nullptr
+                                         ? clampValue(firstDoubleValue(*networkSummary, {"queue_pressure", "queuePressure"}, 0.0), 0.0, 1.0)
+                                         : 0.0;
+            const double trafficGrowthPctPerMin = networkSummary != nullptr
+                                                  ? firstDoubleValue(*networkSummary, {"traffic_growth_pct_per_min", "trafficGrowthPctPerMin"}, 0.0)
+                                                  : 0.0;
+            const double crossGrowthPctPerMin = networkSummary != nullptr
+                                                ? firstDoubleValue(*networkSummary, {"cross_network_growth_pct_per_min", "crossNetworkGrowthPctPerMin"}, 0.0)
+                                                : 0.0;
+            const double flowGrowthPctPerMin = networkSummary != nullptr
+                                               ? firstDoubleValue(*networkSummary, {"flow_growth_pct_per_min", "flowGrowthPctPerMin"}, 0.0)
+                                               : 0.0;
+            const int gpuCount = gpus.is_array()
+                                 ? static_cast<int>(gpus.size())
+                                 : std::max(1, static_cast<int>(firstInt64Value(serverNode, {"gpu_count", "gpuCount"}, 0)));
+            const double gpuUtilizationAvgPct = clampValue(firstDoubleValue(serverNode, {"gpu_utilization_avg_pct", "gpuUtilizationAvgPct"}, 0.0), 0.0, 100.0);
+            const double cpuUsagePct = clampValue(firstDoubleValue(serverNode, {"cpu_usage_pct", "cpuUsagePct"}, 0.0), 0.0, 100.0);
+            const double powerW = std::max(
+                    0.0,
+                    firstDoubleValue(
+                            simulationView,
+                            {"estimated_power_w", "estimatedPowerW"},
+                            firstDoubleValue(serverNode, {"gpu_power_total_w", "gpuPowerTotalW"}, 0.0)
+                    )
+            );
+            const double memoryWorkingSetBytes = std::max(
+                    0.0,
+                    firstDoubleValue(
+                            simulationView,
+                            {"estimated_memory_working_set_bytes", "estimatedMemoryWorkingSetBytes"},
+                            firstDoubleValue(serverNode, {"mem_working_set_bytes", "memWorkingSetBytes", "mem_used_bytes", "memUsedBytes"}, 0.0)
+                    )
+            );
+            const double cpuCoreEstimate = traceyObservedCpuCoreEstimate(
+                    serverNode,
+                    simulationView.empty() ? nullptr : &simulationView,
+                    gpuCount
+            );
+            const std::string dominantProcess = traceyDominantProcess(
+                    serverNode,
+                    simulationView.empty() ? nullptr : &simulationView
+            );
+            const std::string dominantRemoteIp = traceyDominantRemoteIp(
+                    serverNode,
+                    simulationView.empty() ? nullptr : &simulationView
+            );
+            const int sampleCount = std::max(0, static_cast<int>(firstInt64Value(resourceForecast, {"sample_count", "sampleCount"}, 0)));
+
+            const double nodeScaleExponent = clampValue(
+                    1.02 + (crossNetworkShare * 0.20) + (latencyPressure * 0.10) + (queuePressure * 0.06),
+                    1.02,
+                    1.42
+            );
+            const double gpuScaleExponent = clampValue(
+                    0.80 + (crossNetworkShare * 0.08) + (gpuCount > 8 ? 0.06 : 0.0),
+                    0.75,
+                    1.12
+            );
+            const double cpuScaleExponent = clampValue(
+                    0.68 + (queuePressure * 0.12) + (clampValue(cpuUsagePct / 100.0, 0.0, 1.0) * 0.10),
+                    0.68,
+                    1.00
+            );
+            const double collectiveScaleExponent = clampValue(
+                    0.16 + (crossNetworkShare * 0.28) + std::min(0.18, std::log2(std::max(2, gpuCount)) / 10.0),
+                    0.16,
+                    0.90
+            );
+            const double crossNetworkBias = clampValue(
+                    0.45 + (crossNetworkShare * 0.75) + (std::max(0.0, trafficGrowthPctPerMin) / 100.0 * 1.50),
+                    0.45,
+                    1.75
+            );
+            const double confidence = clampValue(
+                    0.18 + (attributionConfidence * 0.52) + (sampleCount > 0 ? 0.10 : 0.0) +
+                    (activeFlows > 0.0 ? 0.08 : 0.0) + (!dominantProcess.empty() ? 0.05 : 0.0),
+                    0.10,
+                    0.98
+            );
+
+            const int recommendedNodes = std::max(
+                    2,
+                    std::min(
+                            16,
+                            1 + static_cast<int>(std::ceil(1.0 + (crossNetworkShare * 3.0) +
+                                                            (std::max(0.0, trafficGrowthPctPerMin) / 20.0)))
+                    )
+            );
+            const int recommendedGpus = std::max(
+                    std::max(1, gpuCount),
+                    std::min(
+                            64,
+                            std::max(gpuCount * (crossNetworkShare >= 0.35 ? 2 : 3), gpuCount + 4)
+                    )
+            );
+            const double recommendedCpuCores = std::ceil(
+                    cpuCoreEstimate * (1.40 + (queuePressure * 0.50) + (crossNetworkShare * 0.30))
+            );
+
+            const nlohmann::json baseline = {
+                    {"node_count", 1},
+                    {"gpu_count", std::max(1, gpuCount)},
+                    {"cpu_core_estimate", cpuCoreEstimate},
+                    {"attributed_total_bps", attributedTotalBps},
+                    {"cross_network_bps", crossNetworkBps},
+                    {"cross_network_share", crossNetworkShare},
+                    {"active_flows", activeFlows},
+                    {"gpu_utilization_avg_pct", gpuUtilizationAvgPct},
+                    {"cpu_usage_pct", cpuUsagePct},
+                    {"memory_working_set_bytes", memoryWorkingSetBytes},
+                    {"power_w", powerW},
+                    {"latency_pressure", latencyPressure},
+                    {"queue_pressure", queuePressure}
+            };
+
+            const nlohmann::json heuristics = {
+                    {"inferred_topology", inferTraceyExpansionTopology(1, gpuCount, crossNetworkShare, latencyPressure, queuePressure)},
+                    {"recommended_collective", inferTraceyExpansionCollective(recommendedNodes, recommendedGpus, crossNetworkShare, latencyPressure, queuePressure)},
+                    {"node_scale_exponent", nodeScaleExponent},
+                    {"gpu_scale_exponent", gpuScaleExponent},
+                    {"cpu_scale_exponent", cpuScaleExponent},
+                    {"collective_scale_exponent", collectiveScaleExponent},
+                    {"cross_network_bias", crossNetworkBias},
+                    {"latency_penalty", clampValue(0.12 + (latencyPressure * 0.88), 0.12, 1.0)},
+                    {"queue_penalty", clampValue(0.10 + (queuePressure * 0.90), 0.10, 1.0)},
+                    {"traffic_growth_pct_per_min", trafficGrowthPctPerMin},
+                    {"cross_network_growth_pct_per_min", crossGrowthPctPerMin},
+                    {"flow_growth_pct_per_min", flowGrowthPctPerMin},
+                    {"attribution_confidence", attributionConfidence},
+                    {"confidence", confidence},
+                    {"dominant_process", dominantProcess},
+                    {"dominant_remote_ip", dominantRemoteIp}
+            };
+
+            const TraceyExpansionEstimate recommendedSimulation = estimateTraceyExpansionScenario(
+                    baseline,
+                    heuristics,
+                    recommendedNodes,
+                    recommendedGpus,
+                    recommendedCpuCores
+            );
+
+            const double projectedTotalBps5m = std::max(
+                    0.0,
+                    firstDoubleValue(
+                            resourceForecast,
+                            {"projected_total_bps_5m", "projectedTotalBps5m"},
+                            attributedTotalBps * traceyScenarioGrowthScale(trafficGrowthPctPerMin, 5.0)
+                    )
+            );
+            const double projectedTotalBps15m = std::max(
+                    0.0,
+                    firstDoubleValue(
+                            resourceForecast,
+                            {"projected_total_bps_15m", "projectedTotalBps15m"},
+                            attributedTotalBps * traceyScenarioGrowthScale(trafficGrowthPctPerMin, 15.0)
+                    )
+            );
+            const double projectedCrossBps5m = std::max(
+                    0.0,
+                    firstDoubleValue(
+                            resourceForecast,
+                            {"projected_cross_network_bps_5m", "projectedCrossNetworkBps5m"},
+                            crossNetworkBps * traceyScenarioGrowthScale(crossGrowthPctPerMin, 5.0)
+                    )
+            );
+            const double projectedCrossBps15m = std::max(
+                    0.0,
+                    firstDoubleValue(
+                            resourceForecast,
+                            {"projected_cross_network_bps_15m", "projectedCrossNetworkBps15m"},
+                            crossNetworkBps * traceyScenarioGrowthScale(crossGrowthPctPerMin, 15.0)
+                    )
+            );
+            const double projectedActiveFlows5m = std::max(
+                    0.0,
+                    firstDoubleValue(
+                            resourceForecast,
+                            {"projected_active_flows_5m", "projectedActiveFlows5m"},
+                            activeFlows * traceyScenarioGrowthScale(flowGrowthPctPerMin, 5.0)
+                    )
+            );
+            const double projectedActiveFlows15m = std::max(
+                    0.0,
+                    firstDoubleValue(
+                            resourceForecast,
+                            {"projected_active_flows_15m", "projectedActiveFlows15m"},
+                            activeFlows * traceyScenarioGrowthScale(flowGrowthPctPerMin, 15.0)
+                    )
+            );
+
+            mergeJsonObjectDefaults(
+                    simulationView,
+                    {
+                            {"estimated_cpu_cores", recommendedCpuCores},
+                            {"estimated_memory_working_set_bytes", recommendedSimulation.memoryBytes},
+                            {"estimated_network_bps", recommendedSimulation.networkBps},
+                            {"estimated_power_w", recommendedSimulation.powerW},
+                            {"estimated_gpu_utilization_avg_pct", recommendedSimulation.gpuUtilizationPct},
+                            {"estimated_cpu_usage_pct", recommendedSimulation.cpuUsagePct},
+                            {"estimated_active_flows", recommendedSimulation.activeFlows},
+                            {"cpu_scale_factor", safeRatio(recommendedCpuCores, cpuCoreEstimate, 1.0)},
+                            {"memory_scale_factor", safeRatio(recommendedSimulation.memoryBytes, std::max(1.0, memoryWorkingSetBytes), safeRatio(recommendedCpuCores, cpuCoreEstimate, 1.0))},
+                            {"power_scale_factor", safeRatio(recommendedSimulation.powerW, std::max(1.0, powerW), 1.0)},
+                            {"latency_pressure", recommendedSimulation.latencyPressure},
+                            {"queue_pressure", recommendedSimulation.queuePressure},
+                            {"cross_network_flows", static_cast<int64_t>(std::llround(recommendedSimulation.activeFlows * recommendedSimulation.crossNetworkShare))},
+                            {"collective_penalty", recommendedSimulation.collectivePenalty},
+                            {"recommended_topology", heuristics.value("inferred_topology", std::string("Switch"))},
+                            {"recommended_collective", heuristics.value("recommended_collective", std::string("Ring"))},
+                            {"dominant_process", dominantProcess},
+                            {"dominant_remote_ip", dominantRemoteIp}
+                    }
+            );
+
+            mergeJsonObjectDefaults(
+                    resourceForecast,
+                    {
+                            {"projected_total_bps_5m", projectedTotalBps5m},
+                            {"projected_total_bps_15m", projectedTotalBps15m},
+                            {"projected_cross_network_bps_5m", projectedCrossBps5m},
+                            {"projected_cross_network_bps_15m", projectedCrossBps15m},
+                            {"projected_active_flows_5m", projectedActiveFlows5m},
+                            {"projected_active_flows_15m", projectedActiveFlows15m},
+                            {"status", attributedTotalBps > 0.0 ? "heuristic" : "disabled"}
+                    }
+            );
+
+            const std::string topologyLabel = heuristics.value("inferred_topology", std::string("Switch"));
+            const std::string collectiveLabel = heuristics.value("recommended_collective", std::string("Ring"));
+            nlohmann::json aiAdvice = firstObjectValue(resourceForecast, {"ai_advice", "aiAdvice"}) != nullptr
+                                      ? *firstObjectValue(resourceForecast, {"ai_advice", "aiAdvice"})
+                                      : nlohmann::json::object();
+            mergeJsonObjectDefaults(
+                    aiAdvice,
+                    {
+                            {"provider", "continuum"},
+                            {"model", "heuristic-expansion-v1"},
+                            {"generated_epoch_ms", nowMs},
+                            {"summary", std::string("Tracey live network telemetry suggests a ") + topologyLabel +
+                                        " expansion shape; keep collectives " + collectiveLabel +
+                                        " beyond " + std::to_string(recommendedNodes) + " nodes."},
+                            {"latency_focus", latencyPressure >= 0.35
+                                              ? "Inter-node latency is already elevated; prefer tree-shaped reductions before adding more racks."
+                                              : "Latency headroom is available; local switch expansion should remain efficient for the next growth step."},
+                            {"cpu_focus", cpuUsagePct >= 70.0
+                                          ? "CPU orchestration pressure is rising; scale host cores with each GPU cohort."
+                                          : "CPU headroom is still workable, but core growth should track active-flow growth as nodes increase."},
+                            {"memory_focus", memoryWorkingSetBytes > 0.0
+                                             ? "Working-set size should grow with GPU and core expansion; keep memory provisioning near the simulated estimate."
+                                             : "Memory telemetry is partial; treat the CPU-core target as the lower-bound for host sizing."},
+                            {"power_focus", powerW > 0.0
+                                            ? std::string("Power scales roughly with GPU expansion; plan for about ") + std::to_string(static_cast<int>(std::round(recommendedSimulation.powerW))) + " W at the recommended target."
+                                            : "Power telemetry is limited; use GPU utilization and active-flow growth as the main expansion signals."},
+                            {"simulation_focus", !dominantProcess.empty()
+                                                 ? dominantProcess + " driving " + topologyLabel + " / " + collectiveLabel
+                                                 : topologyLabel + " / " + collectiveLabel + " fabric path"},
+                            {"confidence", confidence}
+                    }
+            );
+
+            resourceForecast["simulation"] = simulationView;
+            resourceForecast["ai_advice"] = aiAdvice;
+            resourceForecast["continuum_expansion"] = {
+                    {"version", 1},
+                    {"source", "continuum.heuristic"},
+                    {"generated_epoch_ms", nowMs},
+                    {"baseline", baseline},
+                    {"recommended_targets", {
+                            {"node_count", recommendedNodes},
+                            {"gpu_count", recommendedGpus},
+                            {"cpu_core_estimate", recommendedCpuCores}
+                    }},
+                    {"maximum_targets", {
+                            {"node_count", std::max(recommendedNodes, 24)},
+                            {"gpu_count", std::max(recommendedGpus, 96)},
+                            {"cpu_core_estimate", std::max(recommendedCpuCores, 96.0)}
+                    }},
+                    {"heuristics", heuristics},
+                    {"dimensions", nlohmann::json::array({
+                            {
+                                    {"name", "intra_node"},
+                                    {"topology", "Switch"},
+                                    {"participant_count", std::max(1, std::min(gpuCount, 8))},
+                                    {"bandwidth_bias", clampValue(1.0 - (crossNetworkShare * 0.35), 0.55, 1.15)},
+                                    {"latency_bias", clampValue(1.0 + (latencyPressure * 0.35), 1.0, 1.45)}
+                            },
+                            {
+                                    {"name", "inter_node"},
+                                    {"topology", collectiveLabel == "DoubleBinaryTree" ? "DoubleBinaryTree" : "Ring"},
+                                    {"participant_count", recommendedNodes},
+                                    {"bandwidth_bias", clampValue(0.70 + (crossNetworkShare * 0.55), 0.55, 1.40)},
+                                    {"latency_bias", clampValue(1.0 + (latencyPressure * 0.80) + (queuePressure * 0.20), 1.0, 1.95)}
+                            },
+                            {
+                                    {"name", "host_orchestration"},
+                                    {"topology", "FullyConnected"},
+                                    {"participant_count", static_cast<int>(std::ceil(recommendedCpuCores))},
+                                    {"bandwidth_bias", clampValue(0.35 + (queuePressure * 0.45), 0.30, 1.0)},
+                                    {"latency_bias", clampValue(1.0 + (queuePressure * 0.75), 1.0, 1.75)}
+                            }
+                    })},
+                    {"recommended_simulation", {
+                            {"estimated_network_bps", recommendedSimulation.networkBps},
+                            {"estimated_cross_network_bps", recommendedSimulation.crossNetworkBps},
+                            {"estimated_active_flows", recommendedSimulation.activeFlows},
+                            {"estimated_gpu_utilization_avg_pct", recommendedSimulation.gpuUtilizationPct},
+                            {"estimated_cpu_usage_pct", recommendedSimulation.cpuUsagePct},
+                            {"estimated_memory_working_set_bytes", recommendedSimulation.memoryBytes},
+                            {"estimated_power_w", recommendedSimulation.powerW},
+                            {"estimated_latency_pressure", recommendedSimulation.latencyPressure},
+                            {"estimated_queue_pressure", recommendedSimulation.queuePressure},
+                            {"collective_penalty", recommendedSimulation.collectivePenalty},
+                            {"cross_network_share", recommendedSimulation.crossNetworkShare},
+                            {"strategy", recommendedSimulation.strategy},
+                            {"topology", recommendedSimulation.topology},
+                            {"recommended_collective", recommendedSimulation.recommendedCollective},
+                            {"confidence", recommendedSimulation.confidence},
+                            {"dominant_process", recommendedSimulation.dominantProcess},
+                            {"dominant_remote_ip", recommendedSimulation.dominantRemoteIp},
+                            {"simulation_focus", recommendedSimulation.simulationFocus},
+                            {"target_nodes", recommendedNodes},
+                            {"target_gpus", recommendedGpus},
+                            {"target_cpu_cores", recommendedCpuCores}
+                    }}
+            };
+        }
+
+        struct TraceySimulationQuery {
+            bool hasNodes{false};
+            bool hasGpus{false};
+            bool hasCpuCores{false};
+            bool hasStrategy{false};
+            int targetNodes{0};
+            int targetGpus{0};
+            double targetCpuCores{0.0};
+            std::string strategy{"balanced"};
+
+            [[nodiscard]] bool requested() const {
+                return hasNodes || hasGpus || hasCpuCores || hasStrategy;
+            }
+        };
+
+        struct TraceyResolvedSimulationRequest {
+            std::string scope{"server"};
+            std::string strategy{"balanced"};
+            int baselineNodes{1};
+            int baselineGpus{1};
+            double baselineCpuCores{1.0};
+            int recommendedNodes{1};
+            int recommendedGpus{1};
+            double recommendedCpuCores{1.0};
+            int heuristicMaxNodes{1};
+            int heuristicMaxGpus{1};
+            double heuristicMaxCpuCores{1.0};
+            int targetNodes{1};
+            int targetGpus{1};
+            double targetCpuCores{1.0};
+            bool withinHeuristicLimits{true};
+            bool clamped{false};
+        };
+
+        int64_t parseQueryInt64(const httplib::Request& req,
+                                const char* key,
+                                int64_t fallback,
+                                int64_t minValue,
+                                int64_t maxValue);
+
+        TraceySimulationQuery parseTraceySimulationQuery(const httplib::Request& req) {
+            TraceySimulationQuery query;
+            if (req.has_param("simulation_nodes")) {
+                query.hasNodes = true;
+                query.targetNodes = static_cast<int>(parseQueryInt64(req, "simulation_nodes", 1, 1, 4096));
+            }
+            if (req.has_param("simulation_gpus")) {
+                query.hasGpus = true;
+                query.targetGpus = static_cast<int>(parseQueryInt64(req, "simulation_gpus", 1, 1, 65536));
+            }
+            if (req.has_param("simulation_cores")) {
+                query.hasCpuCores = true;
+                query.targetCpuCores = static_cast<double>(parseQueryInt64(req, "simulation_cores", 1, 1, 262144));
+            }
+            if (req.has_param("simulation_strategy")) {
+                query.hasStrategy = true;
+                query.strategy = normalizeTraceySimulationStrategy(req.get_param_value("simulation_strategy"));
+            }
+            return query;
+        }
+
+        TraceyResolvedSimulationRequest resolveTraceySimulationRequest(const nlohmann::json& expansionModel,
+                                                                       const TraceySimulationQuery& query,
+                                                                       const std::string& scope) {
+            const nlohmann::json baseline = firstObjectValue(expansionModel, {"baseline"}) != nullptr
+                                           ? *firstObjectValue(expansionModel, {"baseline"})
+                                           : nlohmann::json::object();
+            const nlohmann::json recommended = firstObjectValue(expansionModel, {"recommended_targets", "recommendedTargets"}) != nullptr
+                                              ? *firstObjectValue(expansionModel, {"recommended_targets", "recommendedTargets"})
+                                              : nlohmann::json::object();
+            const nlohmann::json maximum = firstObjectValue(expansionModel, {"maximum_targets", "maximumTargets"}) != nullptr
+                                          ? *firstObjectValue(expansionModel, {"maximum_targets", "maximumTargets"})
+                                          : nlohmann::json::object();
+
+            TraceyResolvedSimulationRequest resolved;
+            resolved.scope = scope;
+            resolved.strategy = query.hasStrategy ? normalizeTraceySimulationStrategy(query.strategy) : "balanced";
+            resolved.baselineNodes = std::max(1, static_cast<int>(firstInt64Value(baseline, {"node_count", "nodeCount"}, 1)));
+            resolved.baselineGpus = std::max(1, static_cast<int>(firstInt64Value(baseline, {"gpu_count", "gpuCount"}, 1)));
+            resolved.baselineCpuCores = std::max(1.0, firstDoubleValue(baseline, {"cpu_core_estimate", "cpuCoreEstimate"}, 1.0));
+            resolved.recommendedNodes = std::max(
+                    resolved.baselineNodes,
+                    static_cast<int>(firstInt64Value(recommended, {"node_count", "nodeCount"}, resolved.baselineNodes))
+            );
+            resolved.recommendedGpus = std::max(
+                    resolved.baselineGpus,
+                    static_cast<int>(firstInt64Value(recommended, {"gpu_count", "gpuCount"}, resolved.baselineGpus))
+            );
+            resolved.recommendedCpuCores = std::max(
+                    resolved.baselineCpuCores,
+                    firstDoubleValue(recommended, {"cpu_core_estimate", "cpuCoreEstimate"}, resolved.baselineCpuCores)
+            );
+            resolved.heuristicMaxNodes = std::max(
+                    resolved.recommendedNodes,
+                    static_cast<int>(firstInt64Value(maximum, {"node_count", "nodeCount"}, resolved.recommendedNodes))
+            );
+            resolved.heuristicMaxGpus = std::max(
+                    resolved.recommendedGpus,
+                    static_cast<int>(firstInt64Value(maximum, {"gpu_count", "gpuCount"}, resolved.recommendedGpus))
+            );
+            resolved.heuristicMaxCpuCores = std::max(
+                    resolved.recommendedCpuCores,
+                    firstDoubleValue(maximum, {"cpu_core_estimate", "cpuCoreEstimate"}, resolved.recommendedCpuCores)
+            );
+
+            const int desiredNodes = query.hasNodes ? query.targetNodes : resolved.recommendedNodes;
+            const int desiredGpus = query.hasGpus ? query.targetGpus : resolved.recommendedGpus;
+            const double desiredCpuCores = query.hasCpuCores ? query.targetCpuCores : resolved.recommendedCpuCores;
+
+            resolved.targetNodes = std::clamp(desiredNodes, resolved.baselineNodes, std::max(resolved.heuristicMaxNodes, 4096));
+            resolved.targetGpus = std::clamp(desiredGpus, resolved.baselineGpus, std::max(resolved.heuristicMaxGpus, 65536));
+            resolved.targetCpuCores = std::clamp(desiredCpuCores, resolved.baselineCpuCores, std::max(resolved.heuristicMaxCpuCores, 262144.0));
+            resolved.clamped = resolved.targetNodes != desiredNodes ||
+                               resolved.targetGpus != desiredGpus ||
+                               std::abs(resolved.targetCpuCores - desiredCpuCores) > 0.01;
+            resolved.withinHeuristicLimits = resolved.targetNodes <= resolved.heuristicMaxNodes &&
+                                             resolved.targetGpus <= resolved.heuristicMaxGpus &&
+                                             resolved.targetCpuCores <= resolved.heuristicMaxCpuCores;
+            return resolved;
+        }
+
+        nlohmann::json buildTraceySimulationRequestView(const TraceyResolvedSimulationRequest& request) {
+            return {
+                    {"scope", request.scope},
+                    {"strategy", request.strategy},
+                    {"baseline_nodes", request.baselineNodes},
+                    {"baseline_gpus", request.baselineGpus},
+                    {"baseline_cpu_cores", request.baselineCpuCores},
+                    {"recommended_nodes", request.recommendedNodes},
+                    {"recommended_gpus", request.recommendedGpus},
+                    {"recommended_cpu_cores", request.recommendedCpuCores},
+                    {"heuristic_max_nodes", request.heuristicMaxNodes},
+                    {"heuristic_max_gpus", request.heuristicMaxGpus},
+                    {"heuristic_max_cpu_cores", request.heuristicMaxCpuCores},
+                    {"target_nodes", request.targetNodes},
+                    {"target_gpus", request.targetGpus},
+                    {"target_cpu_cores", request.targetCpuCores},
+                    {"within_heuristic_limits", request.withinHeuristicLimits},
+                    {"clamped", request.clamped}
+            };
+        }
+
+        nlohmann::json buildTraceySimulationForecastView(const nlohmann::json& expansionModel,
+                                                         const TraceyResolvedSimulationRequest& request) {
+            const nlohmann::json baseline = firstObjectValue(expansionModel, {"baseline"}) != nullptr
+                                           ? *firstObjectValue(expansionModel, {"baseline"})
+                                           : nlohmann::json::object();
+            const nlohmann::json heuristics = firstObjectValue(expansionModel, {"heuristics"}) != nullptr
+                                             ? *firstObjectValue(expansionModel, {"heuristics"})
+                                             : nlohmann::json::object();
+            const TraceyExpansionEstimate estimate = estimateTraceyExpansionScenario(
+                    baseline,
+                    heuristics,
+                    request.targetNodes,
+                    request.targetGpus,
+                    request.targetCpuCores,
+                    request.strategy
+            );
+            return {
+                    {"scope", request.scope},
+                    {"strategy", request.strategy},
+                    {"estimated_network_bps", estimate.networkBps},
+                    {"estimated_cross_network_bps", estimate.crossNetworkBps},
+                    {"estimated_active_flows", estimate.activeFlows},
+                    {"estimated_gpu_utilization_avg_pct", estimate.gpuUtilizationPct},
+                    {"estimated_cpu_usage_pct", estimate.cpuUsagePct},
+                    {"estimated_memory_working_set_bytes", estimate.memoryBytes},
+                    {"estimated_power_w", estimate.powerW},
+                    {"estimated_latency_pressure", estimate.latencyPressure},
+                    {"estimated_queue_pressure", estimate.queuePressure},
+                    {"collective_penalty", estimate.collectivePenalty},
+                    {"cross_network_share", estimate.crossNetworkShare},
+                    {"topology", estimate.topology},
+                    {"recommended_collective", estimate.recommendedCollective},
+                    {"confidence", estimate.confidence},
+                    {"dominant_process", estimate.dominantProcess},
+                    {"dominant_remote_ip", estimate.dominantRemoteIp},
+                    {"simulation_focus", estimate.simulationFocus},
+                    {"target_nodes", request.targetNodes},
+                    {"target_gpus", request.targetGpus},
+                    {"target_cpu_cores", request.targetCpuCores},
+                    {"extra_nodes", std::max(0, request.targetNodes - request.baselineNodes)},
+                    {"extra_gpus", std::max(0, request.targetGpus - request.baselineGpus)},
+                    {"extra_cpu_cores", std::max(0.0, request.targetCpuCores - request.baselineCpuCores)},
+                    {"within_heuristic_limits", request.withinHeuristicLimits},
+                    {"clamped", request.clamped}
+            };
+        }
+
+        bool buildTraceyRequestedSimulation(const nlohmann::json& resourceForecast,
+                                            const TraceySimulationQuery& query,
+                                            const std::string& scope,
+                                            nlohmann::json& requestOut,
+                                            nlohmann::json& forecastOut) {
+            requestOut = nlohmann::json::object();
+            forecastOut = nlohmann::json::object();
+            if (!query.requested() || !resourceForecast.is_object()) {
+                return false;
+            }
+            const auto* expansionModel = firstObjectValue(resourceForecast, {"continuum_expansion", "continuumExpansion"});
+            if (expansionModel == nullptr || !expansionModel->is_object()) {
+                return false;
+            }
+            const TraceyResolvedSimulationRequest resolved = resolveTraceySimulationRequest(*expansionModel, query, scope);
+            requestOut = buildTraceySimulationRequestView(resolved);
+            forecastOut = buildTraceySimulationForecastView(*expansionModel, resolved);
+            return true;
+        }
+
+        nlohmann::json buildTraceyGpuSimulationForecast(const nlohmann::json& gpuDetail,
+                                                        const nlohmann::json& resourceForecast,
+                                                        const nlohmann::json& simulationForecast) {
+            if (!gpuDetail.is_object() || !resourceForecast.is_object() || !simulationForecast.is_object()) {
+                return nlohmann::json::object();
+            }
+            const auto* expansionModel = firstObjectValue(resourceForecast, {"continuum_expansion", "continuumExpansion"});
+            if (expansionModel == nullptr || !expansionModel->is_object()) {
+                return nlohmann::json::object();
+            }
+
+            const nlohmann::json baseline = firstObjectValue(*expansionModel, {"baseline"}) != nullptr
+                                           ? *firstObjectValue(*expansionModel, {"baseline"})
+                                           : nlohmann::json::object();
+            const double baselineNodes = std::max(1.0, firstDoubleValue(baseline, {"node_count", "nodeCount"}, 1.0));
+            const double baselineGpus = std::max(1.0, firstDoubleValue(baseline, {"gpu_count", "gpuCount"}, 1.0));
+            const double baselineCpuCores = std::max(1.0, firstDoubleValue(baseline, {"cpu_core_estimate", "cpuCoreEstimate"}, 1.0));
+
+            const double targetNodes = std::max(baselineNodes, firstDoubleValue(simulationForecast, {"target_nodes", "targetNodes"}, baselineNodes));
+            const double targetGpus = std::max(baselineGpus, firstDoubleValue(simulationForecast, {"target_gpus", "targetGpus"}, baselineGpus));
+            const double targetCpuCores = std::max(baselineCpuCores, firstDoubleValue(simulationForecast, {"target_cpu_cores", "targetCpuCores"}, baselineCpuCores));
+            const double nodeRatio = std::max(1.0, targetNodes / baselineNodes);
+            const double gpuRatio = std::max(1.0, targetGpus / baselineGpus);
+            const double cpuRatio = std::max(1.0, targetCpuCores / baselineCpuCores);
+
+            const double baseUtilPct = clampValue(firstDoubleValue(gpuDetail, {"util_pct", "utilPct"}, 0.0), 0.0, 100.0);
+            const double basePowerW = std::max(0.0, firstDoubleValue(gpuDetail, {"power_w", "powerW"}, 0.0));
+            const double baseMemUsedBytes = std::max(0.0, firstDoubleValue(gpuDetail, {"mem_used_bytes", "memUsedBytes"}, 0.0));
+            const double baseTempC = std::max(0.0, firstDoubleValue(gpuDetail, {"temp_c", "tempC"}, 0.0));
+            const double baseReliability = clampValue(firstDoubleValue(gpuDetail, {"reliability_score", "reliabilityScore"}, 1.0), 0.0, 1.0);
+            const double baseRisk = clampValue(firstDoubleValue(gpuDetail, {"last_guard_risk", "lastGuardRisk"}, 0.0), 0.0, 1.0);
+            const double baseConfidence = clampValue(firstDoubleValue(gpuDetail, {"last_guard_confidence", "lastGuardConfidence"}, 0.0), 0.0, 1.0);
+            const double latencyPressure = clampValue(firstDoubleValue(simulationForecast, {"estimated_latency_pressure", "estimatedLatencyPressure"}, 0.0), 0.0, 1.0);
+            const double queuePressure = clampValue(firstDoubleValue(simulationForecast, {"estimated_queue_pressure", "estimatedQueuePressure"}, 0.0), 0.0, 1.0);
+            const double collectivePenalty = std::max(0.0, firstDoubleValue(simulationForecast, {"collective_penalty", "collectivePenalty"}, 0.0));
+            const int64_t baseProbeFails = std::max<int64_t>(0, firstInt64Value(gpuDetail, {"probe_fail_count", "probeFailCount"}, 0));
+            const int64_t baseProbeErrors = std::max<int64_t>(0, firstInt64Value(gpuDetail, {"probe_error_count", "probeErrorCount"}, 0));
+            const int64_t smCount = std::max<int64_t>(0, firstInt64Value(gpuDetail, {"sm_count", "smCount"}, 0));
+
+            const double estimatedUtilPct = clampValue(
+                    baseUtilPct * (0.88 + (std::max(0.0, gpuRatio - 1.0) * 0.10) + (collectivePenalty * 0.16)),
+                    1.0,
+                    99.0
+            );
+            const double estimatedPowerW = basePowerW > 0.0
+                                           ? basePowerW * std::max(
+                                                   1.0,
+                                                   (0.54 * gpuRatio) +
+                                                   (0.18 * nodeRatio) +
+                                                   (0.28 * safeRatio(estimatedUtilPct, std::max(1.0, baseUtilPct), 1.0))
+                                           )
+                                           : 0.0;
+            const double estimatedMemUsedBytes = baseMemUsedBytes > 0.0
+                                                 ? baseMemUsedBytes * std::max(1.0, (0.62 * gpuRatio) + (0.38 * cpuRatio))
+                                                 : 0.0;
+            const double estimatedTempC = clampValue(
+                    (baseTempC > 0.0 ? baseTempC : 32.0) +
+                    (std::log2(std::max(1.0, gpuRatio)) * 3.5) +
+                    (std::max(0.0, estimatedUtilPct - baseUtilPct) * 0.10),
+                    baseTempC > 0.0 ? baseTempC : 32.0,
+                    99.0
+            );
+            const double estimatedReliability = clampValue(
+                    baseReliability -
+                    (((latencyPressure + queuePressure) * 0.5) * 0.05) -
+                    (std::max(0.0, gpuRatio - 1.0) * 0.01),
+                    0.45,
+                    1.0
+            );
+            const double estimatedRisk = clampValue(
+                    baseRisk +
+                    (latencyPressure * 0.18) +
+                    (queuePressure * 0.18) +
+                    (std::max(0.0, gpuRatio - 1.0) * 0.04),
+                    0.0,
+                    0.99
+            );
+            const double estimatedConfidence = clampValue(
+                    std::max(baseConfidence, firstDoubleValue(simulationForecast, {"confidence"}, 0.0)) *
+                    (1.0 - (std::max(0.0, estimatedRisk - baseRisk) * 0.10)),
+                    0.05,
+                    0.99
+            );
+
+            int64_t estimatedProbeFails = static_cast<int64_t>(std::llround(
+                    static_cast<double>(baseProbeFails) *
+                    std::max(1.0, (gpuRatio * 0.75) + std::max(0.0, (estimatedRisk - 0.35) * 4.0))
+            ));
+            int64_t estimatedProbeErrors = static_cast<int64_t>(std::llround(
+                    static_cast<double>(baseProbeErrors) *
+                    std::max(1.0, (cpuRatio * 0.40) + (queuePressure * 2.5))
+            ));
+            if (estimatedProbeFails == 0 && estimatedRisk >= 0.70) {
+                estimatedProbeFails = 1;
+            }
+            if (estimatedProbeErrors == 0 && queuePressure >= 0.70) {
+                estimatedProbeErrors = 1;
+            }
+
+            return {
+                    {"gpu_id", firstStringValue(gpuDetail, {"gpu_id", "gpuId"})},
+                    {"strategy", firstStringValue(simulationForecast, {"strategy"}, "balanced")},
+                    {"estimated_util_pct", estimatedUtilPct},
+                    {"estimated_power_w", estimatedPowerW},
+                    {"estimated_mem_used_bytes", estimatedMemUsedBytes},
+                    {"estimated_temp_c", estimatedTempC},
+                    {"estimated_reliability_score", estimatedReliability},
+                    {"estimated_guard_risk", estimatedRisk},
+                    {"estimated_guard_confidence", estimatedConfidence},
+                    {"estimated_probe_fail_count", std::max<int64_t>(estimatedProbeFails, baseProbeFails)},
+                    {"estimated_probe_error_count", std::max<int64_t>(estimatedProbeErrors, baseProbeErrors)},
+                    {"estimated_sm_active", smCount > 0 ? std::min<int64_t>(smCount, static_cast<int64_t>(std::llround((estimatedUtilPct / 100.0) * static_cast<double>(smCount)))) : 0},
+                    {"estimated_sm_pressure_pct", smCount > 0 ? clampValue(estimatedUtilPct + (queuePressure * 12.0), 0.0, 100.0) : 0.0},
+                    {"topology", firstStringValue(simulationForecast, {"topology"})},
+                    {"recommended_collective", firstStringValue(simulationForecast, {"recommended_collective", "recommendedCollective"})},
+                    {"simulation_focus", firstStringValue(simulationForecast, {"simulation_focus", "simulationFocus"})},
+                    {"confidence", firstDoubleValue(simulationForecast, {"confidence"}, 0.0)},
+                    {"target_nodes", targetNodes},
+                    {"target_gpus", targetGpus},
+                    {"target_cpu_cores", targetCpuCores}
+            };
+        }
+
+        nlohmann::json buildTraceyAggregateResourceForecastView(const std::vector<nlohmann::json>& items,
+                                                                int64_t nowMs) {
+            if (items.empty()) {
+                return nlohmann::json::object();
+            }
+
+            double cpuUsageSum = 0.0;
+            int cpuUsageCount = 0;
+            int gpuCountTotal = 0;
+            double gpuUtilWeighted = 0.0;
+            double powerWTotal = 0.0;
+            double memoryWorkingSetBytes = 0.0;
+            double attributedTotalBps = 0.0;
+            double crossNetworkBps = 0.0;
+            double activeFlows = 0.0;
+            double attributionConfidenceWeighted = 0.0;
+            double latencyPressureWeighted = 0.0;
+            double queuePressureWeighted = 0.0;
+            double trafficGrowthWeighted = 0.0;
+            double crossGrowthWeighted = 0.0;
+            double flowGrowthWeighted = 0.0;
+            double weightSum = 0.0;
+            int sampleCount = 0;
+            double dominantWeight = -1.0;
+            std::string dominantProcess;
+            std::string dominantRemoteIp;
+
+            for (const auto& item : items) {
+                const nlohmann::json summary = firstObjectValue(item, {"summary", "server_summary"}) != nullptr
+                                               ? *firstObjectValue(item, {"summary", "server_summary"})
+                                               : nlohmann::json::object();
+                const nlohmann::json resourceForecast = firstObjectValue(item, {"resource_forecast", "resourceForecast"}) != nullptr
+                                                       ? *firstObjectValue(item, {"resource_forecast", "resourceForecast"})
+                                                       : nlohmann::json::object();
+                const nlohmann::json simulation = firstObjectValue(resourceForecast, {"simulation"}) != nullptr
+                                                  ? *firstObjectValue(resourceForecast, {"simulation"})
+                                                  : nlohmann::json::object();
+                const nlohmann::json expansion = firstObjectValue(resourceForecast, {"continuum_expansion", "continuumExpansion"}) != nullptr
+                                                 ? *firstObjectValue(resourceForecast, {"continuum_expansion", "continuumExpansion"})
+                                                 : nlohmann::json::object();
+                const nlohmann::json heuristics = firstObjectValue(expansion, {"heuristics"}) != nullptr
+                                                  ? *firstObjectValue(expansion, {"heuristics"})
+                                                  : nlohmann::json::object();
+
+                const int itemGpuCount = std::max(
+                        1,
+                        static_cast<int>(firstInt64Value(
+                                summary,
+                                {"gpu_count", "gpuCount"},
+                                std::max<int64_t>(1, item.value("gpu_count", 1))
+                        ))
+                );
+                gpuCountTotal += itemGpuCount;
+                const double itemCpuUsage = clampValue(firstDoubleValue(summary, {"cpu_usage_pct", "cpuUsagePct"}, 0.0), 0.0, 100.0);
+                cpuUsageSum += itemCpuUsage;
+                cpuUsageCount++;
+                gpuUtilWeighted += clampValue(firstDoubleValue(summary, {"gpu_utilization_avg_pct", "gpuUtilizationAvgPct"}, 0.0), 0.0, 100.0) * itemGpuCount;
+                powerWTotal += std::max(
+                        0.0,
+                        firstDoubleValue(
+                                simulation,
+                                {"estimated_power_w", "estimatedPowerW"},
+                                firstDoubleValue(summary, {"gpu_power_total_w", "gpuPowerTotalW"}, 0.0)
+                        )
+                );
+                memoryWorkingSetBytes += std::max(
+                        0.0,
+                        firstDoubleValue(
+                                simulation,
+                                {"estimated_memory_working_set_bytes", "estimatedMemoryWorkingSetBytes"},
+                                firstDoubleValue(summary, {"estimated_memory_working_set_bytes", "estimatedMemoryWorkingSetBytes"}, 0.0)
+                        )
+                );
+
+                const double itemAttributedTotalBps = std::max(0.0, firstDoubleValue(summary, {"attributed_total_bps", "attributedTotalBps"}, 0.0));
+                const double itemCrossNetworkBps = std::max(0.0, firstDoubleValue(summary, {"cross_network_bps", "crossNetworkBps"}, 0.0));
+                const double itemActiveFlows = std::max(0.0, firstDoubleValue(summary, {"network_active_flows", "activeFlows"}, 0.0));
+                const double networkWeight = std::max(1.0, itemAttributedTotalBps);
+                attributedTotalBps += itemAttributedTotalBps;
+                crossNetworkBps += itemCrossNetworkBps;
+                activeFlows += itemActiveFlows;
+                attributionConfidenceWeighted += clampValue(
+                        firstDoubleValue(summary, {"network_attribution_confidence", "attribution_confidence", "attributionConfidence"}, 0.0),
+                        0.0,
+                        1.0
+                ) * networkWeight;
+                latencyPressureWeighted += clampValue(
+                        firstDoubleValue(summary, {"network_latency_pressure", "latency_pressure", "latencyPressure"}, 0.0),
+                        0.0,
+                        1.0
+                ) * networkWeight;
+                queuePressureWeighted += clampValue(
+                        firstDoubleValue(summary, {"network_queue_pressure", "queue_pressure", "queuePressure"}, 0.0),
+                        0.0,
+                        1.0
+                ) * networkWeight;
+                trafficGrowthWeighted += firstDoubleValue(
+                        summary,
+                        {"network_traffic_growth_pct_per_min", "traffic_growth_pct_per_min", "trafficGrowthPctPerMin"},
+                        firstDoubleValue(heuristics, {"traffic_growth_pct_per_min", "trafficGrowthPctPerMin"}, 0.0)
+                ) * networkWeight;
+                crossGrowthWeighted += firstDoubleValue(
+                        summary,
+                        {"network_cross_network_growth_pct_per_min", "cross_network_growth_pct_per_min", "crossNetworkGrowthPctPerMin"},
+                        firstDoubleValue(heuristics, {"cross_network_growth_pct_per_min", "crossNetworkGrowthPctPerMin"}, 0.0)
+                ) * networkWeight;
+                flowGrowthWeighted += firstDoubleValue(
+                        summary,
+                        {"network_flow_growth_pct_per_min", "flow_growth_pct_per_min", "flowGrowthPctPerMin"},
+                        firstDoubleValue(heuristics, {"flow_growth_pct_per_min", "flowGrowthPctPerMin"}, 0.0)
+                ) * networkWeight;
+                weightSum += networkWeight;
+                sampleCount += std::max(0, static_cast<int>(firstInt64Value(resourceForecast, {"sample_count", "sampleCount"}, 0)));
+
+                if (networkWeight >= dominantWeight) {
+                    dominantWeight = networkWeight;
+                    dominantProcess = firstStringValue(
+                            heuristics,
+                            {"dominant_process", "dominantProcess"},
+                            firstStringValue(simulation, {"dominant_process", "dominantProcess"})
+                    );
+                    dominantRemoteIp = firstStringValue(
+                            heuristics,
+                            {"dominant_remote_ip", "dominantRemoteIp"},
+                            firstStringValue(simulation, {"dominant_remote_ip", "dominantRemoteIp"})
+                    );
+                }
+            }
+
+            nlohmann::json aggregateServerNode = {
+                    {"gpu_count", gpuCountTotal},
+                    {"cpu_usage_pct", cpuUsageCount > 0 ? cpuUsageSum / static_cast<double>(cpuUsageCount) : 0.0},
+                    {"gpu_utilization_avg_pct", gpuCountTotal > 0 ? gpuUtilWeighted / static_cast<double>(gpuCountTotal) : 0.0},
+                    {"gpu_power_total_w", powerWTotal},
+                    {"mem_working_set_bytes", memoryWorkingSetBytes}
+            };
+            nlohmann::json aggregateNetworkSummary = {
+                    {"attributed_total_bps", attributedTotalBps},
+                    {"cross_network_bps", crossNetworkBps},
+                    {"active_flows", activeFlows},
+                    {"attribution_confidence", weightSum > 0.0 ? attributionConfidenceWeighted / weightSum : 0.0},
+                    {"latency_pressure", weightSum > 0.0 ? latencyPressureWeighted / weightSum : 0.0},
+                    {"queue_pressure", weightSum > 0.0 ? queuePressureWeighted / weightSum : 0.0},
+                    {"traffic_growth_pct_per_min", weightSum > 0.0 ? trafficGrowthWeighted / weightSum : 0.0},
+                    {"cross_network_growth_pct_per_min", weightSum > 0.0 ? crossGrowthWeighted / weightSum : 0.0},
+                    {"flow_growth_pct_per_min", weightSum > 0.0 ? flowGrowthWeighted / weightSum : 0.0}
+            };
+            nlohmann::json aggregateResourceForecast = {
+                    {"sample_count", sampleCount},
+                    {"simulation", {
+                            {"dominant_process", dominantProcess},
+                            {"dominant_remote_ip", dominantRemoteIp}
+                    }}
+            };
+            enrichTraceyResourceForecastView(
+                    aggregateServerNode,
+                    &aggregateNetworkSummary,
+                    nlohmann::json::array(),
+                    aggregateResourceForecast,
+                    nowMs
+            );
+            return aggregateResourceForecast;
         }
 
         nlohmann::json extractTraceyLoaderThreatSummary(const nlohmann::json& statusSnapshot) {
@@ -8995,9 +10233,6 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                                                {"resource_forecast", "resourceForecast", "forecast"}
                                        )
                                        : nullptr;
-        const auto* resourceSimulation = resourceForecast != nullptr
-                                         ? firstObjectValue(*resourceForecast, {"simulation"})
-                                         : nullptr;
         const auto* continuumLoop = statusSnapshot != nullptr
                                     ? firstObjectValue(
                                             *statusSnapshot,
@@ -9078,6 +10313,10 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
         nlohmann::json recentActions = recentActionsArray != nullptr ? *recentActionsArray : nlohmann::json::array();
         sortActionsByTime(recentActions);
 
+        nlohmann::json resourceForecastView = resourceForecast != nullptr ? *resourceForecast : nlohmann::json::object();
+        enrichTraceyResourceForecastView(server, networkSummary, gpus, resourceForecastView, nowMs);
+        const auto* resourceSimulation = firstObjectValue(resourceForecastView, {"simulation"});
+
         const auto* eccNode = firstObjectValue(server, {"ecc"});
         const std::string derivedHost = firstStringValue(identityNode, {"host"});
         const std::string rack = defaultTopologyLabel(firstStringValue(identityNode, {"rack"}), "unassigned");
@@ -9129,7 +10368,7 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                 {"continuum_assessment", continuumAssessment != nullptr ? *continuumAssessment : nlohmann::json::object()},
                 {"continuum_assessment_summary", continuumAssessmentSummary != nullptr ? *continuumAssessmentSummary : nlohmann::json::object()},
                 {"continuum_autoscaler", continuumAutoscaler != nullptr ? *continuumAutoscaler : nlohmann::json::object()},
-                {"resource_forecast", resourceForecast != nullptr ? *resourceForecast : nlohmann::json::object()},
+                {"resource_forecast", resourceForecastView},
                 {"continuum_loop", continuumLoop != nullptr ? *continuumLoop : nlohmann::json::object()},
                 {"loader_threats", loaderThreats},
                 {"summary", {
@@ -9177,13 +10416,13 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                         {"network_traffic_growth_pct_per_min", networkSummary != nullptr ? firstDoubleValue(*networkSummary, {"traffic_growth_pct_per_min", "trafficGrowthPctPerMin"}, 0.0) : 0.0},
                         {"network_cross_network_growth_pct_per_min", networkSummary != nullptr ? firstDoubleValue(*networkSummary, {"cross_network_growth_pct_per_min", "crossNetworkGrowthPctPerMin"}, 0.0) : 0.0},
                         {"network_flow_growth_pct_per_min", networkSummary != nullptr ? firstDoubleValue(*networkSummary, {"flow_growth_pct_per_min", "flowGrowthPctPerMin"}, 0.0) : 0.0},
-                        {"forecast_status", resourceForecast != nullptr ? firstStringValue(*resourceForecast, {"status"}, "disabled") : "disabled"},
-                        {"projected_total_bps_5m", resourceForecast != nullptr ? std::max(0.0, firstDoubleValue(*resourceForecast, {"projected_total_bps_5m", "projectedTotalBps5m"}, 0.0)) : 0.0},
-                        {"projected_total_bps_15m", resourceForecast != nullptr ? std::max(0.0, firstDoubleValue(*resourceForecast, {"projected_total_bps_15m", "projectedTotalBps15m"}, 0.0)) : 0.0},
-                        {"projected_cross_network_bps_5m", resourceForecast != nullptr ? std::max(0.0, firstDoubleValue(*resourceForecast, {"projected_cross_network_bps_5m", "projectedCrossNetworkBps5m"}, 0.0)) : 0.0},
-                        {"projected_cross_network_bps_15m", resourceForecast != nullptr ? std::max(0.0, firstDoubleValue(*resourceForecast, {"projected_cross_network_bps_15m", "projectedCrossNetworkBps15m"}, 0.0)) : 0.0},
-                        {"projected_active_flows_5m", resourceForecast != nullptr ? std::max(0.0, firstDoubleValue(*resourceForecast, {"projected_active_flows_5m", "projectedActiveFlows5m"}, 0.0)) : 0.0},
-                        {"projected_active_flows_15m", resourceForecast != nullptr ? std::max(0.0, firstDoubleValue(*resourceForecast, {"projected_active_flows_15m", "projectedActiveFlows15m"}, 0.0)) : 0.0},
+                        {"forecast_status", firstStringValue(resourceForecastView, {"status"}, "disabled")},
+                        {"projected_total_bps_5m", std::max(0.0, firstDoubleValue(resourceForecastView, {"projected_total_bps_5m", "projectedTotalBps5m"}, 0.0))},
+                        {"projected_total_bps_15m", std::max(0.0, firstDoubleValue(resourceForecastView, {"projected_total_bps_15m", "projectedTotalBps15m"}, 0.0))},
+                        {"projected_cross_network_bps_5m", std::max(0.0, firstDoubleValue(resourceForecastView, {"projected_cross_network_bps_5m", "projectedCrossNetworkBps5m"}, 0.0))},
+                        {"projected_cross_network_bps_15m", std::max(0.0, firstDoubleValue(resourceForecastView, {"projected_cross_network_bps_15m", "projectedCrossNetworkBps15m"}, 0.0))},
+                        {"projected_active_flows_5m", std::max(0.0, firstDoubleValue(resourceForecastView, {"projected_active_flows_5m", "projectedActiveFlows5m"}, 0.0))},
+                        {"projected_active_flows_15m", std::max(0.0, firstDoubleValue(resourceForecastView, {"projected_active_flows_15m", "projectedActiveFlows15m"}, 0.0))},
                         {"estimated_cpu_cores", resourceSimulation != nullptr ? std::max(0.0, firstDoubleValue(*resourceSimulation, {"estimated_cpu_cores", "estimatedCpuCores"}, 0.0)) : 0.0},
                         {"estimated_memory_working_set_bytes", resourceSimulation != nullptr ? std::max(0.0, firstDoubleValue(*resourceSimulation, {"estimated_memory_working_set_bytes", "estimatedMemoryWorkingSetBytes"}, 0.0)) : 0.0},
                         {"estimated_network_bps", resourceSimulation != nullptr ? std::max(0.0, firstDoubleValue(*resourceSimulation, {"estimated_network_bps", "estimatedNetworkBps"}, 0.0)) : 0.0},
@@ -10144,8 +11383,8 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
     }
 
     void APIRoutes::handleTraceyFleet(const httplib::Request& req, httplib::Response& res) {
-        (void)req;
         const int64_t nowMs = nowEpochMs();
+        const TraceySimulationQuery simulationQuery = parseTraceySimulationQuery(req);
         markTraceyStaleAgents(nowMs);
 
         std::vector<TraceyAgent> snapshot;
@@ -10170,8 +11409,23 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
 
         Models::CloudResponse apiResponse;
         apiResponse.success = true;
-        apiResponse.message = "Tracey fleet view generated successfully.";
+        apiResponse.message = simulationQuery.requested()
+                              ? "Tracey fleet view and simulation forecast generated successfully."
+                              : "Tracey fleet view generated successfully.";
         apiResponse.data = buildTraceyFleetViewFromAgents(agentViews, nowMs);
+        apiResponse.data["resource_forecast"] = buildTraceyAggregateResourceForecastView(agentViews, nowMs);
+        nlohmann::json simulationRequest;
+        nlohmann::json simulationForecast;
+        if (buildTraceyRequestedSimulation(
+                apiResponse.data.value("resource_forecast", nlohmann::json::object()),
+                simulationQuery,
+                "fleet",
+                simulationRequest,
+                simulationForecast
+        )) {
+            apiResponse.data["simulation_request"] = simulationRequest;
+            apiResponse.data["simulation_forecast"] = simulationForecast;
+        }
         sendJsonResponse(res, apiResponse);
     }
 
@@ -11151,6 +12405,7 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
         }
 
         const int64_t nowMs = nowEpochMs();
+        const TraceySimulationQuery simulationQuery = parseTraceySimulationQuery(req);
         markTraceyStaleAgents(nowMs);
 
         std::vector<TraceyAgent> snapshot;
@@ -11218,7 +12473,9 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
 
         Models::CloudResponse apiResponse;
         apiResponse.success = true;
-        apiResponse.message = "Tracey rack detail generated successfully.";
+        apiResponse.message = simulationQuery.requested()
+                              ? "Tracey rack detail and simulation forecast generated successfully."
+                              : "Tracey rack detail generated successfully.";
         apiResponse.data = {
                 {"generated_epoch_ms", nowMs},
                 {"rack", firstStringValue(rackSummary, {"rack"})},
@@ -11226,8 +12483,21 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                 {"summary", rackSummary},
                 {"servers", servers},
                 {"gpu_heatmap", rackHeatmap.value("cells", nlohmann::json::array())},
-                {"recent_actions", fleet.value("recent_actions", nlohmann::json::array())}
+                {"recent_actions", fleet.value("recent_actions", nlohmann::json::array())},
+                {"resource_forecast", buildTraceyAggregateResourceForecastView(filtered, nowMs)}
         };
+        nlohmann::json simulationRequest;
+        nlohmann::json simulationForecast;
+        if (buildTraceyRequestedSimulation(
+                apiResponse.data.value("resource_forecast", nlohmann::json::object()),
+                simulationQuery,
+                "rack",
+                simulationRequest,
+                simulationForecast
+        )) {
+            apiResponse.data["simulation_request"] = simulationRequest;
+            apiResponse.data["simulation_forecast"] = simulationForecast;
+        }
         sendJsonResponse(res, apiResponse);
     }
 
@@ -11236,6 +12506,7 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
         if (agentId.empty()) {
             return sendErrorResponse(res, 400, "Missing required parameter: agent_id.");
         }
+        const TraceySimulationQuery simulationQuery = parseTraceySimulationQuery(req);
 
         TraceyAgent agent;
         bool found = false;
@@ -11257,7 +12528,9 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
 
         Models::CloudResponse apiResponse;
         apiResponse.success = true;
-        apiResponse.message = "Tracey server telemetry generated successfully.";
+        apiResponse.message = simulationQuery.requested()
+                              ? "Tracey server telemetry and simulation forecast generated successfully."
+                              : "Tracey server telemetry generated successfully.";
         apiResponse.data = {
                 {"generated_epoch_ms", nowMs},
                 {"agent_id", firstStringValue(view, {"agent_id"})},
@@ -11279,6 +12552,18 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                 {"tracey_guard_summary", view.value("tracey_guard_summary", nlohmann::json::object())},
                 {"loader_threats", view.value("loader_threats", nlohmann::json::object())}
         };
+        nlohmann::json simulationRequest;
+        nlohmann::json simulationForecast;
+        if (buildTraceyRequestedSimulation(
+                apiResponse.data.value("resource_forecast", nlohmann::json::object()),
+                simulationQuery,
+                "server",
+                simulationRequest,
+                simulationForecast
+        )) {
+            apiResponse.data["simulation_request"] = simulationRequest;
+            apiResponse.data["simulation_forecast"] = simulationForecast;
+        }
         sendJsonResponse(res, apiResponse);
     }
 
@@ -11288,6 +12573,7 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
         if (agentId.empty() || gpuId.empty()) {
             return sendErrorResponse(res, 400, "Missing required parameter: agent_id or gpu_id.");
         }
+        const TraceySimulationQuery simulationQuery = parseTraceySimulationQuery(req);
 
         TraceyAgent agent;
         bool found = false;
@@ -11427,7 +12713,9 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
 
         Models::CloudResponse apiResponse;
         apiResponse.success = true;
-        apiResponse.message = "Tracey GPU telemetry generated successfully.";
+        apiResponse.message = simulationQuery.requested()
+                              ? "Tracey GPU telemetry and simulation forecast generated successfully."
+                              : "Tracey GPU telemetry generated successfully.";
         apiResponse.data = {
                 {"generated_epoch_ms", nowMs},
                 {"agent_id", firstStringValue(view, {"agent_id"})},
@@ -11437,6 +12725,8 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                 {"zone", firstStringValue(view, {"zone"})},
                 {"identity", view.value("identity", nlohmann::json::object())},
                 {"server_summary", view.value("summary", nlohmann::json::object())},
+                {"network", view.value("server", nlohmann::json::object()).value("network", nlohmann::json::object())},
+                {"resource_forecast", view.value("resource_forecast", nlohmann::json::object())},
                 {"summary", gpuDetail},
                 {"sm_heatmap", smHeatmap},
                 {"probe_mix", probeMix},
@@ -11445,6 +12735,23 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                 {"remote_faults", remoteFaults},
                 {"recent_actions", recentActions}
         };
+        nlohmann::json simulationRequest;
+        nlohmann::json simulationForecast;
+        if (buildTraceyRequestedSimulation(
+                apiResponse.data.value("resource_forecast", nlohmann::json::object()),
+                simulationQuery,
+                "gpu",
+                simulationRequest,
+                simulationForecast
+        )) {
+            apiResponse.data["simulation_request"] = simulationRequest;
+            apiResponse.data["simulation_forecast"] = simulationForecast;
+            apiResponse.data["gpu_simulation_forecast"] = buildTraceyGpuSimulationForecast(
+                    gpuDetail,
+                    apiResponse.data.value("resource_forecast", nlohmann::json::object()),
+                    simulationForecast
+            );
+        }
         sendJsonResponse(res, apiResponse);
     }
 

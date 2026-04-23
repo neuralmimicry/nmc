@@ -71,10 +71,20 @@
         traceyDeepDiveRefresh: document.getElementById("traceyDeepDiveRefresh"),
         traceyFleetMeta: document.getElementById("traceyFleetMeta"),
         traceyFleetSummaryCards: document.getElementById("traceyFleetSummaryCards"),
+        traceyFleetTopologyTabs: document.getElementById("traceyFleetTopologyTabs"),
+        traceyFleetTopologyTabActual: document.getElementById("traceyFleetTopologyTabActual"),
+        traceyFleetTopologyTabExpansion: document.getElementById("traceyFleetTopologyTabExpansion"),
         traceyFleetTopologyForecast: document.getElementById("traceyFleetTopologyForecast"),
         traceyFleetTalkerMode: document.getElementById("traceyFleetTalkerMode"),
+        traceyFleetSimulationControls: document.getElementById("traceyFleetSimulationControls"),
+        traceyFleetSimulationNodes: document.getElementById("traceyFleetSimulationNodes"),
+        traceyFleetSimulationGpus: document.getElementById("traceyFleetSimulationGpus"),
+        traceyFleetSimulationCores: document.getElementById("traceyFleetSimulationCores"),
+        traceyFleetSimulationStrategy: document.getElementById("traceyFleetSimulationStrategy"),
+        traceyFleetSimulationRecommended: document.getElementById("traceyFleetSimulationRecommended"),
         traceyFleetTopologyChart: document.getElementById("traceyFleetTopologyChart"),
         traceyFleetTopologyLegend: document.getElementById("traceyFleetTopologyLegend"),
+        traceyFleetSimulationFacts: document.getElementById("traceyFleetSimulationFacts"),
         traceyFleetTalkerRows: document.getElementById("traceyFleetTalkerRows"),
         traceyFleetZoneRows: document.getElementById("traceyFleetZoneRows"),
         traceyFleetActionRows: document.getElementById("traceyFleetActionRows"),
@@ -88,10 +98,20 @@
         traceyRackDetailMeta: document.getElementById("traceyRackDetailMeta"),
         traceyRackSummaryCards: document.getElementById("traceyRackSummaryCards"),
         traceyRackGpuHeatmap: document.getElementById("traceyRackGpuHeatmap"),
+        traceyRackTopologyTabs: document.getElementById("traceyRackTopologyTabs"),
+        traceyRackTopologyTabActual: document.getElementById("traceyRackTopologyTabActual"),
+        traceyRackTopologyTabExpansion: document.getElementById("traceyRackTopologyTabExpansion"),
         traceyRackTopologyForecast: document.getElementById("traceyRackTopologyForecast"),
         traceyRackTalkerMode: document.getElementById("traceyRackTalkerMode"),
+        traceyRackSimulationControls: document.getElementById("traceyRackSimulationControls"),
+        traceyRackSimulationNodes: document.getElementById("traceyRackSimulationNodes"),
+        traceyRackSimulationGpus: document.getElementById("traceyRackSimulationGpus"),
+        traceyRackSimulationCores: document.getElementById("traceyRackSimulationCores"),
+        traceyRackSimulationStrategy: document.getElementById("traceyRackSimulationStrategy"),
+        traceyRackSimulationRecommended: document.getElementById("traceyRackSimulationRecommended"),
         traceyRackTopologyChart: document.getElementById("traceyRackTopologyChart"),
         traceyRackTopologyLegend: document.getElementById("traceyRackTopologyLegend"),
+        traceyRackSimulationFacts: document.getElementById("traceyRackSimulationFacts"),
         traceyRackTalkerRows: document.getElementById("traceyRackTalkerRows"),
         traceyRackAssessmentSearch: document.getElementById("traceyRackAssessmentSearch"),
         traceyRackAssessmentFilter: document.getElementById("traceyRackAssessmentFilter"),
@@ -109,10 +129,20 @@
         traceyServerForecastFacts: document.getElementById("traceyServerForecastFacts"),
         traceyServerForecastAdvice: document.getElementById("traceyServerForecastAdvice"),
         traceyServerGuardFacts: document.getElementById("traceyServerGuardFacts"),
+        traceyServerTopologyTabs: document.getElementById("traceyServerTopologyTabs"),
+        traceyServerTopologyTabActual: document.getElementById("traceyServerTopologyTabActual"),
+        traceyServerTopologyTabExpansion: document.getElementById("traceyServerTopologyTabExpansion"),
         traceyServerTopologyForecast: document.getElementById("traceyServerTopologyForecast"),
         traceyServerTalkerMode: document.getElementById("traceyServerTalkerMode"),
+        traceyServerSimulationControls: document.getElementById("traceyServerSimulationControls"),
+        traceyServerSimulationNodes: document.getElementById("traceyServerSimulationNodes"),
+        traceyServerSimulationGpus: document.getElementById("traceyServerSimulationGpus"),
+        traceyServerSimulationCores: document.getElementById("traceyServerSimulationCores"),
+        traceyServerSimulationStrategy: document.getElementById("traceyServerSimulationStrategy"),
+        traceyServerSimulationRecommended: document.getElementById("traceyServerSimulationRecommended"),
         traceyServerTopologyChart: document.getElementById("traceyServerTopologyChart"),
         traceyServerTopologyLegend: document.getElementById("traceyServerTopologyLegend"),
+        traceyServerSimulationFacts: document.getElementById("traceyServerSimulationFacts"),
         traceyServerTalkerBars: document.getElementById("traceyServerTalkerBars"),
         traceyServerTopologyFocus: document.getElementById("traceyServerTopologyFocus"),
         traceyServerTopologyClear: document.getElementById("traceyServerTopologyClear"),
@@ -184,6 +214,56 @@
         selectedAgentLogs: [],
         selectedDeepDive: null,
         serverTopologyFocus: null
+    };
+    const TRACEY_SIMULATION_SCOPE_CONFIG = {
+        fleet: {
+            scope: "fleet",
+            tabs: nodes.traceyFleetTopologyTabs,
+            actualTab: nodes.traceyFleetTopologyTabActual,
+            expansionTab: nodes.traceyFleetTopologyTabExpansion,
+            forecast: nodes.traceyFleetTopologyForecast,
+            controls: nodes.traceyFleetSimulationControls,
+            facts: nodes.traceyFleetSimulationFacts,
+            inputs: {
+                nodes: nodes.traceyFleetSimulationNodes,
+                gpus: nodes.traceyFleetSimulationGpus,
+                cores: nodes.traceyFleetSimulationCores,
+                strategy: nodes.traceyFleetSimulationStrategy
+            },
+            recommendedButton: nodes.traceyFleetSimulationRecommended
+        },
+        rack: {
+            scope: "rack",
+            tabs: nodes.traceyRackTopologyTabs,
+            actualTab: nodes.traceyRackTopologyTabActual,
+            expansionTab: nodes.traceyRackTopologyTabExpansion,
+            forecast: nodes.traceyRackTopologyForecast,
+            controls: nodes.traceyRackSimulationControls,
+            facts: nodes.traceyRackSimulationFacts,
+            inputs: {
+                nodes: nodes.traceyRackSimulationNodes,
+                gpus: nodes.traceyRackSimulationGpus,
+                cores: nodes.traceyRackSimulationCores,
+                strategy: nodes.traceyRackSimulationStrategy
+            },
+            recommendedButton: nodes.traceyRackSimulationRecommended
+        },
+        server: {
+            scope: "server",
+            tabs: nodes.traceyServerTopologyTabs,
+            actualTab: nodes.traceyServerTopologyTabActual,
+            expansionTab: nodes.traceyServerTopologyTabExpansion,
+            forecast: nodes.traceyServerTopologyForecast,
+            controls: nodes.traceyServerSimulationControls,
+            facts: nodes.traceyServerSimulationFacts,
+            inputs: {
+                nodes: nodes.traceyServerSimulationNodes,
+                gpus: nodes.traceyServerSimulationGpus,
+                cores: nodes.traceyServerSimulationCores,
+                strategy: nodes.traceyServerSimulationStrategy
+            },
+            recommendedButton: nodes.traceyServerSimulationRecommended
+        }
     };
     const TRACEY_URL_PARAM_KEYS = [
         "tracey",
@@ -1928,6 +2008,92 @@
         return normalizeTraceyTalkerMode(node ? node.value : "applications");
     }
 
+    function clamp(value, minValue, maxValue) {
+        const numeric = parseNumber(value, minValue);
+        if (!Number.isFinite(numeric)) {
+            return minValue;
+        }
+        return Math.max(minValue, Math.min(maxValue, numeric));
+    }
+
+    function normalizeTraceyTopologyTab(value) {
+        return String(value || "").trim().toLowerCase() === "expansion"
+            ? "expansion"
+            : "actual";
+    }
+
+    function normalizeTraceySimulationStrategy(value) {
+        const normalized = String(value || "").trim().toLowerCase();
+        if (["balanced", "throughput", "collective"].includes(normalized)) {
+            return normalized;
+        }
+        return "balanced";
+    }
+
+    function traceySimulationScopeConfig(scope) {
+        return TRACEY_SIMULATION_SCOPE_CONFIG[String(scope || "").trim().toLowerCase()] || null;
+    }
+
+    function readTraceyTopologyTab(scope) {
+        const config = traceySimulationScopeConfig(scope);
+        if (!config || !config.tabs) {
+            return "actual";
+        }
+        return normalizeTraceyTopologyTab(config.tabs.dataset.activeTab || "actual");
+    }
+
+    function readTraceySimulationStrategy(scope) {
+        const config = traceySimulationScopeConfig(scope);
+        return normalizeTraceySimulationStrategy(
+            config && config.inputs && config.inputs.strategy ? config.inputs.strategy.value : "balanced"
+        );
+    }
+
+    function rerenderTraceySimulationScope(scope) {
+        const normalized = String(scope || "").trim().toLowerCase();
+        if (normalized === "fleet") {
+            renderTraceyFleetNetworkSection(traceyState.fleet);
+            return;
+        }
+        if (normalized === "rack") {
+            renderTraceyRackNetworkSection(traceyState.selectedRackDetail);
+            return;
+        }
+        if (normalized === "server") {
+            if (traceyState.selectedServerTelemetry) {
+                renderTraceyServerNetworkSection(traceyState.selectedServerTelemetry);
+            }
+        }
+    }
+
+    function setTraceyTopologyTab(scope, value, options = {}) {
+        const config = traceySimulationScopeConfig(scope);
+        if (!config) {
+            return;
+        }
+        const normalized = normalizeTraceyTopologyTab(value);
+        if (config.tabs) {
+            config.tabs.dataset.activeTab = normalized;
+        }
+        if (config.actualTab) {
+            config.actualTab.classList.toggle("is-active", normalized === "actual");
+            config.actualTab.setAttribute("aria-selected", normalized === "actual" ? "true" : "false");
+        }
+        if (config.expansionTab) {
+            config.expansionTab.classList.toggle("is-active", normalized === "expansion");
+            config.expansionTab.setAttribute("aria-selected", normalized === "expansion" ? "true" : "false");
+        }
+        if (config.controls) {
+            config.controls.hidden = normalized !== "expansion";
+        }
+        if (config.forecast) {
+            config.forecast.disabled = normalized !== "actual";
+        }
+        if (options.rerender !== false) {
+            rerenderTraceySimulationScope(scope);
+        }
+    }
+
     function traceyText(value, fallback = "") {
         const text = String(value || "").trim();
         return text || fallback;
@@ -2097,6 +2263,826 @@
         return forecast.simulation && typeof forecast.simulation === "object"
             ? forecast.simulation
             : {};
+    }
+
+    function traceyScenarioGrowthScale(growthPctPerMin, minutes) {
+        return clamp(1 + ((parseNumber(growthPctPerMin, 0) / 100) * minutes), 0.4, 8);
+    }
+
+    function traceyInferExpansionTopology(nodeCount, gpuCount, crossShare, latencyPressure, queuePressure) {
+        if (nodeCount <= 1 && gpuCount <= 8) {
+            return "Switch";
+        }
+        if (nodeCount >= 8 || crossShare >= 0.58 || latencyPressure >= 0.48) {
+            return "Switch + DoubleBinaryTree";
+        }
+        if (gpuCount >= 8 || queuePressure >= 0.4 || crossShare >= 0.32) {
+            return "Switch + Ring";
+        }
+        return "Switch";
+    }
+
+    function traceyInferExpansionCollective(nodeCount, gpuCount, crossShare, latencyPressure, queuePressure) {
+        if (nodeCount >= 8 || crossShare >= 0.6 || latencyPressure >= 0.5) {
+            return "DoubleBinaryTree";
+        }
+        if (gpuCount >= 8 || crossShare >= 0.35 || queuePressure >= 0.35) {
+            return "Ring";
+        }
+        return "SwitchLocal";
+    }
+
+    function buildTraceyFallbackExpansionModel(source, scope = "server", overrides = {}) {
+        const network = extractTraceyNetworkPayload(source);
+        const summary = extractTraceyNetworkSummary(source);
+        const resourceForecast = extractTraceyResourceForecast(source);
+        const simulation = extractTraceySimulation(source);
+        const server = source && source.server && typeof source.server === "object"
+            ? source.server
+            : {};
+        const gpus = Array.isArray(source && source.gpus)
+            ? source.gpus
+            : (Array.isArray(server.gpus) ? server.gpus : []);
+        const processes = Array.isArray(server.processes) ? server.processes : [];
+        const topProcesses = Array.isArray(network.top_processes) ? network.top_processes : [];
+        const topFlows = Array.isArray(network.top_flows) ? network.top_flows : [];
+        const baselineNodeCount = Math.max(1, Math.round(parseNumber(
+            overrides.nodeCount,
+            parseNumber(source && source.node_count, scope === "server" ? 1 : 1)
+        )));
+        const baselineGpuCount = Math.max(1, Math.round(parseNumber(
+            overrides.gpuCount,
+            parseNumber(source && source.gpu_count, gpus.length || parseNumber(server.gpu_count, 1))
+        )));
+
+        let cpuCoreEstimate = parseNumber(overrides.cpuCoreEstimate, NaN);
+        if (!Number.isFinite(cpuCoreEstimate) || cpuCoreEstimate <= 0) {
+            cpuCoreEstimate = parseNumber(simulation.estimated_cpu_cores, NaN);
+        }
+        if (!Number.isFinite(cpuCoreEstimate) || cpuCoreEstimate <= 0) {
+            cpuCoreEstimate = processes.reduce(
+                (sum, process) => sum + Math.max(0, parseNumber(process && process.cpu_pct, 0)) / 100,
+                0
+            );
+        }
+        if (!Number.isFinite(cpuCoreEstimate) || cpuCoreEstimate <= 0) {
+            cpuCoreEstimate = Math.max(
+                parseNumber(server.cpu_usage_pct, 0) / 12.5,
+                baselineGpuCount * 1.5
+            );
+        }
+        cpuCoreEstimate = Math.max(1, cpuCoreEstimate);
+
+        const attributedTotalBps = Math.max(
+            0,
+            parseNumber(
+                overrides.attributedTotalBps,
+                parseNumber(summary.attributed_total_bps, parseNumber(source && source.attributed_total_bps, 0))
+            )
+        );
+        const crossNetworkBps = Math.max(
+            0,
+            parseNumber(
+                overrides.crossNetworkBps,
+                parseNumber(summary.cross_network_bps, parseNumber(source && source.cross_network_bps, 0))
+            )
+        );
+        const activeFlows = Math.max(
+            0,
+            parseNumber(
+                overrides.activeFlows,
+                parseNumber(summary.active_flows, parseNumber(source && source.network_active_flows, 0))
+            )
+        );
+        const gpuUtilizationAvgPct = clamp(
+            parseNumber(
+                overrides.gpuUtilizationAvgPct,
+                parseNumber(source && source.gpu_utilization_avg_pct, parseNumber(server.gpu_utilization_avg_pct, 0))
+            ),
+            0,
+            100
+        );
+        const cpuUsagePct = clamp(
+            parseNumber(
+                overrides.cpuUsagePct,
+                parseNumber(source && source.cpu_usage_pct, parseNumber(server.cpu_usage_pct, 0))
+            ),
+            0,
+            100
+        );
+        const latencyPressure = clamp(
+            parseNumber(overrides.latencyPressure, parseNumber(summary.latency_pressure, 0)),
+            0,
+            1
+        );
+        const queuePressure = clamp(
+            parseNumber(overrides.queuePressure, parseNumber(summary.queue_pressure, 0)),
+            0,
+            1
+        );
+        const trafficGrowthPctPerMin = parseNumber(overrides.trafficGrowthPctPerMin, parseNumber(summary.traffic_growth_pct_per_min, 0));
+        const crossGrowthPctPerMin = parseNumber(overrides.crossGrowthPctPerMin, parseNumber(summary.cross_network_growth_pct_per_min, 0));
+        const flowGrowthPctPerMin = parseNumber(overrides.flowGrowthPctPerMin, parseNumber(summary.flow_growth_pct_per_min, 0));
+        const attributionConfidence = clamp(
+            parseNumber(overrides.attributionConfidence, parseNumber(summary.attribution_confidence, 0)),
+            0,
+            1
+        );
+        const powerW = Math.max(
+            0,
+            parseNumber(
+                overrides.powerW,
+                parseNumber(simulation.estimated_power_w, parseNumber(server.gpu_power_total_w, 0))
+            )
+        );
+        const memoryWorkingSetBytes = Math.max(
+            0,
+            parseNumber(
+                overrides.memoryWorkingSetBytes,
+                parseNumber(simulation.estimated_memory_working_set_bytes, parseNumber(server.mem_working_set_bytes, parseNumber(server.mem_used_bytes, 0)))
+            )
+        );
+
+        const dominantProcess = traceyText(
+            simulation.dominant_process,
+            traceyText(
+                topProcesses.reduce((best, process) => {
+                    const totalBps = Math.max(0, parseNumber(process && process.total_bps, 0));
+                    if (totalBps > parseNumber(best && best.total_bps, -1)) {
+                        return process;
+                    }
+                    return best;
+                }, null)?.name,
+                traceyText(topProcesses[0] && (topProcesses[0].name || topProcesses[0].exe_path), "")
+            )
+        );
+        const dominantRemoteIp = traceyText(
+            simulation.dominant_remote_ip,
+            traceyText(
+                topFlows.reduce((best, flow) => {
+                    const totalBps = Math.max(
+                        0,
+                        parseNumber(flow && flow.total_bps, parseNumber(flow && flow.rx_bps, 0) + parseNumber(flow && flow.tx_bps, 0))
+                    );
+                    if (totalBps > parseNumber(best && best.total_bps, -1)) {
+                        return flow;
+                    }
+                    return best;
+                }, null)?.remote_ip,
+                traceyText(topFlows[0] && topFlows[0].remote_ip, "")
+            )
+        );
+
+        const crossNetworkShare = attributedTotalBps > 0
+            ? clamp(crossNetworkBps / attributedTotalBps, 0, 1)
+            : 0;
+        const sampleCount = Math.max(0, Math.round(parseNumber(resourceForecast.sample_count, 0)));
+        const nodeScaleExponent = clamp(1.02 + (crossNetworkShare * 0.20) + (latencyPressure * 0.10) + (queuePressure * 0.06), 1.02, 1.42);
+        const gpuScaleExponent = clamp(0.80 + (crossNetworkShare * 0.08) + (baselineGpuCount > 8 ? 0.06 : 0), 0.75, 1.12);
+        const cpuScaleExponent = clamp(0.68 + (queuePressure * 0.12) + (clamp(cpuUsagePct / 100, 0, 1) * 0.10), 0.68, 1.0);
+        const collectiveScaleExponent = clamp(0.16 + (crossNetworkShare * 0.28) + Math.min(0.18, Math.log2(Math.max(2, baselineGpuCount)) / 10), 0.16, 0.90);
+        const crossNetworkBias = clamp(0.45 + (crossNetworkShare * 0.75) + (Math.max(0, trafficGrowthPctPerMin) / 100 * 1.50), 0.45, 1.75);
+        const confidence = clamp(
+            0.18 + (attributionConfidence * 0.52) + (sampleCount > 0 ? 0.10 : 0) + (activeFlows > 0 ? 0.08 : 0) + (dominantProcess ? 0.05 : 0),
+            0.10,
+            0.98
+        );
+
+        const recommendedNodes = Math.max(
+            baselineNodeCount,
+            Math.min(
+                24,
+                baselineNodeCount + Math.max(
+                    1,
+                    Math.ceil(baselineNodeCount * (0.55 + (crossNetworkShare * 0.90) + (Math.max(0, trafficGrowthPctPerMin) / 40)))
+                )
+            )
+        );
+        const recommendedGpus = Math.max(
+            baselineGpuCount,
+            Math.min(
+                96,
+                baselineGpuCount + Math.max(
+                    4,
+                    Math.ceil(baselineGpuCount * (crossNetworkShare >= 0.35 ? 0.8 : 1.2))
+                )
+            )
+        );
+        const recommendedCpuCores = Math.ceil(cpuCoreEstimate * (1.35 + (queuePressure * 0.50) + (crossNetworkShare * 0.25)));
+        const averageGpusPerNode = Math.max(1, Math.round(baselineGpuCount / Math.max(1, baselineNodeCount)));
+
+        const model = {
+            version: 1,
+            source: "dashboard.heuristic",
+            generated_epoch_ms: Date.now(),
+            baseline: {
+                node_count: baselineNodeCount,
+                gpu_count: baselineGpuCount,
+                cpu_core_estimate: cpuCoreEstimate,
+                attributed_total_bps: attributedTotalBps,
+                cross_network_bps: crossNetworkBps,
+                cross_network_share: crossNetworkShare,
+                active_flows: activeFlows,
+                gpu_utilization_avg_pct: gpuUtilizationAvgPct,
+                cpu_usage_pct: cpuUsagePct,
+                memory_working_set_bytes: memoryWorkingSetBytes,
+                power_w: powerW,
+                latency_pressure: latencyPressure,
+                queue_pressure: queuePressure
+            },
+            recommended_targets: {
+                node_count: recommendedNodes,
+                gpu_count: recommendedGpus,
+                cpu_core_estimate: recommendedCpuCores
+            },
+            maximum_targets: {
+                node_count: Math.max(recommendedNodes, baselineNodeCount * 12, 24),
+                gpu_count: Math.max(recommendedGpus, baselineGpuCount * 6, 96),
+                cpu_core_estimate: Math.max(recommendedCpuCores, Math.ceil(cpuCoreEstimate * 6), 96)
+            },
+            heuristics: {
+                inferred_topology: traceyInferExpansionTopology(baselineNodeCount, baselineGpuCount, crossNetworkShare, latencyPressure, queuePressure),
+                recommended_collective: traceyInferExpansionCollective(recommendedNodes, recommendedGpus, crossNetworkShare, latencyPressure, queuePressure),
+                node_scale_exponent: nodeScaleExponent,
+                gpu_scale_exponent: gpuScaleExponent,
+                cpu_scale_exponent: cpuScaleExponent,
+                collective_scale_exponent: collectiveScaleExponent,
+                cross_network_bias: crossNetworkBias,
+                latency_penalty: clamp(0.12 + (latencyPressure * 0.88), 0.12, 1),
+                queue_penalty: clamp(0.10 + (queuePressure * 0.90), 0.10, 1),
+                traffic_growth_pct_per_min: trafficGrowthPctPerMin,
+                cross_network_growth_pct_per_min: crossGrowthPctPerMin,
+                flow_growth_pct_per_min: flowGrowthPctPerMin,
+                attribution_confidence: attributionConfidence,
+                confidence,
+                dominant_process: dominantProcess,
+                dominant_remote_ip: dominantRemoteIp
+            },
+            dimensions: [
+                {
+                    name: "intra_node",
+                    topology: "Switch",
+                    participant_count: Math.max(1, Math.min(averageGpusPerNode, 8)),
+                    bandwidth_bias: clamp(1 - (crossNetworkShare * 0.35), 0.55, 1.15),
+                    latency_bias: clamp(1 + (latencyPressure * 0.35), 1, 1.45)
+                },
+                {
+                    name: "inter_node",
+                    topology: traceyInferExpansionCollective(recommendedNodes, recommendedGpus, crossNetworkShare, latencyPressure, queuePressure) === "DoubleBinaryTree"
+                        ? "DoubleBinaryTree"
+                        : "Ring",
+                    participant_count: recommendedNodes,
+                    bandwidth_bias: clamp(0.70 + (crossNetworkShare * 0.55), 0.55, 1.40),
+                    latency_bias: clamp(1 + (latencyPressure * 0.80) + (queuePressure * 0.20), 1, 1.95)
+                },
+                {
+                    name: "host_orchestration",
+                    topology: "FullyConnected",
+                    participant_count: Math.max(1, Math.round(recommendedCpuCores)),
+                    bandwidth_bias: clamp(0.35 + (queuePressure * 0.45), 0.30, 1.0),
+                    latency_bias: clamp(1 + (queuePressure * 0.75), 1, 1.75)
+                }
+            ]
+        };
+
+        model.recommended_simulation = traceyEstimateExpansionScenario(
+            model,
+            {
+                nodeCount: recommendedNodes,
+                gpuCount: recommendedGpus,
+                cpuCoreEstimate: recommendedCpuCores
+            },
+            "balanced"
+        );
+        return model;
+    }
+
+    function extractTraceyExpansionModel(source, scope = "server", overrides = {}) {
+        const forecast = extractTraceyResourceForecast(source);
+        if (forecast.continuum_expansion && typeof forecast.continuum_expansion === "object") {
+            return forecast.continuum_expansion;
+        }
+        if (forecast.continuumExpansion && typeof forecast.continuumExpansion === "object") {
+            return forecast.continuumExpansion;
+        }
+        return buildTraceyFallbackExpansionModel(source, scope, overrides);
+    }
+
+    function buildTraceyAggregateExpansionModel(items, scope = "fleet") {
+        const safeItems = Array.isArray(items) ? items : [];
+        if (!safeItems.length) {
+            return buildTraceyFallbackExpansionModel({}, scope, {
+                nodeCount: 1,
+                gpuCount: 1,
+                cpuCoreEstimate: 4
+            });
+        }
+
+        let gpuCountTotal = 0;
+        let cpuCoreTotal = 0;
+        let attributedTotalBps = 0;
+        let crossNetworkBps = 0;
+        let activeFlows = 0;
+        let memoryWorkingSetBytes = 0;
+        let powerW = 0;
+        let gpuUtilizationWeighted = 0;
+        let cpuUsageSum = 0;
+        let latencyWeighted = 0;
+        let queueWeighted = 0;
+        let attributionConfidenceWeighted = 0;
+        let trafficGrowthWeighted = 0;
+        let crossGrowthWeighted = 0;
+        let flowGrowthWeighted = 0;
+        let weightSum = 0;
+        let modelCount = 0;
+        let nodeScaleExponentSum = 0;
+        let gpuScaleExponentSum = 0;
+        let cpuScaleExponentSum = 0;
+        let collectiveScaleExponentSum = 0;
+        let crossNetworkBiasSum = 0;
+        let latencyPenaltySum = 0;
+        let queuePenaltySum = 0;
+        let confidenceSum = 0;
+        let dominantProcess = "";
+        let dominantRemoteIp = "";
+        let dominantWeight = -1;
+
+        for (const item of safeItems) {
+            const model = extractTraceyExpansionModel(item, "server");
+            const base = model && model.baseline && typeof model.baseline === "object" ? model.baseline : {};
+            const heuristics = model && model.heuristics && typeof model.heuristics === "object" ? model.heuristics : {};
+            const networkWeight = Math.max(
+                1,
+                parseNumber(base.attributed_total_bps, parseNumber(extractTraceyNetworkSummary(item).attributed_total_bps, 0))
+            );
+            const itemGpuCount = Math.max(1, Math.round(parseNumber(base.gpu_count, parseNumber(item && item.gpu_count, Array.isArray(item && item.gpus) ? item.gpus.length : 1))));
+            const itemCpuUsage = clamp(parseNumber(base.cpu_usage_pct, parseNumber(item && item.cpu_usage_pct, parseNumber(item && item.summary && item.summary.cpu_usage_pct, parseNumber(item && item.server && item.server.cpu_usage_pct, 0)))), 0, 100);
+            const itemGpuUtil = clamp(parseNumber(base.gpu_utilization_avg_pct, parseNumber(item && item.gpu_utilization_avg_pct, parseNumber(item && item.summary && item.summary.gpu_utilization_avg_pct, parseNumber(item && item.server && item.server.gpu_utilization_avg_pct, 0)))), 0, 100);
+
+            gpuCountTotal += itemGpuCount;
+            cpuCoreTotal += Math.max(1, parseNumber(base.cpu_core_estimate, parseNumber(extractTraceySimulation(item).estimated_cpu_cores, itemGpuCount * 1.5)));
+            attributedTotalBps += Math.max(0, parseNumber(base.attributed_total_bps, parseNumber(extractTraceyNetworkSummary(item).attributed_total_bps, 0)));
+            crossNetworkBps += Math.max(0, parseNumber(base.cross_network_bps, parseNumber(extractTraceyNetworkSummary(item).cross_network_bps, 0)));
+            activeFlows += Math.max(0, parseNumber(base.active_flows, parseNumber(extractTraceyNetworkSummary(item).active_flows, 0)));
+            memoryWorkingSetBytes += Math.max(0, parseNumber(base.memory_working_set_bytes, parseNumber(extractTraceySimulation(item).estimated_memory_working_set_bytes, 0)));
+            powerW += Math.max(0, parseNumber(base.power_w, parseNumber(extractTraceySimulation(item).estimated_power_w, parseNumber(item && item.server && item.server.gpu_power_total_w, 0))));
+            gpuUtilizationWeighted += itemGpuUtil * itemGpuCount;
+            cpuUsageSum += itemCpuUsage;
+            latencyWeighted += clamp(parseNumber(base.latency_pressure, parseNumber(extractTraceyNetworkSummary(item).latency_pressure, 0)), 0, 1) * networkWeight;
+            queueWeighted += clamp(parseNumber(base.queue_pressure, parseNumber(extractTraceyNetworkSummary(item).queue_pressure, 0)), 0, 1) * networkWeight;
+            attributionConfidenceWeighted += clamp(parseNumber(heuristics.attribution_confidence, parseNumber(base.attribution_confidence, parseNumber(extractTraceyNetworkSummary(item).attribution_confidence, 0))), 0, 1) * networkWeight;
+            trafficGrowthWeighted += parseNumber(heuristics.traffic_growth_pct_per_min, parseNumber(extractTraceyNetworkSummary(item).traffic_growth_pct_per_min, 0)) * networkWeight;
+            crossGrowthWeighted += parseNumber(heuristics.cross_network_growth_pct_per_min, parseNumber(extractTraceyNetworkSummary(item).cross_network_growth_pct_per_min, 0)) * networkWeight;
+            flowGrowthWeighted += parseNumber(heuristics.flow_growth_pct_per_min, parseNumber(extractTraceyNetworkSummary(item).flow_growth_pct_per_min, 0)) * networkWeight;
+            weightSum += networkWeight;
+            if (heuristics && Object.keys(heuristics).length) {
+                modelCount += 1;
+                nodeScaleExponentSum += parseNumber(heuristics.node_scale_exponent, 1.08);
+                gpuScaleExponentSum += parseNumber(heuristics.gpu_scale_exponent, 0.82);
+                cpuScaleExponentSum += parseNumber(heuristics.cpu_scale_exponent, 0.74);
+                collectiveScaleExponentSum += parseNumber(heuristics.collective_scale_exponent, 0.18);
+                crossNetworkBiasSum += parseNumber(heuristics.cross_network_bias, 0.70);
+                latencyPenaltySum += parseNumber(heuristics.latency_penalty, 0.15);
+                queuePenaltySum += parseNumber(heuristics.queue_penalty, 0.15);
+                confidenceSum += parseNumber(heuristics.confidence, 0.5);
+            }
+            if (networkWeight > dominantWeight) {
+                dominantWeight = networkWeight;
+                dominantProcess = traceyText(heuristics.dominant_process, dominantProcess);
+                dominantRemoteIp = traceyText(heuristics.dominant_remote_ip, dominantRemoteIp);
+            }
+        }
+
+        const aggregateSource = {
+            server: {
+                cpu_usage_pct: safeItems.length ? cpuUsageSum / safeItems.length : 0,
+                gpu_utilization_avg_pct: gpuCountTotal ? gpuUtilizationWeighted / gpuCountTotal : 0,
+                gpu_power_total_w: powerW,
+                mem_working_set_bytes: memoryWorkingSetBytes,
+                network: {
+                    summary: {
+                        attributed_total_bps: attributedTotalBps,
+                        cross_network_bps: crossNetworkBps,
+                        active_flows: activeFlows,
+                        attribution_confidence: weightSum ? attributionConfidenceWeighted / weightSum : 0,
+                        latency_pressure: weightSum ? latencyWeighted / weightSum : 0,
+                        queue_pressure: weightSum ? queueWeighted / weightSum : 0,
+                        traffic_growth_pct_per_min: weightSum ? trafficGrowthWeighted / weightSum : 0,
+                        cross_network_growth_pct_per_min: weightSum ? crossGrowthWeighted / weightSum : 0,
+                        flow_growth_pct_per_min: weightSum ? flowGrowthWeighted / weightSum : 0
+                    }
+                }
+            },
+            resource_forecast: {
+                simulation: {
+                    estimated_cpu_cores: cpuCoreTotal,
+                    estimated_memory_working_set_bytes: memoryWorkingSetBytes,
+                    estimated_power_w: powerW,
+                    dominant_process: dominantProcess,
+                    dominant_remote_ip: dominantRemoteIp
+                }
+            },
+            gpus: Array.from({ length: Math.max(1, gpuCountTotal) }, () => ({}))
+        };
+        const model = buildTraceyFallbackExpansionModel(aggregateSource, scope, {
+            nodeCount: Math.max(1, safeItems.length),
+            gpuCount: gpuCountTotal,
+            cpuCoreEstimate: cpuCoreTotal,
+            memoryWorkingSetBytes,
+            powerW,
+            gpuUtilizationAvgPct: gpuCountTotal ? gpuUtilizationWeighted / gpuCountTotal : 0,
+            cpuUsagePct: safeItems.length ? cpuUsageSum / safeItems.length : 0,
+            attributedTotalBps,
+            crossNetworkBps,
+            activeFlows,
+            latencyPressure: weightSum ? latencyWeighted / weightSum : 0,
+            queuePressure: weightSum ? queueWeighted / weightSum : 0,
+            attributionConfidence: weightSum ? attributionConfidenceWeighted / weightSum : 0,
+            trafficGrowthPctPerMin: weightSum ? trafficGrowthWeighted / weightSum : 0,
+            crossGrowthPctPerMin: weightSum ? crossGrowthWeighted / weightSum : 0,
+            flowGrowthPctPerMin: weightSum ? flowGrowthWeighted / weightSum : 0
+        });
+
+        if (modelCount > 0) {
+            model.heuristics.node_scale_exponent = nodeScaleExponentSum / modelCount;
+            model.heuristics.gpu_scale_exponent = gpuScaleExponentSum / modelCount;
+            model.heuristics.cpu_scale_exponent = cpuScaleExponentSum / modelCount;
+            model.heuristics.collective_scale_exponent = collectiveScaleExponentSum / modelCount;
+            model.heuristics.cross_network_bias = crossNetworkBiasSum / modelCount;
+            model.heuristics.latency_penalty = latencyPenaltySum / modelCount;
+            model.heuristics.queue_penalty = queuePenaltySum / modelCount;
+            model.heuristics.confidence = confidenceSum / modelCount;
+            model.heuristics.dominant_process = dominantProcess;
+            model.heuristics.dominant_remote_ip = dominantRemoteIp;
+            model.recommended_simulation = traceyEstimateExpansionScenario(
+                model,
+                {
+                    nodeCount: parseNumber(model.recommended_targets && model.recommended_targets.node_count, safeItems.length),
+                    gpuCount: parseNumber(model.recommended_targets && model.recommended_targets.gpu_count, gpuCountTotal),
+                    cpuCoreEstimate: parseNumber(model.recommended_targets && model.recommended_targets.cpu_core_estimate, cpuCoreTotal)
+                },
+                "balanced"
+            );
+        }
+        return model;
+    }
+
+    function traceyExpansionModelSignature(model) {
+        const baseline = model && model.baseline ? model.baseline : {};
+        const recommended = model && model.recommended_targets ? model.recommended_targets : {};
+        return [
+            Math.round(parseNumber(baseline.node_count, 0)),
+            Math.round(parseNumber(baseline.gpu_count, 0)),
+            Math.round(parseNumber(baseline.cpu_core_estimate, 0)),
+            Math.round(parseNumber(recommended.node_count, 0)),
+            Math.round(parseNumber(recommended.gpu_count, 0)),
+            Math.round(parseNumber(recommended.cpu_core_estimate, 0))
+        ].join("|");
+    }
+
+    function syncTraceySimulationInputBounds(scope, model, options = {}) {
+        const config = traceySimulationScopeConfig(scope);
+        if (!config || !model || !config.inputs) {
+            return;
+        }
+        const baseline = model.baseline && typeof model.baseline === "object" ? model.baseline : {};
+        const recommended = model.recommended_targets && typeof model.recommended_targets === "object"
+            ? model.recommended_targets
+            : {};
+        const maximum = model.maximum_targets && typeof model.maximum_targets === "object"
+            ? model.maximum_targets
+            : {};
+        const signature = traceyExpansionModelSignature(model);
+        const force = options.force === true || !config.controls || config.controls.dataset.modelSignature !== signature;
+        if (config.controls) {
+            config.controls.dataset.modelSignature = signature;
+        }
+
+        const bounds = {
+            nodes: {
+                min: Math.max(1, Math.round(parseNumber(baseline.node_count, 1))),
+                max: Math.max(2, Math.round(parseNumber(maximum.node_count, parseNumber(recommended.node_count, 4)))),
+                recommended: Math.max(1, Math.round(parseNumber(recommended.node_count, parseNumber(baseline.node_count, 1))))
+            },
+            gpus: {
+                min: Math.max(1, Math.round(parseNumber(baseline.gpu_count, 1))),
+                max: Math.max(2, Math.round(parseNumber(maximum.gpu_count, parseNumber(recommended.gpu_count, 8)))),
+                recommended: Math.max(1, Math.round(parseNumber(recommended.gpu_count, parseNumber(baseline.gpu_count, 1))))
+            },
+            cores: {
+                min: Math.max(1, Math.round(parseNumber(baseline.cpu_core_estimate, 1))),
+                max: Math.max(2, Math.round(parseNumber(maximum.cpu_core_estimate, parseNumber(recommended.cpu_core_estimate, 16)))),
+                recommended: Math.max(1, Math.round(parseNumber(recommended.cpu_core_estimate, parseNumber(baseline.cpu_core_estimate, 1))))
+            }
+        };
+
+        ["nodes", "gpus", "cores"].forEach((key) => {
+            const input = config.inputs[key];
+            if (!input) {
+                return;
+            }
+            input.min = String(bounds[key].min);
+            input.max = String(bounds[key].max);
+            if (force || input.dataset.userTouched !== "true") {
+                input.value = String(bounds[key].recommended);
+                input.dataset.userTouched = "false";
+            } else {
+                input.value = String(Math.round(clamp(parseNumber(input.value, bounds[key].recommended), bounds[key].min, bounds[key].max)));
+            }
+        });
+        if (config.inputs.strategy) {
+            if (force || config.inputs.strategy.dataset.userTouched !== "true") {
+                config.inputs.strategy.value = "balanced";
+                config.inputs.strategy.dataset.userTouched = "false";
+            }
+        }
+    }
+
+    function readTraceySimulationTargets(scope, model) {
+        const config = traceySimulationScopeConfig(scope);
+        const baseline = model && model.baseline ? model.baseline : {};
+        const recommended = model && model.recommended_targets ? model.recommended_targets : {};
+        const maximum = model && model.maximum_targets ? model.maximum_targets : {};
+        const defaultNodes = Math.max(1, Math.round(parseNumber(recommended.node_count, parseNumber(baseline.node_count, 1))));
+        const defaultGpus = Math.max(1, Math.round(parseNumber(recommended.gpu_count, parseNumber(baseline.gpu_count, 1))));
+        const defaultCores = Math.max(1, Math.round(parseNumber(recommended.cpu_core_estimate, parseNumber(baseline.cpu_core_estimate, 1))));
+        return {
+            nodeCount: Math.round(clamp(
+                parseNumber(config && config.inputs && config.inputs.nodes ? config.inputs.nodes.value : defaultNodes, defaultNodes),
+                Math.max(1, Math.round(parseNumber(baseline.node_count, 1))),
+                Math.max(defaultNodes, Math.round(parseNumber(maximum.node_count, defaultNodes)))
+            )),
+            gpuCount: Math.round(clamp(
+                parseNumber(config && config.inputs && config.inputs.gpus ? config.inputs.gpus.value : defaultGpus, defaultGpus),
+                Math.max(1, Math.round(parseNumber(baseline.gpu_count, 1))),
+                Math.max(defaultGpus, Math.round(parseNumber(maximum.gpu_count, defaultGpus)))
+            )),
+            cpuCoreEstimate: Math.round(clamp(
+                parseNumber(config && config.inputs && config.inputs.cores ? config.inputs.cores.value : defaultCores, defaultCores),
+                Math.max(1, Math.round(parseNumber(baseline.cpu_core_estimate, 1))),
+                Math.max(defaultCores, Math.round(parseNumber(maximum.cpu_core_estimate, defaultCores)))
+            ))
+        };
+    }
+
+    function applyTraceyRecommendedTargets(scope, model) {
+        syncTraceySimulationInputBounds(scope, model, { force: true });
+    }
+
+    function traceyEstimateExpansionScenario(model, targets, strategy = "balanced") {
+        const baseline = model && model.baseline ? model.baseline : {};
+        const heuristics = model && model.heuristics ? model.heuristics : {};
+        const normalizedStrategy = normalizeTraceySimulationStrategy(strategy);
+        const strategyBias = normalizedStrategy === "throughput"
+            ? { network: 1.12, cross: 1.08, gpu: 1.08, cpu: 1.05, collective: 1.05 }
+            : (normalizedStrategy === "collective"
+                ? { network: 0.96, cross: 1.16, gpu: 1.02, cpu: 1.10, collective: 1.18 }
+                : { network: 1.0, cross: 1.0, gpu: 1.0, cpu: 1.0, collective: 1.0 });
+
+        const baselineNodes = Math.max(1, Math.round(parseNumber(baseline.node_count, 1)));
+        const baselineGpus = Math.max(1, Math.round(parseNumber(baseline.gpu_count, 1)));
+        const baselineCpuCores = Math.max(1, parseNumber(baseline.cpu_core_estimate, 1));
+        const baselineNetworkBps = Math.max(0, parseNumber(baseline.attributed_total_bps, 0));
+        const baselineCrossNetworkBps = Math.max(0, parseNumber(baseline.cross_network_bps, 0));
+        const baselineActiveFlows = Math.max(0, parseNumber(baseline.active_flows, 0));
+        const baselineGpuUtil = clamp(parseNumber(baseline.gpu_utilization_avg_pct, 0), 0, 100);
+        const baselineCpuUsage = clamp(parseNumber(baseline.cpu_usage_pct, 0), 0, 100);
+        const baselineMemoryBytes = Math.max(0, parseNumber(baseline.memory_working_set_bytes, 0));
+        const baselinePowerW = Math.max(0, parseNumber(baseline.power_w, 0));
+        const baselineLatencyPressure = clamp(parseNumber(baseline.latency_pressure, 0), 0, 1);
+        const baselineQueuePressure = clamp(parseNumber(baseline.queue_pressure, 0), 0, 1);
+        const baseCrossShare = clamp(parseNumber(baseline.cross_network_share, baselineNetworkBps > 0 ? baselineCrossNetworkBps / baselineNetworkBps : 0), 0, 1);
+        const growthPctPerMin = parseNumber(heuristics.traffic_growth_pct_per_min, 0);
+
+        const targetNodes = Math.max(baselineNodes, Math.round(parseNumber(targets && targets.nodeCount, baselineNodes)));
+        const targetGpus = Math.max(baselineGpus, Math.round(parseNumber(targets && targets.gpuCount, baselineGpus)));
+        const targetCpuCores = Math.max(baselineCpuCores, parseNumber(targets && targets.cpuCoreEstimate, baselineCpuCores));
+        const nodeRatio = Math.max(1, targetNodes / baselineNodes);
+        const gpuRatio = Math.max(1, targetGpus / baselineGpus);
+        const cpuRatio = Math.max(1, targetCpuCores / baselineCpuCores);
+
+        const nodeScaleExponent = clamp(parseNumber(heuristics.node_scale_exponent, 1.08) * strategyBias.network, 0.7, 2.0);
+        const gpuScaleExponent = clamp(parseNumber(heuristics.gpu_scale_exponent, 0.82) * strategyBias.gpu, 0.6, 1.5);
+        const cpuScaleExponent = clamp(parseNumber(heuristics.cpu_scale_exponent, 0.74) * strategyBias.cpu, 0.5, 1.4);
+        const collectiveScaleExponent = clamp(parseNumber(heuristics.collective_scale_exponent, 0.18) * strategyBias.collective, 0.05, 1.4);
+        const crossNetworkBias = clamp(parseNumber(heuristics.cross_network_bias, 0.70) * strategyBias.cross, 0.05, 2.5);
+        const latencyPenalty = clamp(parseNumber(heuristics.latency_penalty, 0.15), 0, 1.5);
+        const queuePenalty = clamp(parseNumber(heuristics.queue_penalty, 0.15), 0, 1.5);
+        const collectiveFactor = 1 + (collectiveScaleExponent * Math.log2(Math.max(1, nodeRatio)));
+        const weightedScale = (0.46 * Math.pow(nodeRatio, nodeScaleExponent)) +
+            (0.36 * Math.pow(gpuRatio, gpuScaleExponent)) +
+            (0.18 * Math.pow(cpuRatio, cpuScaleExponent));
+        const growthScale = traceyScenarioGrowthScale(growthPctPerMin, 12);
+        const pressureScale = 1 +
+            (latencyPenalty * Math.max(0, nodeRatio - 1) * 0.08) +
+            (queuePenalty * Math.max(0, gpuRatio - 1) * 0.05);
+        const estimatedNetworkBps = baselineNetworkBps > 0
+            ? baselineNetworkBps * weightedScale * collectiveFactor * growthScale * pressureScale * strategyBias.network
+            : 0;
+        const estimatedCrossShare = clamp(
+            baseCrossShare +
+            (crossNetworkBias * Math.max(0, nodeRatio - 1) * 0.09) +
+            (Math.max(0, gpuRatio - 1) * 0.03),
+            0.02,
+            0.97
+        );
+        const estimatedCrossNetworkBps = estimatedNetworkBps * estimatedCrossShare;
+        const estimatedActiveFlows = baselineActiveFlows > 0
+            ? baselineActiveFlows * ((0.40 * nodeRatio) + (0.35 * gpuRatio) + (0.25 * cpuRatio)) * (1 + (estimatedCrossShare * 0.20))
+            : 0;
+        const estimatedGpuUtilizationAvgPct = clamp(
+            baselineGpuUtil * (0.84 + (Math.max(0, gpuRatio - 1) * 0.12) + ((collectiveFactor - 1) * 0.18)),
+            4,
+            99
+        );
+        const estimatedCpuUsagePct = clamp(
+            (baselineCpuUsage * (0.78 + (Math.max(0, cpuRatio - 1) * 0.22))) +
+            (Math.max(0, nodeRatio - 1) * 6) +
+            (Math.max(0, gpuRatio - 1) * 3),
+            3,
+            99
+        );
+        const estimatedMemoryWorkingSetBytes = baselineMemoryBytes > 0
+            ? baselineMemoryBytes * Math.max(1, (0.55 * gpuRatio) + (0.45 * cpuRatio))
+            : 0;
+        const estimatedPowerW = baselinePowerW > 0
+            ? baselinePowerW * Math.max(
+                1,
+                (0.48 * gpuRatio) +
+                (0.24 * nodeRatio) +
+                (0.28 * (estimatedGpuUtilizationAvgPct / Math.max(1, baselineGpuUtil || 1)))
+            )
+            : 0;
+        const estimatedLatencyPressure = clamp(
+            baselineLatencyPressure +
+            (Math.log2(Math.max(1, nodeRatio)) * 0.12) +
+            (estimatedCrossShare * 0.10) +
+            (Math.max(0, gpuRatio - 1) * 0.02),
+            0,
+            1
+        );
+        const estimatedQueuePressure = clamp(
+            baselineQueuePressure +
+            (Math.log2(Math.max(1, Math.max(gpuRatio, cpuRatio))) * 0.10) +
+            (estimatedCrossShare * 0.06),
+            0,
+            1
+        );
+        const topology = traceyInferExpansionTopology(
+            targetNodes,
+            targetGpus,
+            estimatedCrossShare,
+            estimatedLatencyPressure,
+            estimatedQueuePressure
+        );
+        const recommendedCollective = normalizedStrategy === "collective"
+            ? "DoubleBinaryTree"
+            : traceyInferExpansionCollective(
+                targetNodes,
+                targetGpus,
+                estimatedCrossShare,
+                estimatedLatencyPressure,
+                estimatedQueuePressure
+            );
+        const confidence = clamp(
+            parseNumber(heuristics.confidence, parseNumber(heuristics.attribution_confidence, 0.5)) *
+                (normalizedStrategy === "collective" ? 0.96 : 1.0),
+            0.10,
+            0.99
+        );
+        const dominantProcess = traceyText(heuristics.dominant_process, "");
+        const dominantRemoteIp = traceyText(heuristics.dominant_remote_ip, "");
+        const focus = dominantProcess
+            ? `${dominantProcess} driving ${topology}`
+            : (dominantRemoteIp ? `${dominantRemoteIp} on ${recommendedCollective}` : `${topology} fabric`);
+
+        return {
+            targetNodes,
+            targetGpus,
+            targetCpuCores,
+            strategy: normalizedStrategy,
+            estimatedNetworkBps,
+            estimatedCrossNetworkBps,
+            estimatedActiveFlows,
+            estimatedGpuUtilizationAvgPct,
+            estimatedCpuUsagePct,
+            estimatedMemoryWorkingSetBytes,
+            estimatedPowerW,
+            estimatedLatencyPressure,
+            estimatedQueuePressure,
+            collectivePenalty: Math.max(0, collectiveFactor - 1),
+            crossNetworkShare: estimatedCrossShare,
+            topology,
+            recommendedCollective,
+            confidence,
+            dominantProcess,
+            dominantRemoteIp,
+            simulationFocus: focus,
+            extraNetworkBps: Math.max(0, estimatedNetworkBps - baselineNetworkBps),
+            extraNodes: Math.max(0, targetNodes - baselineNodes),
+            extraGpus: Math.max(0, targetGpus - baselineGpus),
+            extraCpuCores: Math.max(0, targetCpuCores - baselineCpuCores)
+        };
+    }
+
+    function buildTraceySimulationFactRows(model, scenario) {
+        if (!model || !scenario) {
+            return [];
+        }
+        const warningTone = toneClassFromPressure(Math.max(
+            parseNumber(scenario.estimatedLatencyPressure, 0),
+            parseNumber(scenario.estimatedQueuePressure, 0)
+        ));
+        return [
+            {
+                label: "Targets",
+                value: `${formatCount(scenario.targetNodes, "0")} nodes / ${formatCount(scenario.targetGpus, "0")} GPU`,
+                subtitle: `${formatCount(scenario.targetCpuCores, "0")} CPU cores • ${formatActionLabel(scenario.strategy)}`,
+                tone: "tracey-tone-neutral"
+            },
+            {
+                label: "Fabric Load",
+                value: formatBytesRate(scenario.estimatedNetworkBps),
+                subtitle: `cross ${formatBytesRate(scenario.estimatedCrossNetworkBps)} • ${formatCount(scenario.estimatedActiveFlows, "0")} flows`,
+                tone: parseNumber(scenario.estimatedNetworkBps, 0) > parseNumber(model.baseline && model.baseline.attributed_total_bps, 0)
+                    ? "tracey-tone-warn"
+                    : "tracey-tone-neutral"
+            },
+            {
+                label: "Utilization",
+                value: `${formatPercentValue(scenario.estimatedGpuUtilizationAvgPct, 0)} GPU`,
+                subtitle: `CPU ${formatPercentValue(scenario.estimatedCpuUsagePct, 0)} • ${formatPower(scenario.estimatedPowerW)}`,
+                tone: parseNumber(scenario.estimatedGpuUtilizationAvgPct, 0) >= 85 ? "tracey-tone-warn" : "tracey-tone-ok"
+            },
+            {
+                label: "Pressure",
+                value: `${formatRatioPercent(scenario.estimatedLatencyPressure, 0, "-")} / ${formatRatioPercent(scenario.estimatedQueuePressure, 0, "-")}`,
+                subtitle: `latency / queue • penalty x${formatFixed(1 + parseNumber(scenario.collectivePenalty, 0), 2, "1.00")}`,
+                tone: warningTone
+            },
+            {
+                label: "Topology",
+                value: traceyText(scenario.topology, "Heuristic"),
+                subtitle: `${traceyText(scenario.recommendedCollective, "Ring")} collective • conf ${formatFixed(scenario.confidence, 2, "-")}`,
+                tone: "tracey-tone-neutral"
+            },
+            {
+                label: "Focus",
+                value: traceyText(scenario.dominantProcess, traceyText(scenario.dominantRemoteIp, "Heuristic fabric")),
+                subtitle: traceyText(scenario.simulationFocus, "No dominant talker identified."),
+                tone: "tracey-tone-neutral"
+            }
+        ];
+    }
+
+    function buildTraceyActualNetworkFactRows(model) {
+        if (!model) {
+            return [];
+        }
+        const baseline = model.baseline && typeof model.baseline === "object" ? model.baseline : {};
+        const heuristics = model.heuristics && typeof model.heuristics === "object" ? model.heuristics : {};
+        const pressureTone = toneClassFromPressure(Math.max(
+            parseNumber(baseline.latency_pressure, 0),
+            parseNumber(baseline.queue_pressure, 0)
+        ));
+        return [
+            {
+                label: "Live Fabric",
+                value: formatBytesRate(baseline.attributed_total_bps),
+                subtitle: `cross ${formatBytesRate(baseline.cross_network_bps)} • ${formatCount(baseline.active_flows, "0")} flows`,
+                tone: parseNumber(baseline.attributed_total_bps, 0) > 0 ? "tracey-tone-neutral" : "tracey-tone-warn"
+            },
+            {
+                label: "Utilization",
+                value: `${formatPercentValue(baseline.gpu_utilization_avg_pct, 0)} GPU`,
+                subtitle: `CPU ${formatPercentValue(baseline.cpu_usage_pct, 0)} • ${formatPower(baseline.power_w)}`,
+                tone: parseNumber(baseline.gpu_utilization_avg_pct, 0) >= 85 ? "tracey-tone-warn" : "tracey-tone-ok"
+            },
+            {
+                label: "Capacity",
+                value: `${formatCount(baseline.node_count, "0")} nodes / ${formatCount(baseline.gpu_count, "0")} GPU`,
+                subtitle: `${formatCount(baseline.cpu_core_estimate, "0")} CPU cores • ${formatBytes(baseline.memory_working_set_bytes)}`,
+                tone: "tracey-tone-neutral"
+            },
+            {
+                label: "Pressure",
+                value: `${formatRatioPercent(baseline.latency_pressure, 0, "-")} / ${formatRatioPercent(baseline.queue_pressure, 0, "-")}`,
+                subtitle: `latency / queue • cross share ${formatRatioPercent(baseline.cross_network_share, 0, "-")}`,
+                tone: pressureTone
+            },
+            {
+                label: "Topology",
+                value: traceyText(heuristics.inferred_topology, "Observed"),
+                subtitle: `${traceyText(heuristics.recommended_collective, "Ring")} collective • conf ${formatFixed(heuristics.confidence, 2, "-")}`,
+                tone: "tracey-tone-neutral"
+            },
+            {
+                label: "Focus",
+                value: traceyText(heuristics.dominant_process, traceyText(heuristics.dominant_remote_ip, "No dominant talker")),
+                subtitle: traceyText(heuristics.dominant_remote_ip, "Live Tracey network attribution"),
+                tone: "tracey-tone-neutral"
+            }
+        ];
     }
 
     // Per-flow projections stay client-side by scaling current flow records with the host forecast ratio.
@@ -2644,6 +3630,306 @@
             .sort((left, right) => traceyLinkMetric(right.currentBps, right.forecastBps, mode) - traceyLinkMetric(left.currentBps, left.forecastBps, mode));
     }
 
+    function buildTraceySimulationTopologyFromDataset(baseDataset, model, scenario, options = {}) {
+        const base = baseDataset && typeof baseDataset === "object"
+            ? baseDataset
+            : { localNodes: [], remoteNodes: [], links: [], stats: {} };
+        const baseline = model && model.baseline ? model.baseline : {};
+        const baselineTotal = Math.max(0, parseNumber(base.stats && base.stats.currentTotal, 0));
+        const baselineFlows = Math.max(0, parseNumber(base.stats && base.stats.activeFlows, 0));
+        const scale = baselineTotal > 0
+            ? clamp(parseNumber(scenario && scenario.estimatedNetworkBps, baselineTotal) / baselineTotal, 0.15, 24)
+            : 1;
+        const mode = "simulation";
+        const allLinks = Array.isArray(base.links)
+            ? base.links.map((link) => ({
+                ...link,
+                currentBps: Math.max(0, parseNumber(link && link.currentBps, 0)),
+                forecastBps: Math.max(0, parseNumber(link && link.currentBps, 0) * scale),
+                flowCount: Math.max(0, parseNumber(link && link.flowCount, 0)),
+                localPorts: Array.isArray(link && link.localPorts) ? link.localPorts.slice() : [],
+                remotePorts: Array.isArray(link && link.remotePorts) ? link.remotePorts.slice() : [],
+                localMacs: Array.isArray(link && link.localMacs) ? link.localMacs.slice() : [],
+                remoteMacs: Array.isArray(link && link.remoteMacs) ? link.remoteMacs.slice() : []
+            }))
+            : [];
+
+        const targetNodes = Math.max(1, Math.round(parseNumber(scenario && scenario.targetNodes, parseNumber(baseline.node_count, 1))));
+        const targetGpus = Math.max(1, Math.round(parseNumber(scenario && scenario.targetGpus, parseNumber(baseline.gpu_count, 1))));
+        const baselineNodes = Math.max(1, Math.round(parseNumber(baseline.node_count, Math.max(1, parseNumber(base.localNodes && base.localNodes.length, 1)))));
+        const baselineGpus = Math.max(1, Math.round(parseNumber(baseline.gpu_count, 1)));
+        const extraNetworkBps = Math.max(0, parseNumber(scenario && scenario.extraNetworkBps, 0));
+        const extraNodeCount = Math.max(0, targetNodes - baselineNodes);
+        const extraGpuCount = Math.max(0, targetGpus - baselineGpus);
+
+        if (extraNetworkBps > 0) {
+            const remoteSeeds = Array.isArray(base.remoteNodes)
+                ? base.remoteNodes
+                    .slice()
+                    .sort((left, right) => traceyLinkMetric(right.currentBps, right.forecastBps, base.forecastMode || "current") - traceyLinkMetric(left.currentBps, left.forecastBps, base.forecastMode || "current"))
+                    .slice(0, 3)
+                : [];
+            if (!remoteSeeds.length) {
+                remoteSeeds.push({
+                    id: `synthetic-remote:${traceyText(options.scopeKey, "scope")}`,
+                    label: "Collective Fabric",
+                    subtitle: traceyText(scenario && scenario.recommendedCollective, "Heuristic"),
+                    remoteIp: "",
+                    remotePort: 0,
+                    remoteMac: "",
+                    tone: "tracey-tone-neutral",
+                    currentBps: 0,
+                    forecastBps: 0,
+                    flowCount: 0
+                });
+            }
+            const cohortCount = Math.max(
+                1,
+                Math.min(
+                    3,
+                    extraNodeCount > 0
+                        ? extraNodeCount
+                        : Math.ceil(extraGpuCount / Math.max(1, Math.round(baselineGpus / baselineNodes)))
+                )
+            );
+            const nodesPerCohort = extraNodeCount > 0 ? Math.max(1, Math.ceil(extraNodeCount / cohortCount)) : 1;
+            const gpusPerCohort = extraGpuCount > 0
+                ? Math.max(1, Math.ceil(extraGpuCount / cohortCount))
+                : Math.max(1, Math.round(targetGpus / Math.max(1, targetNodes)));
+            const remoteWeightTotal = remoteSeeds.reduce(
+                (sum, node) => sum + Math.max(1, parseNumber(node && node.currentBps, 0)),
+                0
+            );
+            for (let index = 0; index < cohortCount; index += 1) {
+                const localId = `synthetic-local:${traceyText(options.scopeKey, "scope")}:${index}`;
+                const cohortMeta = {
+                    nodes: nodesPerCohort,
+                    gpus: gpusPerCohort
+                };
+                const localLabel = typeof options.syntheticLocalLabel === "function"
+                    ? options.syntheticLocalLabel(index, cohortMeta, scenario)
+                    : `Expansion +${nodesPerCohort}`;
+                const localSubtitle = typeof options.syntheticLocalSubtitle === "function"
+                    ? options.syntheticLocalSubtitle(index, cohortMeta, scenario)
+                    : `${gpusPerCohort} GPUs • ${traceyText(scenario && scenario.topology, "Heuristic")}`;
+                remoteSeeds.forEach((remoteNode, remoteIndex) => {
+                    const weight = remoteWeightTotal > 0
+                        ? Math.max(1, parseNumber(remoteNode && remoteNode.currentBps, 0)) / remoteWeightTotal
+                        : (1 / remoteSeeds.length);
+                    const linkForecastBps = (extraNetworkBps / cohortCount) * weight;
+                    const linkFlowCount = Math.max(
+                        1,
+                        Math.round(
+                            Math.max(1, parseNumber(scenario && scenario.estimatedActiveFlows, 0) - baselineFlows) /
+                            cohortCount *
+                            weight
+                        )
+                    );
+                    allLinks.push({
+                        id: `${localId}=>${traceyText(remoteNode && remoteNode.id, `synthetic-remote:${remoteIndex}`)}:simulation`,
+                        localId,
+                        localLabel,
+                        localSubtitle,
+                        localKind: traceyText(options.syntheticLocalKind, "expansion"),
+                        localProcess: "",
+                        localPid: 0,
+                        localProtocol: "",
+                        localPort: 0,
+                        localTone: "tracey-tone-neutral",
+                        remoteId: traceyText(remoteNode && remoteNode.id, `synthetic-remote:${remoteIndex}`),
+                        remoteLabel: traceyText(remoteNode && remoteNode.label, "Collective Fabric"),
+                        remoteIp: traceyText(remoteNode && remoteNode.remoteIp, ""),
+                        remotePort: Math.max(0, parseNumber(remoteNode && remoteNode.remotePort, 0)),
+                        remoteMac: traceyText(remoteNode && remoteNode.remoteMac, ""),
+                        remoteSubtitle: traceyText(remoteNode && remoteNode.subtitle, traceyText(scenario && scenario.recommendedCollective, "")),
+                        remoteTone: traceyText(remoteNode && remoteNode.tone, "tracey-tone-neutral"),
+                        currentBps: 0,
+                        forecastBps: linkForecastBps,
+                        flowCount: linkFlowCount,
+                        tone: "tracey-tone-neutral",
+                        crossNetwork: true,
+                        sameLan: false,
+                        localHost: false,
+                        localPorts: [],
+                        remotePorts: [],
+                        localMacs: [],
+                        remoteMacs: [],
+                        synthetic: true
+                    });
+                });
+            }
+        }
+
+        allLinks.sort((left, right) => traceyLinkMetric(right.currentBps, right.forecastBps, mode) - traceyLinkMetric(left.currentBps, left.forecastBps, mode));
+        const maxLinks = Math.max(1, parseNumber(options.maxLinks, 20));
+        const maxNodesPerSide = Math.max(2, parseNumber(options.maxNodesPerSide, 7));
+        const localMetrics = new Map();
+        const remoteMetrics = new Map();
+        for (const link of allLinks) {
+            const metric = traceyLinkMetric(link.currentBps, link.forecastBps, mode);
+            localMetrics.set(link.localId, (localMetrics.get(link.localId) || 0) + metric);
+            remoteMetrics.set(link.remoteId, (remoteMetrics.get(link.remoteId) || 0) + metric);
+        }
+        const visibleLocalKeys = new Set(
+            Array.from(localMetrics.entries())
+                .sort((left, right) => right[1] - left[1])
+                .slice(0, maxNodesPerSide)
+                .map(([key]) => key)
+        );
+        const visibleRemoteKeys = new Set(
+            Array.from(remoteMetrics.entries())
+                .sort((left, right) => right[1] - left[1])
+                .slice(0, maxNodesPerSide)
+                .map(([key]) => key)
+        );
+        const visibleLinks = allLinks
+            .filter((link) => visibleLocalKeys.has(link.localId) && visibleRemoteKeys.has(link.remoteId))
+            .slice(0, maxLinks);
+        if (!visibleLinks.length && allLinks.length) {
+            visibleLinks.push(...allLinks.slice(0, maxLinks));
+        }
+
+        const localNodes = new Map();
+        const remoteNodes = new Map();
+        for (const link of visibleLinks) {
+            if (!localNodes.has(link.localId)) {
+                localNodes.set(link.localId, {
+                    id: link.localId,
+                    label: link.localLabel,
+                    subtitle: link.localSubtitle,
+                    localKind: traceyText(link.localKind, ""),
+                    localProcess: traceyText(link.localProcess, ""),
+                    localPid: Math.max(0, parseNumber(link.localPid, 0)),
+                    localProtocol: traceyText(link.localProtocol, ""),
+                    localPort: Math.max(0, parseNumber(link.localPort, 0)),
+                    tone: traceyText(link.localTone, "tracey-tone-neutral"),
+                    currentBps: 0,
+                    forecastBps: 0,
+                    flowCount: 0
+                });
+            }
+            if (!remoteNodes.has(link.remoteId)) {
+                remoteNodes.set(link.remoteId, {
+                    id: link.remoteId,
+                    label: link.remoteLabel,
+                    subtitle: link.remoteSubtitle,
+                    remoteIp: traceyText(link.remoteIp, ""),
+                    remotePort: Math.max(0, parseNumber(link.remotePort, 0)),
+                    remoteMac: traceyText(link.remoteMac, ""),
+                    tone: traceyText(link.remoteTone, "tracey-tone-neutral"),
+                    currentBps: 0,
+                    forecastBps: 0,
+                    flowCount: 0
+                });
+            }
+            const localNode = localNodes.get(link.localId);
+            localNode.currentBps += Math.max(0, parseNumber(link.currentBps, 0));
+            localNode.forecastBps += Math.max(0, parseNumber(link.forecastBps, 0));
+            localNode.flowCount += Math.max(0, parseNumber(link.flowCount, 0));
+            localNode.tone = strongerTraceyTone(localNode.tone, traceyText(link.localTone, localNode.tone));
+
+            const remoteNode = remoteNodes.get(link.remoteId);
+            remoteNode.currentBps += Math.max(0, parseNumber(link.currentBps, 0));
+            remoteNode.forecastBps += Math.max(0, parseNumber(link.forecastBps, 0));
+            remoteNode.flowCount += Math.max(0, parseNumber(link.flowCount, 0));
+            remoteNode.tone = strongerTraceyTone(remoteNode.tone, traceyText(link.remoteTone, remoteNode.tone));
+        }
+
+        return {
+            forecastMode: mode,
+            localCaption: traceyText(options.localCaption, "Current + Expansion"),
+            remoteCaption: traceyText(options.remoteCaption, "Remote / Fabric"),
+            localNodes: Array.from(localNodes.values()).sort((left, right) => traceyLinkMetric(right.currentBps, right.forecastBps, mode) - traceyLinkMetric(left.currentBps, left.forecastBps, mode)),
+            remoteNodes: Array.from(remoteNodes.values()).sort((left, right) => traceyLinkMetric(right.currentBps, right.forecastBps, mode) - traceyLinkMetric(left.currentBps, left.forecastBps, mode)),
+            links: visibleLinks,
+            stats: {
+                currentTotal: baselineTotal,
+                forecastTotal: Math.max(0, parseNumber(scenario && scenario.estimatedNetworkBps, baselineTotal)),
+                activeFlows: Math.max(0, parseNumber(scenario && scenario.estimatedActiveFlows, baselineFlows)),
+                estimatedFlows: Math.max(0, parseNumber(scenario && scenario.estimatedActiveFlows, baselineFlows)),
+                udpDrops: Math.max(0, Math.round(parseNumber(base.stats && base.stats.udpDrops, 0) * (1 + parseNumber(scenario && scenario.estimatedQueuePressure, 0)))),
+                avgConfidence: parseNumber(scenario && scenario.confidence, parseNumber(base.stats && base.stats.avgConfidence, NaN)),
+                hiddenLinks: Math.max(0, allLinks.length - visibleLinks.length),
+                hiddenLocalNodes: Math.max(0, localMetrics.size - localNodes.size),
+                hiddenRemoteNodes: Math.max(0, remoteMetrics.size - remoteNodes.size),
+                backend: traceyText(base.stats && base.stats.backend, traceyText(model && model.source, "")),
+                scaleMax: scale,
+                simulationFocus: traceyText(scenario && scenario.simulationFocus, ""),
+                targetNodes: Math.max(1, Math.round(parseNumber(scenario && scenario.targetNodes, baselineNodes))),
+                targetGpus: Math.max(1, Math.round(parseNumber(scenario && scenario.targetGpus, baselineGpus))),
+                targetCpuCores: Math.max(1, Math.round(parseNumber(scenario && scenario.targetCpuCores, parseNumber(baseline.cpu_core_estimate, 1)))),
+                topology: traceyText(scenario && scenario.topology, ""),
+                collective: traceyText(scenario && scenario.recommendedCollective, ""),
+                estimatedGpuUtilizationPct: parseNumber(scenario && scenario.estimatedGpuUtilizationAvgPct, 0),
+                estimatedCpuUsagePct: parseNumber(scenario && scenario.estimatedCpuUsagePct, 0),
+                latencyPressure: parseNumber(scenario && scenario.estimatedLatencyPressure, 0),
+                queuePressure: parseNumber(scenario && scenario.estimatedQueuePressure, 0),
+                confidence: parseNumber(scenario && scenario.confidence, NaN)
+            }
+        };
+    }
+
+    function buildTraceyScopedSimulationTopology(items, model, scenario, options = {}) {
+        const baseDataset = buildTraceyScopedTopology(items, "current", options);
+        return buildTraceySimulationTopologyFromDataset(baseDataset, model, scenario, {
+            ...options,
+            scopeKey: traceyText(options.scopeKey, "scope")
+        });
+    }
+
+    function buildTraceyServerSimulationTopology(data, model, scenario, talkerMode) {
+        const baseDataset = buildTraceyServerTopology(data, "current", talkerMode);
+        return buildTraceySimulationTopologyFromDataset(baseDataset, model, scenario, {
+            scopeKey: "server",
+            maxLinks: 18,
+            maxNodesPerSide: 7,
+            localCaption: "Processes + Cohorts",
+            remoteCaption: "Remote / Fabric",
+            syntheticLocalKind: "expansion",
+            syntheticLocalLabel: (_index, cohortMeta, scenarioMeta) => {
+                if (parseNumber(scenarioMeta && scenarioMeta.extraNodes, 0) > 0) {
+                    return `Node Cohort +${formatCount(cohortMeta.nodes, "0")}`;
+                }
+                return `GPU Cohort +${formatCount(cohortMeta.gpus, "0")}`;
+            },
+            syntheticLocalSubtitle: (_index, cohortMeta, scenarioMeta) => `${formatCount(cohortMeta.gpus, "0")} GPUs • ${traceyText(scenarioMeta && scenarioMeta.topology, "Heuristic")}`
+        });
+    }
+
+    function buildTraceyScenarioTalkers(items, scenario, talkerMode, options = {}) {
+        const talkers = buildTraceyScopedTalkers(items, "current", talkerMode, options);
+        const baselineTotal = talkers.reduce((sum, talker) => sum + Math.max(0, parseNumber(talker && talker.currentBps, 0)), 0);
+        const baselineFlows = talkers.reduce((sum, talker) => sum + Math.max(0, parseNumber(talker && talker.flowCount, 0)), 0);
+        const scale = baselineTotal > 0
+            ? clamp(parseNumber(scenario && scenario.estimatedNetworkBps, baselineTotal) / baselineTotal, 0.15, 24)
+            : 1;
+        const projectedTalkers = talkers.map((talker) => ({
+            ...talker,
+            forecastBps: Math.max(0, parseNumber(talker && talker.currentBps, 0) * scale)
+        }));
+        const extraNetworkBps = Math.max(0, parseNumber(scenario && scenario.extraNetworkBps, 0));
+        if (extraNetworkBps > 0) {
+            projectedTalkers.unshift({
+                key: "simulation-expansion",
+                label: "Expansion Fabric",
+                detail: `${traceyText(scenario && scenario.topology, "Heuristic")} • ${traceyText(scenario && scenario.recommendedCollective, "Ring")}`,
+                tone: toneClassFromPressure(Math.max(
+                    parseNumber(scenario && scenario.estimatedLatencyPressure, 0),
+                    parseNumber(scenario && scenario.estimatedQueuePressure, 0)
+                )),
+                currentBps: 0,
+                forecastBps: extraNetworkBps,
+                flowCount: Math.max(1, Math.round(Math.max(1, parseNumber(scenario && scenario.estimatedActiveFlows, 0) - baselineFlows))),
+                listenerCount: 0,
+                scopeNodes: new Set(),
+                remotes: new Set(),
+                scopeLabel: `${formatCount(parseNumber(scenario && scenario.targetNodes, 0), "0")} nodes • ${formatCount(parseNumber(scenario && scenario.targetGpus, 0), "0")} GPUs`
+            });
+        }
+        return projectedTalkers
+            .sort((left, right) => traceyLinkMetric(right.currentBps, right.forecastBps, "simulation") - traceyLinkMetric(left.currentBps, left.forecastBps, "simulation"));
+    }
+
     function buildTraceyTopologyLegendEntries(dataset, forecastMode, extraEntries = []) {
         const stats = dataset && dataset.stats ? dataset.stats : {};
         const entries = [
@@ -2716,13 +4002,13 @@
             x: leftX,
             y: 16,
             class: "tracey-topology-caption"
-        })).textContent = "Observed";
+        })).textContent = traceyText(dataset && dataset.localCaption, "Observed");
         svg.appendChild(createSvgNode("text", {
             x: rightX + boxWidth,
             y: 16,
             "text-anchor": "end",
             class: "tracey-topology-caption"
-        })).textContent = "Remote";
+        })).textContent = traceyText(dataset && dataset.remoteCaption, "Remote");
 
         const maxMetric = Math.max(1, ...dataset.links.map((link) => traceyLinkMetric(link.currentBps, link.forecastBps, dataset.forecastMode)));
         for (const link of dataset.links) {
@@ -3300,20 +4586,95 @@
         });
     }
 
+    function currentTraceySimulationModel(scope) {
+        const normalized = String(scope || "").trim().toLowerCase();
+        if (normalized === "fleet") {
+            return buildTraceyAggregateExpansionModel(
+                traceyState.fleet && Array.isArray(traceyState.fleet.agents) ? traceyState.fleet.agents : [],
+                normalized
+            );
+        }
+        if (normalized === "rack") {
+            return buildTraceyAggregateExpansionModel(
+                traceyState.selectedRackDetail && Array.isArray(traceyState.selectedRackDetail.servers) ? traceyState.selectedRackDetail.servers : [],
+                normalized
+            );
+        }
+        if (normalized === "server") {
+            return traceyState.selectedServerTelemetry
+                ? extractTraceyExpansionModel(traceyState.selectedServerTelemetry, normalized)
+                : buildTraceyFallbackExpansionModel({}, normalized, { nodeCount: 1, gpuCount: 1, cpuCoreEstimate: 4 });
+        }
+        return buildTraceyFallbackExpansionModel({}, normalized, { nodeCount: 1, gpuCount: 1, cpuCoreEstimate: 4 });
+    }
+
+    function bindTraceySimulationControls(scope) {
+        const config = traceySimulationScopeConfig(scope);
+        if (!config) {
+            return;
+        }
+        if (config.actualTab) {
+            config.actualTab.addEventListener("click", () => {
+                setTraceyTopologyTab(scope, "actual");
+            });
+        }
+        if (config.expansionTab) {
+            config.expansionTab.addEventListener("click", () => {
+                setTraceyTopologyTab(scope, "expansion");
+            });
+        }
+        if (config.recommendedButton) {
+            config.recommendedButton.addEventListener("click", () => {
+                const model = currentTraceySimulationModel(scope);
+                applyTraceyRecommendedTargets(scope, model);
+                setTraceyTopologyTab(scope, "expansion", { rerender: false });
+                rerenderTraceySimulationScope(scope);
+            });
+        }
+        ["nodes", "gpus", "cores"].forEach((key) => {
+            const input = config.inputs && config.inputs[key];
+            if (!input) {
+                return;
+            }
+            input.addEventListener("input", () => {
+                input.dataset.userTouched = "true";
+                rerenderTraceySimulationScope(scope);
+            });
+        });
+        if (config.inputs && config.inputs.strategy) {
+            config.inputs.strategy.addEventListener("change", () => {
+                config.inputs.strategy.dataset.userTouched = "true";
+                rerenderTraceySimulationScope(scope);
+            });
+        }
+        setTraceyTopologyTab(scope, "actual", { rerender: false });
+    }
+
     function renderTraceyFleetNetworkSection(data) {
         const items = Array.isArray(data && data.agents) ? data.agents : [];
-        const forecastMode = readTraceyTopologyForecast(nodes.traceyFleetTopologyForecast);
+        const scope = "fleet";
+        const simulationModel = buildTraceyAggregateExpansionModel(items, scope);
+        syncTraceySimulationInputBounds(scope, simulationModel);
         const talkerMode = readTraceyTalkerMode(nodes.traceyFleetTalkerMode);
-        const dataset = buildTraceyScopedTopology(items, forecastMode, {
+        const topologyOptions = {
+            scopeKey: "fleet",
             localKey: (item) => traceyText(item && item.rack, "unassigned"),
             localLabel: (item) => traceyText(item && item.rack, "unassigned"),
             localSubtitle: (item) => traceyText(item && item.zone, "unassigned"),
             localTone: (item) => traceyItemTone(item),
             maxLinks: 18,
-            maxNodesPerSide: 6
-        });
-        renderTraceyTopologySvg(nodes.traceyFleetTopologyChart, dataset, "No fleet network map available.", {
+            maxNodesPerSide: 6,
+            syntheticLocalKind: "rack_cohort",
+            syntheticLocalLabel: (_index, cohortMeta) => `Rack Cohort +${formatCount(cohortMeta.nodes, "0")}`,
+            syntheticLocalSubtitle: (_index, cohortMeta, scenario) => `${formatCount(cohortMeta.gpus, "0")} GPUs • ${traceyText(scenario && scenario.topology, "Heuristic")}`,
+            localCaption: "Racks + Expansion",
+            remoteCaption: "Remote / Fabric"
+        };
+        const topologyResolver = {
             resolveNodeInteraction: (node, side) => {
+                if (String(node && node.id || "").startsWith("synthetic-")) {
+                    return null;
+                }
                 if (side === "local") {
                     return {
                         scope: "fleet",
@@ -3332,18 +4693,54 @@
                     ariaLabel: `Select busiest server for remote ${traceyText(node && node.label, "endpoint")}`
                 };
             },
-            resolveLinkInteraction: (link) => ({
-                scope: "fleet",
-                type: "link",
-                rackId: traceyText(link && link.localId, ""),
-                remoteIp: traceyText(link && link.remoteIp, ""),
-                remotePort: parseNumber(link && link.remotePort, 0),
-                remoteLabel: traceyText(link && link.remoteLabel, ""),
-                remoteSubtitle: traceyText(link && link.remoteSubtitle, ""),
-                ariaLabel: `Open rack ${traceyText(link && link.localLabel, "rack")} and filter remote ${traceyText(link && link.remoteLabel, "endpoint")}`
-            })
-        });
+            resolveLinkInteraction: (link) => String(link && link.id || "").includes(":simulation")
+                ? null
+                : ({
+                    scope: "fleet",
+                    type: "link",
+                    rackId: traceyText(link && link.localId, ""),
+                    remoteIp: traceyText(link && link.remoteIp, ""),
+                    remotePort: parseNumber(link && link.remotePort, 0),
+                    remoteLabel: traceyText(link && link.remoteLabel, ""),
+                    remoteSubtitle: traceyText(link && link.remoteSubtitle, ""),
+                    ariaLabel: `Open rack ${traceyText(link && link.localLabel, "rack")} and filter remote ${traceyText(link && link.remoteLabel, "endpoint")}`
+                })
+        };
+
+        if (readTraceyTopologyTab(scope) === "expansion") {
+            const scenario = traceyEstimateExpansionScenario(
+                simulationModel,
+                readTraceySimulationTargets(scope, simulationModel),
+                readTraceySimulationStrategy(scope)
+            );
+            const dataset = buildTraceyScopedSimulationTopology(items, simulationModel, scenario, topologyOptions);
+            renderTraceyTopologySvg(nodes.traceyFleetTopologyChart, dataset, "No fleet network map available.", topologyResolver);
+            renderLegend(nodes.traceyFleetTopologyLegend, buildTraceyTopologyLegendEntries(dataset, "simulation", [
+                { label: "Targets", color: "#06b6d4", value: `${formatCount(scenario.targetNodes, "0")}n / ${formatCount(scenario.targetGpus, "0")}g` },
+                { label: "Topology", color: "#94a3b8", value: traceyTrimLabel(scenario.topology, 18) },
+                { label: "Collective", color: "#f97316", value: traceyTrimLabel(scenario.recommendedCollective, 16) }
+            ]));
+            renderMetricList(
+                nodes.traceyFleetSimulationFacts,
+                buildTraceySimulationFactRows(simulationModel, scenario),
+                "No fleet expansion model available."
+            );
+            renderTraceyTalkerTable(
+                nodes.traceyFleetTalkerRows,
+                buildTraceyScenarioTalkers(items, scenario, talkerMode, {
+                    scopeLabel: (item) => traceyText(item && (item.host || item.agent_id), "agent")
+                }),
+                "simulation",
+                "No fleet talkers visible in the simulated expansion window."
+            );
+            return;
+        }
+
+        const forecastMode = readTraceyTopologyForecast(nodes.traceyFleetTopologyForecast);
+        const dataset = buildTraceyScopedTopology(items, forecastMode, topologyOptions);
+        renderTraceyTopologySvg(nodes.traceyFleetTopologyChart, dataset, "No fleet network map available.", topologyResolver);
         renderLegend(nodes.traceyFleetTopologyLegend, buildTraceyTopologyLegendEntries(dataset, forecastMode));
+        renderMetricList(nodes.traceyFleetSimulationFacts, buildTraceyActualNetworkFactRows(simulationModel), "No fleet network telemetry available.");
         renderTraceyTalkerTable(
             nodes.traceyFleetTalkerRows,
             buildTraceyScopedTalkers(items, forecastMode, talkerMode, {
@@ -3356,9 +4753,12 @@
 
     function renderTraceyRackNetworkSection(detail) {
         const items = Array.isArray(detail && detail.servers) ? detail.servers : [];
-        const forecastMode = readTraceyTopologyForecast(nodes.traceyRackTopologyForecast);
+        const scope = "rack";
+        const simulationModel = buildTraceyAggregateExpansionModel(items, scope);
+        syncTraceySimulationInputBounds(scope, simulationModel);
         const talkerMode = readTraceyTalkerMode(nodes.traceyRackTalkerMode);
-        const dataset = buildTraceyScopedTopology(items, forecastMode, {
+        const topologyOptions = {
+            scopeKey: "rack",
             localKey: (item) => traceyText(item && (item.agent_id || item.host), "server"),
             localLabel: (item) => traceyText(item && (item.host || item.agent_id), "server"),
             localSubtitle: (item) => traceyJoin([
@@ -3367,10 +4767,18 @@
             ]),
             localTone: (item) => traceyItemTone(item),
             maxLinks: 20,
-            maxNodesPerSide: 7
-        });
-        renderTraceyTopologySvg(nodes.traceyRackTopologyChart, dataset, "Select a rack to load its network map.", {
+            maxNodesPerSide: 7,
+            syntheticLocalKind: "node_cohort",
+            syntheticLocalLabel: (_index, cohortMeta) => `Node Cohort +${formatCount(cohortMeta.nodes, "0")}`,
+            syntheticLocalSubtitle: (_index, cohortMeta, scenario) => `${formatCount(cohortMeta.gpus, "0")} GPUs • ${traceyText(scenario && scenario.topology, "Heuristic")}`,
+            localCaption: "Servers + Expansion",
+            remoteCaption: "Remote / Fabric"
+        };
+        const topologyResolver = {
             resolveNodeInteraction: (node, side) => {
+                if (String(node && node.id || "").startsWith("synthetic-")) {
+                    return null;
+                }
                 if (side === "local") {
                     return {
                         scope: "rack",
@@ -3389,18 +4797,54 @@
                     ariaLabel: `Select busiest server for remote ${traceyText(node && node.label, "endpoint")}`
                 };
             },
-            resolveLinkInteraction: (link) => ({
-                scope: "rack",
-                type: "link",
-                agentId: traceyText(link && link.localId, ""),
-                remoteIp: traceyText(link && link.remoteIp, ""),
-                remotePort: parseNumber(link && link.remotePort, 0),
-                remoteLabel: traceyText(link && link.remoteLabel, ""),
-                remoteSubtitle: traceyText(link && link.remoteSubtitle, ""),
-                ariaLabel: `Open server ${traceyText(link && link.localLabel, "server")} and filter remote ${traceyText(link && link.remoteLabel, "endpoint")}`
-            })
-        });
+            resolveLinkInteraction: (link) => String(link && link.id || "").includes(":simulation")
+                ? null
+                : ({
+                    scope: "rack",
+                    type: "link",
+                    agentId: traceyText(link && link.localId, ""),
+                    remoteIp: traceyText(link && link.remoteIp, ""),
+                    remotePort: parseNumber(link && link.remotePort, 0),
+                    remoteLabel: traceyText(link && link.remoteLabel, ""),
+                    remoteSubtitle: traceyText(link && link.remoteSubtitle, ""),
+                    ariaLabel: `Open server ${traceyText(link && link.localLabel, "server")} and filter remote ${traceyText(link && link.remoteLabel, "endpoint")}`
+                })
+        };
+
+        if (readTraceyTopologyTab(scope) === "expansion") {
+            const scenario = traceyEstimateExpansionScenario(
+                simulationModel,
+                readTraceySimulationTargets(scope, simulationModel),
+                readTraceySimulationStrategy(scope)
+            );
+            const dataset = buildTraceyScopedSimulationTopology(items, simulationModel, scenario, topologyOptions);
+            renderTraceyTopologySvg(nodes.traceyRackTopologyChart, dataset, "Select a rack to load its network map.", topologyResolver);
+            renderLegend(nodes.traceyRackTopologyLegend, buildTraceyTopologyLegendEntries(dataset, "simulation", [
+                { label: "Targets", color: "#06b6d4", value: `${formatCount(scenario.targetNodes, "0")}n / ${formatCount(scenario.targetGpus, "0")}g` },
+                { label: "Topology", color: "#94a3b8", value: traceyTrimLabel(scenario.topology, 18) },
+                { label: "Collective", color: "#f97316", value: traceyTrimLabel(scenario.recommendedCollective, 16) }
+            ]));
+            renderMetricList(
+                nodes.traceyRackSimulationFacts,
+                buildTraceySimulationFactRows(simulationModel, scenario),
+                "No rack expansion model available."
+            );
+            renderTraceyTalkerTable(
+                nodes.traceyRackTalkerRows,
+                buildTraceyScenarioTalkers(items, scenario, talkerMode, {
+                    scopeLabel: (item) => traceyText(item && (item.host || item.agent_id), "server")
+                }),
+                "simulation",
+                "No rack talkers visible in the simulated expansion window."
+            );
+            return;
+        }
+
+        const forecastMode = readTraceyTopologyForecast(nodes.traceyRackTopologyForecast);
+        const dataset = buildTraceyScopedTopology(items, forecastMode, topologyOptions);
+        renderTraceyTopologySvg(nodes.traceyRackTopologyChart, dataset, "Select a rack to load its network map.", topologyResolver);
         renderLegend(nodes.traceyRackTopologyLegend, buildTraceyTopologyLegendEntries(dataset, forecastMode));
+        renderMetricList(nodes.traceyRackSimulationFacts, buildTraceyActualNetworkFactRows(simulationModel), "No rack network telemetry available.");
         renderTraceyTalkerTable(
             nodes.traceyRackTalkerRows,
             buildTraceyScopedTalkers(items, forecastMode, talkerMode, {
@@ -3412,19 +4856,15 @@
     }
 
     function renderTraceyServerNetworkSection(data) {
-        const forecastMode = readTraceyTopologyForecast(nodes.traceyServerTopologyForecast);
+        const scope = "server";
+        const simulationModel = extractTraceyExpansionModel(data, scope);
+        syncTraceySimulationInputBounds(scope, simulationModel);
         const talkerMode = readTraceyTalkerMode(nodes.traceyServerTalkerMode);
-        const dataset = buildTraceyServerTopology(data, forecastMode, talkerMode);
-        const extraLegendEntries = [];
-        if (dataset && dataset.stats && dataset.stats.simulationFocus) {
-            extraLegendEntries.push({
-                label: "Sim Focus",
-                color: "#06b6d4",
-                value: traceyTrimLabel(dataset.stats.simulationFocus, 18)
-            });
-        }
-        renderTraceyTopologySvg(nodes.traceyServerTopologyChart, dataset, "No server topology is available for the selected talker mode.", {
+        const resolver = {
             resolveNodeInteraction: (node, side) => {
+                if (String(node && node.id || "").startsWith("synthetic-")) {
+                    return null;
+                }
                 if (side === "remote") {
                     return {
                         scope: "server",
@@ -3442,16 +4882,60 @@
                         : "Clear server network focus"
                 };
             },
-            resolveLinkInteraction: (link) => ({
-                scope: "server",
-                type: "link",
-                link,
-                ariaLabel: `Filter server tables by path ${traceyText(link && link.localLabel, "local")} to ${traceyText(link && link.remoteLabel, "remote")}`
-            }),
+            resolveLinkInteraction: (link) => String(link && link.id || "").includes(":simulation")
+                ? null
+                : ({
+                    scope: "server",
+                    type: "link",
+                    link,
+                    ariaLabel: `Filter server tables by path ${traceyText(link && link.localLabel, "local")} to ${traceyText(link && link.remoteLabel, "remote")}`
+                }),
             isNodeActive: (node, side) => traceyServerTopologyNodeIsActive(node, side),
             isLinkActive: (link) => traceyServerTopologyLinkIsActive(link)
-        });
+        };
+
+        if (readTraceyTopologyTab(scope) === "expansion") {
+            const scenario = traceyEstimateExpansionScenario(
+                simulationModel,
+                readTraceySimulationTargets(scope, simulationModel),
+                readTraceySimulationStrategy(scope)
+            );
+            const dataset = buildTraceyServerSimulationTopology(data, simulationModel, scenario, talkerMode);
+            renderTraceyTopologySvg(nodes.traceyServerTopologyChart, dataset, "No server topology is available for the selected talker mode.", resolver);
+            renderLegend(nodes.traceyServerTopologyLegend, buildTraceyTopologyLegendEntries(dataset, "simulation", [
+                { label: "Targets", color: "#06b6d4", value: `${formatCount(scenario.targetNodes, "0")}n / ${formatCount(scenario.targetGpus, "0")}g` },
+                { label: "Topology", color: "#94a3b8", value: traceyTrimLabel(scenario.topology, 18) },
+                { label: "Collective", color: "#f97316", value: traceyTrimLabel(scenario.recommendedCollective, 16) }
+            ]));
+            renderMetricList(
+                nodes.traceyServerSimulationFacts,
+                buildTraceySimulationFactRows(simulationModel, scenario),
+                "No server expansion model available."
+            );
+            renderTraceyTalkerBars(
+                nodes.traceyServerTalkerBars,
+                buildTraceyScenarioTalkers([data], scenario, talkerMode, {
+                    scopeLabel: () => traceyText(data && (data.host || data.agent_id), "server")
+                }),
+                "simulation",
+                "No server talkers available for the simulated expansion window."
+            );
+            return;
+        }
+
+        const forecastMode = readTraceyTopologyForecast(nodes.traceyServerTopologyForecast);
+        const dataset = buildTraceyServerTopology(data, forecastMode, talkerMode);
+        const extraLegendEntries = [];
+        if (dataset && dataset.stats && dataset.stats.simulationFocus) {
+            extraLegendEntries.push({
+                label: "Sim Focus",
+                color: "#06b6d4",
+                value: traceyTrimLabel(dataset.stats.simulationFocus, 18)
+            });
+        }
+        renderTraceyTopologySvg(nodes.traceyServerTopologyChart, dataset, "No server topology is available for the selected talker mode.", resolver);
         renderLegend(nodes.traceyServerTopologyLegend, buildTraceyTopologyLegendEntries(dataset, forecastMode, extraLegendEntries));
+        renderMetricList(nodes.traceyServerSimulationFacts, buildTraceyActualNetworkFactRows(simulationModel), "No server network telemetry available.");
         renderTraceyTalkerBars(
             nodes.traceyServerTalkerBars,
             buildTraceyScopedTalkers([data], forecastMode, talkerMode, {
@@ -5366,6 +6850,9 @@
             nodes.traceyServerTalkerMode.value = normalizeTraceyTalkerMode(nodes.traceyServerTalkerMode.value);
             nodes.traceyServerTalkerMode.addEventListener("change", rerenderServerNetwork);
         }
+        bindTraceySimulationControls("fleet");
+        bindTraceySimulationControls("rack");
+        bindTraceySimulationControls("server");
         bindTraceyTopologyInteractions(nodes.traceyFleetTopologyChart);
         bindTraceyTopologyInteractions(nodes.traceyRackTopologyChart);
         bindTraceyTopologyInteractions(nodes.traceyServerTopologyChart);

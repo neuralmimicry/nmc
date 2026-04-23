@@ -21,6 +21,17 @@ namespace httplib {
 
 namespace NMC::Core {
 
+    struct TraceySimulationQuery {
+        int simulationNodes{-1};
+        int simulationGpus{-1};
+        int simulationCores{-1};
+        std::string simulationStrategy;
+
+        [[nodiscard]] bool hasAny() const {
+            return simulationNodes > 0 || simulationGpus > 0 || simulationCores > 0 || !simulationStrategy.empty();
+        }
+    };
+
     /**
      * HTTP transport facade used by all CLI commands.
      *
@@ -151,20 +162,24 @@ namespace NMC::Core {
         Models::CloudResponse traceyHeartbeat(const nlohmann::json& heartbeatPayload);
         Models::CloudResponse listTraceyAgents();
         Models::CloudResponse getTraceyAnalytics(int windowSeconds = -1, int bucketSeconds = -1, int logLimit = -1);
-        Models::CloudResponse getTraceyFleet();
+        Models::CloudResponse getTraceyFleet(const TraceySimulationQuery& simulation = TraceySimulationQuery{});
         Models::CloudResponse getTraceyAdaptive(const std::string& policy = "");
         Models::CloudResponse getTraceyCveStatus();
         Models::CloudResponse getTraceyAssessmentFleet();
         Models::CloudResponse getTraceyAssessmentPlan(const std::string& agentId);
         Models::CloudResponse submitTraceyAssessmentReport(const std::string& agentId, const nlohmann::json& reportPayload);
         Models::CloudResponse listTraceyRacks();
-        Models::CloudResponse getTraceyRackDetails(const std::string& rackId);
+        Models::CloudResponse getTraceyRackDetails(const std::string& rackId,
+                                                   const TraceySimulationQuery& simulation = TraceySimulationQuery{});
         Models::CloudResponse getTraceyAgentAnalysis(const std::string& agentId,
                                                      int windowSeconds = -1,
                                                      int bucketSeconds = -1,
                                                      int logLimit = -1);
-        Models::CloudResponse getTraceyAgentServer(const std::string& agentId);
-        Models::CloudResponse getTraceyAgentGpu(const std::string& agentId, const std::string& gpuId);
+        Models::CloudResponse getTraceyAgentServer(const std::string& agentId,
+                                                   const TraceySimulationQuery& simulation = TraceySimulationQuery{});
+        Models::CloudResponse getTraceyAgentGpu(const std::string& agentId,
+                                                const std::string& gpuId,
+                                                const TraceySimulationQuery& simulation = TraceySimulationQuery{});
         Models::CloudResponse getTraceyAgentCompromise(const std::string& agentId);
         Models::CloudResponse controlTraceyAgent(const std::string& agentId, const nlohmann::json& controlPayload);
         Models::CloudResponse getTraceyAgentDeepDive(const std::string& agentId);

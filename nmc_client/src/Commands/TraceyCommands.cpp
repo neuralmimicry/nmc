@@ -18,6 +18,16 @@ std::string normalizeAdaptivePolicyValue(std::string value) {
     return "";
 }
 
+std::string normalizeSimulationStrategyValue(std::string value) {
+    for (auto& ch : value) {
+        ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    }
+    if (value == "balanced" || value == "throughput" || value == "collective") {
+        return value;
+    }
+    return "";
+}
+
 // Parse optional integer flag that must be positive when provided.
 bool parseOptionalPositiveInt(const std::map<std::string, std::string>& parsedFlags,
                               const std::string& flagName,
@@ -96,6 +106,35 @@ bool parseAdaptivePolicyFlag(const std::map<std::string, std::string>& parsedFla
         return true;
     }
     errorOut = "--policy must be one of: balanced, throughput, risk, energy.";
+    return false;
+}
+
+void addTraceySimulationFlags(BaseCommand& command) {
+    command.addFlag(CLI::Flag("N", "sim-nodes", "Scenario target node count", CLI::FlagType::Int, false));
+    command.addFlag(CLI::Flag("G", "sim-gpus", "Scenario target GPU count", CLI::FlagType::Int, false));
+    command.addFlag(CLI::Flag("C", "sim-cores", "Scenario target CPU core count", CLI::FlagType::Int, false));
+    command.addFlag(CLI::Flag("S", "sim-strategy", "Scenario strategy: balanced, throughput, collective", CLI::FlagType::String, false));
+}
+
+bool parseTraceySimulationFlags(const std::map<std::string, std::string>& parsedFlags,
+                                NMC::Core::TraceySimulationQuery& queryOut,
+                                std::string& errorOut) {
+    queryOut = NMC::Core::TraceySimulationQuery{};
+    if (!parseOptionalPositiveInt(parsedFlags, "sim-nodes", queryOut.simulationNodes, errorOut) ||
+        !parseOptionalPositiveInt(parsedFlags, "sim-gpus", queryOut.simulationGpus, errorOut) ||
+        !parseOptionalPositiveInt(parsedFlags, "sim-cores", queryOut.simulationCores, errorOut)) {
+        return false;
+    }
+
+    const auto it = parsedFlags.find("sim-strategy");
+    if (it == parsedFlags.end() || it->second.empty()) {
+        return true;
+    }
+    queryOut.simulationStrategy = normalizeSimulationStrategyValue(it->second);
+    if (!queryOut.simulationStrategy.empty()) {
+        return true;
+    }
+    errorOut = "--sim-strategy must be one of: balanced, throughput, collective.";
     return false;
 }
 
@@ -272,8 +311,9 @@ int TraceyAnalyticsCommand::execute(const std::map<std::string, std::string>& pa
 
 TraceyFleetCommand::TraceyFleetCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client)
     : BaseCommand("fleet", "Fetch Tracey fleet-wide topology and telemetry view", std::move(client)) {
-    usage = "nmc tracey fleet";
-    examples = "nmc tracey fleet";
+    usage = "nmc tracey fleet [--sim-nodes N] [--sim-gpus N] [--sim-cores N] [--sim-strategy balanced|throughput|collective]";
+    examples = "nmc tracey fleet --sim-nodes 24 --sim-gpus 192 --sim-cores 384 --sim-strategy collective";
+    addTraceySimulationFlags(*this);
 }
 
 int TraceyFleetCommand::execute(const std::map<std::string, std::string>& parsedFlags,
@@ -282,7 +322,14 @@ int TraceyFleetCommand::execute(const std::map<std::string, std::string>& parsed
     if (!validateArguments(parsedArgs) || !validateFlags(parsedFlags)) {
         return 1;
     }
-    Models::CloudResponse response = apiClient->getTraceyFleet();
+    NMC::Core::TraceySimulationQuery simulation;
+    std::string parseError;
+    if (!parseTraceySimulationFlags(parsedFlags, simulation, parseError)) {
+        Models::CloudResponse response{false, parseError, nlohmann::json::object(), 400};
+        printOutput(response, globalFlags);
+        return 1;
+    }
+    Models::CloudResponse response = apiClient->getTraceyFleet(simulation);
     printOutput(response, globalFlags);
     return response.success ? 0 : 1;
 }
@@ -416,9 +463,10 @@ int TraceyRacksCommand::execute(const std::map<std::string, std::string>& parsed
 
 TraceyRackCommand::TraceyRackCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client)
     : BaseCommand("rack", "Fetch Tracey telemetry for a single rack", std::move(client)) {
-    usage = "nmc tracey rack RACK_ID";
-    examples = "nmc tracey rack R09";
+    usage = "nmc tracey rack RACK_ID [--sim-nodes N] [--sim-gpus N] [--sim-cores N] [--sim-strategy balanced|throughput|collective]";
+    examples = "nmc tracey rack R09 --sim-nodes 8 --sim-gpus 64 --sim-cores 128";
     addArgument(CLI::Argument("RACK_ID", "Rack identifier", true, 0));
+    addTraceySimulationFlags(*this);
 }
 
 int TraceyRackCommand::execute(const std::map<std::string, std::string>& parsedFlags,
@@ -427,7 +475,14 @@ int TraceyRackCommand::execute(const std::map<std::string, std::string>& parsedF
     if (!validateArguments(parsedArgs) || !validateFlags(parsedFlags)) {
         return 1;
     }
-    Models::CloudResponse response = apiClient->getTraceyRackDetails(parsedArgs[0]);
+    NMC::Core::TraceySimulationQuery simulation;
+    std::string parseError;
+    if (!parseTraceySimulationFlags(parsedFlags, simulation, parseError)) {
+        Models::CloudResponse response{false, parseError, nlohmann::json::object(), 400};
+        printOutput(response, globalFlags);
+        return 1;
+    }
+    Models::CloudResponse response = apiClient->getTraceyRackDetails(parsedArgs[0], simulation);
     printOutput(response, globalFlags);
     return response.success ? 0 : 1;
 }
@@ -469,9 +524,10 @@ int TraceyAnalysisCommand::execute(const std::map<std::string, std::string>& par
 
 TraceyServerCommand::TraceyServerCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client)
     : BaseCommand("server", "Fetch full server telemetry for a Tracey agent", std::move(client)) {
-    usage = "nmc tracey server AGENT_ID";
-    examples = "nmc tracey server tracey-1";
+    usage = "nmc tracey server AGENT_ID [--sim-nodes N] [--sim-gpus N] [--sim-cores N] [--sim-strategy balanced|throughput|collective]";
+    examples = "nmc tracey server tracey-1 --sim-nodes 4 --sim-gpus 16 --sim-cores 64 --sim-strategy throughput";
     addArgument(CLI::Argument("AGENT_ID", "Tracey agent ID", true, 0));
+    addTraceySimulationFlags(*this);
 }
 
 int TraceyServerCommand::execute(const std::map<std::string, std::string>& parsedFlags,
@@ -480,17 +536,25 @@ int TraceyServerCommand::execute(const std::map<std::string, std::string>& parse
     if (!validateArguments(parsedArgs) || !validateFlags(parsedFlags)) {
         return 1;
     }
-    Models::CloudResponse response = apiClient->getTraceyAgentServer(parsedArgs[0]);
+    NMC::Core::TraceySimulationQuery simulation;
+    std::string parseError;
+    if (!parseTraceySimulationFlags(parsedFlags, simulation, parseError)) {
+        Models::CloudResponse response{false, parseError, nlohmann::json::object(), 400};
+        printOutput(response, globalFlags);
+        return 1;
+    }
+    Models::CloudResponse response = apiClient->getTraceyAgentServer(parsedArgs[0], simulation);
     printOutput(response, globalFlags);
     return response.success ? 0 : 1;
 }
 
 TraceyGpuCommand::TraceyGpuCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client)
     : BaseCommand("gpu", "Fetch deep telemetry for a single GPU on a Tracey agent", std::move(client)) {
-    usage = "nmc tracey gpu AGENT_ID GPU_ID";
-    examples = "nmc tracey gpu tracey-1 nvidia:0";
+    usage = "nmc tracey gpu AGENT_ID GPU_ID [--sim-nodes N] [--sim-gpus N] [--sim-cores N] [--sim-strategy balanced|throughput|collective]";
+    examples = "nmc tracey gpu tracey-1 nvidia:0 --sim-gpus 32 --sim-cores 96 --sim-strategy collective";
     addArgument(CLI::Argument("AGENT_ID", "Tracey agent ID", true, 0));
     addArgument(CLI::Argument("GPU_ID", "GPU identifier", true, 1));
+    addTraceySimulationFlags(*this);
 }
 
 int TraceyGpuCommand::execute(const std::map<std::string, std::string>& parsedFlags,
@@ -499,7 +563,14 @@ int TraceyGpuCommand::execute(const std::map<std::string, std::string>& parsedFl
     if (!validateArguments(parsedArgs) || !validateFlags(parsedFlags)) {
         return 1;
     }
-    Models::CloudResponse response = apiClient->getTraceyAgentGpu(parsedArgs[0], parsedArgs[1]);
+    NMC::Core::TraceySimulationQuery simulation;
+    std::string parseError;
+    if (!parseTraceySimulationFlags(parsedFlags, simulation, parseError)) {
+        Models::CloudResponse response{false, parseError, nlohmann::json::object(), 400};
+        printOutput(response, globalFlags);
+        return 1;
+    }
+    Models::CloudResponse response = apiClient->getTraceyAgentGpu(parsedArgs[0], parsedArgs[1], simulation);
     printOutput(response, globalFlags);
     return response.success ? 0 : 1;
 }

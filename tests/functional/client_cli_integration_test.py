@@ -174,7 +174,10 @@ class MockServer:
         )
 
         path_only = handler.path.split("?", 1)[0]
+        rack_match = re.match(r"^/tracey/racks/([^/]+)$", path_only)
         analysis_match = re.match(r"^/tracey/agents/([^/]+)/analysis$", path_only)
+        server_match = re.match(r"^/tracey/agents/([^/]+)/server$", path_only)
+        gpu_match = re.match(r"^/tracey/agents/([^/]+)/gpus/([^/]+)/telemetry$", path_only)
         control_match = re.match(r"^/tracey/agents/([^/]+)/control$", path_only)
         deepdive_match = re.match(r"^/tracey/agents/([^/]+)/deepdive$", path_only)
 
@@ -182,8 +185,24 @@ class MockServer:
             self._send_json(handler, 200, {"route": "tracey_analytics", "path": handler.path})
             return
 
+        if handler.command == "GET" and path_only == "/tracey/fleet":
+            self._send_json(handler, 200, {"route": "tracey_fleet", "path": handler.path})
+            return
+
         if handler.command == "GET" and path_only == "/tracey/adaptive":
             self._send_json(handler, 200, {"route": "tracey_adaptive", "path": handler.path})
+            return
+
+        if handler.command == "GET" and rack_match:
+            self._send_json(
+                handler,
+                200,
+                {
+                    "route": "tracey_rack",
+                    "rack_id": rack_match.group(1),
+                    "path": handler.path,
+                },
+            )
             return
 
         if handler.command == "GET" and path_only == "/healthz":
@@ -238,6 +257,31 @@ class MockServer:
                 {
                     "route": "tracey_analysis",
                     "agent_id": analysis_match.group(1),
+                    "path": handler.path,
+                },
+            )
+            return
+
+        if handler.command == "GET" and server_match:
+            self._send_json(
+                handler,
+                200,
+                {
+                    "route": "tracey_server",
+                    "agent_id": server_match.group(1),
+                    "path": handler.path,
+                },
+            )
+            return
+
+        if handler.command == "GET" and gpu_match:
+            self._send_json(
+                handler,
+                200,
+                {
+                    "route": "tracey_gpu",
+                    "agent_id": gpu_match.group(1),
+                    "gpu_id": gpu_match.group(2),
                     "path": handler.path,
                 },
             )
@@ -571,6 +615,126 @@ def test_adaptive_policy_query_serialization(server: MockServer, home_dir: pathl
     )
 
 
+def test_fleet_simulation_query_serialization(server: MockServer, home_dir: pathlib.Path) -> None:
+    server.clear_records()
+    result = run_nmc(
+        [
+            "tracey",
+            "fleet",
+            "--sim-nodes",
+            "24",
+            "--sim-gpus",
+            "192",
+            "--sim-cores",
+            "384",
+            "--sim-strategy",
+            "collective",
+        ],
+        home_dir,
+    )
+    assert_success(result, "tracey fleet simulation")
+
+    records = server.records()
+    assert_true(len(records) == 1, f"tracey fleet simulation expected 1 request, got {len(records)}")
+    req = records[0]
+    assert_true(req.method == "GET", f"tracey fleet simulation expected GET, got {req.method}")
+    assert_true(
+        req.path == "/tracey/fleet?simulation_nodes=24&simulation_gpus=192&simulation_cores=384&simulation_strategy=collective",
+        f"tracey fleet simulation wrong path: {req.path}",
+    )
+
+
+def test_rack_simulation_query_serialization(server: MockServer, home_dir: pathlib.Path) -> None:
+    server.clear_records()
+    result = run_nmc(
+        [
+            "tracey",
+            "rack",
+            "R09",
+            "--sim-nodes",
+            "8",
+            "--sim-gpus",
+            "64",
+            "--sim-cores",
+            "128",
+            "--sim-strategy",
+            "throughput",
+        ],
+        home_dir,
+    )
+    assert_success(result, "tracey rack simulation")
+
+    records = server.records()
+    assert_true(len(records) == 1, f"tracey rack simulation expected 1 request, got {len(records)}")
+    req = records[0]
+    assert_true(req.method == "GET", f"tracey rack simulation expected GET, got {req.method}")
+    assert_true(
+        req.path == "/tracey/racks/R09?simulation_nodes=8&simulation_gpus=64&simulation_cores=128&simulation_strategy=throughput",
+        f"tracey rack simulation wrong path: {req.path}",
+    )
+
+
+def test_server_simulation_query_serialization(server: MockServer, home_dir: pathlib.Path) -> None:
+    server.clear_records()
+    result = run_nmc(
+        [
+            "tracey",
+            "server",
+            "agent-1",
+            "--sim-nodes",
+            "4",
+            "--sim-gpus",
+            "16",
+            "--sim-cores",
+            "64",
+            "--sim-strategy",
+            "balanced",
+        ],
+        home_dir,
+    )
+    assert_success(result, "tracey server simulation")
+
+    records = server.records()
+    assert_true(len(records) == 1, f"tracey server simulation expected 1 request, got {len(records)}")
+    req = records[0]
+    assert_true(req.method == "GET", f"tracey server simulation expected GET, got {req.method}")
+    assert_true(
+        req.path == "/tracey/agents/agent-1/server?simulation_nodes=4&simulation_gpus=16&simulation_cores=64&simulation_strategy=balanced",
+        f"tracey server simulation wrong path: {req.path}",
+    )
+
+
+def test_gpu_simulation_query_serialization(server: MockServer, home_dir: pathlib.Path) -> None:
+    server.clear_records()
+    result = run_nmc(
+        [
+            "tracey",
+            "gpu",
+            "agent-1",
+            "nvidia:0",
+            "--sim-nodes",
+            "2",
+            "--sim-gpus",
+            "32",
+            "--sim-cores",
+            "96",
+            "--sim-strategy",
+            "collective",
+        ],
+        home_dir,
+    )
+    assert_success(result, "tracey gpu simulation")
+
+    records = server.records()
+    assert_true(len(records) == 1, f"tracey gpu simulation expected 1 request, got {len(records)}")
+    req = records[0]
+    assert_true(req.method == "GET", f"tracey gpu simulation expected GET, got {req.method}")
+    assert_true(
+        req.path == "/tracey/agents/agent-1/gpus/nvidia:0/telemetry?simulation_nodes=2&simulation_gpus=32&simulation_cores=96&simulation_strategy=collective",
+        f"tracey gpu simulation wrong path: {req.path}",
+    )
+
+
 def test_control_payload_serialization(server: MockServer, home_dir: pathlib.Path) -> None:
     server.clear_records()
     result = run_nmc(
@@ -671,6 +835,17 @@ def test_invalid_adaptive_policy_fails_before_network(server: MockServer, home_d
         f"expected adaptive policy validation error, got stderr:\n{result.stderr}",
     )
     assert_true(len(server.records()) == 0, "invalid adaptive policy should not perform network calls")
+
+
+def test_invalid_tracey_simulation_strategy_fails_before_network(server: MockServer, home_dir: pathlib.Path) -> None:
+    server.clear_records()
+    result = run_nmc(["tracey", "server", "agent-1", "--sim-strategy", "turbo"], home_dir)
+    assert_failure(result, "tracey server invalid sim-strategy")
+    assert_true(
+        "--sim-strategy must be one of: balanced, throughput, collective." in result.stderr,
+        f"expected simulation strategy validation error, got stderr:\n{result.stderr}",
+    )
+    assert_true(len(server.records()) == 0, "invalid simulation strategy should not perform network calls")
 
 
 def test_malformed_upstream_response_fails_predictably(server: MockServer, home_dir: pathlib.Path) -> None:
@@ -1087,11 +1262,16 @@ def main() -> int:
             test_agent_analysis_query_serialization(server, home_dir)
             test_adaptive_query_serialization(server, home_dir)
             test_adaptive_policy_query_serialization(server, home_dir)
+            test_fleet_simulation_query_serialization(server, home_dir)
+            test_rack_simulation_query_serialization(server, home_dir)
+            test_server_simulation_query_serialization(server, home_dir)
+            test_gpu_simulation_query_serialization(server, home_dir)
             test_control_payload_serialization(server, home_dir)
             test_heartbeat_payload_serialization(server, home_dir)
             test_invalid_json_fails_before_network(server, home_dir)
             test_invalid_flag_fails_before_network(server, home_dir)
             test_invalid_adaptive_policy_fails_before_network(server, home_dir)
+            test_invalid_tracey_simulation_strategy_fails_before_network(server, home_dir)
             test_malformed_upstream_response_fails_predictably(server, home_dir)
             test_proxmox_request_serialization(server, home_dir)
             test_proxmox_status_serialization(server, home_dir)

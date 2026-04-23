@@ -33,6 +33,13 @@ namespace {
         path += key + "=" + value;
     }
 
+    void appendTraceySimulationQuery(std::string& path, const NMC::Core::TraceySimulationQuery& simulation) {
+        appendQueryInt(path, "simulation_nodes", simulation.simulationNodes);
+        appendQueryInt(path, "simulation_gpus", simulation.simulationGpus);
+        appendQueryInt(path, "simulation_cores", simulation.simulationCores);
+        appendQueryString(path, "simulation_strategy", simulation.simulationStrategy);
+    }
+
     // Normalize heterogeneous cluster list payload shapes to a plain array.
     nlohmann::json extractClusterArray(const nlohmann::json& payload) {
         if (payload.is_array()) {
@@ -841,8 +848,10 @@ namespace NMC::Core {
         return processHttpResponse(res, "Tracey analytics retrieved.");
     }
 
-    Models::CloudResponse CloudAPIClient::getTraceyFleet() {
-        auto res = cli->Get("/tracey/fleet");
+    Models::CloudResponse CloudAPIClient::getTraceyFleet(const TraceySimulationQuery& simulation) {
+        std::string path = "/tracey/fleet";
+        appendTraceySimulationQuery(path, simulation);
+        auto res = cli->Get(path);
         return processHttpResponse(res, "Tracey fleet view retrieved.");
     }
 
@@ -883,8 +892,11 @@ namespace NMC::Core {
         return processHttpResponse(res, "Tracey racks listed.");
     }
 
-    Models::CloudResponse CloudAPIClient::getTraceyRackDetails(const std::string& rackId) {
-        auto res = cli->Get("/tracey/racks/" + rackId);
+    Models::CloudResponse CloudAPIClient::getTraceyRackDetails(const std::string& rackId,
+                                                               const TraceySimulationQuery& simulation) {
+        std::string path = "/tracey/racks/" + rackId;
+        appendTraceySimulationQuery(path, simulation);
+        auto res = cli->Get(path);
         return processHttpResponse(res, "Tracey rack details retrieved.");
     }
 
@@ -900,13 +912,20 @@ namespace NMC::Core {
         return processHttpResponse(res, "Tracey agent analysis retrieved.");
     }
 
-    Models::CloudResponse CloudAPIClient::getTraceyAgentServer(const std::string& agentId) {
-        auto res = cli->Get("/tracey/agents/" + agentId + "/server");
+    Models::CloudResponse CloudAPIClient::getTraceyAgentServer(const std::string& agentId,
+                                                               const TraceySimulationQuery& simulation) {
+        std::string path = "/tracey/agents/" + agentId + "/server";
+        appendTraceySimulationQuery(path, simulation);
+        auto res = cli->Get(path);
         return processHttpResponse(res, "Tracey server telemetry retrieved.");
     }
 
-    Models::CloudResponse CloudAPIClient::getTraceyAgentGpu(const std::string& agentId, const std::string& gpuId) {
-        auto res = cli->Get("/tracey/agents/" + agentId + "/gpus/" + gpuId + "/telemetry");
+    Models::CloudResponse CloudAPIClient::getTraceyAgentGpu(const std::string& agentId,
+                                                            const std::string& gpuId,
+                                                            const TraceySimulationQuery& simulation) {
+        std::string path = "/tracey/agents/" + agentId + "/gpus/" + gpuId + "/telemetry";
+        appendTraceySimulationQuery(path, simulation);
+        auto res = cli->Get(path);
         return processHttpResponse(res, "Tracey GPU telemetry retrieved.");
     }
 

@@ -392,6 +392,40 @@ h1 {
     outline: none;
 }
 
+.tracey-topology-tabs {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.18rem;
+    padding: 0.16rem;
+    border-radius: 999px;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    background: rgba(9, 14, 20, 0.72);
+}
+
+.tracey-topology-tab {
+    border: 0;
+    border-radius: 999px;
+    padding: 0.34rem 0.72rem;
+    background: transparent;
+    color: rgba(216, 210, 202, 0.76);
+    font-size: 0.72rem;
+    font-family: var(--font-mono);
+    cursor: pointer;
+    transition: background 140ms ease, color 140ms ease, box-shadow 140ms ease;
+}
+
+.tracey-topology-tab:hover,
+.tracey-topology-tab:focus-visible {
+    color: #ffffff;
+    outline: none;
+}
+
+.tracey-topology-tab.is-active {
+    background: linear-gradient(135deg, rgba(56, 189, 248, 0.26), rgba(227, 85, 40, 0.22));
+    color: #ffffff;
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14);
+}
+
 .panel-action-btn {
     border: 1px solid rgba(255, 255, 255, 0.32);
     border-radius: 999px;
@@ -583,6 +617,20 @@ td {
     gap: 0.6rem;
     margin-bottom: 0.8rem;
     align-items: flex-end;
+}
+
+.tracey-topology-simulation-controls {
+    padding: 0.75rem 0.85rem;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 14px;
+    background:
+        linear-gradient(135deg, rgba(6, 182, 212, 0.08), transparent 42%),
+        linear-gradient(135deg, rgba(245, 158, 11, 0.10), transparent 82%),
+        rgba(10, 16, 24, 0.78);
+}
+
+.tracey-topology-simulation-controls[hidden] {
+    display: none !important;
 }
 
 .tracey-control {
@@ -1011,6 +1059,15 @@ td {
 .tracey-metric-list {
     display: grid;
     gap: 0.42rem;
+}
+
+.tracey-simulation-facts {
+    margin-top: 0.6rem;
+    grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+}
+
+.tracey-simulation-facts .tracey-metric-row {
+    min-height: 72px;
 }
 
 .tracey-sensor-row,

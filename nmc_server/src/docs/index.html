@@ -487,13 +487,16 @@
                     <div class="panel-title-row">
                         <h4>Fleet Network Map</h4>
                         <div class="panel-actions">
+                            <div id="traceyFleetTopologyTabs" class="tracey-topology-tabs" role="tablist" aria-label="Fleet network mode">
+                                <button id="traceyFleetTopologyTabActual" class="tracey-topology-tab is-active" type="button" data-tracey-topology-tab="actual" aria-selected="true">Actual</button>
+                                <button id="traceyFleetTopologyTabExpansion" class="tracey-topology-tab" type="button" data-tracey-topology-tab="expansion" aria-selected="false">Expansion</button>
+                            </div>
                             <label class="panel-select" for="traceyFleetTopologyForecast">
                                 <span>Forecast</span>
                                 <select id="traceyFleetTopologyForecast">
                                     <option value="current" selected>Current</option>
                                     <option value="projected_5m">5m</option>
                                     <option value="projected_15m">15m</option>
-                                    <option value="simulation">Simulation</option>
                                 </select>
                             </label>
                             <label class="panel-select" for="traceyFleetTalkerMode">
@@ -506,8 +509,34 @@
                             </label>
                         </div>
                     </div>
+                    <div id="traceyFleetSimulationControls" class="tracey-controls tracey-topology-simulation-controls" hidden>
+                        <label class="tracey-control">
+                            <span>Nodes</span>
+                            <input id="traceyFleetSimulationNodes" type="number" min="1" step="1" value="8">
+                        </label>
+                        <label class="tracey-control">
+                            <span>GPUs</span>
+                            <input id="traceyFleetSimulationGpus" type="number" min="1" step="1" value="16">
+                        </label>
+                        <label class="tracey-control">
+                            <span>CPU Cores</span>
+                            <input id="traceyFleetSimulationCores" type="number" min="1" step="1" value="32">
+                        </label>
+                        <label class="tracey-control">
+                            <span>Strategy</span>
+                            <select id="traceyFleetSimulationStrategy">
+                                <option value="balanced" selected>Balanced</option>
+                                <option value="throughput">Throughput</option>
+                                <option value="collective">Collective</option>
+                            </select>
+                        </label>
+                        <button id="traceyFleetSimulationRecommended" class="panel-action-btn" type="button">Recommended</button>
+                    </div>
                     <svg id="traceyFleetTopologyChart" class="tracey-topology" viewBox="0 0 900 280" preserveAspectRatio="none"></svg>
                     <div id="traceyFleetTopologyLegend" class="tracey-legend"></div>
+                    <div id="traceyFleetSimulationFacts" class="tracey-metric-list tracey-simulation-facts">
+                        <p class="empty">Switch to Expansion to model a larger fleet fabric.</p>
+                    </div>
                     <div class="table-wrap">
                         <table class="detail-table">
                             <thead>
@@ -634,13 +663,16 @@
                     <div class="panel-title-row">
                         <h4>Rack Network Map</h4>
                         <div class="panel-actions">
+                            <div id="traceyRackTopologyTabs" class="tracey-topology-tabs" role="tablist" aria-label="Rack network mode">
+                                <button id="traceyRackTopologyTabActual" class="tracey-topology-tab is-active" type="button" data-tracey-topology-tab="actual" aria-selected="true">Actual</button>
+                                <button id="traceyRackTopologyTabExpansion" class="tracey-topology-tab" type="button" data-tracey-topology-tab="expansion" aria-selected="false">Expansion</button>
+                            </div>
                             <label class="panel-select" for="traceyRackTopologyForecast">
                                 <span>Forecast</span>
                                 <select id="traceyRackTopologyForecast">
                                     <option value="current" selected>Current</option>
                                     <option value="projected_5m">5m</option>
                                     <option value="projected_15m">15m</option>
-                                    <option value="simulation">Simulation</option>
                                 </select>
                             </label>
                             <label class="panel-select" for="traceyRackTalkerMode">
@@ -653,8 +685,34 @@
                             </label>
                         </div>
                     </div>
+                    <div id="traceyRackSimulationControls" class="tracey-controls tracey-topology-simulation-controls" hidden>
+                        <label class="tracey-control">
+                            <span>Nodes</span>
+                            <input id="traceyRackSimulationNodes" type="number" min="1" step="1" value="4">
+                        </label>
+                        <label class="tracey-control">
+                            <span>GPUs</span>
+                            <input id="traceyRackSimulationGpus" type="number" min="1" step="1" value="8">
+                        </label>
+                        <label class="tracey-control">
+                            <span>CPU Cores</span>
+                            <input id="traceyRackSimulationCores" type="number" min="1" step="1" value="16">
+                        </label>
+                        <label class="tracey-control">
+                            <span>Strategy</span>
+                            <select id="traceyRackSimulationStrategy">
+                                <option value="balanced" selected>Balanced</option>
+                                <option value="throughput">Throughput</option>
+                                <option value="collective">Collective</option>
+                            </select>
+                        </label>
+                        <button id="traceyRackSimulationRecommended" class="panel-action-btn" type="button">Recommended</button>
+                    </div>
                     <svg id="traceyRackTopologyChart" class="tracey-topology" viewBox="0 0 900 280" preserveAspectRatio="none"></svg>
                     <div id="traceyRackTopologyLegend" class="tracey-legend"></div>
+                    <div id="traceyRackSimulationFacts" class="tracey-metric-list tracey-simulation-facts">
+                        <p class="empty">Switch to Expansion to model additional servers and GPUs in this rack.</p>
+                    </div>
                     <div class="table-wrap">
                         <table class="detail-table">
                             <thead>
@@ -784,13 +842,16 @@
                         <div class="panel-title-row">
                             <h4>Network Diagram</h4>
                             <div class="panel-actions">
+                                <div id="traceyServerTopologyTabs" class="tracey-topology-tabs" role="tablist" aria-label="Server network mode">
+                                    <button id="traceyServerTopologyTabActual" class="tracey-topology-tab is-active" type="button" data-tracey-topology-tab="actual" aria-selected="true">Actual</button>
+                                    <button id="traceyServerTopologyTabExpansion" class="tracey-topology-tab" type="button" data-tracey-topology-tab="expansion" aria-selected="false">Expansion</button>
+                                </div>
                                 <label class="panel-select" for="traceyServerTopologyForecast">
                                     <span>Forecast</span>
                                     <select id="traceyServerTopologyForecast">
                                         <option value="current" selected>Current</option>
                                         <option value="projected_5m">5m</option>
                                         <option value="projected_15m">15m</option>
-                                        <option value="simulation">Simulation</option>
                                     </select>
                                 </label>
                                 <label class="panel-select" for="traceyServerTalkerMode">
@@ -803,8 +864,34 @@
                                 </label>
                             </div>
                         </div>
+                        <div id="traceyServerSimulationControls" class="tracey-controls tracey-topology-simulation-controls" hidden>
+                            <label class="tracey-control">
+                                <span>Nodes</span>
+                                <input id="traceyServerSimulationNodes" type="number" min="1" step="1" value="2">
+                            </label>
+                            <label class="tracey-control">
+                                <span>GPUs</span>
+                                <input id="traceyServerSimulationGpus" type="number" min="1" step="1" value="4">
+                            </label>
+                            <label class="tracey-control">
+                                <span>CPU Cores</span>
+                                <input id="traceyServerSimulationCores" type="number" min="1" step="1" value="12">
+                            </label>
+                            <label class="tracey-control">
+                                <span>Strategy</span>
+                                <select id="traceyServerSimulationStrategy">
+                                    <option value="balanced" selected>Balanced</option>
+                                    <option value="throughput">Throughput</option>
+                                    <option value="collective">Collective</option>
+                                </select>
+                            </label>
+                            <button id="traceyServerSimulationRecommended" class="panel-action-btn" type="button">Recommended</button>
+                        </div>
                         <svg id="traceyServerTopologyChart" class="tracey-topology" viewBox="0 0 900 280" preserveAspectRatio="none"></svg>
                         <div id="traceyServerTopologyLegend" class="tracey-legend"></div>
+                        <div id="traceyServerSimulationFacts" class="tracey-metric-list tracey-simulation-facts">
+                            <p class="empty">Switch to Expansion to model larger node, GPU, or CPU-core targets.</p>
+                        </div>
                     </section>
                     <section class="detail-card">
                         <h4>Talker Forecast</h4>
