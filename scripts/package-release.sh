@@ -5,7 +5,7 @@ usage() {
   cat <<'USAGE'
 Usage: package-release.sh [options]
 
-Package an NMC Unix release artifact.
+Package NMC release artifacts.
 
 Options:
   --component client|server   Logical component name.
@@ -13,7 +13,8 @@ Options:
   --input PATH                Built binary to package.
   --platform NAME             Platform suffix in output names.
   --output-dir DIR            Directory to receive packaged artifacts.
-  --rename NAME               Optional binary name inside the archive.
+  --rename NAME               Optional binary name inside the archive and package.
+  --deb-arch ARCH             Also build a Debian package for linux using ARCH (amd64 or arm64).
   -h, --help                  Show this help text.
 USAGE
 }
@@ -37,12 +38,121 @@ sha256_tool() {
   fi
 }
 
-COMPONENT=
-VERSION=
-INPUT=
-PLATFORM=
-OUTPUT_DIR=
-RENAME=
+validate_deb_arch() {
+  case "$1" in
+    amd64|arm64)
+      ;;
+    *)
+      die "unsupported Debian architecture: $1"
+      ;;
+  esac
+}
+
+debian_package_version() {
+  local version sanitized
+  version="$1"
+  [[ -n "$version" ]] || die "Debian package version is empty"
+  sanitized=$(
+    printf '%s' "$version" \
+      | tr '-' '~' \
+      | sed -E 's/[^A-Za-z0-9.+:~]+/./g; s/^[^A-Za-z0-9]+//; s/[^A-Za-z0-9]+$//'
+  )
+  [[ -n "$sanitized" ]] || die "unable to derive Debian package version from '$version'"
+  printf '%s\n' "$sanitized"
+}
+
+compute_deb_depends() {
+  if ! command -v dpkg-shlibdeps >/dev/null 2>&1; then
+    printf '\n'
+    return
+  fi
+
+  local work_dir output depends
+  work_dir="$(mktemp -d)"
+  output=$(
+    cd "$work_dir"
+    dpkg-shlibdeps -O "$1" 2>/dev/null || true
+  )
+  rm -rf "$work_dir"
+  depends="$(printf '%s\n' "$output" | sed -n 's/^shlibs:Depends=//p' | tail -n 1)"
+  printf '%s\n' "$depends"
+}
+
+install_linux_helpers_into_dir() {
+  local dest_dir="$1"
+  install -m 0755 "$REPO_ROOT/scripts/install-common.sh" "$dest_dir/install-common.sh"
+  install -m 0755 "$REPO_ROOT/scripts/install-client.sh" "$dest_dir/install-client.sh"
+  if [[ "$COMPONENT" == "server" ]]; then
+    install -m 0755 "$REPO_ROOT/scripts/install-server.sh" "$dest_dir/install-server.sh"
+  fi
+}
+
+create_debian_package() {
+  local deb_name deb_version deb_stage_root deb_root deb_path depends docs_root
+
+  [[ "$PLATFORM" == linux* ]] || die "--deb-arch is only supported for linux platforms"
+  validate_deb_arch "$DEB_ARCH"
+  command -v dpkg-deb >/dev/null 2>&1 || die "dpkg-deb is required when --deb-arch is used"
+
+  deb_name="nmc-${COMPONENT}"
+  deb_version="$(debian_package_version "$VERSION")"
+  deb_stage_root="$OUTPUT_DIR/.deb-stage-${COMPONENT}"
+  deb_root="$deb_stage_root/root"
+  deb_path="$OUTPUT_DIR/${deb_name}_${deb_version}_${DEB_ARCH}.deb"
+  docs_root="$deb_root/usr/share/doc/${deb_name}"
+
+  rm -rf "$deb_stage_root"
+  install -d -m 0755 \
+    "$deb_root/DEBIAN" \
+    "$deb_root/usr/bin" \
+    "$docs_root"
+
+  install -m 0755 "$INPUT" "$deb_root/usr/bin/$RENAME"
+  install -m 0644 "$REPO_ROOT/README.md" "$docs_root/README.md"
+
+  if [[ -f "$REPO_ROOT/VERSION" ]]; then
+    install -m 0644 "$REPO_ROOT/VERSION" "$docs_root/VERSION"
+  fi
+
+  if [[ "$COMPONENT" == "server" ]]; then
+    install -d -m 0755 "$deb_root/usr/share/nmc-server"
+    cp -R "$REPO_ROOT/nmc_server/src/docs" "$deb_root/usr/share/nmc-server/docs"
+  fi
+
+  depends="$(compute_deb_depends "$deb_root/usr/bin/$RENAME")"
+
+  {
+    printf 'Package: %s\n' "$deb_name"
+    printf 'Version: %s\n' "$deb_version"
+    printf 'Section: admin\n'
+    printf 'Priority: optional\n'
+    printf 'Architecture: %s\n' "$DEB_ARCH"
+    if [[ -n "$depends" ]]; then
+      printf 'Depends: %s\n' "$depends"
+    fi
+    printf 'Maintainer: NeuralMimicry <opensource@neuralmimicry.ai>\n'
+    printf 'Homepage: https://github.com/neuralmimicry/nmc\n'
+    if [[ "$COMPONENT" == "client" ]]; then
+      printf 'Description: NeuralMimicry Continuum CLI client\n'
+      printf ' The nmc-client package installs the nmc command-line interface.\n'
+    else
+      printf 'Description: NeuralMimicry Continuum control-plane server\n'
+      printf ' The nmc-server package installs the server binary and bundled docs.\n'
+    fi
+  } >"$deb_root/DEBIAN/control"
+
+  dpkg-deb --build --root-owner-group "$deb_root" "$deb_path" >/dev/null
+  artifacts+=("$deb_path")
+  rm -rf "$deb_stage_root"
+}
+
+COMPONENT=""
+VERSION=""
+INPUT=""
+PLATFORM=""
+OUTPUT_DIR=""
+RENAME=""
+DEB_ARCH=""
 
 while (($#)); do
   case "$1" in
@@ -76,6 +186,11 @@ while (($#)); do
       (($#)) || die "--rename requires a value"
       RENAME="$1"
       ;;
+    --deb-arch)
+      shift
+      (($#)) || die "--deb-arch requires a value"
+      DEB_ARCH="$1"
+      ;;
     -h|--help)
       usage
       exit 0
@@ -93,9 +208,9 @@ done
 [[ -n "$PLATFORM" ]] || die "--platform is required"
 [[ -n "$OUTPUT_DIR" ]] || die "--output-dir is required"
 
-SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-REPO_ROOT=$(CDPATH='' cd -- "$SCRIPT_DIR/.." && pwd)
-INPUT=$(CDPATH='' cd -- "$(dirname -- "$INPUT")" && pwd)/$(basename -- "$INPUT")
+SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(CDPATH='' cd -- "$SCRIPT_DIR/.." && pwd)"
+INPUT="$(CDPATH='' cd -- "$(dirname -- "$INPUT")" && pwd)/$(basename -- "$INPUT")"
 [[ -f "$INPUT" ]] || die "missing input binary: $INPUT"
 
 if [[ -z "$RENAME" ]]; then
@@ -107,8 +222,8 @@ if [[ -z "$RENAME" ]]; then
 fi
 
 ARCHIVE_BASENAME="nmc-${COMPONENT}-${VERSION}-${PLATFORM}"
-OUTPUT_DIR=$(mkdir -p "$OUTPUT_DIR" && cd "$OUTPUT_DIR" && pwd)
-STAGE_ROOT="$OUTPUT_DIR/.stage"
+OUTPUT_DIR="$(mkdir -p "$OUTPUT_DIR" && cd "$OUTPUT_DIR" && pwd)"
+STAGE_ROOT="$OUTPUT_DIR/.stage-${COMPONENT}"
 PAYLOAD_DIR="$STAGE_ROOT/$ARCHIVE_BASENAME"
 ARCHIVE_PATH="$OUTPUT_DIR/${ARCHIVE_BASENAME}.tar.gz"
 CHECKSUM_PATH="$OUTPUT_DIR/${ARCHIVE_BASENAME}.sha256.txt"
@@ -116,20 +231,42 @@ CHECKSUM_PATH="$OUTPUT_DIR/${ARCHIVE_BASENAME}.sha256.txt"
 rm -rf "$STAGE_ROOT"
 mkdir -p "$PAYLOAD_DIR"
 install -m 0755 "$INPUT" "$PAYLOAD_DIR/$RENAME"
-if [[ -f "$REPO_ROOT/README.md" ]]; then
-  install -m 0644 "$REPO_ROOT/README.md" "$PAYLOAD_DIR/README.md"
+install -m 0644 "$REPO_ROOT/README.md" "$PAYLOAD_DIR/README.md"
+if [[ -f "$REPO_ROOT/VERSION" ]]; then
+  install -m 0644 "$REPO_ROOT/VERSION" "$PAYLOAD_DIR/VERSION"
 fi
 
+if [[ "$COMPONENT" == "server" ]]; then
+  cp -R "$REPO_ROOT/nmc_server/src/docs" "$PAYLOAD_DIR/docs"
+fi
+
+case "$PLATFORM" in
+  linux*)
+    install_linux_helpers_into_dir "$PAYLOAD_DIR"
+    ;;
+esac
+
 tar -C "$STAGE_ROOT" -czf "$ARCHIVE_PATH" "$ARCHIVE_BASENAME"
-checksum_cmd=$(sha256_tool)
+artifacts=("$ARCHIVE_PATH")
+
+if [[ -n "$DEB_ARCH" ]]; then
+  create_debian_package
+fi
+
+checksum_cmd="$(sha256_tool)"
 (
   cd "$OUTPUT_DIR"
-  $checksum_cmd "$(basename "$ARCHIVE_PATH")" >"$(basename "$CHECKSUM_PATH")"
+  relative_artifacts=()
+  for artifact in "${artifacts[@]}"; do
+    relative_artifacts+=("$(basename "$artifact")")
+  done
+  $checksum_cmd "${relative_artifacts[@]}" >"$(basename "$CHECKSUM_PATH")"
 )
 
 log
 log "packaged NMC release artifacts:"
-log "  $ARCHIVE_PATH"
-log "  $CHECKSUM_PATH"
+for artifact in "${artifacts[@]}" "$CHECKSUM_PATH"; do
+  log "  $artifact"
+done
 
 rm -rf "$STAGE_ROOT"

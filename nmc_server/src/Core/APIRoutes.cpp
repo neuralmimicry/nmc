@@ -43,6 +43,17 @@ namespace NMC::Server {
             return value.substr(start, end - start + 1);
         }
 
+        std::string resolveDocsDir() {
+            const char* docsDirEnv = std::getenv("NMC_DOCS_DIR");
+            if (docsDirEnv) {
+                const std::string value = trim(docsDirEnv);
+                if (!value.empty()) {
+                    return value;
+                }
+            }
+            return "./docs";
+        }
+
         std::string trimLineEnd(std::string value) {
             while (!value.empty() && (value.back() == '\n' || value.back() == '\r')) {
                 value.pop_back();
@@ -4868,6 +4879,9 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
         });
 
         if (docsEnabled) {
+            const std::string docsDir = resolveDocsDir();
+            const std::string docsIndexPath = docsDir + "/index.html";
+            const std::string docsLoginPath = docsDir + "/login.html";
             // Set up static file serving for documentation
             // Assumes a 'docs' directory exists relative to the executable
             // or where the server is run from.
@@ -4875,24 +4889,24 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
             // All requests to /docs/* will look for files in the ./docs/ directory.
             // E.g., /docs/index.html will serve ./docs/index.html
             // /docs/bucket.html will serve ./docs/bucket.html
-            svr.set_base_dir("./docs"); // Set the base directory for static files
+            svr.set_base_dir(docsDir); // Set the base directory for static files
 
             // --- Documentation Route ---
             // This route will serve the index.html from the docs directory
             // when /docs is accessed directly.
             // Other files like /docs/bucket.html will be served automatically
             // by set_base_dir.
-            svr.Get("/", [](const httplib::Request& req, httplib::Response& res) {
-                res.set_content(Utils::readFile("./docs/index.html"), "text/html");
+            svr.Get("/", [docsIndexPath](const httplib::Request& req, httplib::Response& res) {
+                res.set_content(Utils::readFile(docsIndexPath), "text/html");
             });
-            svr.Get("/index.html", [](const httplib::Request& req, httplib::Response& res) {
-                res.set_content(Utils::readFile("./docs/index.html"), "text/html");
+            svr.Get("/index.html", [docsIndexPath](const httplib::Request& req, httplib::Response& res) {
+                res.set_content(Utils::readFile(docsIndexPath), "text/html");
             });
-            svr.Get("/docs", [](const httplib::Request& req, httplib::Response& res) {
-                res.set_content(Utils::readFile("./docs/index.html"), "text/html");
+            svr.Get("/docs", [docsIndexPath](const httplib::Request& req, httplib::Response& res) {
+                res.set_content(Utils::readFile(docsIndexPath), "text/html");
             });
-            svr.Get("/login", [](const httplib::Request& req, httplib::Response& res) {
-                res.set_content(Utils::readFile("./docs/login.html"), "text/html");
+            svr.Get("/login", [docsLoginPath](const httplib::Request& req, httplib::Response& res) {
+                res.set_content(Utils::readFile(docsLoginPath), "text/html");
             });
             svr.Post("/auth/login", [this](const httplib::Request& req, httplib::Response& res) {
                 handleAuthLogin(req, res);
@@ -4901,14 +4915,14 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
                 handleAuthSession(req, res);
             });
             // Legacy launch path used by neuralmimicry.ai control-panel links.
-            svr.Get(R"(^/services/health/monitoring/?$)", [](const httplib::Request& req, httplib::Response& res) {
-                res.set_content(Utils::readFile("./docs/index.html"), "text/html");
+            svr.Get(R"(^/services/health/monitoring/?$)", [docsIndexPath](const httplib::Request& req, httplib::Response& res) {
+                res.set_content(Utils::readFile(docsIndexPath), "text/html");
             });
-            svr.Get(R"(^/services/health/monitoring/index\.html$)", [](const httplib::Request& req, httplib::Response& res) {
-                res.set_content(Utils::readFile("./docs/index.html"), "text/html");
+            svr.Get(R"(^/services/health/monitoring/index\.html$)", [docsIndexPath](const httplib::Request& req, httplib::Response& res) {
+                res.set_content(Utils::readFile(docsIndexPath), "text/html");
             });
-            svr.Get(R"(^/services/health/monitoring/login/?$)", [](const httplib::Request& req, httplib::Response& res) {
-                res.set_content(Utils::readFile("./docs/login.html"), "text/html");
+            svr.Get(R"(^/services/health/monitoring/login/?$)", [docsLoginPath](const httplib::Request& req, httplib::Response& res) {
+                res.set_content(Utils::readFile(docsLoginPath), "text/html");
             });
             svr.Post(R"(^/services/health/monitoring/auth/login/?$)", [this](const httplib::Request& req, httplib::Response& res) {
                 handleAuthLogin(req, res);

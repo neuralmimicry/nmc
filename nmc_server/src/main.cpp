@@ -12,6 +12,7 @@
 #include <exception>
 #include <cstdlib>
 #include <regex>         // For catching std::regex_error
+#include <filesystem>
 #include <spdlog/spdlog.h>
 #include <spdlog/sinks/rotating_file_sink.h>
 #include <fstream>
@@ -21,6 +22,27 @@
 #include <kubernetes/config/kube_config.h>
 
 static std::atomic<bool> k8sHealthy{false};
+
+namespace {
+    std::string resolveLogFilePath() {
+        const char* logPathEnv = std::getenv("NMC_LOG_FILE");
+        if (logPathEnv && *logPathEnv) {
+            return logPathEnv;
+        }
+        return "logs/nmc_server.log";
+    }
+
+    void ensureLogDirectoryExists(const std::string& logPath) {
+        const std::filesystem::path path(logPath);
+        const std::filesystem::path parent = path.parent_path();
+        if (parent.empty()) {
+            return;
+        }
+
+        std::error_code ec;
+        std::filesystem::create_directories(parent, ec);
+    }
+}
 
 struct K8sClientConfig {
     char* basePath = nullptr;
@@ -148,8 +170,10 @@ void myTerminate() {
 
 int main(int argc, char* argv[]) {
     // Phase 1: initialize structured logging before any subsystem starts.
+    const std::string logFilePath = resolveLogFilePath();
+    ensureLogDirectoryExists(logFilePath);
     auto file_sink = std::make_shared<spdlog::sinks::rotating_file_sink_mt>(
-        "logs/nmc_server.log",  // log file path
+        logFilePath,            // log file path
         1048576 * 5,            // max file size = 5 MiB
         3                       // max rotated files
     );

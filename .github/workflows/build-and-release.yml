@@ -82,6 +82,22 @@ jobs:
       - name: Run functional CLI integration test
         run: python3 tests/functional/client_cli_integration_test.py
 
+  shell-script-test:
+    name: Shell Script Syntax
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Validate shell scripts
+        run: |
+          bash -n \
+            deploy.sh \
+            scripts/install-common.sh \
+            scripts/install-client.sh \
+            scripts/install-server.sh \
+            scripts/package-release.sh
+
   release-metadata:
     name: Release Metadata
     runs-on: ubuntu-latest
@@ -89,13 +105,12 @@ jobs:
       - contract-test
       - safety-test
       - functional-test
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      startsWith(github.ref, 'refs/tags/v')
+      - shell-script-test
     outputs:
       artifact_version: ${{ steps.meta.outputs.artifact_version }}
       release_tag: ${{ steps.meta.outputs.release_tag }}
-
+      publish_release: ${{ steps.meta.outputs.publish_release }}
+      create_release_tag: ${{ steps.meta.outputs.create_release_tag }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -103,15 +118,38 @@ jobs:
       - name: Compute artifact metadata
         id: meta
         shell: bash
+        env:
+          MANUAL_PUBLISH_REQUEST: >-
+            ${{ github.event_name == 'workflow_dispatch' && inputs.publish_release || false }}
         run: |
           set -euo pipefail
-          source_version=$(tr -d '[:space:]' < VERSION)
+          source_version="$(tr -d '[:space:]' < VERSION)"
+          candidate_tag="v${source_version}"
           short_sha="${GITHUB_SHA::0:7}"
           release_tag=""
+          publish_release="false"
+          create_release_tag="false"
 
           if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
             release_tag="${GITHUB_REF#refs/tags/}"
             artifact_version="${release_tag#v}"
+            if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
+              publish_release="true"
+            elif [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" && \
+                    "${MANUAL_PUBLISH_REQUEST}" == "true" ]]; then
+              publish_release="true"
+            fi
+          elif [[ "${GITHUB_EVENT_NAME}" == "push" && \
+                  "${GITHUB_REF}" == "refs/heads/main" ]]; then
+            if git ls-remote --exit-code --tags --refs origin \
+              "refs/tags/${candidate_tag}" >/dev/null 2>&1; then
+              artifact_version="${source_version}-dev.${GITHUB_RUN_NUMBER}.${short_sha}"
+            else
+              release_tag="${candidate_tag}"
+              artifact_version="${source_version}"
+              publish_release="true"
+              create_release_tag="true"
+            fi
           else
             artifact_version="${source_version}-dev.${GITHUB_RUN_NUMBER}.${short_sha}"
           fi
@@ -124,11 +162,23 @@ jobs:
 
           echo "artifact_version=$artifact_version" >> "$GITHUB_OUTPUT"
           echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
+          echo "publish_release=$publish_release" >> "$GITHUB_OUTPUT"
+          echo "create_release_tag=$create_release_tag" >> "$GITHUB_OUTPUT"
 
   package-client-linux:
-    name: Package Client (Linux x64)
-    runs-on: ubuntu-latest
+    name: Package Client (Linux ${{ matrix.deb_arch }})
+    runs-on: ${{ matrix.runner }}
     needs: release-metadata
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            platform: linux-x86_64
+            deb_arch: amd64
+          - runner: ubuntu-24.04-arm
+            platform: linux-aarch64
+            deb_arch: arm64
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -136,7 +186,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends build-essential cmake
+          sudo apt-get install -y --no-install-recommends build-essential cmake dpkg-dev
 
       - name: Configure
         run: >-
@@ -146,34 +196,71 @@ jobs:
       - name: Build
         run: cmake --build nmc_client/build --config Release -- -j"$(nproc)"
 
-      - name: Smoke test
+      - name: Smoke test built client
         run: ./nmc_client/build/nmc version --no-check
 
       - name: Package
         shell: bash
         run: |
           set -euo pipefail
-          chmod +x scripts/package-release.sh
           ./scripts/package-release.sh \
             --component client \
             --version "${{ needs.release-metadata.outputs.artifact_version }}" \
             --input ./nmc_client/build/nmc \
-            --platform linux-x86_64 \
+            --platform "${{ matrix.platform }}" \
             --rename nmc \
+            --deb-arch "${{ matrix.deb_arch }}" \
             --output-dir ./dist
+
+      - name: Validate Debian package metadata
+        run: |
+          set -euo pipefail
+          deb_path="$(find dist -maxdepth 1 -type f -name 'nmc-client_*.deb' | head -n 1)"
+          [[ -n "$deb_path" ]]
+          expected_version="$(basename "$deb_path" | sed -E 's/^nmc-client_(.*)_[^_]+\.deb$/\1/')"
+          actual_package="$(dpkg-deb -f "$deb_path" Package)"
+          actual_version="$(dpkg-deb -f "$deb_path" Version)"
+          actual_arch="$(dpkg-deb -f "$deb_path" Architecture)"
+          [[ "$actual_package" == "nmc-client" ]]
+          [[ "$actual_version" == "$expected_version" ]]
+          [[ "$actual_arch" == "${{ matrix.deb_arch }}" ]]
+
+      - name: Smoke install Debian package
+        run: |
+          set -euo pipefail
+          deb_path="$(readlink -f "$(find dist -maxdepth 1 -type f -name 'nmc-client_*.deb' | head -n 1)")"
+          sudo apt-get update
+          sudo apt-get install -y "$deb_path"
+          nmc version --no-check
+          dpkg-query -W -f='${Version}\n' nmc-client
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: nmc-client-linux-x86_64
+          name: release-assets-client-${{ matrix.platform }}
           path: dist/*
           if-no-files-found: error
           retention-days: 14
 
-  package-client-windows:
-    name: Package Client (Windows x64)
-    runs-on: windows-latest
+  package-client-cross:
+    name: Package Client (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
     needs: release-metadata
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      startsWith(github.ref, 'refs/tags/v')
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            platform: windows-x86_64
+            executable: .\nmc_client\build\Release\nmc.exe
+            archive_ext: zip
+          - runner: macos-latest
+            platform: macos-aarch64
+            executable: ./nmc_client/build/nmc
+            archive_ext: tar.gz
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -187,83 +274,62 @@ jobs:
         run: cmake --build nmc_client/build --config Release
 
       - name: Smoke test
-        shell: pwsh
-        run: .\nmc_client\build\Release\nmc.exe version --no-check
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            pwsh -NoLogo -NoProfile -Command '.\nmc_client\build\Release\nmc.exe version --no-check'
+          else
+            ./nmc_client/build/nmc version --no-check
+          fi
 
-      - name: Package
+      - name: Package Windows release artifact
+        if: ${{ runner.os == 'Windows' }}
         shell: pwsh
         run: |
           .\scripts\package-release.ps1 `
             -Component client `
             -Version "${{ needs.release-metadata.outputs.artifact_version }}" `
             -Input .\nmc_client\build\Release\nmc.exe `
-            -Platform windows-x86_64 `
+            -Platform "${{ matrix.platform }}" `
             -Rename nmc.exe `
             -OutputDir .\dist
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: nmc-client-windows-x86_64
-          path: dist/*
-          if-no-files-found: error
-          retention-days: 14
-
-  package-client-macos:
-    name: Package Client (macOS)
-    runs-on: macos-latest
-    needs: release-metadata
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Configure
-        run: >-
-          cmake -S nmc_client -B nmc_client/build -DCMAKE_BUILD_TYPE=Release
-          -DNMC_CLIENT_VERSION=${{ needs.release-metadata.outputs.artifact_version }}
-
-      - name: Build
-        run: cmake --build nmc_client/build --config Release -- -j"$(sysctl -n hw.ncpu)"
-
-      - name: Smoke test
-        run: ./nmc_client/build/nmc version --no-check
-
-      - name: Detect platform
-        id: platform
+      - name: Package Unix release artifact
+        if: ${{ runner.os != 'Windows' }}
         shell: bash
         run: |
           set -euo pipefail
-          arch=$(uname -m)
-          case "$arch" in
-            arm64) arch="aarch64" ;;
-          esac
-          echo "value=macos-${arch}" >> "$GITHUB_OUTPUT"
-
-      - name: Package
-        shell: bash
-        run: |
-          set -euo pipefail
-          chmod +x scripts/package-release.sh
           ./scripts/package-release.sh \
             --component client \
             --version "${{ needs.release-metadata.outputs.artifact_version }}" \
             --input ./nmc_client/build/nmc \
-            --platform "${{ steps.platform.outputs.value }}" \
+            --platform "${{ matrix.platform }}" \
             --rename nmc \
             --output-dir ./dist
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: nmc-client-macos
+          name: release-assets-client-${{ matrix.platform }}
           path: dist/*
           if-no-files-found: error
           retention-days: 14
 
   package-server-linux:
-    name: Package Server (Linux x64)
-    runs-on: ubuntu-latest
+    name: Package Server (Linux ${{ matrix.deb_arch }})
+    runs-on: ${{ matrix.runner }}
     needs: release-metadata
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            platform: linux-x86_64
+            deb_arch: amd64
+          - runner: ubuntu-24.04-arm
+            platform: linux-aarch64
+            deb_arch: arm64
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -273,8 +339,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake git pkg-config libssl-dev libspdlog-dev \
-            libwebsockets-dev libcurl4-openssl-dev autoconf automake libtool \
-            ca-certificates curl gawk
+            libwebsockets-dev libcurl4-openssl-dev libpq-dev libpqxx-dev \
+            autoconf automake libtool ca-certificates curl gawk dpkg-dev
 
       - name: Configure
         run: >-
@@ -288,19 +354,42 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          chmod +x scripts/package-release.sh
           ./scripts/package-release.sh \
             --component server \
             --version "${{ needs.release-metadata.outputs.artifact_version }}" \
             --input ./nmc_server/build/nmc_server \
-            --platform linux-x86_64 \
+            --platform "${{ matrix.platform }}" \
             --rename nmc_server \
+            --deb-arch "${{ matrix.deb_arch }}" \
             --output-dir ./dist
+
+      - name: Validate Debian package metadata
+        run: |
+          set -euo pipefail
+          deb_path="$(find dist -maxdepth 1 -type f -name 'nmc-server_*.deb' | head -n 1)"
+          [[ -n "$deb_path" ]]
+          expected_version="$(basename "$deb_path" | sed -E 's/^nmc-server_(.*)_[^_]+\.deb$/\1/')"
+          actual_package="$(dpkg-deb -f "$deb_path" Package)"
+          actual_version="$(dpkg-deb -f "$deb_path" Version)"
+          actual_arch="$(dpkg-deb -f "$deb_path" Architecture)"
+          [[ "$actual_package" == "nmc-server" ]]
+          [[ "$actual_version" == "$expected_version" ]]
+          [[ "$actual_arch" == "${{ matrix.deb_arch }}" ]]
+
+      - name: Smoke install Debian package
+        run: |
+          set -euo pipefail
+          deb_path="$(readlink -f "$(find dist -maxdepth 1 -type f -name 'nmc-server_*.deb' | head -n 1)")"
+          sudo apt-get update
+          sudo apt-get install -y "$deb_path"
+          test -x /usr/bin/nmc_server
+          test -f /usr/share/nmc-server/docs/index.html
+          dpkg-query -W -f='${Version}\n' nmc-server
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: nmc-server-linux-x86_64
+          name: release-assets-server-${{ matrix.platform }}
           path: dist/*
           if-no-files-found: error
           retention-days: 14
@@ -311,30 +400,51 @@ jobs:
     needs:
       - release-metadata
       - package-client-linux
-      - package-client-windows
-      - package-client-macos
+      - package-client-cross
       - package-server-linux
     if: >-
-      startsWith(github.ref, 'refs/tags/v') ||
-      (github.event_name == 'workflow_dispatch' && inputs.publish_release)
+      always() &&
+      needs.release-metadata.outputs.publish_release == 'true' &&
+      needs.package-client-linux.result == 'success' &&
+      needs.package-server-linux.result == 'success' &&
+      (
+        needs.package-client-cross.result == 'success' ||
+        needs.package-client-cross.result == 'skipped'
+      )
     permissions:
       contents: write
-
     steps:
       - name: Validate publish target
         shell: bash
         run: |
           set -euo pipefail
           if [[ -z "${{ needs.release-metadata.outputs.release_tag }}" ]]; then
-            echo "::error::Publishing requires a v* tag ref"
+            echo "::error::Publishing requires a resolved release tag"
             exit 1
           fi
+
+      - name: Ensure release tag exists on GitHub
+        if: ${{ needs.release-metadata.outputs.create_release_tag == 'true' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.release-metadata.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          if gh api "repos/${GH_REPO}/git/ref/tags/${RELEASE_TAG}" >/dev/null 2>&1; then
+            exit 0
+          fi
+
+          gh api "repos/${GH_REPO}/git/refs" \
+            --method POST \
+            -f ref="refs/tags/${RELEASE_TAG}" \
+            -f sha="${GITHUB_SHA}"
 
       - name: Download packaged artifacts
         uses: actions/download-artifact@v5
         with:
-          path: ./release-assets
-          merge-multiple: true
+          path: ./dist
 
       - name: Create or update GitHub release
         shell: bash
@@ -348,9 +458,7 @@ jobs:
             ${{ github.event_name == 'workflow_dispatch' && inputs.prerelease }}
         run: |
           set -euo pipefail
-          shopt -s nullglob
-
-          files=(release-assets/*)
+          mapfile -d '' files < <(find dist -type f -print0 | sort -z)
           if [[ ${#files[@]} -eq 0 ]]; then
             echo "::error::No packaged artifacts were downloaded"
             exit 1

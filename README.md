@@ -20,7 +20,7 @@ Together they provide connection management, Kubernetes and virtual-cluster oper
 | Tracey | `tracey` | Heartbeat ingestion, fleet inventory, analytics, the adaptive plan/ramp/optimise/repeat loop, operator-selectable placement policies, CVE status, compromise assessment, per-agent assessment plan/report flows, rack views, agent telemetry, control, deep-dive diagnostics, debounced snapshot persistence, and optional PostgreSQL history storage. |
 | Node onboarding | `node recruit` | API mode through `POST /node/recruit` or direct SSH/SCP execution from the CLI host, with optional post-recruit Ansible auto-configuration. |
 | Refiner | `refiner` | Local `kubectl` deploy/status/scale/logs/remove workflows; `status` and `scale` can also use the server API via `--server`. |
-| Deployment | `deploy.sh`, `ansible/deploy.yml` | Ubuntu/systemd deployment automation with optional Kubernetes bootstrap, GPU tooling, auto-update timer, and local Tracey sidecar setup. |
+| Deployment | `deploy.sh`, `ansible/deploy.yml`, `scripts/install-server.sh`, `scripts/install-client.sh` | Ubuntu/systemd deployment automation plus package-native installers for the private GitHub release assets. |
 | Documentation | `docs/`, `nmc_server/src/docs/` | Markdown project docs plus built-in web docs served by `nmc_server` when `NMC_DOCS_ENABLED=true`. |
 | Quality gates | `tests/contracts/`, `tests/functional/` | Static client/server contract checks, route safety checks, dedicated adaptive-loop contract checks, and CLI functional tests against a mock HTTP server. |
 
@@ -32,6 +32,7 @@ Together they provide connection management, Kubernetes and virtual-cluster oper
 - `ansible/`: deployment playbooks, templates, and recruited-node automation.
 - `tests/`: contract and functional tests.
 - `deploy.sh`: local Ubuntu/systemd deployment bootstrap script.
+- `scripts/install-server.sh` and `scripts/install-client.sh`: package-native Linux installers for private GitHub releases.
 - `scripts/package-release.sh` and `scripts/package-release.ps1`: packaging helpers.
 - `VERSION`: shared client/server release version source of truth.
 
@@ -148,7 +149,7 @@ Global output formats currently implemented are:
 ./nmc_server/build/nmc_server --port 8080 -k /etc/nmc/kubeconfig
 ```
 
-When docs are enabled, `nmc_server` serves the built-in operator site from its build directory at:
+When docs are enabled, `nmc_server` serves the built-in operator site from its configured docs directory (`./docs` during local builds, `/usr/share/nmc-server/docs` for packaged installs) at:
 - `/`
 - `/docs`
 - `/login`
@@ -176,10 +177,13 @@ The lightweight unauthenticated liveness route is `GET /health`.
 
 ## Deployment and Release
 
-- `deploy.sh` bootstraps an Ubuntu host with build dependencies, optional Kubernetes install, optional GPU tooling, `nmc_server` systemd service setup, optional auto-update timer, and optional local Tracey sidecar.
+- Linux releases now publish `nmc-client_<version>_<arch>.deb` and `nmc-server_<version>_<arch>.deb` for `amd64` and `arm64`.
+- `scripts/install-client.sh` installs the private-release CLI package on Linux.
+- `scripts/install-server.sh` installs the private-release server package, writes the systemd unit, and configures packaged docs/log paths.
+- `deploy.sh` remains the source-build/bootstrap path for full host provisioning.
 - `ansible/deploy.yml` provides the same deployment path in Ansible form.
 - `VERSION` drives the shared semantic version for client and server builds.
-- `scripts/package-release.sh` and `scripts/package-release.ps1` build versioned release archives and checksum files.
+- `scripts/package-release.sh` and `scripts/package-release.ps1` build versioned release archives and checksum files, and Linux builds also emit Debian packages.
 
 ## Documentation Map
 

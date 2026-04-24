@@ -1,5 +1,5 @@
 # nmc_client/CMakeLists.txt
-cmake_minimum_required(VERSION 3.31.6) # Main project's required CMake version
+cmake_minimum_required(VERSION 3.14)
 file(STRINGS "${CMAKE_CURRENT_LIST_DIR}/../VERSION" NMC_VERSION_FILE LIMIT_COUNT 1)
 if(NOT NMC_VERSION_FILE)
     set(NMC_VERSION_FILE "0.0.1")
@@ -9,7 +9,7 @@ project(nmc VERSION ${NMC_VERSION_DEFAULT} LANGUAGES CXX) # Project name is 'nmc
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
-set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+set(CMAKE_POLICY_VERSION_MINIMUM 3.14)
 set(NMC_CLIENT_VERSION "${PROJECT_VERSION}" CACHE STRING "NMC client semantic version")
 # Include FetchContent module for automatic dependency downloading
 include(FetchContent)
@@ -21,7 +21,7 @@ FetchContent_Declare(
         nlohmann_json
         GIT_REPOSITORY https://github.com/nlohmann/json.git
         GIT_TAG        v3.11.2
-        CMAKE_ARGS     -DCMAKE_POLICY_VERSION_MINIMUM=3.31.6
+        CMAKE_ARGS     -DCMAKE_POLICY_VERSION_MINIMUM=3.14
 )
 FetchContent_MakeAvailable(nlohmann_json)
 
@@ -33,7 +33,7 @@ FetchContent_Declare(
         # IMPORTANT: Disable SSL to avoid OpenSSL dependencies in cross-compilation environments
         # This CMAKE_ARGS is for httplib's internal CMake.
         # We will also add a compile definition below for extra certainty.
-        CMAKE_ARGS     -DCMAKE_POLICY_VERSION_MINIMUM=3.31.6 -DHTTPPEBLIB_WITH_SSL=OFF
+        CMAKE_ARGS     -DCMAKE_POLICY_VERSION_MINIMUM=3.14 -DHTTPPEBLIB_WITH_SSL=OFF
 )
 FetchContent_MakeAvailable(httplib)
 
