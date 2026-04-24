@@ -26,6 +26,74 @@ nmc_env_first() {
   return 1
 }
 
+nmc_proc_status_field() {
+  local pid="$1"
+  local field="$2"
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+  awk -v field="$field" '$1 == field ":" { print $2; exit }' "/proc/$pid/status" 2>/dev/null
+}
+
+nmc_proc_env_first() {
+  local pid="$1"
+  shift
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+  [[ -r "/proc/$pid/environ" ]] || return 1
+
+  local line name
+  while IFS= read -r line; do
+    for name in "$@"; do
+      if [[ "$line" == "$name="* ]]; then
+        printf '%s\n' "${line#*=}"
+        return 0
+      fi
+    done
+  done < <(tr '\0' '\n' <"/proc/$pid/environ" 2>/dev/null)
+
+  return 1
+}
+
+nmc_sudo_ancestor_env_token() {
+  local target_uid="${SUDO_UID-}"
+  local pid="${PPID-}"
+  local proc_uid next_pid token
+
+  [[ -n "$target_uid" && "$target_uid" =~ ^[0-9]+$ ]] || return 1
+
+  while [[ "$pid" =~ ^[0-9]+$ ]] && (( pid > 1 )); do
+    proc_uid="$(nmc_proc_status_field "$pid" Uid || true)"
+    if [[ "$proc_uid" == "$target_uid" ]]; then
+      token="$(nmc_proc_env_first "$pid" GITHUB_TOKEN GH_TOKEN 2>/dev/null || true)"
+      if [[ -n "$token" ]]; then
+        printf '%s\n' "$token"
+        return 0
+      fi
+    fi
+
+    next_pid="$(nmc_proc_status_field "$pid" PPid || true)"
+    [[ -n "$next_pid" && "$next_pid" != "$pid" ]] || break
+    pid="$next_pid"
+  done
+
+  return 1
+}
+
+nmc_sudo_user_gh_token() {
+  local sudo_user="${SUDO_USER-}"
+  local token=""
+
+  [[ -n "$sudo_user" && "$sudo_user" != "root" ]] || return 1
+  command -v gh >/dev/null 2>&1 || return 1
+
+  if command -v runuser >/dev/null 2>&1; then
+    token="$(runuser -u "$sudo_user" -- gh auth token 2>/dev/null || true)"
+  elif command -v sudo >/dev/null 2>&1; then
+    token="$(sudo -u "$sudo_user" gh auth token 2>/dev/null || true)"
+  fi
+
+  [[ -n "$token" ]] || return 1
+  printf '%s\n' "$token"
+}
+
 nmc_detect_deb_arch() {
   local arch=""
   if command -v dpkg >/dev/null 2>&1; then
@@ -114,7 +182,29 @@ nmc_find_local_deb() {
 }
 
 nmc_github_token() {
-  nmc_env_first GITHUB_TOKEN GH_TOKEN NMC_GITHUB_TOKEN
+  local token=""
+
+  token="$(nmc_env_first GITHUB_TOKEN GH_TOKEN 2>/dev/null || true)"
+  if [[ -n "$token" ]]; then
+    printf '%s\n' "$token"
+    return 0
+  fi
+
+  if [[ $(id -u) -eq 0 && -n "${SUDO_USER-}" ]]; then
+    token="$(nmc_sudo_ancestor_env_token 2>/dev/null || true)"
+    if [[ -n "$token" ]]; then
+      printf '%s\n' "$token"
+      return 0
+    fi
+
+    token="$(nmc_sudo_user_gh_token 2>/dev/null || true)"
+    if [[ -n "$token" ]]; then
+      printf '%s\n' "$token"
+      return 0
+    fi
+  fi
+
+  return 1
 }
 
 nmc_resolve_latest_release_version() {
@@ -272,5 +362,5 @@ nmc_download_release_asset() {
     return 0
   fi
 
-  nmc_die "failed to download ${asset_name}; authenticate gh or set GITHUB_TOKEN or GH_TOKEN for private releases"
+  nmc_die "failed to download ${asset_name}; authenticate gh or set GITHUB_TOKEN or GH_TOKEN for private releases (when invoking via sudo, run without sudo or use sudo --preserve-env=GITHUB_TOKEN,GH_TOKEN)"
 }

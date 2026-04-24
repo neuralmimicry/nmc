@@ -37,7 +37,6 @@
       {{
         lookup('env', 'GITHUB_TOKEN')
         | default(lookup('env', 'GH_TOKEN'), true)
-        | default(lookup('env', 'NMC_GITHUB_TOKEN'), true)
         | default('', true)
       }}
     nmc_package_arch_map:
@@ -303,7 +302,7 @@
             else ((nmc_version_file.content | default('') | b64decode | trim))
           }}
 
-    - name: Derive NMC Debian package metadata
+    - name: Derive NMC Debian package version and release tag
       when: nmc_install_mode == "package"
       ansible.builtin.set_fact:
         nmc_package_deb_version_effective: >-
@@ -317,6 +316,10 @@
             )
           }}
         nmc_package_release_tag_effective: "v{{ nmc_package_version_effective }}"
+
+    - name: Derive NMC package asset and download metadata
+      when: nmc_install_mode == "package"
+      ansible.builtin.set_fact:
         nmc_package_asset_name_effective: >-
           {{ nmc_package_name }}_{{ nmc_package_deb_version_effective }}_{{
             nmc_package_architecture_effective
