@@ -317,7 +317,7 @@
           }}
         nmc_package_release_tag_effective: "v{{ nmc_package_version_effective }}"
 
-    - name: Derive NMC package asset and download metadata
+    - name: Derive NMC package asset and release API metadata
       when: nmc_install_mode == "package"
       ansible.builtin.set_fact:
         nmc_package_asset_name_effective: >-
@@ -328,6 +328,10 @@
           https://api.github.com/repos/{{ nmc_package_repository }}/releases/tags/{{
             nmc_package_release_tag_effective
           }}
+
+    - name: Derive NMC package download path
+      when: nmc_install_mode == "package"
+      ansible.builtin.set_fact:
         nmc_package_download_path_effective: >-
           {{
             (nmc_package_download_path | trim)
