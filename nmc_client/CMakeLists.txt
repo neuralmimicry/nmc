@@ -2,7 +2,7 @@
 cmake_minimum_required(VERSION 3.14)
 file(STRINGS "${CMAKE_CURRENT_LIST_DIR}/../VERSION" NMC_VERSION_FILE LIMIT_COUNT 1)
 if(NOT NMC_VERSION_FILE)
-    set(NMC_VERSION_FILE "0.0.1")
+    set(NMC_VERSION_FILE "0.0.2")
 endif()
 string(STRIP "${NMC_VERSION_FILE}" NMC_VERSION_DEFAULT)
 project(nmc VERSION ${NMC_VERSION_DEFAULT} LANGUAGES CXX) # Project name is 'nmc' for the client executable

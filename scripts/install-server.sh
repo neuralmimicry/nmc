@@ -37,8 +37,8 @@ Environment:
 
 Examples:
   sudo ./scripts/install-server.sh
-  sudo ./scripts/install-server.sh --release-version 0.0.1
-  sudo ./scripts/install-server.sh --server-deb-file ./dist/nmc-server_0.0.1_amd64.deb
+  sudo ./scripts/install-server.sh --release-version 0.0.2
+  sudo ./scripts/install-server.sh --server-deb-file ./dist/nmc-server_0.0.2_amd64.deb
 USAGE
 }
 

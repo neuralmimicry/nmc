@@ -179,7 +179,7 @@ std::string currentVersion() {
 #ifdef NMC_CLIENT_VERSION
     return NMC_CLIENT_VERSION;
 #else
-    return "0.0.1";
+    return "0.0.2";
 #endif
 }
 
