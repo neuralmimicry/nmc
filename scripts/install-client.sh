@@ -26,8 +26,8 @@ Environment:
 
 Examples:
   ./scripts/install-client.sh
-  sudo ./scripts/install-client.sh --release-version 0.0.2
-  sudo ./scripts/install-client.sh --deb-file ./dist/nmc-client_0.0.2_amd64.deb
+  sudo ./scripts/install-client.sh --release-version 0.0.3
+  sudo ./scripts/install-client.sh --deb-file ./dist/nmc-client_0.0.3_amd64.deb
 USAGE
 }
 

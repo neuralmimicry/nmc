@@ -67,15 +67,93 @@ compute_deb_depends() {
     return
   fi
 
-  local work_dir output depends
+  local binary="$1"
+  shift
+
+  local work_dir stage_root binary_stage_path output depends extra_dir extra_stage_dir extra_stage_file
+  local -a extra_args=() analyze_args=()
+
   work_dir="$(mktemp -d)"
+  stage_root="$work_dir/root"
+  binary_stage_path="$stage_root/usr/bin/$(basename "$binary")"
+
+  install -d -m 0755 "$work_dir/debian" "$(dirname "$binary_stage_path")"
+  cat >"$work_dir/debian/control" <<'EOF'
+Source: nmc
+Section: admin
+Priority: optional
+Maintainer: NeuralMimicry <opensource@neuralmimicry.ai>
+Standards-Version: 4.7.0
+Package: nmc
+Architecture: any
+Description: temporary shlibdeps metadata carrier
+EOF
+
+  install -m 0755 "$binary" "$binary_stage_path"
+  analyze_args+=("-e" "./${binary_stage_path#$work_dir/}")
+  for extra_dir in "$@"; do
+    [[ -n "$extra_dir" && -d "$extra_dir" ]] || continue
+    extra_stage_dir="$stage_root/usr/lib/$(basename "$extra_dir")"
+    install -d -m 0755 "$extra_stage_dir"
+    cp -a "$extra_dir"/. "$extra_stage_dir"/ 2>/dev/null || true
+    extra_args+=("-l./${extra_stage_dir#$work_dir/}")
+    while IFS= read -r extra_stage_file; do
+      analyze_args+=("-e" "./${extra_stage_file#$work_dir/}")
+    done < <(find "$extra_stage_dir" -type f -name '*.so*' | sort)
+  done
+
   output=$(
     cd "$work_dir"
-    dpkg-shlibdeps -O "$1" 2>/dev/null || true
+    dpkg-shlibdeps --ignore-missing-info -O -Tdebian/substvars \
+      "${analyze_args[@]}" "${extra_args[@]}" 2>/dev/null || true
   )
   rm -rf "$work_dir"
   depends="$(printf '%s\n' "$output" | sed -n 's/^shlibs:Depends=//p' | tail -n 1)"
-  printf '%s\n' "$depends"
+  printf '%s\n' "$depends" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//; s/, ,/, /g; s/^, //; s/, $//'
+}
+
+resolve_server_runtime_library() {
+  local binary="$1"
+  local pattern="$2"
+  ldd "$binary" | awk -v pattern="$pattern" '$1 ~ pattern && $3 ~ /^\// { print $3; exit }'
+}
+
+bundle_library_file() {
+  local source_path="$1"
+  local dest_dir="$2"
+
+  [[ -n "$source_path" && -f "$source_path" ]] || return 1
+
+  install -d -m 0755 "$dest_dir"
+  install -m 0644 "$source_path" "$dest_dir/$(basename "$source_path")"
+  printf '%s\n' "$(basename "$source_path")"
+}
+
+bundle_server_deb_runtime_libs() {
+  local binary="$1"
+  local dest_dir="$2"
+  local libpqxx_path=""
+
+  libpqxx_path="$(resolve_server_runtime_library "$binary" "^libpqxx-[^[:space:]]*[.]so")"
+  if [[ -n "$libpqxx_path" ]]; then
+    bundle_library_file "$libpqxx_path" "$dest_dir"
+  fi
+}
+
+filter_bundled_deb_depends() {
+  local depends="$1"
+  shift
+
+  local bundled_lib
+  for bundled_lib in "$@"; do
+    case "$bundled_lib" in
+      libpqxx-*.so*)
+        depends="$(printf '%s' "$depends" | sed -E 's/(^|, )libpqxx-[^,]+( \([^)]*\))?(, )?/\1/g')"
+        ;;
+    esac
+  done
+
+  printf '%s\n' "$depends" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//; s/, ,/, /g; s/^, //; s/, $//'
 }
 
 install_linux_helpers_into_dir() {
@@ -88,7 +166,8 @@ install_linux_helpers_into_dir() {
 }
 
 create_debian_package() {
-  local deb_name deb_version deb_stage_root deb_root deb_path depends docs_root
+  local deb_name deb_version deb_stage_root deb_root deb_path depends docs_root bundled_lib
+  local -a bundled_libs=()
 
   [[ "$PLATFORM" == linux* ]] || die "--deb-arch is only supported for linux platforms"
   validate_deb_arch "$DEB_ARCH"
@@ -115,11 +194,25 @@ create_debian_package() {
   fi
 
   if [[ "$COMPONENT" == "server" ]]; then
-    install -d -m 0755 "$deb_root/usr/share/nmc-server"
+    install -d -m 0755 "$deb_root/usr/share/nmc-server" "$deb_root/usr/lib/nmc-server"
     cp -R "$REPO_ROOT/nmc_server/src/docs" "$deb_root/usr/share/nmc-server/docs"
+
+    while IFS= read -r bundled_lib; do
+      [[ -n "$bundled_lib" ]] || continue
+      bundled_libs+=("$bundled_lib")
+    done < <(bundle_server_deb_runtime_libs "$deb_root/usr/bin/$RENAME" "$deb_root/usr/lib/nmc-server")
+
+    if ((${#bundled_libs[@]})); then
+      command -v patchelf >/dev/null 2>&1 \
+        || die "patchelf is required to bundle nmc-server runtime libraries"
+      patchelf --set-rpath '$ORIGIN/../lib/nmc-server' "$deb_root/usr/bin/$RENAME"
+    fi
   fi
 
-  depends="$(compute_deb_depends "$deb_root/usr/bin/$RENAME")"
+  depends="$(compute_deb_depends "$deb_root/usr/bin/$RENAME" "$deb_root/usr/lib/nmc-server")"
+  if ((${#bundled_libs[@]})); then
+    depends="$(filter_bundled_deb_depends "$depends" "${bundled_libs[@]}")"
+  fi
 
   {
     printf 'Package: %s\n' "$deb_name"
