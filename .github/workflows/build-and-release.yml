@@ -71,7 +71,8 @@ jobs:
       - name: Install client build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends build-essential cmake
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake pkg-config libcurl4-openssl-dev
 
       - name: Configure client build for functional tests
         run: cmake -S nmc_client -B nmc_client/build -DCMAKE_BUILD_TYPE=Release
@@ -186,7 +187,8 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends build-essential cmake dpkg-dev
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake pkg-config libcurl4-openssl-dev dpkg-dev
 
       - name: Configure
         run: >-

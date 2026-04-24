@@ -9,18 +9,44 @@
     nmc_install_dir: "{{ playbook_dir | dirname }}"
     nmc_repo_url: ""
     nmc_repo_branch: "main"
+    nmc_install_mode: "package"
     nmc_skip_build: false
 
     nmc_run_user: "nmc"
     nmc_run_group: "{{ nmc_run_user }}"
     nmc_build_user: ""
     nmc_build_group: ""
+    nmc_state_dir: "/var/lib/nmc"
+    nmc_log_file_path: "{{ nmc_state_dir }}/logs/nmc_server.log"
 
     nmc_port: 8080
     nmc_docs_enabled: true
     nmc_max_body_bytes: 1048576
     nmc_log_body_bytes: 2048
     nmc_oshift_api_url: "http://127.0.0.1:8000"
+
+    # Server package delivery
+    nmc_package_name: "nmc-server"
+    nmc_package_version: ""
+    nmc_package_repository: "neuralmimicry/nmc"
+    nmc_package_download_url: ""
+    nmc_package_download_path: ""
+    nmc_package_checksum: ""
+    nmc_package_validate_certs: true
+    nmc_package_github_token: >-
+      {{
+        lookup('env', 'GITHUB_TOKEN')
+        | default(lookup('env', 'GH_TOKEN'), true)
+        | default(lookup('env', 'NMC_GITHUB_TOKEN'), true)
+        | default('', true)
+      }}
+    nmc_package_arch_map:
+      x86_64: amd64
+      amd64: amd64
+      aarch64: arm64
+      arm64: arm64
+    nmc_packaged_server_binary_path: "/usr/bin/nmc_server"
+    nmc_packaged_docs_dir: "/usr/share/nmc-server/docs"
 
     # Auth
     nmc_auth_mode: "token"
@@ -90,9 +116,15 @@
     nmc_tracey_auth_timeout_ms: 3000
 
     nmc_base_packages:
+      - git
+      - ca-certificates
+      - curl
+      - gpg
+      - lsb-release
+      - pciutils
+    nmc_source_build_packages:
       - build-essential
       - cmake
-      - git
       - pkg-config
       - libssl-dev
       - libspdlog-dev
@@ -102,11 +134,6 @@
       - autoconf
       - automake
       - libtool
-      - ca-certificates
-      - curl
-      - gpg
-      - lsb-release
-      - pciutils
 
   pre_tasks:
     - name: Validate auth mode
@@ -114,6 +141,12 @@
         that:
           - nmc_auth_mode in ["token", "oidc", "off"]
         fail_msg: "nmc_auth_mode must be one of: token, oidc, off"
+
+    - name: Validate NMC install mode
+      ansible.builtin.assert:
+        that:
+          - nmc_install_mode in ["package", "source"]
+        fail_msg: "nmc_install_mode must be one of: package, source."
 
     - name: Warn when token mode has no static token or central session URL
       ansible.builtin.debug:
@@ -252,10 +285,103 @@
       ansible.builtin.set_fact:
         nmc_build_dir: "{{ nmc_repo_dir }}/nmc_server/build"
 
+    - name: Read repository VERSION file
+      ansible.builtin.slurp:
+        path: "{{ nmc_repo_dir }}/VERSION"
+      register: nmc_version_file
+      failed_when: false
+
+    - name: Derive NMC server package version and architecture
+      when: nmc_install_mode == "package"
+      ansible.builtin.set_fact:
+        nmc_package_architecture_effective: >-
+          {{ nmc_package_arch_map.get(ansible_architecture, '') }}
+        nmc_package_version_effective: >-
+          {{
+            (nmc_package_version | trim)
+            if (nmc_package_version | trim | length) > 0
+            else ((nmc_version_file.content | default('') | b64decode | trim))
+          }}
+
+    - name: Derive NMC Debian package metadata
+      when: nmc_install_mode == "package"
+      ansible.builtin.set_fact:
+        nmc_package_deb_version_effective: >-
+          {{
+            (
+              nmc_package_version_effective
+              | replace('-', '~')
+              | regex_replace('[^A-Za-z0-9.+:~]+', '.')
+              | regex_replace('^[^A-Za-z0-9]+', '')
+              | regex_replace('[^A-Za-z0-9]+$', '')
+            )
+          }}
+        nmc_package_release_tag_effective: "v{{ nmc_package_version_effective }}"
+        nmc_package_asset_name_effective: >-
+          {{ nmc_package_name }}_{{ nmc_package_deb_version_effective }}_{{
+            nmc_package_architecture_effective
+          }}.deb
+        nmc_package_release_api_url_effective: >-
+          https://api.github.com/repos/{{ nmc_package_repository }}/releases/tags/{{
+            nmc_package_release_tag_effective
+          }}
+        nmc_package_download_path_effective: >-
+          {{
+            (nmc_package_download_path | trim)
+            if (nmc_package_download_path | trim | length) > 0
+            else ('/tmp/' ~ nmc_package_asset_name_effective)
+          }}
+
+    - name: Assert NMC package inputs are configured
+      when: nmc_install_mode == "package"
+      ansible.builtin.assert:
+        that:
+          - nmc_package_architecture_effective | trim | length > 0
+          - nmc_package_version_effective | trim | length > 0
+          - nmc_package_deb_version_effective | trim | length > 0
+          - nmc_package_asset_name_effective | trim | length > 0
+          - nmc_package_download_path_effective | trim | length > 0
+          - nmc_packaged_server_binary_path | trim | length > 0
+          - nmc_packaged_docs_dir | trim | length > 0
+        fail_msg: >-
+          NMC package configuration is incomplete. Set nmc_package_version (or keep
+          VERSION in the repo checkout), architecture mapping, and packaged path variables.
+
+    - name: Assert NMC package download access is configured
+      when: nmc_install_mode == "package"
+      ansible.builtin.assert:
+        that:
+          - >-
+            (
+              nmc_package_download_url | default('', true) | trim | length > 0
+            )
+            or (
+              nmc_package_release_api_url_effective | default('', true) | trim | length > 0
+            )
+          - >-
+            (
+              nmc_package_download_url | default('', true) | trim | length > 0
+            )
+            or (
+              nmc_package_github_token | default('', true) | trim | length > 0
+            )
+        fail_msg: >-
+          NMC package download is not configured. Provide nmc_package_download_url
+          for a direct package URL, or set GITHUB_TOKEN or GH_TOKEN
+          on the Ansible controller so the private GitHub release asset can be resolved.
+
   tasks:
-    - name: Install base dependencies
+    - name: Install NMC deployment prerequisites
       ansible.builtin.apt:
-        name: "{{ nmc_base_packages }}"
+        name: >-
+          {{
+            nmc_base_packages
+            + (
+                nmc_source_build_packages
+                if nmc_install_mode == 'source'
+                else []
+              )
+          }}
         state: present
         update_cache: true
 
@@ -790,6 +916,23 @@
         state: directory
         mode: "0755"
 
+    - name: Ensure NMC runtime state directories exist
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: directory
+        owner: "{{ item.owner }}"
+        group: "{{ item.group }}"
+        mode: "{{ item.mode }}"
+      loop:
+        - path: "{{ nmc_state_dir }}"
+          owner: "{{ nmc_run_user }}"
+          group: "{{ nmc_run_group }}"
+          mode: "0755"
+        - path: "{{ nmc_state_dir }}/logs"
+          owner: "{{ nmc_run_user }}"
+          group: "{{ nmc_run_group }}"
+          mode: "0755"
+
     - name: Ensure Tracey state root exists
       ansible.builtin.file:
         path: "{{ nmc_tracey_state_root }}"
@@ -825,8 +968,108 @@
         - nmc_enable_nvidia_device_plugin
         - nmc_admin_conf_for_plugin.stat.exists
 
-    - name: Build nmc_server
-      when: not nmc_skip_build
+    - name: Ensure NMC package download directory exists
+      when: nmc_install_mode == "package"
+      ansible.builtin.file:
+        path: "{{ nmc_package_download_path_effective | dirname }}"
+        state: directory
+        mode: "0755"
+
+    - name: Fetch NMC GitHub release metadata
+      when:
+        - nmc_install_mode == "package"
+        - nmc_package_download_url | default('', true) | trim | length == 0
+      ansible.builtin.uri:
+        url: "{{ nmc_package_release_api_url_effective }}"
+        method: GET
+        headers:
+          Accept: "application/vnd.github+json"
+          Authorization: "Bearer {{ nmc_package_github_token }}"
+          X-GitHub-Api-Version: "2022-11-28"
+        validate_certs: "{{ nmc_package_validate_certs | bool }}"
+        status_code: 200
+        return_content: true
+      register: nmc_package_release_metadata
+      no_log: true
+
+    - name: Resolve NMC GitHub release asset URL
+      when:
+        - nmc_install_mode == "package"
+        - nmc_package_download_url | default('', true) | trim | length == 0
+      ansible.builtin.set_fact:
+        nmc_package_release_asset_api_url: >-
+          {{
+            (
+              nmc_package_release_metadata.json.assets | default([])
+              | selectattr('name', 'equalto', nmc_package_asset_name_effective)
+              | map(attribute='url')
+              | first
+            ) | default('', true)
+          }}
+
+    - name: Assert NMC GitHub release asset exists
+      when:
+        - nmc_install_mode == "package"
+        - nmc_package_download_url | default('', true) | trim | length == 0
+      ansible.builtin.assert:
+        that:
+          - nmc_package_release_asset_api_url | trim | length > 0
+        fail_msg: >-
+          NMC release {{ nmc_package_release_tag_effective }} does not include asset
+          {{ nmc_package_asset_name_effective }} for {{ inventory_hostname }}.
+
+    - name: Download NMC Debian package from explicit URL
+      when:
+        - nmc_install_mode == "package"
+        - nmc_package_download_url | default('', true) | trim | length > 0
+      ansible.builtin.get_url:
+        url: "{{ nmc_package_download_url }}"
+        dest: "{{ nmc_package_download_path_effective }}"
+        mode: "0644"
+        validate_certs: "{{ nmc_package_validate_certs | bool }}"
+        checksum: >-
+          {{
+            nmc_package_checksum
+            if (nmc_package_checksum | default('') | trim | length > 0)
+            else omit
+          }}
+      register: nmc_package_download
+
+    - name: Download NMC Debian package from private GitHub release
+      when:
+        - nmc_install_mode == "package"
+        - nmc_package_download_url | default('', true) | trim | length == 0
+      ansible.builtin.get_url:
+        url: "{{ nmc_package_release_asset_api_url }}"
+        headers:
+          Accept: "application/octet-stream"
+          Authorization: "Bearer {{ nmc_package_github_token }}"
+          X-GitHub-Api-Version: "2022-11-28"
+        dest: "{{ nmc_package_download_path_effective }}"
+        mode: "0644"
+        validate_certs: "{{ nmc_package_validate_certs | bool }}"
+        checksum: >-
+          {{
+            nmc_package_checksum
+            if (nmc_package_checksum | default('') | trim | length > 0)
+            else omit
+          }}
+      register: nmc_package_download
+      no_log: true
+
+    - name: Install NMC server Debian package
+      when: nmc_install_mode == "package"
+      ansible.builtin.apt:
+        deb: "{{ nmc_package_download_path_effective }}"
+        state: present
+      register: nmc_package_install
+      notify:
+        - Restart nmc-server
+
+    - name: Build nmc_server from source
+      when:
+        - nmc_install_mode == "source"
+        - not nmc_skip_build
       block:
         - name: Ensure build directory exists and is writable by build user
           ansible.builtin.file:
@@ -860,6 +1103,50 @@
             owner: "{{ nmc_run_user }}"
             group: "{{ nmc_run_group }}"
             mode: "0755"
+
+    - name: Resolve effective NMC service paths
+      ansible.builtin.set_fact:
+        nmc_server_binary_path_effective: >-
+          {{
+            (nmc_install_mode == 'package')
+            | ternary(nmc_packaged_server_binary_path, nmc_build_dir ~ '/nmc_server')
+          }}
+        nmc_docs_dir_effective: >-
+          {{
+            (nmc_install_mode == 'package')
+            | ternary(nmc_packaged_docs_dir, nmc_build_dir ~ '/docs')
+          }}
+        nmc_service_working_dir_effective: >-
+          {{
+            (nmc_install_mode == 'package')
+            | ternary(nmc_state_dir, nmc_build_dir)
+          }}
+        nmc_log_file_path_effective: >-
+          {{
+            (nmc_install_mode == 'package')
+            | ternary(nmc_log_file_path, nmc_build_dir ~ '/logs/nmc_server.log')
+          }}
+
+    - name: Verify effective NMC server binary exists
+      ansible.builtin.stat:
+        path: "{{ nmc_server_binary_path_effective }}"
+      register: nmc_server_binary_stat
+
+    - name: Verify effective NMC docs directory exists
+      ansible.builtin.stat:
+        path: "{{ nmc_docs_dir_effective }}"
+      register: nmc_server_docs_stat
+
+    - name: Assert effective NMC server paths are valid
+      ansible.builtin.assert:
+        that:
+          - nmc_server_binary_stat.stat.exists | default(false)
+          - nmc_server_binary_stat.stat.executable | default(false)
+          - nmc_server_docs_stat.stat.exists | default(false)
+          - nmc_server_docs_stat.stat.isdir | default(false)
+        fail_msg: >-
+          Effective NMC server paths are invalid. binary={{ nmc_server_binary_path_effective }}
+          docs={{ nmc_docs_dir_effective }} install_mode={{ nmc_install_mode }}
 
     - name: Configure Tracey sidecar for local Continuum monitoring
       when: nmc_tracey_sidecar_enabled
@@ -1108,7 +1395,11 @@
             dest: /etc/nmc/nmc-update.conf
             owner: root
             group: root
-            mode: "0644"
+            mode: "0600"
+          no_log: >-
+            {{
+              nmc_package_github_token | default('', true) | trim | length > 0
+            }}
 
         - name: Install update script
           ansible.builtin.template:

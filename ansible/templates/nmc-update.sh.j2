@@ -14,6 +14,14 @@ fi
 : "${REPO_DIR:?Missing REPO_DIR}"
 : "${REPO_BRANCH:=main}"
 : "${UPDATE_USER:=nmc}"
+: "${INSTALL_MODE:=source}"
+: "${PACKAGE_REPO:=neuralmimicry/nmc}"
+: "${RUN_USER:=nmc}"
+: "${RUN_GROUP:=${RUN_USER}}"
+: "${PORT:=8080}"
+: "${STATE_DIR:=/var/lib/nmc}"
+: "${ENV_FILE:=/etc/nmc/nmc.env}"
+: "${KUBECONFIG_PATH:=/etc/nmc/kubeconfig}"
 
 run_as_user() {
   if [[ "$(id -u)" -eq 0 && "$UPDATE_USER" != "root" ]]; then
@@ -27,25 +35,51 @@ run_as_user() {
   fi
 }
 
-cd "$REPO_DIR"
+git_as_user() {
+  run_as_user git -C "$REPO_DIR" "$@"
+}
 
-if [[ -n "$(git status --porcelain)" ]]; then
+if [[ -n "$(git_as_user status --porcelain)" ]]; then
   echo "Working tree dirty; skipping update" >&2
   exit 0
 fi
 
-git fetch origin "$REPO_BRANCH"
-LOCAL="$(git rev-parse HEAD)"
-REMOTE="$(git rev-parse "origin/$REPO_BRANCH")"
+git_as_user fetch origin "$REPO_BRANCH"
+LOCAL="$(git_as_user rev-parse HEAD)"
+REMOTE="$(git_as_user rev-parse "origin/$REPO_BRANCH")"
 
 if [[ "$LOCAL" == "$REMOTE" ]]; then
   exit 0
 fi
 
-git checkout "$REPO_BRANCH"
-git pull --ff-only origin "$REPO_BRANCH"
+git_as_user checkout "$REPO_BRANCH"
+git_as_user pull --ff-only origin "$REPO_BRANCH"
 
-run_as_user cmake -S "$REPO_DIR/nmc_server" -B "$REPO_DIR/nmc_server/build" -DCMAKE_BUILD_TYPE=Release
-run_as_user cmake --build "$REPO_DIR/nmc_server/build" -- -j"$(nproc)"
+if [[ "$INSTALL_MODE" == "package" ]]; then
+  release_version="$(tr -d '[:space:]' < "$REPO_DIR/VERSION")"
+  [[ -n "$release_version" ]] || {
+    echo "VERSION file is empty: $REPO_DIR/VERSION" >&2
+    exit 1
+  }
 
-systemctl restart nmc-server.service
+  if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+    export GITHUB_TOKEN
+  fi
+
+  "$REPO_DIR/scripts/install-server.sh" \
+    --release-version "$release_version" \
+    --repo "$PACKAGE_REPO" \
+    --run-user "$RUN_USER" \
+    --run-group "$RUN_GROUP" \
+    --service-name nmc-server \
+    --port "$PORT" \
+    --state-dir "$STATE_DIR" \
+    --env-file "$ENV_FILE" \
+    --kubeconfig "$KUBECONFIG_PATH" \
+    --skip-client
+else
+  run_as_user cmake -S "$REPO_DIR/nmc_server" -B "$REPO_DIR/nmc_server/build" -DCMAKE_BUILD_TYPE=Release
+  run_as_user cmake --build "$REPO_DIR/nmc_server/build" -- -j"$(nproc)"
+
+  systemctl restart nmc-server.service
+fi

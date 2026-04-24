@@ -4878,6 +4878,17 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
             logRequest(req, res);
         });
 
+        auto guard = [this](const httplib::Request& req, httplib::Response& res) -> bool {
+            ensureRequestId(req, res);
+            if (!enforceBodyLimit(req, res)) {
+                return false;
+            }
+            if (!authorizeOrReject(req, res)) {
+                return false;
+            }
+            return true;
+        };
+
         if (docsEnabled) {
             const std::string docsDir = resolveDocsDir();
             const std::string docsIndexPath = docsDir + "/index.html";
@@ -4911,7 +4922,8 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
             svr.Post("/auth/login", [this](const httplib::Request& req, httplib::Response& res) {
                 handleAuthLogin(req, res);
             });
-            svr.Get("/auth/session", [this](const httplib::Request& req, httplib::Response& res) {
+            svr.Get("/auth/session", [this, guard](const httplib::Request& req, httplib::Response& res) {
+                if (!guard(req, res)) return;
                 handleAuthSession(req, res);
             });
             // Legacy launch path used by neuralmimicry.ai control-panel links.
@@ -4927,24 +4939,14 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
             svr.Post(R"(^/services/health/monitoring/auth/login/?$)", [this](const httplib::Request& req, httplib::Response& res) {
                 handleAuthLogin(req, res);
             });
-            svr.Get(R"(^/services/health/monitoring/auth/session/?$)", [this](const httplib::Request& req, httplib::Response& res) {
+            svr.Get(R"(^/services/health/monitoring/auth/session/?$)", [this, guard](const httplib::Request& req, httplib::Response& res) {
+                if (!guard(req, res)) return;
                 handleAuthSession(req, res);
             });
             svr.Get("/logout", [](const httplib::Request& req, httplib::Response& res) {
                 res.set_redirect("/login");
             });
         }
-
-        auto guard = [this](const httplib::Request& req, httplib::Response& res) -> bool {
-            ensureRequestId(req, res);
-            if (!enforceBodyLimit(req, res)) {
-                return false;
-            }
-            if (!authorizeOrReject(req, res)) {
-                return false;
-            }
-            return true;
-        };
 
         // --- Unauthenticated Health ---
         // Lightweight probe for CLI connection checks and external monitors.

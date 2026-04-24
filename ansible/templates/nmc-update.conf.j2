@@ -1,3 +1,14 @@
 REPO_DIR={{ nmc_repo_dir }}
 REPO_BRANCH={{ nmc_repo_branch }}
 UPDATE_USER={{ nmc_effective_build_user }}
+INSTALL_MODE={{ nmc_install_mode }}
+PACKAGE_REPO={{ nmc_package_repository }}
+RUN_USER={{ nmc_run_user }}
+RUN_GROUP={{ nmc_run_group }}
+PORT={{ nmc_port }}
+STATE_DIR={{ nmc_state_dir }}
+ENV_FILE=/etc/nmc/nmc.env
+KUBECONFIG_PATH=/etc/nmc/kubeconfig
+{% if nmc_package_github_token | default('', true) | trim | length > 0 %}
+GITHUB_TOKEN={{ nmc_package_github_token | to_json }}
+{% endif %}

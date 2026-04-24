@@ -21,8 +21,8 @@ Options:
   -h, --help                 Show this help text.
 
 Environment:
-  NMC_GITHUB_TOKEN           Optional GitHub token for private release downloads.
-  GH_TOKEN, GITHUB_TOKEN     Alternative GitHub token variable names.
+  GITHUB_TOKEN               Optional GitHub token for private release downloads.
+  GH_TOKEN                   Alternative GitHub token variable name.
 
 Examples:
   ./scripts/install-client.sh

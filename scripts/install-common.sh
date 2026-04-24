@@ -114,7 +114,7 @@ nmc_find_local_deb() {
 }
 
 nmc_github_token() {
-  nmc_env_first NMC_GITHUB_TOKEN GH_TOKEN GITHUB_TOKEN
+  nmc_env_first GITHUB_TOKEN GH_TOKEN NMC_GITHUB_TOKEN
 }
 
 nmc_resolve_latest_release_version() {
@@ -272,5 +272,5 @@ nmc_download_release_asset() {
     return 0
   fi
 
-  nmc_die "failed to download ${asset_name}; authenticate gh or set NMC_GITHUB_TOKEN/GH_TOKEN/GITHUB_TOKEN for private releases"
+  nmc_die "failed to download ${asset_name}; authenticate gh or set GITHUB_TOKEN or GH_TOKEN for private releases"
 }

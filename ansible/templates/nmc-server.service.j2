@@ -11,9 +11,11 @@ Wants=network-online.target
 [Service]
 User={{ nmc_run_user }}
 Group={{ nmc_run_group }}
-WorkingDirectory={{ nmc_build_dir }}
+WorkingDirectory={{ nmc_service_working_dir_effective }}
+Environment=NMC_DOCS_DIR={{ nmc_docs_dir_effective }}
+Environment=NMC_LOG_FILE={{ nmc_log_file_path_effective }}
 EnvironmentFile=-/etc/nmc/nmc.env
-ExecStart={{ nmc_build_dir }}/nmc_server --port {{ nmc_port }} -k /etc/nmc/kubeconfig
+ExecStart={{ nmc_server_binary_path_effective }} --port {{ nmc_port }} -k /etc/nmc/kubeconfig
 Restart=on-failure
 RestartSec=5
 NoNewPrivileges=true
