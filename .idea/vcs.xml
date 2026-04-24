@@ -2,7 +2,6 @@
 <project version="4">
   <component name="VcsDirectoryMappings">
     <mapping directory="" vcs="Git" />
-    <mapping directory="$PROJECT_DIR$/nmc_client/build/_deps/httplib-src" vcs="Git" />
     <mapping directory="$PROJECT_DIR$/nmc_client/build/_deps/nlohmann_json-src" vcs="Git" />
     <mapping directory="$PROJECT_DIR$/nmc_server/build/_deps/nlohmann_json-src" vcs="Git" />
     <mapping directory="$PROJECT_DIR$/nmc_server/cmake-build-debug/_deps/httplib-src" vcs="Git" />
