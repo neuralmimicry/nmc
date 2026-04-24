@@ -36,6 +36,8 @@ DEB_SOURCE_PATH=""
 PACKAGE_RELEASE_VERSION=""
 RELEASE_REPO="neuralmimicry/nmc"
 RUN_PREFIX=()
+CLIENT_PACKAGED_BIN="/usr/bin/nmc"
+CLIENT_INSTALL_PATH="/usr/local/bin/nmc"
 
 while (($#)); do
   case "$1" in
@@ -92,6 +94,33 @@ require_sudo() {
   fi
 }
 
+reconcile_client_command_path() {
+  local packaged_bin="$1"
+  local install_path="$2"
+  local backup_path=""
+  local resolved_target=""
+
+  [[ -x "$packaged_bin" ]] || nmc_die "expected packaged client at $packaged_bin after installation"
+  [[ "$install_path" != "$packaged_bin" ]] || return 0
+
+  if [[ -L "$install_path" ]]; then
+    resolved_target="$(readlink -f "$install_path" 2>/dev/null || true)"
+    if [[ "$resolved_target" == "$packaged_bin" ]]; then
+      return 0
+    fi
+  fi
+
+  run install -d -m 0755 "$(dirname "$install_path")"
+
+  if [[ -e "$install_path" && ! -L "$install_path" ]]; then
+    backup_path="${install_path}.pre-package.$(date +%Y%m%d%H%M%S)"
+    run mv "$install_path" "$backup_path"
+    nmc_warn "moved existing $install_path to $backup_path so the packaged client is used"
+  fi
+
+  run ln -sfn "$packaged_bin" "$install_path"
+}
+
 [[ "$(uname -s)" == "Linux" ]] || nmc_die "this installer currently supports Linux only"
 require_sudo
 
@@ -142,6 +171,7 @@ nmc_log
 
 run apt-get update
 run apt-get install -y "$DEB_SOURCE_PATH"
+reconcile_client_command_path "$CLIENT_PACKAGED_BIN" "$CLIENT_INSTALL_PATH"
 
 if (( ! DRY_RUN )); then
   nmc_log
