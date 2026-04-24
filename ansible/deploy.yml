@@ -973,7 +973,12 @@
       ansible.builtin.file:
         path: "{{ nmc_package_download_path_effective | dirname }}"
         state: directory
-        mode: "0755"
+        mode: >-
+          {{
+            '1777'
+            if (nmc_package_download_path_effective | dirname) in ['/tmp', '/var/tmp']
+            else '0755'
+          }}
 
     - name: Fetch NMC GitHub release metadata
       when:
