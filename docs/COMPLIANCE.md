@@ -34,11 +34,11 @@ The repository already contains auditable implementation evidence in:
 
 ## 4. Controls Still Required Outside The Repo
 
-These must be provided by deployment and organizational process:
+These must be provided by deployment and organisational process:
 - TLS termination and certificate lifecycle management
 - production secret storage and rotation
 - access reviews and least-privilege network policy
-- centralized logging, retention, and alerting
+- centralised logging, retention, and alerting
 - vulnerability scanning and dependency patching
 - incident response, backup, and evidence collection procedures
 

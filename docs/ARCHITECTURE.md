@@ -68,12 +68,12 @@ Primary modules:
 
 ### 3.1 CLI to API path
 
-1. `CLIParser` normalizes global flags and resolves the command/subcommand path.
+1. `CLIParser` normalises global flags and resolves the command/subcommand path.
 2. The selected command validates required arguments and flags.
 3. The command either:
    - calls `CloudAPIClient`, or
    - executes a local workflow (`refiner`, direct `node recruit`).
-4. `CloudAPIClient` resolves the active endpoint and bearer token, sends the HTTP request, and normalizes the response to the shared envelope.
+4. `CloudAPIClient` resolves the active endpoint and bearer token, sends the HTTP request, and normalises the response to the shared envelope.
 5. The CLI prints human-readable output by default, or JSON/YAML when requested.
 
 ### 3.2 Server request path
@@ -127,13 +127,13 @@ Important distinctions:
 Tracey combines several mechanisms in `APIRoutes`:
 - heartbeat ingestion (`/tracey/agents/heartbeat`)
 - fleet summaries and analytics (`/tracey/agents`, `/tracey/fleet`, `/tracey/analytics`)
-- adaptive plan/ramp/optimize/repeat synthesis (`/tracey/adaptive`)
+- adaptive plan/ramp/optimise/repeat synthesis (`/tracey/adaptive`)
 - rack, server, GPU, and compromise views
 - compromise-assessment fleet and per-agent handoff (`/tracey/assessment/fleet`, `/tracey/agents/{id}/assessment/plan`, `/tracey/agents/{id}/assessment/report`)
 - control forwarding and deep-dive retrieval for individual agents
 - optional local bootstrap requirement for a sidecar agent using `NMC_TRACEY_BOOTSTRAP_LOCAL_AGENT`
 
-The adaptive loop is built server-side from cached Tracey status snapshots. When newer agents expose `continuum_loop` data directly, Continuum consumes that state. When older agents do not, `APIRoutes` synthesizes a fallback loop from the available telemetry, assessment, TraceyGuard, loader-threat, and Slurm fields so the CLI and dashboards still get a stable control-plane contract.
+The adaptive loop is built server-side from cached Tracey status snapshots. When newer agents expose `continuum_loop` data directly, Continuum consumes that state. When older agents do not, `APIRoutes` synthesises a fallback loop from the available telemetry, assessment, TraceyGuard, loader-threat, and Slurm fields so the CLI and dashboards still get a stable control-plane contract.
 
 Placement intent is operator-tunable through the `policy` query on `/tracey/adaptive` and `nmc tracey adaptive --policy ...`. The current built-in modes are:
 - `balanced`

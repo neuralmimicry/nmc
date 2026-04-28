@@ -239,11 +239,7 @@ namespace NMC::Server {
         struct CentralAuthCacheEntry {
             bool authenticated{false};
             std::string user;
-            std::string role;
-            std::vector<std::string> groups;
-            nlohmann::json activeTeam;
-            int64_t teamCount{0};
-            int64_t pendingInvitationCount{0};
+            nlohmann::json claims = nlohmann::json::object();
             int64_t expiresAtMs{0};
         };
         std::string centralAuthSessionUrl;

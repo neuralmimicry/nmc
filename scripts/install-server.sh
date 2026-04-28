@@ -368,6 +368,7 @@ if [[ ! -e "$ENV_FILE_PATH" || "$FORCE_ENV_FILE" -eq 1 ]]; then
 # NMC_TRACEY_STATE_ROOT=/var/lib/nmc/tracey-state
 # NMC_TRACEY_PERSIST_FLUSH_MS=5000
 # NMC_TRACEY_POSTGRES_DSN=
+# NMC_TRACEY_STATUS_BEARER_TOKEN=
 # NMC_POSTGRES_DSN=
 else
   nmc_log "keeping existing environment file: ${ENV_FILE_PATH}"

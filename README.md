@@ -22,7 +22,7 @@ Together they provide connection management, Kubernetes and virtual-cluster oper
 | Refiner | `refiner` | Local `kubectl` deploy/status/scale/logs/remove workflows; `status` and `scale` can also use the server API via `--server`. |
 | Deployment | `deploy.sh`, `ansible/deploy.yml`, `scripts/install-server.sh`, `scripts/install-client.sh` | Ubuntu/systemd deployment automation plus package-native installers for the private GitHub release assets. |
 | Documentation | `docs/`, `nmc_server/src/docs/` | Markdown project docs plus built-in web docs served by `nmc_server` when `NMC_DOCS_ENABLED=true`. |
-| Quality gates | `tests/contracts/`, `tests/functional/` | Static client/server contract checks, route safety checks, dedicated adaptive-loop contract checks, and CLI functional tests against a mock HTTP server. |
+| Quality gates | `tests/contracts/`, `tests/functional/` | Static client/server contract checks, route safety checks, dedicated adaptive-loop contract checks, CLI functional tests against a mock HTTP server, and a focused server authorisation harness against a real `nmc_server` process. |
 
 ## Repository Layout
 
@@ -161,6 +161,15 @@ The lightweight unauthenticated liveness route is `GET /health`.
 
 - Server auth modes: `NMC_AUTH_MODE=token` (default), `oidc`, or `off`.
 - Token mode accepts `Authorization: Bearer <token>` and `X-NMC-Token`.
+- In token mode, `nmc_server` can resolve the shared Customers session payload from `service_access` and apply route-level authorisation for `continuum`, `tracey`, and `aarnn`.
+- Customers-issued service-account bearer tokens are supported for backend-to-backend calls. Those principals keep only their explicit groups and do not inherit any human fallback grants.
+- Current server-side service gates are:
+  - `continuum:observe` for read-only Continuum routes
+  - `continuum:use` for mutating Continuum routes
+  - `continuum:control` for `/connections*`, `/node/recruit`, and `/k8s/refiner/scale`
+  - `tracey:observe` for Tracey read routes, `tracey:use` for heartbeat and assessment report ingest, and `tracey:control` for other Tracey mutations
+  - `aarnn:observe` for AARNN read routes, `aarnn:use` for `/aarnn/proxy/runtime`, and `aarnn:control` for `/aarnn/proxy/control`
+- `GET /auth/session` returns the normalised identity payload consumed by the built-in docs dashboard, including `service_access`, `visible_services`, and group visibility metadata.
 - Client bearer token precedence is:
   1. `NMC_OIDC_ACCESS_TOKEN`
   2. `NM_OIDC_ACCESS_TOKEN`

@@ -111,6 +111,7 @@
     nmc_tracey_auth_protect_otlp_grpc: false
     nmc_tracey_auth_session_url: ""
     nmc_tracey_auth_token: ""
+    nmc_tracey_status_bearer_token: "{{ nmc_auth_token | default('', true) }}"
     nmc_tracey_auth_cache_ttl_ms: 15000
     nmc_tracey_auth_timeout_ms: 3000
 

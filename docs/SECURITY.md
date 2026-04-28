@@ -14,11 +14,11 @@ Out of scope:
 - reverse proxies and TLS termination layers
 - external OpenShift, OpenStack, and Proxmox portal services
 - CI/CD platforms and secret stores
-- organization-level access review, monitoring, and incident response processes
+- organisation-level access review, monitoring, and incident response processes
 
 ## 2. Implemented Technical Controls
 
-### 2.1 Authentication and authorization
+### 2.1 Authentication and authorisation
 
 Server auth modes:
 - `NMC_AUTH_MODE=token`: shared secret validation using `Authorization: Bearer <token>` or `X-NMC-Token`
@@ -90,7 +90,7 @@ The server applies extra controls around Tracey status and control-plane communi
 - local/private address enforcement unless `NMC_TRACEY_ALLOW_PUBLIC_ADDR=true`
 - optional TLS verification control via `NMC_TRACEY_TLS_VERIFY`
 - optional signature requirement via `NMC_TRACEY_REQUIRE_SIGNATURE`
-- optional dedicated bearer token for Tracey status polling via `NMC_TRACEY_STATUS_BEARER_TOKEN`
+- optional dedicated bearer token for Tracey status polling via `NMC_TRACEY_STATUS_BEARER_TOKEN`; in shared Customers-backed auth deployments this should be Continuum's own service-account bearer token
 
 ### 2.7 Local command execution safety
 
@@ -117,14 +117,14 @@ These controls are still required in deployment:
 - TLS termination for `nmc_server` and any proxied upstreams
 - secret storage and rotation for shared tokens and OIDC credentials
 - network segmentation and firewall policy
-- centralized log collection and retention
+- centralised log collection and retention
 - dependency scanning and patch management
 - incident response procedures and evidence collection
 - backup and restore testing for any persisted deployment state
 
 ## 5. Configuration Reference
 
-### 5.1 Server auth and HTTP behavior
+### 5.1 Server auth and HTTP behaviour
 
 - `NMC_AUTH_MODE`: `token`, `oidc`, or `off`
 - `NMC_AUTH_TOKEN`: shared secret for token mode
@@ -154,7 +154,7 @@ These controls are still required in deployment:
 - `NMC_OPENSTACK_API_URL`
 - `NMC_PROXMOX_API_URL`
 
-### 5.4 Tracey behavior
+### 5.4 Tracey behaviour
 
 - `NMC_TRACEY_STALE_SECONDS`
 - `NMC_TRACEY_ENFORCE_MANAGED_RESOURCES`

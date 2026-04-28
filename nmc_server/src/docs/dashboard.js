@@ -7,6 +7,17 @@
     const basePath = window.location.pathname.startsWith(monitoringPrefix)
         ? monitoringPrefix
         : "";
+    const serviceAccess = window.NMCServiceAccess || {
+        getServiceAccessMap: () => ({}),
+        getServiceAccess: () => ({
+            visible: false,
+            can_observe: false,
+            can_use: false,
+            can_control: false
+        }),
+        isServiceVisible: () => false,
+        canControlService: () => false
+    };
 
     const nodes = {
         sessionLabel: document.getElementById("sessionLabel"),
@@ -462,29 +473,50 @@
             if (!parsed || typeof parsed !== "object" || !parsed.user) {
                 return null;
             }
-            return parsed;
+            return normalizeIdentityPayload(parsed);
         } catch (_error) {
             return null;
         }
     }
 
-    function saveIdentity(identity) {
+    function normalizeIdentityPayload(identity) {
         if (!identity || typeof identity !== "object" || !identity.user) {
-            localStorage.removeItem(IDENTITY_STORAGE_KEY);
-            authIdentity = null;
-            updateSessionLabel();
             return null;
         }
-        authIdentity = {
+        const normalizedServiceAccess = serviceAccess.getServiceAccessMap(identity);
+        const visibleServices = Object.values(normalizedServiceAccess)
+            .filter((entry) => entry && entry.visible)
+            .map((entry) => entry.service_key);
+        return {
             user: String(identity.user || "").trim(),
             role: String(identity.role || "").trim(),
             groups: Array.isArray(identity.groups) ? identity.groups : [],
+            is_admin: Boolean(identity.is_admin),
             active_team: identity.active_team && typeof identity.active_team === "object" ? identity.active_team : null,
             team_count: Number(identity.team_count || 0),
             pending_invitation_count: Number(identity.pending_invitation_count || 0),
+            group_memberships: Array.isArray(identity.group_memberships) ? identity.group_memberships : [],
+            manageable_groups: Array.isArray(identity.manageable_groups) ? identity.manageable_groups : [],
+            visible_groups: Array.isArray(identity.visible_groups) ? identity.visible_groups : [],
+            can_manage_access: Boolean(identity.can_manage_access),
+            service_access: normalizedServiceAccess,
+            visible_services: visibleServices
         };
+    }
+
+    function saveIdentity(identity) {
+        const normalizedIdentity = normalizeIdentityPayload(identity);
+        if (!normalizedIdentity) {
+            localStorage.removeItem(IDENTITY_STORAGE_KEY);
+            authIdentity = null;
+            updateSessionLabel();
+            applyTraceyAccessUi();
+            return null;
+        }
+        authIdentity = normalizedIdentity;
         localStorage.setItem(IDENTITY_STORAGE_KEY, JSON.stringify(authIdentity));
         updateSessionLabel();
+        applyTraceyAccessUi();
         return authIdentity;
     }
 
@@ -533,6 +565,7 @@
             localStorage.removeItem(TOKEN_STORAGE_KEY);
             localStorage.removeItem(IDENTITY_STORAGE_KEY);
             authIdentity = null;
+            applyTraceyAccessUi();
         }
         authToken = trimmed;
         updateSessionLabel();
@@ -561,6 +594,66 @@
             return;
         }
         nodes.sessionLabel.textContent = authToken ? `Bearer ${maskToken(authToken)}` : "Token not set";
+    }
+
+    function traceyServiceAccess() {
+        return serviceAccess.getServiceAccess(authIdentity || {}, "tracey");
+    }
+
+    function hasTraceyVisibility() {
+        return Boolean(serviceAccess.isServiceVisible(authIdentity || {}, "tracey"));
+    }
+
+    function canControlTracey() {
+        return Boolean(serviceAccess.canControlService(authIdentity || {}, "tracey"));
+    }
+
+    function applyTraceyAccessUi() {
+        const traceyVisible = hasTraceyVisibility();
+        const traceyControllable = canControlTracey();
+        if (nodes.traceyCard) {
+            nodes.traceyCard.hidden = !traceyVisible;
+        }
+        if (nodes.openTraceyInsightsBtn) {
+            nodes.openTraceyInsightsBtn.hidden = !traceyVisible;
+        }
+        if (nodes.openTraceyAdaptiveBtn) {
+            nodes.openTraceyAdaptiveBtn.hidden = !traceyVisible;
+        }
+        if (!traceyVisible && nodes.traceyInsightsModal && !nodes.traceyInsightsModal.hidden) {
+            closeTraceyInsightsModal();
+        }
+        [
+            nodes.traceyControlAgent,
+            nodes.traceyControlOverhead,
+            nodes.traceyControlEnabled,
+            nodes.traceyControlDeepDive,
+            nodes.traceyControlTmr,
+            nodes.traceyControlForceScan,
+            nodes.traceyControlApply
+        ].forEach((node) => {
+            if (node) {
+                node.disabled = !traceyControllable;
+            }
+        });
+        if (!nodes.traceyControlStatus) {
+            return;
+        }
+        if (!traceyVisible) {
+            nodes.traceyControlStatus.textContent = "Tracey service is not granted.";
+            nodes.traceyControlStatus.style.borderColor = "#9ca3af";
+            return;
+        }
+        if (!traceyControllable) {
+            nodes.traceyControlStatus.textContent = "Tracey access is read-only.";
+            nodes.traceyControlStatus.style.borderColor = "#9ca3af";
+            return;
+        }
+        if (nodes.traceyControlStatus.textContent === "Tracey access is read-only."
+            || nodes.traceyControlStatus.textContent === "Tracey service is not granted.") {
+            nodes.traceyControlStatus.textContent = "";
+            nodes.traceyControlStatus.style.borderColor = "";
+        }
     }
 
     async function refreshAuthIdentity() {
@@ -1684,7 +1777,7 @@
                 tone: toneClassForAdaptiveStatus(ramp.status)
             },
             {
-                label: `Optimize • ${formatActionLabel(optimize.status || "unknown")}`,
+                label: `Optimise • ${formatActionLabel(optimize.status || "unknown")}`,
                 value: formatRatioPercent(optimize.score, 0, "-"),
                 subtitle: String(optimize.headline || "No placement signal."),
                 tone: toneClassForAdaptiveStatus(optimize.status)
@@ -6423,6 +6516,10 @@
     }
 
     async function refreshTraceyInsights() {
+        if (!hasTraceyVisibility()) {
+            closeTraceyInsightsModal();
+            return;
+        }
         await Promise.all([
             fetchTraceyAnalytics(),
             fetchTraceyAssessmentFleet(),
@@ -6455,6 +6552,13 @@
     }
 
     async function applyTraceyControl() {
+        if (!canControlTracey()) {
+            if (nodes.traceyControlStatus) {
+                nodes.traceyControlStatus.textContent = "Tracey access is read-only.";
+                nodes.traceyControlStatus.style.borderColor = "#9ca3af";
+            }
+            return;
+        }
         const agentId = String((nodes.traceyControlAgent && nodes.traceyControlAgent.value) || traceyState.selectedAgentId || "").trim();
         if (!agentId) {
             if (nodes.traceyControlStatus) {
@@ -6601,6 +6705,9 @@
     }
 
     async function openTraceyInsightsModal(preselectedAgentId = "") {
+        if (!hasTraceyVisibility()) {
+            return;
+        }
         closeClusterDetailsModal();
         closeOpenShiftDetailsModal();
         if (preselectedAgentId) {
@@ -7214,7 +7321,7 @@
     function updateAuthPill(lastResults) {
         const unauthorized = lastResults.some((r) => r.status === 401);
         if (unauthorized) {
-            setPill(nodes.authPill, "Auth", "Unauthorized", "rgba(239,68,68,0.85)");
+            setPill(nodes.authPill, "Auth", "Unauthorised", "rgba(239,68,68,0.85)");
             window.setTimeout(() => redirectToLogin("unauthorized"), 400);
             return;
         }
@@ -7228,6 +7335,7 @@
 
     async function refreshDashboard() {
         setPill(nodes.refreshPill, "Refresh", "Updating", "rgba(245,158,11,0.8)");
+        const traceyVisible = hasTraceyVisibility();
 
         const [
             k8sListRes,
@@ -7250,8 +7358,25 @@
             fetchJson("/openstack/clusters"),
             fetchJson("/proxmox/clusters"),
             fetchJson("/vm/list"),
-            fetchJson("/tracey/agents"),
-            fetchJson(buildTraceyAdaptivePath()),
+            traceyVisible
+                ? fetchJson("/tracey/agents")
+                : Promise.resolve({
+                    ok: true,
+                    status: 200,
+                    payload: {
+                        data: {
+                            agents: [],
+                            summary: {},
+                            probe_watch_summary: {},
+                            tracey_guard_summary: {},
+                            loader_threat_summary: {},
+                            requirement_summary: {}
+                        }
+                    }
+                }),
+            traceyVisible
+                ? fetchJson(buildTraceyAdaptivePath())
+                : Promise.resolve({ ok: true, status: 200, payload: {} }),
             fetchJson("/k8s/healthz"),
             fetchJson("/connections/status"),
             fetchJson("/openshift/resources"),
@@ -7363,36 +7488,42 @@
         const tracey_guardSummary = traceyData.tracey_guard_summary || {};
         const loaderThreatSummary = traceyData.loader_threat_summary || {};
         const requirementSummary = traceyData.requirement_summary || {};
-        nodes.traceyMetric.textContent = `${traceySummary.healthy || 0} / ${traceySummary.total || 0}`;
-        const traceyRows = traceyAgents.map((agent) => {
-            const status = agent.stale ? "stale" : (agent.status || "unknown");
-            const ago = Number(agent.last_seen_seconds_ago || 0);
-            const lastSeen = ago < 1 ? "just now" : `${ago}s ago`;
-            const agentId = String(agent.agent_id || "unknown");
-            const agentCell = agentId && agentId !== "unknown"
-                ? `<button class="cluster-link tracey-agent-link" type="button" data-tracey-agent-id="${escapeHtml(agentId)}">${escapeHtml(agentId)}</button>`
-                : escapeHtml(agentId);
-            return `<tr><td>${agentCell}</td><td>${escapeHtml(agent.cluster || "-")}</td><td>${statusBadge(status)}</td><td>${escapeHtml(lastSeen)}</td><td>${escapeHtml(agent.version || "-")}</td></tr>`;
-        });
-        renderRows(nodes.traceyRows, traceyRows, "No Tracey agent heartbeats received yet.", 5);
+        if (traceyVisible) {
+            nodes.traceyMetric.textContent = `${traceySummary.healthy || 0} / ${traceySummary.total || 0}`;
+            const traceyRows = traceyAgents.map((agent) => {
+                const status = agent.stale ? "stale" : (agent.status || "unknown");
+                const ago = Number(agent.last_seen_seconds_ago || 0);
+                const lastSeen = ago < 1 ? "just now" : `${ago}s ago`;
+                const agentId = String(agent.agent_id || "unknown");
+                const agentCell = agentId && agentId !== "unknown"
+                    ? `<button class="cluster-link tracey-agent-link" type="button" data-tracey-agent-id="${escapeHtml(agentId)}">${escapeHtml(agentId)}</button>`
+                    : escapeHtml(agentId);
+                return `<tr><td>${agentCell}</td><td>${escapeHtml(agent.cluster || "-")}</td><td>${statusBadge(status)}</td><td>${escapeHtml(lastSeen)}</td><td>${escapeHtml(agent.version || "-")}</td></tr>`;
+            });
+            renderRows(nodes.traceyRows, traceyRows, "No Tracey agent heartbeats received yet.", 5);
 
-        const traceyNetworkRows = traceyAgents.map((agent) => {
-            const node = agent.agent_id || "unknown";
-            const source = agent.source || "unknown";
-            const announceAddr = agent.announce_addr || agent.host || "-";
-            const statusAddr = agent.status_addr || "-";
-            const linkState = agent.stale ? "offline" : (agent.link_state || "unknown");
-            const linkSecurity = agent.link_security || "unknown";
-            const queryFailures = Number(agent.query_failures || 0);
-            const lastError = String(agent.last_error || "").trim();
-            const failureText = queryFailures > 0
-                ? `${queryFailures}${lastError ? ` (${lastError})` : ""}`
-                : "0";
-            return `<tr><td>${escapeHtml(node)}</td><td>${escapeHtml(source)}</td><td>${escapeHtml(announceAddr)}</td><td>${escapeHtml(statusAddr)}</td><td>${statusBadge(linkState)}</td><td>${escapeHtml(linkSecurity)}</td><td>${escapeHtml(failureText)}</td></tr>`;
-        });
-        renderRows(nodes.traceyNetworkRows, traceyNetworkRows, "No discovered Tracey nodes yet.", 7);
+            const traceyNetworkRows = traceyAgents.map((agent) => {
+                const node = agent.agent_id || "unknown";
+                const source = agent.source || "unknown";
+                const announceAddr = agent.announce_addr || agent.host || "-";
+                const statusAddr = agent.status_addr || "-";
+                const linkState = agent.stale ? "offline" : (agent.link_state || "unknown");
+                const linkSecurity = agent.link_security || "unknown";
+                const queryFailures = Number(agent.query_failures || 0);
+                const lastError = String(agent.last_error || "").trim();
+                const failureText = queryFailures > 0
+                    ? `${queryFailures}${lastError ? ` (${lastError})` : ""}`
+                    : "0";
+                return `<tr><td>${escapeHtml(node)}</td><td>${escapeHtml(source)}</td><td>${escapeHtml(announceAddr)}</td><td>${escapeHtml(statusAddr)}</td><td>${statusBadge(linkState)}</td><td>${escapeHtml(linkSecurity)}</td><td>${escapeHtml(failureText)}</td></tr>`;
+            });
+            renderRows(nodes.traceyNetworkRows, traceyNetworkRows, "No discovered Tracey nodes yet.", 7);
+        } else {
+            nodes.traceyMetric.textContent = "--";
+            renderRows(nodes.traceyRows, [], "Tracey access is not granted.", 5);
+            renderRows(nodes.traceyNetworkRows, [], "Tracey access is not granted.", 7);
+        }
 
-        const adaptiveData = traceyAdaptiveRes.ok ? (responseData(traceyAdaptiveRes.payload) || {}) : null;
+        const adaptiveData = traceyVisible && traceyAdaptiveRes.ok ? (responseData(traceyAdaptiveRes.payload) || {}) : null;
         traceyState.adaptive = adaptiveData;
         renderTraceyAdaptiveOverview(adaptiveData);
 
@@ -7420,12 +7551,16 @@
         const probeAlertAgents = Number(probeWatchSummary.agents_with_alerts || 0);
         const blockedLoaderProviders = Number(loaderThreatSummary.blocked_provider_count || 0);
         const blockedLoaderArtifacts = Number(loaderThreatSummary.blocked_artifact_count || 0);
-        const traceyTone = !traceyAgentsRes.ok
+        const traceyTone = !traceyVisible
+            ? "#9ca3af"
+            : !traceyAgentsRes.ok
             ? "#ef4444"
             : (nonCompliantResources > 0 || probeHighAlerts > 0 || tracey_guardQuarantined > 0 || tracey_guardFailures > 0 || blockedLoaderProviders > 0 || blockedLoaderArtifacts > 0 ? "#f59e0b" : "#22c55e");
         setCheck(
             nodes.traceyStatus,
-            traceyAgentsRes.ok
+            !traceyVisible
+                ? "Not granted"
+                : traceyAgentsRes.ok
                 ? `${traceyAgents.length} detected (${reachableTracey} reachable, ${discoveredTracey} discovered, ${nonCompliantResources}/${managedResources} non-compliant, ${probeAlerts} probe alerts on ${probeAlertAgents} agents, ${tracey_guardQuarantined} quarantined, ${tracey_guardFailures} probe failures, ${blockedLoaderProviders} blocked providers, ${blockedLoaderArtifacts} blocked artifacts)`
                 : "Unavailable",
             traceyTone
@@ -7440,9 +7575,7 @@
 
     function initializeSessionUi() {
         updateSessionLabel();
-        if (authToken && !authIdentity) {
-            void refreshAuthIdentity();
-        }
+        applyTraceyAccessUi();
         if (!nodes.logoutBtn) {
             return;
         }
@@ -7462,6 +7595,13 @@
     renderTraceyGpuTelemetry(null);
     renderTraceyAgentDrilldown(null);
     renderTraceyDeepDive(null);
-    void refreshDashboard().then(() => applyTraceyUrlState());
+    void (async () => {
+        if (authToken && !authIdentity) {
+            await refreshAuthIdentity();
+        }
+        applyTraceyAccessUi();
+        await refreshDashboard();
+        await applyTraceyUrlState();
+    })();
     window.setInterval(refreshDashboard, REFRESH_INTERVAL_MS);
 })();

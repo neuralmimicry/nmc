@@ -8,8 +8,8 @@ The current test suite focuses on:
 - client/server interface drift
 - command-to-route coverage drift
 - adaptive loop contract drift
-- server guard and redaction regressions
-- CLI payload serialization and failure behavior
+- server guard, redaction, and route authorisation regressions
+- CLI payload serialisation and failure behaviour
 
 ## 2. Test Layers
 
@@ -41,19 +41,36 @@ Location: `tests/functional/`
 Current test file:
 - `client_cli_integration_test.py`
 
-Covered behaviors:
-- Tracey analytics query serialization
-- Tracey adaptive query serialization
-- Tracey adaptive policy query serialization
-- Tracey agent analysis query serialization
-- Tracey control payload serialization
-- Tracey heartbeat payload serialization
+Covered behaviours:
+- Tracey analytics query serialisation
+- Tracey adaptive query serialisation
+- Tracey adaptive policy query serialisation
+- Tracey agent analysis query serialisation
+- Tracey control payload serialisation
+- Tracey heartbeat payload serialisation
 - invalid adaptive policy rejection before network execution
 - invalid JSON rejection before network execution
 - invalid flag rejection before network execution
 - malformed upstream response handling
 
 The functional suite runs the real `nmc` binary against a local mock HTTP server and inspects the emitted HTTP method, path, and body.
+
+### 2.3 Functional server authorisation tests
+
+Location: `tests/functional/`
+
+Current test file:
+- `server_authz_integration_test.py`
+
+Covered behaviours:
+- `/auth/session` central-session identity normalisation
+- static admin-token fallback for protected server routes
+- Continuum observe/control route authorisation
+- Tracey observe/use/control route authorisation
+- AARNN observe/use/control route authorisation
+- denied Tracey and AARNN control/runtime requests do not reach guarded upstream targets
+
+This harness starts a real `nmc_server` process, points it at local mock HTTP dependencies, and validates the shared `service_access` contract end to end without requiring a live Kubernetes cluster.
 
 ## 3. Build Validation
 
@@ -72,14 +89,18 @@ Binary resolution order in the functional test is:
 
 ### 3.2 Server build
 
-There is no lightweight server-runtime integration harness in this repo today. The server can still be built directly when you need compile coverage:
+The functional server-authorisation harness requires a built server binary:
 
 ```bash
 cmake -S nmc_server -B nmc_server/build
 cmake --build nmc_server/build -j4
 ```
 
-Because the server embeds the Kubernetes C client and fetches several dependencies at configure/build time, this path is heavier than the CLI build and is not currently part of the lightweight Python test suite.
+Binary resolution order in the server functional test is:
+1. `NMC_SERVER_BIN`
+2. `nmc_server/build/nmc_server`
+
+The harness runs without a live Kubernetes cluster, but the build path is still heavier than the CLI because `nmc_server` embeds the Kubernetes C client and fetches several dependencies at configure/build time.
 
 ## 4. How To Run
 
@@ -91,17 +112,17 @@ python3 tests/contracts/command_coverage_contract_test.py
 python3 tests/contracts/tracey_adaptive_contract_test.py
 python3 tests/contracts/server_safety_contract_test.py
 python3 tests/functional/client_cli_integration_test.py
+python3 tests/functional/server_authz_integration_test.py
 ```
 
 ## 5. Recommended CI Gate
 
 Minimum CI gate for this repository:
 1. build `nmc_client`
-2. run all contract tests
-3. run the functional CLI mock-server test
-
-Stronger gate when server dependencies are available:
-4. build `nmc_server`
+2. build `nmc_server`
+3. run all contract tests
+4. run the functional CLI mock-server test
+5. run the server authorisation integration test
 
 ## 6. What These Tests Protect
 
@@ -110,11 +131,13 @@ Stronger gate when server dependencies are available:
 - The Tracey adaptive loop cannot quietly lose its placement-policy controls, fallback synthesis, or dashboard-facing response keys.
 - Sensitive endpoints cannot quietly lose request-body redaction.
 - CLI query strings and JSON payloads are checked against real process execution rather than mocked command objects.
+- Shared `service_access` authorisation is validated end to end for Continuum, Tracey, and AARNN routes.
+- Denied Tracey and AARNN guarded requests are checked to ensure they do not reach protected upstream targets.
 
 ## 7. Current Gaps
 
-- No automated end-to-end server-runtime test harness around a real Kubernetes cluster.
+- No automated end-to-end server-runtime test harness around a real Kubernetes cluster; the current server harness uses a real `nmc_server` process with mock upstreams.
 - No property/fuzz testing for CLI parsing.
 - No automated coverage today for the local `kubectl` Refiner workflows or the SSH/SCP recruitment execution path.
-- No executable end-to-end test today for the full Tracey assessment plan/report cycle against a live server.
-- No persistence-focused tests for server restart behavior because several server-side stores are intentionally in-memory.
+- No executable end-to-end test today for the full Tracey assessment plan/report cycle against a live multi-agent deployment; the current server harness covers route authorisation and guarded forwarding only.
+- No persistence-focused tests for server restart behaviour because several server-side stores are intentionally in-memory.

@@ -11,7 +11,7 @@ This document summarizes the end-to-end workflows implemented by the CLI, the se
    - `--output` / `-x` with default human-readable output, `json`, or `yaml`
 3. Root commands are resolved from the registry built in `nmc_client/src/main.cpp`.
 4. Subcommands are traversed until no deeper match exists.
-5. Final-command flags are normalized to long names, so short and long flags map to the same lookup key.
+5. Final-command flags are normalised to long names, so short and long flags map to the same lookup key.
 6. Commands validate arguments before network or shell execution.
 
 ## 2. Connection Management
@@ -96,7 +96,7 @@ Server-side advanced workflow:
 2. `openshift resources` and `openshift clusters` proxy read operations.
 3. `openshift request` validates the provisioning payload and forwards it.
 4. `openshift status` polls cluster state until the requested target status or timeout.
-5. Portal statuses are normalized to `Pending`, `Provisioning`, `Ready`, `Failed`, or `Unknown`.
+5. Portal statuses are normalised to `Pending`, `Provisioning`, `Ready`, `Failed`, or `Unknown`.
 
 ### 5.2 OpenStack
 
@@ -104,7 +104,7 @@ Server-side advanced workflow:
 2. `openstack resources` and `openstack clusters` proxy read operations.
 3. `openstack request` validates and forwards the provisioning payload.
 4. `openstack status` performs the same poll/until workflow as OpenShift.
-5. Status values are normalized to the same common state set.
+5. Status values are normalised to the same common state set.
 
 ### 5.3 Proxmox
 
@@ -112,7 +112,7 @@ Server-side advanced workflow:
 2. `proxmox resources` and `proxmox clusters` proxy read operations.
 3. `proxmox request` validates and forwards the provisioning payload.
 4. `proxmox status` performs the same poll/until workflow as OpenShift and OpenStack.
-5. Status values are normalized to the same common state set.
+5. Status values are normalised to the same common state set.
 
 ## 6. Tracey Workflows
 
@@ -128,10 +128,10 @@ Server-side advanced workflow:
 - `tracey adaptive` queries `/tracey/adaptive` and returns the always-on fleet control loop used by Continuum dashboards and operator workflows.
 - `tracey adaptive --policy balanced|throughput|risk|energy` applies an operator-selected placement bias before the server ranks placement candidates and recommendations.
 - The server merges per-agent `continuum_loop` snapshots when agents expose them directly.
-- For older agents, the server synthesizes a fallback loop from the available telemetry, assessment, TraceyGuard, loader-threat, and Slurm state so the response contract stays stable.
+- For older agents, the server synthesises a fallback loop from the available telemetry, assessment, TraceyGuard, loader-threat, and Slurm state so the response contract stays stable.
 - The response is organised around:
   - `summary` for overall mode, scores, policy, counts, and next action
-  - `plan`, `ramp`, `optimise`, and `repeat` for normalized phase state
+  - `plan`, `ramp`, `optimise`, and `repeat` for normalised phase state
   - `recommendations`, `placement_candidates`, `gpu_candidates`, and `recent_actions` for the next scheduling cycle
 
 ### 6.3 Analytics and compromise-assessment views

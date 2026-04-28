@@ -17,6 +17,9 @@
     const basePath = window.location.pathname.startsWith(monitoringPrefix)
         ? monitoringPrefix
         : "";
+    const serviceAccess = window.NMCServiceAccess || {
+        getServiceAccessMap: () => ({})
+    };
 
     function withBase(path) {
         if (!basePath) {
@@ -56,16 +59,27 @@
     }
 
     function persistIdentity(payload) {
+        const normalizedServiceAccess = serviceAccess.getServiceAccessMap(payload || {});
+        const visibleServices = Object.values(normalizedServiceAccess)
+            .filter((entry) => entry && entry.visible)
+            .map((entry) => entry.service_key);
         const identity = payload && typeof payload === "object"
             ? {
                 user: (payload.user || "").trim(),
                 role: (payload.role || "").trim(),
                 groups: Array.isArray(payload.groups) ? payload.groups : [],
+                is_admin: Boolean(payload.is_admin),
                 active_team: payload.active_team && typeof payload.active_team === "object" ? payload.active_team : null,
                 team_count: Number.isFinite(payload.team_count) ? payload.team_count : Number(payload.team_count || 0),
                 pending_invitation_count: Number.isFinite(payload.pending_invitation_count)
                     ? payload.pending_invitation_count
                     : Number(payload.pending_invitation_count || 0),
+                group_memberships: Array.isArray(payload.group_memberships) ? payload.group_memberships : [],
+                manageable_groups: Array.isArray(payload.manageable_groups) ? payload.manageable_groups : [],
+                visible_groups: Array.isArray(payload.visible_groups) ? payload.visible_groups : [],
+                can_manage_access: Boolean(payload.can_manage_access),
+                service_access: normalizedServiceAccess,
+                visible_services: visibleServices
             }
             : null;
         if (!identity || !identity.user) {
