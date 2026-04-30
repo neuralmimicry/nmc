@@ -8,21 +8,10 @@ Tracey adaptive contract test:
 
 from __future__ import annotations
 
-import pathlib
 import re
 import sys
 
-
-REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
-SERVER_FILE = REPO_ROOT / "nmc_server" / "src" / "Core" / "APIRoutes.cpp"
-
-
-def read_text(path: pathlib.Path) -> str:
-    try:
-        return path.read_text(encoding="utf-8")
-    except OSError as exc:
-        print(f"[tracey-adaptive-contract] failed to read {path}: {exc}", file=sys.stderr)
-        sys.exit(1)
+from server_route_sources import read_route_registration_source
 
 
 def extract_braced_block(src: str, open_brace_index: int) -> tuple[str, int]:
@@ -61,10 +50,11 @@ def extract_initializer_block(src: str, anchor_pattern: str) -> str:
 
 
 def main() -> int:
-    server_src = read_text(SERVER_FILE)
+    route_src = read_route_registration_source()
+    server_src = route_src
     failures: list[str] = []
 
-    if 'svr.Get("/tracey/adaptive"' not in server_src:
+    if 'svr.Get("/tracey/adaptive"' not in route_src:
         failures.append('missing `svr.Get("/tracey/adaptive", ...)` registration')
 
     try:

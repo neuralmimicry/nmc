@@ -2,6 +2,15 @@
 
 This document summarizes the end-to-end workflows implemented by the CLI, the server, and the deployment automation.
 
+## Lifecycle Positioning
+
+Within the wider estate:
+- Conductor owns `plan` and `govern`.
+- Refiner owns `code`, `build`, `test`, and `iterate`.
+- Continuum owns `release` and `operate`.
+
+The workflows in this document are therefore runtime-control workflows. They provision, deploy, scale, inspect, and operate systems after change intent has already been decided elsewhere.
+
 ## 1. CLI Parsing and Output
 
 1. `CLIParser` removes global flags from the argument stream before command dispatch.
@@ -218,8 +227,25 @@ When `--auto-configure` is enabled:
 
 `refiner status --server` and `refiner scale --server` call dedicated `/k8s/refiner/*` routes instead of running local `kubectl`.
 
+These routes are intentionally operational. They belong in Continuum because they manipulate deployed runtime state rather than deciding what code change should be made.
+
 ## 9. Version Check Workflow
 
 - `nmc version` reports the local client version and, unless `--no-check` is used, checks the latest GitHub release.
 - `nmc_server` performs the same release check at startup.
 - `GET /server/version` exposes the server version, release-check status, and latest-version metadata through the API.
+
+## 10. Current Split State
+
+The current structural workflow breakup inside `nmc_server/src/Core/APIRoutes.cpp` is:
+- docs/auth/session/server-metadata route registration now lives in `APIRoutes_DocsAuth.cpp`
+- bucket/connection/k8s/vcluster/model/ssh route registration plus CRUD/server-snapshot handlers now live in `APIRoutes_DomainCrud.cpp`
+- AARNN/provider/Gail route registration and proxy handlers now live in `APIRoutes_DomainProxy.cpp`
+- release/operate route registration for Refiner runtime control, VM lifecycle, and node recruitment now lives in `APIRoutes_ReleaseOperate.cpp`
+- VM lifecycle implementation and node recruitment execution now live in `APIRoutes_ReleaseOperateExecution.cpp`
+- Tracey route registration now lives in `APIRoutes_Tracey.cpp`
+- auth/session/server-metadata request handling and access policy now live in `APIRoutes_ControlSurface.cpp`
+- Tracey adaptive/assessment handler assembly now lives in `APIRoutes_TraceyAdaptiveAssessment.cpp`
+- Tracey discovery, polling, state snapshots, analytics, fleet detail, and agent-control/runtime handlers now live in `APIRoutes_TraceyRuntime.cpp`
+
+`APIRoutes.cpp` is now thin bootstrap and shared-response glue rather than a mixed operational hotspot.

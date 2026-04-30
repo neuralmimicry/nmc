@@ -17,9 +17,10 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import DefaultDict, Dict, Iterable, List, Sequence, Set, Tuple
 
+from server_route_sources import read_route_registration_source
+
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
-SERVER_FILE = REPO_ROOT / "nmc_server" / "src" / "Core" / "APIRoutes.cpp"
 CLOUD_API_FILE = REPO_ROOT / "nmc_client" / "src" / "Core" / "CloudAPIClient.cpp"
 COMMANDS_DIR = REPO_ROOT / "nmc_client" / "src" / "Commands"
 MAIN_FILE = REPO_ROOT / "nmc_client" / "src" / "main.cpp"
@@ -307,7 +308,7 @@ def match_server_route_to_cloud_methods(
 
 
 def main() -> int:
-    server_src = read_text(SERVER_FILE)
+    server_src = read_route_registration_source()
     cloud_src = read_text(CLOUD_API_FILE)
     main_src = read_text(MAIN_FILE)
 

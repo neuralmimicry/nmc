@@ -166,6 +166,15 @@ message(STATUS "kubernetes_client_c_ext_SOURCE_DIR: ${kubernetes_client_c_ext_SO
 set(NMC_SERVER_SOURCES
         src/main.cpp
         src/Core/APIRoutes.cpp
+        src/Core/APIRoutes_ControlSurface.cpp
+        src/Core/APIRoutes_DocsAuth.cpp
+        src/Core/APIRoutes_DomainCrud.cpp
+        src/Core/APIRoutes_DomainProxy.cpp
+        src/Core/APIRoutes_ReleaseOperate.cpp
+        src/Core/APIRoutes_ReleaseOperateExecution.cpp
+        src/Core/APIRoutes_Tracey.cpp
+        src/Core/APIRoutes_TraceyAdaptiveAssessment.cpp
+        src/Core/APIRoutes_TraceyRuntime.cpp
         src/Core/K8sHandlers.cpp
         src/Core/K8sHandlers_VCluster_Advanced.cpp
         src/Core/K8sHandlers_VCluster_Lifecycle.cpp

@@ -11,9 +11,10 @@ from __future__ import annotations
 import pathlib
 import sys
 
+from server_route_sources import read_route_registration_source
+
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
-SERVER_FILE = REPO_ROOT / "nmc_server" / "src" / "Core" / "APIRoutes.cpp"
 DASHBOARD_JS_FILE = REPO_ROOT / "nmc_server" / "src" / "docs" / "dashboard.js"
 INDEX_HTML_FILE = REPO_ROOT / "nmc_server" / "src" / "docs" / "index.html"
 
@@ -33,7 +34,7 @@ def require_substrings(src: str, values: list[str], failures: list[str], context
 
 
 def main() -> int:
-    server_src = read_text(SERVER_FILE)
+    server_src = read_route_registration_source()
     dashboard_js = read_text(DASHBOARD_JS_FILE)
     index_html = read_text(INDEX_HTML_FILE)
 
@@ -53,7 +54,7 @@ def main() -> int:
             'resourceForecast["simulation"] = simulationView;',
         ],
         failures,
-        "APIRoutes.cpp",
+        "APIRoutes sources",
     )
 
     require_substrings(

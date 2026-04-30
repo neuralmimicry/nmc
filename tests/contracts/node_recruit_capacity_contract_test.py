@@ -12,9 +12,10 @@ import pathlib
 import re
 import sys
 
+from server_route_sources import read_route_registration_source
+
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
-SERVER_FILE = REPO_ROOT / "nmc_server" / "src" / "Core" / "APIRoutes.cpp"
 DOC_FILE = REPO_ROOT / "nmc_server" / "src" / "docs" / "node.html"
 
 
@@ -26,20 +27,36 @@ def read_text(path: pathlib.Path) -> str:
         sys.exit(1)
 
 
+def extract_function_body(src: str, signature_pattern: str) -> str | None:
+    match = re.search(signature_pattern, src)
+    if not match:
+        return None
+
+    brace_index = match.end() - 1
+    depth = 0
+    for idx in range(brace_index, len(src)):
+        ch = src[idx]
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return src[brace_index + 1 : idx]
+    return None
+
+
 def main() -> int:
-    server_src = read_text(SERVER_FILE)
+    server_src = read_route_registration_source()
     doc_src = read_text(DOC_FILE)
 
-    handle_match = re.search(
-        r"void\s+APIRoutes::handleRecruitNode\(const httplib::Request& req, httplib::Response& res\)\s*\{(.*)\n\s*}\n\n} // namespace NMC::Server",
+    handle_body = extract_function_body(
         server_src,
-        re.DOTALL,
+        r"void\s+APIRoutes::handleRecruitNode\(const httplib::Request& req, httplib::Response& res\)\s*\{",
     )
-    if not handle_match:
+    if handle_body is None:
         print("[node-recruit-capacity-test] failed to locate handleRecruitNode implementation", file=sys.stderr)
         return 1
 
-    handle_body = handle_match.group(1)
     failures: list[str] = []
 
     if "assessRecruitCapacity(host)" not in handle_body:

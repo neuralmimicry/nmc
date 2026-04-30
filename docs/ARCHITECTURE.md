@@ -2,6 +2,15 @@
 
 This document describes the runtime structure and control-plane boundaries of the NeuralMimicry Continuum codebase.
 
+## Estate Lifecycle Role
+
+Continuum is the estate's `release` and `operate` product. In the target split:
+- Conductor owns `plan` and `govern`.
+- Refiner owns `code`, `build`, `test`, and `iterate`.
+- Continuum owns `release` and `operate`.
+
+That means NMC should expose deployment, scaling, capacity, telemetry, runtime health, and platform-control contracts. It should not become the place where backlog governance or engineering change-planning logic accumulates.
+
 ## 1. Runtime Surfaces
 
 ### 1.1 `nmc_client`
@@ -27,10 +36,21 @@ The server is responsible for:
 - in-memory resource handlers for several CRUD-style surfaces
 - OpenShift, OpenStack, and Proxmox portal proxying
 - Tracey discovery, status polling, fleet views, adaptive loop synthesis, compromise-assessment brokering, and control forwarding
+- release/operate control-plane workflows consumed by operators and sibling products
 - built-in operator web docs when `NMC_DOCS_ENABLED=true`
 
 Primary modules:
 - `nmc_server/src/Core/APIRoutes.*`: route registration, guards, resource handlers, Tracey state
+- `nmc_server/src/Core/APIRoutes_DocsAuth.cpp`: docs, login/session, and server-metadata route registration
+- `nmc_server/src/Core/APIRoutes_DomainCrud.cpp`: bucket/connection/k8s/vcluster/model/ssh route registration, CRUD handlers, and server snapshot persistence glue
+- `nmc_server/src/Core/APIRoutes_DomainProxy.cpp`: AARNN discovery/proxy, provider portal handlers, Gail trading proxy handlers, and their route registration
+- `nmc_server/src/Core/APIRoutes_ReleaseOperate.cpp`: release/operate route registration for Refiner runtime control, VM lifecycle, and node recruitment
+- `nmc_server/src/Core/APIRoutes_ReleaseOperateExecution.cpp`: VM lifecycle handlers, same-hardware recruit-capacity assessment, and node recruitment execution
+- `nmc_server/src/Core/APIRoutes_Tracey.cpp`: Tracey route registration for fleet telemetry, adaptive control, assessment, and per-agent operations
+- `nmc_server/src/Core/APIRoutes_ControlSurface.cpp`: request logging, auth/session flows, access checks, and server-metadata handlers
+- `nmc_server/src/Core/APIRoutes_TraceyAdaptiveAssessment.cpp`: Tracey adaptive placement assembly and compromise-assessment handlers
+- `nmc_server/src/Core/APIRoutes_TraceyRuntime.cpp`: Tracey discovery, polling, runtime state snapshots, analytics, fleet detail, and per-agent runtime/control handlers
+- `nmc_server/src/Core/APIRoutes_InternalHelpers.inl`: shared internal helper layer used by the split route translation units
 - `nmc_server/src/Core/K8sHandlers*`: Kubernetes and vcluster handlers
 - `nmc_server/src/Core/OpenShiftClient.*`: OpenShift portal transport
 - `nmc_server/src/Core/OpenStackClient.*`: OpenStack portal transport
@@ -61,7 +81,7 @@ Primary modules:
 | OpenStack portal | `nmc openstack *` | `/openstack/*` + `OpenStackClient` | proxied to external portal |
 | Proxmox portal | `nmc proxmox *` | `/proxmox/*` + `ProxmoxClient` | proxied to external portal |
 | Tracey | `nmc tracey *` | `/tracey/*` routes | in-memory server state with debounced snapshot persistence, optional PostgreSQL history storage, discovery, status polling, adaptive-loop synthesis, and assessment handoff |
-| Refiner | `nmc refiner *` | local `kubectl` plus limited `/k8s/refiner/*` routes | local cluster operations or server passthrough |
+| Refiner runtime operations | `nmc refiner *` | local `kubectl` plus limited `/k8s/refiner/*` routes | release/operate platform actions against running Refiner infrastructure |
 | Node recruitment | `nmc node recruit` | direct SSH/SCP or `POST /node/recruit` | imperative execution with optional Ansible follow-up |
 
 ## 3. Request Lifecycle
@@ -124,7 +144,13 @@ Important distinctions:
 
 ### 5.2 Tracey
 
-Tracey combines several mechanisms in `APIRoutes`:
+Tracey now spans four internal units plus a shared helper layer:
+- `APIRoutes_Tracey.cpp` for `/tracey/*` route registration
+- `APIRoutes_TraceyAdaptiveAssessment.cpp` for adaptive placement and assessment workflows
+- `APIRoutes_TraceyRuntime.cpp` for discovery, polling, state snapshots, fleet/runtime detail, analytics, and agent-control plumbing
+- `APIRoutes_InternalHelpers.inl` for the shared helper layer reused by the split route units
+
+Together they provide:
 - heartbeat ingestion (`/tracey/agents/heartbeat`)
 - fleet summaries and analytics (`/tracey/agents`, `/tracey/fleet`, `/tracey/analytics`)
 - adaptive plan/ramp/optimise/repeat synthesis (`/tracey/adaptive`)
@@ -150,6 +176,8 @@ Managed-resource enforcement is route-driven for several server-side create flow
 Refiner is intentionally hybrid:
 - `deploy`, `logs`, and `remove` are local CLI workflows that shell out to `kubectl`
 - `status` and `scale` can run locally or call server routes with `--server`
+
+Those Continuum-backed routes are part of the `release`/`operate` lifecycle. Governed change planning belongs upstream in Conductor and Refiner, with Refiner then calling Continuum for runtime capacity, deployment, workspace, and scaling operations.
 
 ### 5.4 Built-In Docs
 
@@ -191,3 +219,9 @@ Implemented patterns include:
 - OpenShift, OpenStack, and Proxmox flows depend on external portal API contracts.
 - Vcluster `config-update` stores new configuration metadata but does not hot-apply most changes to running workloads.
 - Vcluster metrics are pod/state summaries, not full Prometheus resource telemetry.
+
+## 9. Next Modularisation Priority
+
+The large Tracey runtime, CRUD/proxy clusters, and release/operate execution logic are now out of `nmc_server/src/Core/APIRoutes.cpp`. The file is down to constructor/bootstrap wiring, shared response helpers, and the fleet-view glue wrapper.
+
+That finishes the main route-level ownership split around Continuum's `release` and `operate` lifecycle. Any further breakup is optional cleanup rather than a required structural move.

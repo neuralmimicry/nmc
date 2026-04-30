@@ -8,6 +8,16 @@ NeuralMimicry Continuum ships two C++ binaries:
 
 Together they provide connection management, Kubernetes and virtual-cluster operations, portal orchestration for OpenShift, OpenStack, and Proxmox, Tracey fleet telemetry/control plus the adaptive plan/ramp/optimise/repeat loop, Refiner deployment workflows, and Continuum node recruitment.
 
+Within the wider NeuralMimicry estate, Continuum is the `release` and `operate` control plane. It should own deployment automation, runtime capacity, platform telemetry, cluster and VM management, and operator-facing control surfaces. Backlog governance and change planning belong in Conductor, while engineering execution belongs in Refiner.
+
+## Lifecycle Ownership
+
+| Lifecycle segment | Product | Expected ownership |
+|---|---|---|
+| `plan`, `govern` | Conductor (`../conductor`) | backlog intake, prioritisation, policy gates, release intent, and governed change orchestration |
+| `code`, `build`, `test`, `iterate` | Refiner (`../rag_demo`) | assisted engineering execution, implementation plans, coding loops, validation, and iteration |
+| `release`, `operate` | Continuum / NMC (`.`) | runtime provisioning, deployment, platform control, scaling, health, telemetry, and operational intervention |
+
 ## Feature Inventory
 
 | Area | Surface | Notes |
@@ -35,6 +45,24 @@ Together they provide connection management, Kubernetes and virtual-cluster oper
 - `scripts/install-server.sh` and `scripts/install-client.sh`: package-native Linux installers for private GitHub releases.
 - `scripts/package-release.sh` and `scripts/package-release.ps1`: packaging helpers.
 - `VERSION`: shared client/server release version source of truth.
+
+## Modularisation Priority
+
+The current `APIRoutes` split is:
+- `nmc_server/src/Core/APIRoutes_DocsAuth.cpp` owns docs, login, session, health, and server-metadata route registration.
+- `nmc_server/src/Core/APIRoutes_ReleaseOperate.cpp` owns release/operate registration for Refiner runtime control, VM lifecycle, and node recruitment.
+- `nmc_server/src/Core/APIRoutes_ReleaseOperateExecution.cpp` owns the VM lifecycle handlers plus same-hardware capacity assessment and `/node/recruit` execution.
+- `nmc_server/src/Core/APIRoutes_Tracey.cpp` owns Tracey route registration for fleet telemetry, adaptive control, assessment, and per-agent operations.
+- `nmc_server/src/Core/APIRoutes_ControlSurface.cpp` owns request logging, auth/session flows, access checks, and server-metadata handlers.
+- `nmc_server/src/Core/APIRoutes_TraceyAdaptiveAssessment.cpp` owns adaptive placement assembly and compromise-assessment handlers.
+- `nmc_server/src/Core/APIRoutes_DomainCrud.cpp` owns bucket/connection/k8s/vcluster/model/ssh route registration, the server-side CRUD handlers, and server snapshot serialisation.
+- `nmc_server/src/Core/APIRoutes_DomainProxy.cpp` owns AARNN discovery/proxy handlers, provider-portal handlers, Gail trading proxy handlers, and their route registration.
+- `nmc_server/src/Core/APIRoutes_TraceyRuntime.cpp` owns Tracey discovery, polling, state snapshots, fleet/runtime detail, analytics, and per-agent control/runtime handlers.
+- `nmc_server/src/Core/APIRoutes_InternalHelpers.inl` now holds the shared internal helper layer reused by the remaining route units.
+
+`nmc_server/src/Core/APIRoutes.cpp` is now thin bootstrap/glue: constructor/bootstrap wiring, common response helpers, and the shared `buildTraceyFleetViewFromAgents(...)` wrapper.
+
+The large operational clusters are now split by lifecycle/domain boundary. Any further extraction from `APIRoutes.cpp` is incremental rather than structural.
 
 ## Building
 

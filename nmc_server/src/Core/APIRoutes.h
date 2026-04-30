@@ -11,6 +11,7 @@
 #include <thread>
 #include <atomic>
 #include <deque>
+#include <functional>
 
 // Include data models
 #include "../Models/Bucket.h"
@@ -62,6 +63,8 @@ namespace NMC::Server {
         ~APIRoutes();
 
     private:
+        using RouteGuard = std::function<bool(const httplib::Request&, httplib::Response&)>;
+
         // data storage for various resources
         std::vector<Models::Bucket> buckets;
         std::vector<Models::K8sCluster> k8sClusters;
@@ -283,6 +286,12 @@ namespace NMC::Server {
         std::string extractAuthToken(const httplib::Request& req) const;
         nlohmann::json centralAuthClaimsJson(const CentralAuthCacheEntry& entry) const;
         bool validateCentralAuthToken(const std::string& token, nlohmann::json* claimsOut = nullptr) const;
+        void registerDocsAndAuthRoutes(httplib::Server& svr, const RouteGuard& guard);
+        void registerControlMetadataRoutes(httplib::Server& svr, const RouteGuard& guard);
+        void registerDomainCrudRoutes(httplib::Server& svr, const RouteGuard& guard);
+        void registerReleaseOperateRoutes(httplib::Server& svr, const RouteGuard& guard);
+        void registerDomainProxyRoutes(httplib::Server& svr, const RouteGuard& guard);
+        void registerTraceyRoutes(httplib::Server& svr, const RouteGuard& guard);
         void handleAuthLogin(const httplib::Request& req, httplib::Response& res);
         void handleAuthSession(const httplib::Request& req, httplib::Response& res);
 
@@ -367,6 +376,8 @@ namespace NMC::Server {
                                              nlohmann::json& statusOut,
                                              std::string& errorOut);
         nlohmann::json buildTraceyContinuumAgentView(const TraceyAgent& agent, int64_t nowMs) const;
+        nlohmann::json buildTraceyFleetViewFromAgents(const std::vector<nlohmann::json>& agentViews,
+                                                      int64_t nowMs) const;
         RecruitCapacityAssessment assessRecruitCapacity(const std::string& host);
         void handleRecruitNode(const httplib::Request& req, httplib::Response& res);
         void runTraceyDiscoveryLoop();

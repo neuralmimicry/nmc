@@ -8,15 +8,12 @@ Server safety contract test:
 
 from __future__ import annotations
 
-import pathlib
 import re
-import sys
 from dataclasses import dataclass
 from typing import List
 
+from server_route_sources import read_route_registration_source
 
-REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
-SERVER_FILE = REPO_ROOT / "nmc_server" / "src" / "Core" / "APIRoutes.cpp"
 
 DOCS_STATIC_PATHS = {"/", "/index.html", "/docs", "/login", "/logout", "/auth/login"}
 REDACTION_MINIMUM_PREFIXES = {
@@ -37,16 +34,6 @@ class RouteRegistration:
     path: str
     capture: str
     body: str
-
-
-def read_text(path: pathlib.Path) -> str:
-    try:
-        return path.read_text(encoding="utf-8")
-    except OSError as exc:
-        print(f"[safety-test] failed to read {path}: {exc}", file=sys.stderr)
-        sys.exit(1)
-
-
 def collect_routes(src: str) -> List[RouteRegistration]:
     route_start = re.compile(
         r'^\s*svr\.(Get|Post|Delete|Put|Patch)\(\s*(R"\((.*?)\)"|"([^"]+)")\s*,\s*\[([^\]]*)\]\(const httplib::Request& req, httplib::Response& res\)\s*\{',
@@ -134,8 +121,9 @@ def extract_redaction_prefixes(src: str) -> List[str]:
 
 
 def main() -> int:
-    src = read_text(SERVER_FILE)
-    routes = collect_routes(src)
+    route_src = read_route_registration_source()
+    src = route_src
+    routes = collect_routes(route_src)
     guard_failures = ensure_guarded_routes(routes)
 
     redacted_prefixes = set(extract_redaction_prefixes(src))

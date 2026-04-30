@@ -14,10 +14,11 @@ import sys
 from dataclasses import dataclass
 from typing import Dict, List, Sequence
 
+from server_route_sources import read_route_registration_source
+
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 CLIENT_FILE = REPO_ROOT / "nmc_client" / "src" / "Core" / "CloudAPIClient.cpp"
-SERVER_FILE = REPO_ROOT / "nmc_server" / "src" / "Core" / "APIRoutes.cpp"
 
 
 @dataclass(frozen=True)
@@ -177,7 +178,7 @@ def server_has_route_for_client(client_route: Route, server_routes: Sequence[Rou
 
 def main() -> int:
     client_src = read_text(CLIENT_FILE)
-    server_src = read_text(SERVER_FILE)
+    server_src = read_route_registration_source()
 
     client_routes = collect_client_routes(client_src)
     server_routes = collect_server_routes(server_src)
