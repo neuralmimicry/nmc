@@ -297,7 +297,7 @@ umask 077
 export DEBIAN_FRONTEND=noninteractive
 if command -v apt-get >/dev/null 2>&1; then
   apt-get update -y
-  apt-get install -y curl ca-certificates jq
+  apt-get install -y --allow-downgrades curl ca-certificates jq
 fi
 
 mkdir -p /opt/continuum/node
@@ -317,17 +317,17 @@ EOF
 case "${NMC_NODE_TYPE:-bare-metal}" in
   podman)
     if command -v apt-get >/dev/null 2>&1; then
-      apt-get install -y podman
+      apt-get install -y --allow-downgrades podman
     fi
     ;;
   kubernetes)
     if command -v apt-get >/dev/null 2>&1; then
-      apt-get install -y apt-transport-https containerd
+      apt-get install -y --allow-downgrades apt-transport-https containerd
     fi
     ;;
   openstack)
     if command -v apt-get >/dev/null 2>&1; then
-      apt-get install -y python3-openstackclient
+      apt-get install -y --allow-downgrades --allow-downgrades python3-openstackclient
     fi
     ;;
   vm|app-install|bare-metal)

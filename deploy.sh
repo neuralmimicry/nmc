@@ -199,7 +199,7 @@ apt_update_once() {
 
 apt_install() {
   apt_update_once
-  retry run_root apt-get install -y --no-install-recommends "$@"
+  retry run_root apt-get install -y --allow-downgrades --no-install-recommends "$@"
 }
 
 usage() {
