@@ -175,7 +175,25 @@ int main(int argc, char* argv[]) {
     refinerCmd->addSubcommand(std::make_shared<NMC::Commands::RefinerRemoveCommand>(apiClient));
     parser.registerCommand(refinerCmd);
 
-    parser.registerCommand(NMC::Commands::buildGailCommandTree());
+    auto gailCmd = std::make_shared<NMC::Commands::GailCommand>(apiClient);
+    NMC::Commands::attachDirectGailSubcommands(gailCmd);
+
+    auto gailTradingCmd = std::make_shared<NMC::Commands::GailTradingCommand>(apiClient);
+    gailTradingCmd->addSubcommand(std::make_shared<NMC::Commands::GailTradingStatusCommand>(apiClient));
+    gailTradingCmd->addSubcommand(std::make_shared<NMC::Commands::GailTradingPortfolioCommand>(apiClient));
+    gailTradingCmd->addSubcommand(std::make_shared<NMC::Commands::GailTradingPositionsCommand>(apiClient));
+    gailTradingCmd->addSubcommand(std::make_shared<NMC::Commands::GailTradingHistoryCommand>(apiClient));
+    gailTradingCmd->addSubcommand(std::make_shared<NMC::Commands::GailTradingLogsCommand>(apiClient));
+    gailTradingCmd->addSubcommand(std::make_shared<NMC::Commands::GailTradingExchangesCommand>(apiClient));
+    gailTradingCmd->addSubcommand(std::make_shared<NMC::Commands::GailTradingCurrenciesCommand>(apiClient));
+    gailTradingCmd->addSubcommand(std::make_shared<NMC::Commands::GailTradingConfigCommand>(apiClient));
+    gailTradingCmd->addSubcommand(std::make_shared<NMC::Commands::GailTradingConfigSetCommand>(apiClient));
+    gailTradingCmd->addSubcommand(std::make_shared<NMC::Commands::GailTradingPauseCommand>(apiClient));
+    gailTradingCmd->addSubcommand(std::make_shared<NMC::Commands::GailTradingResumeCommand>(apiClient));
+    gailTradingCmd->addSubcommand(std::make_shared<NMC::Commands::GailTradingOverrideCommand>(apiClient));
+    gailTradingCmd->addSubcommand(std::make_shared<NMC::Commands::GailTradingEvaluateCommand>(apiClient));
+    gailCmd->addSubcommand(gailTradingCmd);
+    parser.registerCommand(gailCmd);
 
     auto aarnnCmd = std::make_shared<NMC::Commands::AarnnCommand>(apiClient);
     aarnnCmd->addSubcommand(std::make_shared<NMC::Commands::AarnnEndpointsCommand>(apiClient));

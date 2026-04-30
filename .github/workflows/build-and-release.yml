@@ -40,7 +40,7 @@ concurrency:
 jobs:
   contract-test:
     name: Contract Tests (Routes + Command Coverage)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64]
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -53,7 +53,7 @@ jobs:
 
   safety-test:
     name: Safety Test (Server Guard/Redaction)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64]
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -63,7 +63,7 @@ jobs:
 
   functional-test:
     name: Functional Test (CLI Mock Integration)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64]
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -85,7 +85,7 @@ jobs:
 
   shell-script-test:
     name: Shell Script Syntax
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64]
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -101,7 +101,7 @@ jobs:
 
   release-metadata:
     name: Release Metadata
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64]
     needs:
       - contract-test
       - safety-test
@@ -427,7 +427,7 @@ jobs:
 
   publish-release:
     name: Publish Release
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64]
     needs:
       - release-metadata
       - package-client-linux

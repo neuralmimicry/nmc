@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify (${{ matrix.runner_arch }})
+    runs-on: [self-hosted, Linux, "${{ matrix.runner_arch }}"]
+    strategy:
+      fail-fast: false
+      matrix:
+        runner_arch: [X64, ARM64]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install client build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            pkg-config \
+            libcurl4-openssl-dev
+
+      - name: Run contract tests
+        run: |
+          python3 tests/contracts/api_route_contract_test.py
+          python3 tests/contracts/command_coverage_contract_test.py
+          python3 tests/contracts/server_safety_contract_test.py
+
+      - name: Build client for functional validation
+        run: |
+          cmake -S nmc_client -B nmc_client/build -DCMAKE_BUILD_TYPE=Release
+          cmake --build nmc_client/build --config Release -- -j"$(nproc)"
+
+      - name: Run functional CLI integration test
+        run: python3 tests/functional/client_cli_integration_test.py
+
+      - name: Validate shell scripts
+        run: |
+          bash -n \
+            deploy.sh \
+            scripts/install-common.sh \
+            scripts/install-client.sh \
+            scripts/install-server.sh \
+            scripts/package-release.sh

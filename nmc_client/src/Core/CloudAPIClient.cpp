@@ -106,6 +106,16 @@ namespace {
         }
         return payload;
     }
+
+    void unwrapStandardEnvelopeResponse(NMC::Models::CloudResponse& response) {
+        if (!response.data.is_object()) {
+            return;
+        }
+        if (response.data.contains("message") && response.data["message"].is_string()) {
+            response.message = response.data["message"].get<std::string>();
+        }
+        response.data = unwrapEnvelopeData(response.data);
+    }
 }
 
 namespace NMC::Core {
@@ -647,6 +657,101 @@ namespace NMC::Core {
     Models::CloudResponse CloudAPIClient::getServerVersion() {
         auto res = cli->Get("/server/version");
         return processHttpResponse(res, "Server version metadata retrieved.");
+    }
+
+    Models::CloudResponse CloudAPIClient::getGailTradingStatus() {
+        auto res = cli->Get("/gail/trading/status");
+        auto apiResponse = processHttpResponse(res, "Trading bridge status retrieved.");
+        unwrapStandardEnvelopeResponse(apiResponse);
+        return apiResponse;
+    }
+
+    Models::CloudResponse CloudAPIClient::getGailTradingPortfolio() {
+        auto res = cli->Get("/gail/trading/portfolio");
+        auto apiResponse = processHttpResponse(res, "Portfolio retrieved.");
+        unwrapStandardEnvelopeResponse(apiResponse);
+        return apiResponse;
+    }
+
+    Models::CloudResponse CloudAPIClient::getGailTradingPositions() {
+        auto res = cli->Get("/gail/trading/positions");
+        auto apiResponse = processHttpResponse(res, "Open positions retrieved.");
+        unwrapStandardEnvelopeResponse(apiResponse);
+        return apiResponse;
+    }
+
+    Models::CloudResponse CloudAPIClient::getGailTradingHistory(int limit) {
+        std::string path = "/gail/trading/history";
+        appendQueryInt(path, "limit", limit);
+        auto res = cli->Get(path);
+        auto apiResponse = processHttpResponse(res, "Trade history retrieved.");
+        unwrapStandardEnvelopeResponse(apiResponse);
+        return apiResponse;
+    }
+
+    Models::CloudResponse CloudAPIClient::getGailTradingLogs(int limit) {
+        std::string path = "/gail/trading/logs";
+        appendQueryInt(path, "limit", limit);
+        auto res = cli->Get(path);
+        auto apiResponse = processHttpResponse(res, "Activity log retrieved.");
+        unwrapStandardEnvelopeResponse(apiResponse);
+        return apiResponse;
+    }
+
+    Models::CloudResponse CloudAPIClient::getGailTradingExchanges() {
+        auto res = cli->Get("/gail/trading/exchanges");
+        auto apiResponse = processHttpResponse(res, "Exchanges retrieved.");
+        unwrapStandardEnvelopeResponse(apiResponse);
+        return apiResponse;
+    }
+
+    Models::CloudResponse CloudAPIClient::getGailTradingCurrencies() {
+        auto res = cli->Get("/gail/trading/currencies");
+        auto apiResponse = processHttpResponse(res, "Currencies retrieved.");
+        unwrapStandardEnvelopeResponse(apiResponse);
+        return apiResponse;
+    }
+
+    Models::CloudResponse CloudAPIClient::getGailTradingConfig() {
+        auto res = cli->Get("/gail/trading/config");
+        auto apiResponse = processHttpResponse(res, "Trading config retrieved.");
+        unwrapStandardEnvelopeResponse(apiResponse);
+        return apiResponse;
+    }
+
+    Models::CloudResponse CloudAPIClient::setGailTradingConfig(const nlohmann::json& config) {
+        auto res = cli->Post("/gail/trading/config", config.dump(), "application/json");
+        auto apiResponse = processHttpResponse(res, "Trading config updated.");
+        unwrapStandardEnvelopeResponse(apiResponse);
+        return apiResponse;
+    }
+
+    Models::CloudResponse CloudAPIClient::pauseGailTrading(const nlohmann::json& body) {
+        auto res = cli->Post("/gail/trading/pause", body.dump(), "application/json");
+        auto apiResponse = processHttpResponse(res, "Trading bridge paused.");
+        unwrapStandardEnvelopeResponse(apiResponse);
+        return apiResponse;
+    }
+
+    Models::CloudResponse CloudAPIClient::resumeGailTrading(const nlohmann::json& body) {
+        auto res = cli->Post("/gail/trading/resume", body.dump(), "application/json");
+        auto apiResponse = processHttpResponse(res, "Trading bridge resumed.");
+        unwrapStandardEnvelopeResponse(apiResponse);
+        return apiResponse;
+    }
+
+    Models::CloudResponse CloudAPIClient::overrideGailTrading(const nlohmann::json& body) {
+        auto res = cli->Post("/gail/trading/override", body.dump(), "application/json");
+        auto apiResponse = processHttpResponse(res, "Trade override submitted.");
+        unwrapStandardEnvelopeResponse(apiResponse);
+        return apiResponse;
+    }
+
+    Models::CloudResponse CloudAPIClient::evaluateGailTrading(const nlohmann::json& body) {
+        auto res = cli->Post("/gail/trading/evaluate", body.dump(), "application/json");
+        auto apiResponse = processHttpResponse(res, "Evaluation triggered.");
+        unwrapStandardEnvelopeResponse(apiResponse);
+        return apiResponse;
     }
 
     Models::CloudResponse CloudAPIClient::listOpenShiftResources() {

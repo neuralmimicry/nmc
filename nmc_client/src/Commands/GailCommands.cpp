@@ -481,204 +481,84 @@ public:
 };
 
 // ---------------------------------------------------------------------------
-// Gail Trading Bridge commands
+// Gail Trading Bridge helpers
 // ---------------------------------------------------------------------------
 
-class GailTradingRootCommand final : public GailCommandBase {
-public:
-    GailTradingRootCommand() : GailCommandBase("trading", "Manage the Gail crypto trading bridge") {
-        usage = "nmc gail trading [command]";
-        examples = "nmc gail trading status\nnmc gail trading pause\nnmc gail trading resume";
+void addDirectTradingFlags(CLI::Command& command, bool includeLimit = false, bool includeJsonBody = false) {
+    command.addFlag(CLI::Flag(
+        "d",
+        "direct",
+        "Call Gail directly instead of routing through the configured NMC server.",
+        CLI::FlagType::Bool,
+        false));
+    command.addFlag(CLI::Flag(
+        "u",
+        "base-url",
+        "Direct Gail base URL. Overrides NMC_GAIL_BASE_URL/GAIL_BASE_URL.",
+        CLI::FlagType::String,
+        false));
+    command.addFlag(CLI::Flag(
+        "t",
+        "api-token",
+        "Direct Gail bearer token. Overrides NMC_GAIL_API_TOKEN/GAIL_API_TOKEN.",
+        CLI::FlagType::String,
+        false));
+    if (includeLimit) {
+        command.addFlag(CLI::Flag("n", "limit", "Maximum number of items to return", CLI::FlagType::Int, false));
+    }
+    if (includeJsonBody) {
+        command.addFlag(CLI::Flag("j", "json", "JSON payload to send", CLI::FlagType::String, false));
+        command.addFlag(CLI::Flag("f", "json-file", "Path to JSON file to send", CLI::FlagType::String, false));
+    }
+}
+
+std::unique_ptr<Core::GailClient> createDirectTradingClient(
+    const std::map<std::string, std::string>& parsedFlags,
+    std::string& errorOut
+) {
+    std::string baseUrl;
+    std::string apiToken;
+    if (!Core::GailClient::resolveConfiguration(
+            optionalFlag(parsedFlags, "base-url"),
+            optionalFlag(parsedFlags, "api-token"),
+            baseUrl,
+            apiToken,
+            errorOut)) {
+        return nullptr;
+    }
+    return std::make_unique<Core::GailClient>(baseUrl, apiToken);
+}
+
+bool shouldUseDirectGailTrading(const std::shared_ptr<Core::CloudAPIClient>& apiClient,
+                                const std::map<std::string, std::string>& parsedFlags) {
+    if (hasFlag(parsedFlags, "direct") || hasFlag(parsedFlags, "base-url") || hasFlag(parsedFlags, "api-token")) {
+        return true;
+    }
+    if (apiClient && apiClient->hasDefaultConnection()) {
+        return false;
     }
 
-    int execute(const std::map<std::string, std::string>&,
-                const std::vector<std::string>&,
-                const CLI::GlobalFlags&) override {
-        printHelp();
-        return 0;
-    }
-};
+    std::string baseUrl;
+    std::string apiToken;
+    std::string error;
+    return Core::GailClient::resolveConfiguration("", "", baseUrl, apiToken, error);
+}
 
-// Simple GET command that proxies to a Gail trading endpoint.
-class GailTradingGetCommand final : public GailCommandBase {
-public:
-    GailTradingGetCommand(const std::string& name,
-                          const std::string& description,
-                          const std::string& gailPath,
-                          const std::string& usageStr,
-                          const std::string& examplesStr,
-                          const std::string& successMessage,
-                          bool hasLimitFlag = false)
-        : GailCommandBase(name, description)
-        , gailPath_(gailPath)
-        , successMessage_(successMessage)
-        , hasLimitFlag_(hasLimitFlag) {
-        usage = usageStr;
-        examples = examplesStr;
-        addClientFlags();
-        if (hasLimitFlag_) {
-            addFlag(CLI::Flag("n", "limit", "Maximum number of items to return", CLI::FlagType::Int, false));
-        }
-    }
+int printAndReturnResponse(const Models::CloudResponse& response, const CLI::GlobalFlags& globalFlags) {
+    BaseCommand::printOutput(response, globalFlags);
+    return response.success ? 0 : 1;
+}
 
-    int execute(const std::map<std::string, std::string>& parsedFlags,
-                const std::vector<std::string>& parsedArgs,
-                const CLI::GlobalFlags& globalFlags) override {
-        if (!validateArguments(parsedArgs) || !validateFlags(parsedFlags)) {
-            return 1;
-        }
-
-        std::string path = gailPath_;
-        if (hasLimitFlag_ && hasFlag(parsedFlags, "limit")) {
-            int limit = 50;
-            std::string parseError;
-            if (!parsePositiveInt(parsedFlags, "limit", 50, limit, parseError)) {
-                return printAndReturn(errorResponse(parseError), globalFlags);
-            }
-            path += "?limit=" + std::to_string(limit);
-        }
-
-        std::string error;
-        auto client = createClient(parsedFlags, error);
-        if (!client) {
-            return printAndReturn(errorResponse(error), globalFlags);
-        }
-
-        auto response = client->request("GET", path);
-        if (response.success) {
-            response.message = successMessage_;
-        }
-        return printAndReturn(response, globalFlags);
-    }
-
-private:
-    std::string gailPath_;
-    std::string successMessage_;
-    bool hasLimitFlag_;
-};
-
-// Simple POST command that sends an optional JSON body to a Gail trading endpoint.
-class GailTradingPostCommand final : public GailCommandBase {
-public:
-    GailTradingPostCommand(const std::string& name,
-                           const std::string& description,
-                           const std::string& gailPath,
-                           const std::string& usageStr,
-                           const std::string& examplesStr,
-                           const std::string& successMessage,
-                           bool acceptsJsonBody = false)
-        : GailCommandBase(name, description)
-        , gailPath_(gailPath)
-        , successMessage_(successMessage)
-        , acceptsJsonBody_(acceptsJsonBody) {
-        usage = usageStr;
-        examples = examplesStr;
-        addClientFlags();
-        if (acceptsJsonBody_) {
-            addFlag(CLI::Flag("j", "json", "JSON payload to send", CLI::FlagType::String, false));
-            addFlag(CLI::Flag("f", "json-file", "Path to JSON file to send", CLI::FlagType::String, false));
-        }
-    }
-
-    int execute(const std::map<std::string, std::string>& parsedFlags,
-                const std::vector<std::string>& parsedArgs,
-                const CLI::GlobalFlags& globalFlags) override {
-        if (!validateArguments(parsedArgs) || !validateFlags(parsedFlags)) {
-            return 1;
-        }
-
-        nlohmann::json body = nlohmann::json::object();
-        if (acceptsJsonBody_ && (hasFlag(parsedFlags, "json") || hasFlag(parsedFlags, "json-file"))) {
-            std::string parseError;
-            if (!parseJsonFlagOrFile(parsedFlags, "json", "json-file", body, parseError, true)) {
-                return printAndReturn(errorResponse(parseError), globalFlags);
-            }
-        }
-
-        std::string error;
-        auto client = createClient(parsedFlags, error);
-        if (!client) {
-            return printAndReturn(errorResponse(error), globalFlags);
-        }
-
-        auto response = client->postJson(gailPath_, body);
-        if (response.success) {
-            response.message = successMessage_;
-        }
-        return printAndReturn(response, globalFlags);
-    }
-
-private:
-    std::string gailPath_;
-    std::string successMessage_;
-    bool acceptsJsonBody_;
-};
-
-// Override command: accepts --action, --symbol, --amount flags.
-class GailTradingOverrideCommand final : public GailCommandBase {
-public:
-    GailTradingOverrideCommand() : GailCommandBase("override", "Inject a one-shot trade override into the trading bridge") {
-        usage = "nmc gail trading override --action ACTION --symbol SYMBOL [--amount USD] [--exchange EXCHANGE]";
-        examples = "nmc gail trading override --action buy --symbol BTC/USDT --amount 10.0 --exchange binance";
-        addClientFlags();
-        addFlag(CLI::Flag("a", "action", "Trade action: buy, sell, strong_buy, strong_sell, cancel, hold", CLI::FlagType::String, true));
-        addFlag(CLI::Flag("s", "symbol", "Trading pair symbol, e.g. BTC/USDT", CLI::FlagType::String, true));
-        addFlag(CLI::Flag("m", "amount", "USD amount to trade", CLI::FlagType::String, false));
-        addFlag(CLI::Flag("e", "exchange", "Exchange name", CLI::FlagType::String, false));
-    }
-
-    int execute(const std::map<std::string, std::string>& parsedFlags,
-                const std::vector<std::string>& parsedArgs,
-                const CLI::GlobalFlags& globalFlags) override {
-        if (!validateArguments(parsedArgs) || !validateFlags(parsedFlags)) {
-            return 1;
-        }
-
-        const std::string action = trimCopy(optionalFlag(parsedFlags, "action"));
-        const std::string symbol = trimCopy(optionalFlag(parsedFlags, "symbol"));
-        if (action.empty()) {
-            return printAndReturn(errorResponse("--action is required (buy, sell, strong_buy, strong_sell, cancel, hold)"), globalFlags);
-        }
-        if (symbol.empty()) {
-            return printAndReturn(errorResponse("--symbol is required (e.g. BTC/USDT)"), globalFlags);
-        }
-
-        nlohmann::json body = {
-            {"action", action},
-            {"symbol", symbol}
-        };
-        const std::string amountStr = trimCopy(optionalFlag(parsedFlags, "amount"));
-        if (!amountStr.empty()) {
-            try {
-                body["amount_usd"] = std::stod(amountStr);
-            } catch (const std::exception&) {
-                return printAndReturn(errorResponse("--amount must be a valid number"), globalFlags);
-            }
-        }
-        const std::string exchange = trimCopy(optionalFlag(parsedFlags, "exchange"));
-        if (!exchange.empty()) {
-            body["exchange"] = exchange;
-        }
-
-        std::string error;
-        auto client = createClient(parsedFlags, error);
-        if (!client) {
-            return printAndReturn(errorResponse(error), globalFlags);
-        }
-
-        auto response = client->postJson("/v1/trading/override", body);
-        if (response.success) {
-            response.message = "Trade override submitted.";
-        }
-        return printAndReturn(response, globalFlags);
-    }
-};
+bool parseTradingLimitFlag(const std::map<std::string, std::string>& parsedFlags,
+                           int fallback,
+                           int& limitOut,
+                           std::string& errorOut) {
+    return parsePositiveInt(parsedFlags, "limit", fallback, limitOut, errorOut);
+}
 
 } // namespace
 
-std::shared_ptr<NMC::CLI::Command> buildGailCommandTree() {
-    // Keep the Gail surface thin: small convenience commands plus a raw escape hatch.
-    auto root = std::make_shared<GailRootCommand>();
+void attachDirectGailSubcommands(const std::shared_ptr<NMC::CLI::Command>& root) {
     root->addSubcommand(std::make_shared<GailHealthCommand>());
     root->addSubcommand(std::make_shared<GailStatusCommand>());
     root->addSubcommand(std::make_shared<GailJsonEndpointCommand>(
@@ -731,100 +611,498 @@ std::shared_ptr<NMC::CLI::Command> buildGailCommandTree() {
         "nmc gail aer-decode --json-file ./aer-decode.json",
         "Gail AER decode completed."));
     root->addSubcommand(std::make_shared<GailRequestCommand>());
+}
 
-    // Trading bridge subcommand tree
-    auto trading = std::make_shared<GailTradingRootCommand>();
-    trading->addSubcommand(std::make_shared<GailTradingGetCommand>(
-        "status",
-        "Show Gail trading bridge status",
-        "/v1/trading/status",
-        "nmc gail trading status [--base-url URL] [--api-token TOKEN]",
-        "nmc gail trading status",
-        "Trading bridge status retrieved."));
-    trading->addSubcommand(std::make_shared<GailTradingGetCommand>(
-        "portfolio",
-        "Show OctoBot portfolio holdings",
-        "/v1/trading/portfolio",
-        "nmc gail trading portfolio [--base-url URL] [--api-token TOKEN]",
-        "nmc gail trading portfolio",
-        "Portfolio retrieved."));
-    trading->addSubcommand(std::make_shared<GailTradingGetCommand>(
-        "positions",
-        "Show open OctoBot positions",
-        "/v1/trading/positions",
-        "nmc gail trading positions [--base-url URL] [--api-token TOKEN]",
-        "nmc gail trading positions",
-        "Open positions retrieved."));
-    trading->addSubcommand(std::make_shared<GailTradingGetCommand>(
-        "history",
-        "Show recent executed trades",
-        "/v1/trading/history",
-        "nmc gail trading history [--limit N] [--base-url URL] [--api-token TOKEN]",
-        "nmc gail trading history --limit 20",
-        "Trade history retrieved.",
-        /*hasLimitFlag=*/true));
-    trading->addSubcommand(std::make_shared<GailTradingGetCommand>(
-        "logs",
-        "Show trading bridge activity log",
-        "/v1/trading/logs",
-        "nmc gail trading logs [--limit N] [--base-url URL] [--api-token TOKEN]",
-        "nmc gail trading logs --limit 100",
-        "Activity log retrieved.",
-        /*hasLimitFlag=*/true));
-    trading->addSubcommand(std::make_shared<GailTradingGetCommand>(
-        "exchanges",
-        "List available OctoBot exchanges",
-        "/v1/trading/exchanges",
-        "nmc gail trading exchanges [--base-url URL] [--api-token TOKEN]",
-        "nmc gail trading exchanges",
-        "Exchanges retrieved."));
-    trading->addSubcommand(std::make_shared<GailTradingGetCommand>(
-        "currencies",
-        "List available trading currencies/pairs",
-        "/v1/trading/currencies",
-        "nmc gail trading currencies [--base-url URL] [--api-token TOKEN]",
-        "nmc gail trading currencies",
-        "Currencies retrieved."));
-    trading->addSubcommand(std::make_shared<GailTradingGetCommand>(
-        "config",
-        "Show current trading bridge configuration",
-        "/v1/trading/config",
-        "nmc gail trading config [--base-url URL] [--api-token TOKEN]",
-        "nmc gail trading config",
-        "Trading config retrieved."));
-    trading->addSubcommand(std::make_shared<GailTradingPostCommand>(
-        "config-set",
-        "Update trading bridge configuration at runtime",
-        "/v1/trading/config",
-        "nmc gail trading config-set --json JSON|--json-file FILE [--base-url URL] [--api-token TOKEN]",
-        "nmc gail trading config-set --json '{\"micro_trade_max_usd\":15.0}'",
-        "Trading config updated.",
-        /*acceptsJsonBody=*/true));
-    trading->addSubcommand(std::make_shared<GailTradingPostCommand>(
-        "pause",
-        "Pause the trading bridge evaluation loop",
-        "/v1/trading/pause",
-        "nmc gail trading pause [--base-url URL] [--api-token TOKEN]",
-        "nmc gail trading pause",
-        "Trading bridge paused."));
-    trading->addSubcommand(std::make_shared<GailTradingPostCommand>(
-        "resume",
-        "Resume the trading bridge evaluation loop",
-        "/v1/trading/resume",
-        "nmc gail trading resume [--base-url URL] [--api-token TOKEN]",
-        "nmc gail trading resume",
-        "Trading bridge resumed."));
-    trading->addSubcommand(std::make_shared<GailTradingOverrideCommand>());
-    trading->addSubcommand(std::make_shared<GailTradingPostCommand>(
-        "evaluate",
-        "Trigger an immediate trading evaluation cycle",
-        "/v1/trading/evaluate",
-        "nmc gail trading evaluate [--base-url URL] [--api-token TOKEN]",
-        "nmc gail trading evaluate",
-        "Evaluation triggered."));
-    root->addSubcommand(trading);
+GailCommand::GailCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client)
+    : BaseCommand("gail", "Call the Gail shared AI middleware service", std::move(client)) {
+    usage = "nmc gail [command]";
+    examples = "nmc gail health --base-url https://gail.internal.example\n"
+               "nmc gail status --probe-engines\n"
+               "nmc gail trading status";
+}
 
-    return root;
+int GailCommand::execute(const std::map<std::string, std::string>&,
+                         const std::vector<std::string>&,
+                         const CLI::GlobalFlags&) {
+    printHelp();
+    return 0;
+}
+
+GailTradingCommand::GailTradingCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client)
+    : BaseCommand("trading", "Manage the Gail crypto trading bridge", std::move(client)) {
+    usage = "nmc gail trading [command]";
+    examples = "nmc gail trading status\nnmc gail trading pause\nnmc gail trading resume";
+}
+
+int GailTradingCommand::execute(const std::map<std::string, std::string>&,
+                                const std::vector<std::string>&,
+                                const CLI::GlobalFlags&) {
+    printHelp();
+    return 0;
+}
+
+GailTradingStatusCommand::GailTradingStatusCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client)
+    : BaseCommand("status", "Show Gail trading bridge status", std::move(client)) {
+    usage = "nmc gail trading status [--direct] [--base-url URL] [--api-token TOKEN]";
+    examples = "nmc gail trading status";
+    addDirectTradingFlags(*this);
+}
+
+int GailTradingStatusCommand::execute(const std::map<std::string, std::string>& parsedFlags,
+                                      const std::vector<std::string>& parsedArgs,
+                                      const CLI::GlobalFlags& globalFlags) {
+    if (!validateArguments(parsedArgs) || !validateFlags(parsedFlags)) {
+        return 1;
+    }
+
+    Models::CloudResponse response;
+    if (shouldUseDirectGailTrading(apiClient, parsedFlags)) {
+        std::string error;
+        auto client = createDirectTradingClient(parsedFlags, error);
+        if (!client) {
+            return printAndReturnResponse(errorResponse(error), globalFlags);
+        }
+        response = client->request("GET", "/v1/trading/status");
+    } else {
+        response = apiClient->getGailTradingStatus();
+    }
+    if (response.success) {
+        response.message = "Trading bridge status retrieved.";
+    }
+    return printAndReturnResponse(response, globalFlags);
+}
+
+GailTradingPortfolioCommand::GailTradingPortfolioCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client)
+    : BaseCommand("portfolio", "Show OctoBot portfolio holdings", std::move(client)) {
+    usage = "nmc gail trading portfolio [--direct] [--base-url URL] [--api-token TOKEN]";
+    examples = "nmc gail trading portfolio";
+    addDirectTradingFlags(*this);
+}
+
+int GailTradingPortfolioCommand::execute(const std::map<std::string, std::string>& parsedFlags,
+                                         const std::vector<std::string>& parsedArgs,
+                                         const CLI::GlobalFlags& globalFlags) {
+    if (!validateArguments(parsedArgs) || !validateFlags(parsedFlags)) {
+        return 1;
+    }
+
+    Models::CloudResponse response;
+    if (shouldUseDirectGailTrading(apiClient, parsedFlags)) {
+        std::string error;
+        auto client = createDirectTradingClient(parsedFlags, error);
+        if (!client) {
+            return printAndReturnResponse(errorResponse(error), globalFlags);
+        }
+        response = client->request("GET", "/v1/trading/portfolio");
+    } else {
+        response = apiClient->getGailTradingPortfolio();
+    }
+    if (response.success) {
+        response.message = "Portfolio retrieved.";
+    }
+    return printAndReturnResponse(response, globalFlags);
+}
+
+GailTradingPositionsCommand::GailTradingPositionsCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client)
+    : BaseCommand("positions", "Show open OctoBot positions", std::move(client)) {
+    usage = "nmc gail trading positions [--direct] [--base-url URL] [--api-token TOKEN]";
+    examples = "nmc gail trading positions";
+    addDirectTradingFlags(*this);
+}
+
+int GailTradingPositionsCommand::execute(const std::map<std::string, std::string>& parsedFlags,
+                                         const std::vector<std::string>& parsedArgs,
+                                         const CLI::GlobalFlags& globalFlags) {
+    if (!validateArguments(parsedArgs) || !validateFlags(parsedFlags)) {
+        return 1;
+    }
+
+    Models::CloudResponse response;
+    if (shouldUseDirectGailTrading(apiClient, parsedFlags)) {
+        std::string error;
+        auto client = createDirectTradingClient(parsedFlags, error);
+        if (!client) {
+            return printAndReturnResponse(errorResponse(error), globalFlags);
+        }
+        response = client->request("GET", "/v1/trading/positions");
+    } else {
+        response = apiClient->getGailTradingPositions();
+    }
+    if (response.success) {
+        response.message = "Open positions retrieved.";
+    }
+    return printAndReturnResponse(response, globalFlags);
+}
+
+GailTradingHistoryCommand::GailTradingHistoryCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client)
+    : BaseCommand("history", "Show recent executed trades", std::move(client)) {
+    usage = "nmc gail trading history [--limit N] [--direct] [--base-url URL] [--api-token TOKEN]";
+    examples = "nmc gail trading history --limit 20";
+    addDirectTradingFlags(*this, true);
+}
+
+int GailTradingHistoryCommand::execute(const std::map<std::string, std::string>& parsedFlags,
+                                       const std::vector<std::string>& parsedArgs,
+                                       const CLI::GlobalFlags& globalFlags) {
+    if (!validateArguments(parsedArgs) || !validateFlags(parsedFlags)) {
+        return 1;
+    }
+
+    int limit = 50;
+    std::string parseError;
+    if (!parseTradingLimitFlag(parsedFlags, 50, limit, parseError)) {
+        return printAndReturnResponse(errorResponse(parseError), globalFlags);
+    }
+
+    Models::CloudResponse response;
+    if (shouldUseDirectGailTrading(apiClient, parsedFlags)) {
+        std::string error;
+        auto client = createDirectTradingClient(parsedFlags, error);
+        if (!client) {
+            return printAndReturnResponse(errorResponse(error), globalFlags);
+        }
+        std::string path = "/v1/trading/history";
+        if (hasFlag(parsedFlags, "limit")) {
+            path += "?limit=" + std::to_string(limit);
+        }
+        response = client->request("GET", path);
+    } else {
+        response = apiClient->getGailTradingHistory(hasFlag(parsedFlags, "limit") ? limit : -1);
+    }
+    if (response.success) {
+        response.message = "Trade history retrieved.";
+    }
+    return printAndReturnResponse(response, globalFlags);
+}
+
+GailTradingLogsCommand::GailTradingLogsCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client)
+    : BaseCommand("logs", "Show trading bridge activity log", std::move(client)) {
+    usage = "nmc gail trading logs [--limit N] [--direct] [--base-url URL] [--api-token TOKEN]";
+    examples = "nmc gail trading logs --limit 100";
+    addDirectTradingFlags(*this, true);
+}
+
+int GailTradingLogsCommand::execute(const std::map<std::string, std::string>& parsedFlags,
+                                    const std::vector<std::string>& parsedArgs,
+                                    const CLI::GlobalFlags& globalFlags) {
+    if (!validateArguments(parsedArgs) || !validateFlags(parsedFlags)) {
+        return 1;
+    }
+
+    int limit = 50;
+    std::string parseError;
+    if (!parseTradingLimitFlag(parsedFlags, 50, limit, parseError)) {
+        return printAndReturnResponse(errorResponse(parseError), globalFlags);
+    }
+
+    Models::CloudResponse response;
+    if (shouldUseDirectGailTrading(apiClient, parsedFlags)) {
+        std::string error;
+        auto client = createDirectTradingClient(parsedFlags, error);
+        if (!client) {
+            return printAndReturnResponse(errorResponse(error), globalFlags);
+        }
+        std::string path = "/v1/trading/logs";
+        if (hasFlag(parsedFlags, "limit")) {
+            path += "?limit=" + std::to_string(limit);
+        }
+        response = client->request("GET", path);
+    } else {
+        response = apiClient->getGailTradingLogs(hasFlag(parsedFlags, "limit") ? limit : -1);
+    }
+    if (response.success) {
+        response.message = "Activity log retrieved.";
+    }
+    return printAndReturnResponse(response, globalFlags);
+}
+
+GailTradingExchangesCommand::GailTradingExchangesCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client)
+    : BaseCommand("exchanges", "List available OctoBot exchanges", std::move(client)) {
+    usage = "nmc gail trading exchanges [--direct] [--base-url URL] [--api-token TOKEN]";
+    examples = "nmc gail trading exchanges";
+    addDirectTradingFlags(*this);
+}
+
+int GailTradingExchangesCommand::execute(const std::map<std::string, std::string>& parsedFlags,
+                                         const std::vector<std::string>& parsedArgs,
+                                         const CLI::GlobalFlags& globalFlags) {
+    if (!validateArguments(parsedArgs) || !validateFlags(parsedFlags)) {
+        return 1;
+    }
+
+    Models::CloudResponse response;
+    if (shouldUseDirectGailTrading(apiClient, parsedFlags)) {
+        std::string error;
+        auto client = createDirectTradingClient(parsedFlags, error);
+        if (!client) {
+            return printAndReturnResponse(errorResponse(error), globalFlags);
+        }
+        response = client->request("GET", "/v1/trading/exchanges");
+    } else {
+        response = apiClient->getGailTradingExchanges();
+    }
+    if (response.success) {
+        response.message = "Exchanges retrieved.";
+    }
+    return printAndReturnResponse(response, globalFlags);
+}
+
+GailTradingCurrenciesCommand::GailTradingCurrenciesCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client)
+    : BaseCommand("currencies", "List available trading currencies/pairs", std::move(client)) {
+    usage = "nmc gail trading currencies [--direct] [--base-url URL] [--api-token TOKEN]";
+    examples = "nmc gail trading currencies";
+    addDirectTradingFlags(*this);
+}
+
+int GailTradingCurrenciesCommand::execute(const std::map<std::string, std::string>& parsedFlags,
+                                          const std::vector<std::string>& parsedArgs,
+                                          const CLI::GlobalFlags& globalFlags) {
+    if (!validateArguments(parsedArgs) || !validateFlags(parsedFlags)) {
+        return 1;
+    }
+
+    Models::CloudResponse response;
+    if (shouldUseDirectGailTrading(apiClient, parsedFlags)) {
+        std::string error;
+        auto client = createDirectTradingClient(parsedFlags, error);
+        if (!client) {
+            return printAndReturnResponse(errorResponse(error), globalFlags);
+        }
+        response = client->request("GET", "/v1/trading/currencies");
+    } else {
+        response = apiClient->getGailTradingCurrencies();
+    }
+    if (response.success) {
+        response.message = "Currencies retrieved.";
+    }
+    return printAndReturnResponse(response, globalFlags);
+}
+
+GailTradingConfigCommand::GailTradingConfigCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client)
+    : BaseCommand("config", "Show current trading bridge configuration", std::move(client)) {
+    usage = "nmc gail trading config [--direct] [--base-url URL] [--api-token TOKEN]";
+    examples = "nmc gail trading config";
+    addDirectTradingFlags(*this);
+}
+
+int GailTradingConfigCommand::execute(const std::map<std::string, std::string>& parsedFlags,
+                                      const std::vector<std::string>& parsedArgs,
+                                      const CLI::GlobalFlags& globalFlags) {
+    if (!validateArguments(parsedArgs) || !validateFlags(parsedFlags)) {
+        return 1;
+    }
+
+    Models::CloudResponse response;
+    if (shouldUseDirectGailTrading(apiClient, parsedFlags)) {
+        std::string error;
+        auto client = createDirectTradingClient(parsedFlags, error);
+        if (!client) {
+            return printAndReturnResponse(errorResponse(error), globalFlags);
+        }
+        response = client->request("GET", "/v1/trading/config");
+    } else {
+        response = apiClient->getGailTradingConfig();
+    }
+    if (response.success) {
+        response.message = "Trading config retrieved.";
+    }
+    return printAndReturnResponse(response, globalFlags);
+}
+
+GailTradingConfigSetCommand::GailTradingConfigSetCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client)
+    : BaseCommand("config-set", "Update trading bridge configuration at runtime", std::move(client)) {
+    usage = "nmc gail trading config-set --json JSON|--json-file FILE [--direct] [--base-url URL] [--api-token TOKEN]";
+    examples = "nmc gail trading config-set --json '{\"micro_trade_max_usd\":15.0}'";
+    addDirectTradingFlags(*this, false, true);
+}
+
+int GailTradingConfigSetCommand::execute(const std::map<std::string, std::string>& parsedFlags,
+                                         const std::vector<std::string>& parsedArgs,
+                                         const CLI::GlobalFlags& globalFlags) {
+    if (!validateArguments(parsedArgs) || !validateFlags(parsedFlags)) {
+        return 1;
+    }
+
+    nlohmann::json body;
+    std::string parseError;
+    if (!parseJsonFlagOrFile(parsedFlags, "json", "json-file", body, parseError, true)) {
+        return printAndReturnResponse(errorResponse(parseError), globalFlags);
+    }
+
+    Models::CloudResponse response;
+    if (shouldUseDirectGailTrading(apiClient, parsedFlags)) {
+        std::string error;
+        auto client = createDirectTradingClient(parsedFlags, error);
+        if (!client) {
+            return printAndReturnResponse(errorResponse(error), globalFlags);
+        }
+        response = client->postJson("/v1/trading/config", body);
+    } else {
+        response = apiClient->setGailTradingConfig(body);
+    }
+    if (response.success) {
+        response.message = "Trading config updated.";
+    }
+    return printAndReturnResponse(response, globalFlags);
+}
+
+GailTradingPauseCommand::GailTradingPauseCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client)
+    : BaseCommand("pause", "Pause the trading bridge evaluation loop", std::move(client)) {
+    usage = "nmc gail trading pause [--direct] [--base-url URL] [--api-token TOKEN]";
+    examples = "nmc gail trading pause";
+    addDirectTradingFlags(*this);
+}
+
+int GailTradingPauseCommand::execute(const std::map<std::string, std::string>& parsedFlags,
+                                     const std::vector<std::string>& parsedArgs,
+                                     const CLI::GlobalFlags& globalFlags) {
+    if (!validateArguments(parsedArgs) || !validateFlags(parsedFlags)) {
+        return 1;
+    }
+
+    const nlohmann::json body = nlohmann::json::object();
+    Models::CloudResponse response;
+    if (shouldUseDirectGailTrading(apiClient, parsedFlags)) {
+        std::string error;
+        auto client = createDirectTradingClient(parsedFlags, error);
+        if (!client) {
+            return printAndReturnResponse(errorResponse(error), globalFlags);
+        }
+        response = client->postJson("/v1/trading/pause", body);
+    } else {
+        response = apiClient->pauseGailTrading(body);
+    }
+    if (response.success) {
+        response.message = "Trading bridge paused.";
+    }
+    return printAndReturnResponse(response, globalFlags);
+}
+
+GailTradingResumeCommand::GailTradingResumeCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client)
+    : BaseCommand("resume", "Resume the trading bridge evaluation loop", std::move(client)) {
+    usage = "nmc gail trading resume [--direct] [--base-url URL] [--api-token TOKEN]";
+    examples = "nmc gail trading resume";
+    addDirectTradingFlags(*this);
+}
+
+int GailTradingResumeCommand::execute(const std::map<std::string, std::string>& parsedFlags,
+                                      const std::vector<std::string>& parsedArgs,
+                                      const CLI::GlobalFlags& globalFlags) {
+    if (!validateArguments(parsedArgs) || !validateFlags(parsedFlags)) {
+        return 1;
+    }
+
+    const nlohmann::json body = nlohmann::json::object();
+    Models::CloudResponse response;
+    if (shouldUseDirectGailTrading(apiClient, parsedFlags)) {
+        std::string error;
+        auto client = createDirectTradingClient(parsedFlags, error);
+        if (!client) {
+            return printAndReturnResponse(errorResponse(error), globalFlags);
+        }
+        response = client->postJson("/v1/trading/resume", body);
+    } else {
+        response = apiClient->resumeGailTrading(body);
+    }
+    if (response.success) {
+        response.message = "Trading bridge resumed.";
+    }
+    return printAndReturnResponse(response, globalFlags);
+}
+
+GailTradingOverrideCommand::GailTradingOverrideCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client)
+    : BaseCommand("override", "Inject a one-shot trade override into the trading bridge", std::move(client)) {
+    usage = "nmc gail trading override --action ACTION --symbol SYMBOL [--amount USD] [--exchange EXCHANGE] [--direct] [--base-url URL] [--api-token TOKEN]";
+    examples = "nmc gail trading override --action buy --symbol BTC/USDT --amount 10.0 --exchange binance";
+    addDirectTradingFlags(*this);
+    addFlag(CLI::Flag("a", "action", "Trade action: buy, sell, strong_buy, strong_sell, cancel, hold", CLI::FlagType::String, true));
+    addFlag(CLI::Flag("s", "symbol", "Trading pair symbol, e.g. BTC/USDT", CLI::FlagType::String, true));
+    addFlag(CLI::Flag("m", "amount", "USD amount to trade", CLI::FlagType::String, false));
+    addFlag(CLI::Flag("e", "exchange", "Exchange name", CLI::FlagType::String, false));
+}
+
+int GailTradingOverrideCommand::execute(const std::map<std::string, std::string>& parsedFlags,
+                                        const std::vector<std::string>& parsedArgs,
+                                        const CLI::GlobalFlags& globalFlags) {
+    if (!validateArguments(parsedArgs) || !validateFlags(parsedFlags)) {
+        return 1;
+    }
+
+    const std::string action = trimCopy(optionalFlag(parsedFlags, "action"));
+    const std::string symbol = trimCopy(optionalFlag(parsedFlags, "symbol"));
+    if (action.empty()) {
+        return printAndReturnResponse(
+            errorResponse("--action is required (buy, sell, strong_buy, strong_sell, cancel, hold)"),
+            globalFlags);
+    }
+    if (symbol.empty()) {
+        return printAndReturnResponse(errorResponse("--symbol is required (e.g. BTC/USDT)"), globalFlags);
+    }
+
+    nlohmann::json body = {
+        {"action", action},
+        {"symbol", symbol}
+    };
+    const std::string amountStr = trimCopy(optionalFlag(parsedFlags, "amount"));
+    if (!amountStr.empty()) {
+        try {
+            body["amount_usd"] = std::stod(amountStr);
+        } catch (const std::exception&) {
+            return printAndReturnResponse(errorResponse("--amount must be a valid number"), globalFlags);
+        }
+    }
+    const std::string exchange = trimCopy(optionalFlag(parsedFlags, "exchange"));
+    if (!exchange.empty()) {
+        body["exchange"] = exchange;
+    }
+
+    Models::CloudResponse response;
+    if (shouldUseDirectGailTrading(apiClient, parsedFlags)) {
+        std::string error;
+        auto client = createDirectTradingClient(parsedFlags, error);
+        if (!client) {
+            return printAndReturnResponse(errorResponse(error), globalFlags);
+        }
+        response = client->postJson("/v1/trading/override", body);
+    } else {
+        response = apiClient->overrideGailTrading(body);
+    }
+    if (response.success) {
+        response.message = "Trade override submitted.";
+    }
+    return printAndReturnResponse(response, globalFlags);
+}
+
+GailTradingEvaluateCommand::GailTradingEvaluateCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client)
+    : BaseCommand("evaluate", "Trigger an immediate trading evaluation cycle", std::move(client)) {
+    usage = "nmc gail trading evaluate [--direct] [--base-url URL] [--api-token TOKEN]";
+    examples = "nmc gail trading evaluate";
+    addDirectTradingFlags(*this);
+}
+
+int GailTradingEvaluateCommand::execute(const std::map<std::string, std::string>& parsedFlags,
+                                        const std::vector<std::string>& parsedArgs,
+                                        const CLI::GlobalFlags& globalFlags) {
+    if (!validateArguments(parsedArgs) || !validateFlags(parsedFlags)) {
+        return 1;
+    }
+
+    const nlohmann::json body = nlohmann::json::object();
+    Models::CloudResponse response;
+    if (shouldUseDirectGailTrading(apiClient, parsedFlags)) {
+        std::string error;
+        auto client = createDirectTradingClient(parsedFlags, error);
+        if (!client) {
+            return printAndReturnResponse(errorResponse(error), globalFlags);
+        }
+        response = client->postJson("/v1/trading/evaluate", body);
+    } else {
+        response = apiClient->evaluateGailTrading(body);
+    }
+    if (response.success) {
+        response.message = "Evaluation triggered.";
+    }
+    return printAndReturnResponse(response, globalFlags);
 }
 
 } // namespace NMC::Commands

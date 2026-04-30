@@ -180,6 +180,14 @@ class MockServer:
         gpu_match = re.match(r"^/tracey/agents/([^/]+)/gpus/([^/]+)/telemetry$", path_only)
         control_match = re.match(r"^/tracey/agents/([^/]+)/control$", path_only)
         deepdive_match = re.match(r"^/tracey/agents/([^/]+)/deepdive$", path_only)
+        gail_trading_get_match = re.match(
+            r"^/(gail/trading|v1/trading)/(status|portfolio|positions|history|logs|exchanges|currencies|config)$",
+            path_only,
+        )
+        gail_trading_post_match = re.match(
+            r"^/(gail/trading|v1/trading)/(config|pause|resume|override|evaluate)$",
+            path_only,
+        )
 
         if handler.command == "GET" and path_only == "/tracey/analytics":
             self._send_json(handler, 200, {"route": "tracey_analytics", "path": handler.path})
@@ -248,6 +256,51 @@ class MockServer:
                 200,
                 {"route": "gail_raw", "path": handler.path, "body_length": len(body)},
             )
+            return
+
+        if handler.command == "GET" and gail_trading_get_match:
+            route_prefix = gail_trading_get_match.group(1)
+            if route_prefix == "gail/trading":
+                self._send_json(
+                    handler,
+                    200,
+                    {
+                        "success": True,
+                        "message": "Gail trading request completed.",
+                        "data": {"route": "gail_trading_proxy_get", "path": handler.path},
+                    },
+                )
+            else:
+                self._send_json(
+                    handler,
+                    200,
+                    {"route": "gail_trading_direct_get", "path": handler.path},
+                )
+            return
+
+        if handler.command == "POST" and gail_trading_post_match:
+            try:
+                payload = json.loads(body) if body else {}
+            except json.JSONDecodeError:
+                self._send_json(handler, 400, {"message": "invalid json payload"})
+                return
+            route_prefix = gail_trading_post_match.group(1)
+            if route_prefix == "gail/trading":
+                self._send_json(
+                    handler,
+                    200,
+                    {
+                        "success": True,
+                        "message": "Gail trading request completed.",
+                        "data": {"route": "gail_trading_proxy_post", "path": handler.path, "payload": payload},
+                    },
+                )
+            else:
+                self._send_json(
+                    handler,
+                    200,
+                    {"route": "gail_trading_direct_post", "path": handler.path, "payload": payload},
+                )
             return
 
         if handler.command == "GET" and analysis_match:
@@ -1227,6 +1280,65 @@ def test_gail_request_raw_body_serialization(server: MockServer, home_dir: pathl
     assert_true(req.content_type == "text/plain", f"gail request wrong content-type: {req.content_type!r}")
 
 
+def test_gail_trading_status_uses_server_route_by_default(server: MockServer, home_dir: pathlib.Path) -> None:
+    server.clear_records()
+    result = run_nmc(["gail", "trading", "status"], home_dir)
+    assert_success(result, "gail trading status")
+
+    records = server.records()
+    assert_true(len(records) == 1, f"gail trading status expected 1 request, got {len(records)}")
+    req = records[0]
+    assert_true(req.method == "GET", f"gail trading status expected GET, got {req.method}")
+    assert_true(req.path == "/gail/trading/status", f"gail trading status wrong path: {req.path}")
+
+
+def test_gail_trading_override_uses_server_route_and_payload(server: MockServer, home_dir: pathlib.Path) -> None:
+    server.clear_records()
+    result = run_nmc(
+        [
+            "gail",
+            "trading",
+            "override",
+            "--action",
+            "buy",
+            "--symbol",
+            "BTC/USDT",
+            "--amount",
+            "10.5",
+            "--exchange",
+            "binance",
+        ],
+        home_dir,
+    )
+    assert_success(result, "gail trading override")
+
+    records = server.records()
+    assert_true(len(records) == 1, f"gail trading override expected 1 request, got {len(records)}")
+    req = records[0]
+    assert_true(req.method == "POST", f"gail trading override expected POST, got {req.method}")
+    assert_true(req.path == "/gail/trading/override", f"gail trading override wrong path: {req.path}")
+    payload = json.loads(req.body or "{}")
+    assert_true(payload.get("action") == "buy", "gail trading override missing action")
+    assert_true(payload.get("symbol") == "BTC/USDT", "gail trading override missing symbol")
+    assert_true(payload.get("amount_usd") == 10.5, "gail trading override missing amount_usd")
+    assert_true(payload.get("exchange") == "binance", "gail trading override missing exchange")
+
+
+def test_gail_trading_direct_mode_uses_gail_endpoint(server: MockServer, home_dir: pathlib.Path) -> None:
+    server.clear_records()
+    result = run_nmc(
+        ["gail", "trading", "status", "--direct", "--base-url", server.base_url],
+        home_dir,
+    )
+    assert_success(result, "gail trading direct status")
+
+    records = server.records()
+    assert_true(len(records) == 1, f"gail trading direct status expected 1 request, got {len(records)}")
+    req = records[0]
+    assert_true(req.method == "GET", f"gail trading direct status expected GET, got {req.method}")
+    assert_true(req.path == "/v1/trading/status", f"gail trading direct status wrong path: {req.path}")
+
+
 def test_gail_invalid_json_fails_before_network(server: MockServer, home_dir: pathlib.Path) -> None:
     server.clear_records()
     result = run_nmc(
@@ -1289,6 +1401,9 @@ def main() -> int:
             test_gail_complete_serialization_and_auth_header(server, home_dir)
             test_gail_transcribe_multipart_serialization(server, home_dir)
             test_gail_request_raw_body_serialization(server, home_dir)
+            test_gail_trading_status_uses_server_route_by_default(server, home_dir)
+            test_gail_trading_override_uses_server_route_and_payload(server, home_dir)
+            test_gail_trading_direct_mode_uses_gail_endpoint(server, home_dir)
             test_gail_invalid_json_fails_before_network(server, home_dir)
     except AssertionError as exc:
         print(f"[functional-test] FAILED: {exc}", file=sys.stderr)

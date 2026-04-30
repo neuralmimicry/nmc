@@ -124,6 +124,19 @@ namespace NMC::Core {
         // OpenShift / OpenStack / Proxmox Continuum Operations (via provider portal APIs)
         Models::CloudResponse getServerHealth();
         Models::CloudResponse getServerVersion();
+        Models::CloudResponse getGailTradingStatus();
+        Models::CloudResponse getGailTradingPortfolio();
+        Models::CloudResponse getGailTradingPositions();
+        Models::CloudResponse getGailTradingHistory(int limit = -1);
+        Models::CloudResponse getGailTradingLogs(int limit = -1);
+        Models::CloudResponse getGailTradingExchanges();
+        Models::CloudResponse getGailTradingCurrencies();
+        Models::CloudResponse getGailTradingConfig();
+        Models::CloudResponse setGailTradingConfig(const nlohmann::json& config);
+        Models::CloudResponse pauseGailTrading(const nlohmann::json& body = nlohmann::json::object());
+        Models::CloudResponse resumeGailTrading(const nlohmann::json& body = nlohmann::json::object());
+        Models::CloudResponse overrideGailTrading(const nlohmann::json& body);
+        Models::CloudResponse evaluateGailTrading(const nlohmann::json& body = nlohmann::json::object());
         Models::CloudResponse listOpenShiftResources();
         Models::CloudResponse listOpenShiftClusters();
         Models::CloudResponse getOpenShiftClusterDetails(const std::string& idOrName);
