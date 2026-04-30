@@ -82,7 +82,7 @@ compute_deb_depends() {
 Source: nmc
 Section: admin
 Priority: optional
-Maintainer: NeuralMimicry <opensource@neuralmimicry.ai>
+Maintainer: NeuralMimicry <paul@neuralmimicry.ai>
 Standards-Version: 4.7.0
 Package: nmc
 Architecture: any
@@ -202,11 +202,9 @@ create_debian_package() {
       bundled_libs+=("$bundled_lib")
     done < <(bundle_server_deb_runtime_libs "$deb_root/usr/bin/$RENAME" "$deb_root/usr/lib/nmc-server")
 
-    if ((${#bundled_libs[@]})); then
-      command -v patchelf >/dev/null 2>&1 \
-        || die "patchelf is required to bundle nmc-server runtime libraries"
-      patchelf --set-rpath '$ORIGIN/../lib/nmc-server' "$deb_root/usr/bin/$RENAME"
-    fi
+    command -v patchelf >/dev/null 2>&1 \
+      || die "patchelf is required to normalize nmc-server runtime library paths"
+    patchelf --set-rpath '$ORIGIN/../lib/nmc-server' "$deb_root/usr/bin/$RENAME"
   fi
 
   depends="$(compute_deb_depends "$deb_root/usr/bin/$RENAME" "$deb_root/usr/lib/nmc-server")"
@@ -223,7 +221,7 @@ create_debian_package() {
     if [[ -n "$depends" ]]; then
       printf 'Depends: %s\n' "$depends"
     fi
-    printf 'Maintainer: NeuralMimicry <opensource@neuralmimicry.ai>\n'
+    printf 'Maintainer: NeuralMimicry <paul@neuralmimicry.ai>\n'
     printf 'Homepage: https://github.com/neuralmimicry/nmc\n'
     if [[ "$COMPONENT" == "client" ]]; then
       printf 'Description: NeuralMimicry Continuum CLI client\n'

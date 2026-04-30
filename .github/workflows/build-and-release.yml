@@ -413,8 +413,9 @@ jobs:
           test -x /usr/bin/nmc_server
           test -f /usr/share/nmc-server/docs/index.html
           ldd /usr/bin/nmc_server | tee /tmp/nmc-server.ldd
-          grep -q 'libpqxx' /tmp/nmc-server.ldd
           ! grep -q 'not found' /tmp/nmc-server.ldd
+          current_rpath="$(patchelf --print-rpath /usr/bin/nmc_server)"
+          [[ "$current_rpath" == '$ORIGIN/../lib/nmc-server' ]]
           dpkg-query -W -f='${Version}\n' nmc-server
 
       - name: Upload artifact
