@@ -187,6 +187,7 @@ The lightweight unauthenticated liveness route is `GET /health`.
 ## Deployment and Release
 
 - Linux releases now publish `nmc-client_<version>_<arch>.deb` and `nmc-server_<version>_<arch>.deb` for `amd64` and `arm64`.
+- `.github/workflows/build-and-release.yml` builds those Linux client/server artifacts automatically on push using self-hosted Ubuntu runners labelled `self-hosted`, `Linux`, and either `X64` or `ARM64`; those runners must provide passwordless `sudo` for dependency installation.
 - `scripts/install-client.sh` installs the private-release CLI package on Linux.
 - `scripts/install-server.sh` installs the private-release server package, writes the systemd unit, and configures packaged docs/log paths.
 - `deploy.sh` remains the source-build/bootstrap path for full host provisioning.

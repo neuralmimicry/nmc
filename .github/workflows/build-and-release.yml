@@ -9,7 +9,7 @@ on:
       - main
   push:
     branches:
-      - main
+      - "**"
     tags:
       - "v*"
   workflow_dispatch:
@@ -168,21 +168,34 @@ jobs:
 
   package-client-linux:
     name: Package Client (Linux ${{ matrix.deb_arch }})
-    runs-on: ${{ matrix.runner }}
+    runs-on:
+      - self-hosted
+      - Linux
+      - ${{ matrix.runner_arch }}
     needs: release-metadata
     strategy:
       fail-fast: false
       matrix:
         include:
-          - runner: ubuntu-24.04
+          - runner_arch: X64
             platform: linux-x86_64
             deb_arch: amd64
-          - runner: ubuntu-24.04-arm
+          - runner_arch: ARM64
             platform: linux-aarch64
             deb_arch: arm64
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+
+      - name: Assert Ubuntu self-hosted runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          source /etc/os-release
+          if [[ "${ID:-}" != "ubuntu" ]]; then
+            echo "::error::Expected an Ubuntu self-hosted runner, found ${PRETTY_NAME:-unknown}"
+            exit 1
+          fi
 
       - name: Install dependencies
         run: |
@@ -320,21 +333,34 @@ jobs:
 
   package-server-linux:
     name: Package Server (Linux ${{ matrix.deb_arch }})
-    runs-on: ${{ matrix.runner }}
+    runs-on:
+      - self-hosted
+      - Linux
+      - ${{ matrix.runner_arch }}
     needs: release-metadata
     strategy:
       fail-fast: false
       matrix:
         include:
-          - runner: ubuntu-24.04
+          - runner_arch: X64
             platform: linux-x86_64
             deb_arch: amd64
-          - runner: ubuntu-24.04-arm
+          - runner_arch: ARM64
             platform: linux-aarch64
             deb_arch: arm64
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+
+      - name: Assert Ubuntu self-hosted runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          source /etc/os-release
+          if [[ "${ID:-}" != "ubuntu" ]]; then
+            echo "::error::Expected an Ubuntu self-hosted runner, found ${PRETTY_NAME:-unknown}"
+            exit 1
+          fi
 
       - name: Install dependencies
         run: |
