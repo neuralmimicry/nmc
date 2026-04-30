@@ -423,6 +423,32 @@ namespace NMC::Server {
         std::unique_ptr<OpenStackClient> openStackClient;
         std::unique_ptr<OpenShiftClient> openShiftClient;
         std::unique_ptr<ProxmoxClient> proxmoxClient;
+
+        // --- Gail Trading Bridge Proxy Handlers ---
+        // These proxy Gail's /v1/trading/* endpoints through the NMC server so the
+        // dashboard and CLI can access trading data without direct Gail connectivity.
+        std::string resolveGailBaseUrl() const;
+        std::string resolveGailApiToken() const;
+        bool proxyGailTradingRequest(
+            const httplib::Request& req,
+            httplib::Response& res,
+            const std::string& gailPath,
+            const std::string& method,
+            const std::string& body = ""
+        );
+        void handleGailTradingStatus(const httplib::Request& req, httplib::Response& res);
+        void handleGailTradingPortfolio(const httplib::Request& req, httplib::Response& res);
+        void handleGailTradingPositions(const httplib::Request& req, httplib::Response& res);
+        void handleGailTradingHistory(const httplib::Request& req, httplib::Response& res);
+        void handleGailTradingLogs(const httplib::Request& req, httplib::Response& res);
+        void handleGailTradingExchanges(const httplib::Request& req, httplib::Response& res);
+        void handleGailTradingCurrencies(const httplib::Request& req, httplib::Response& res);
+        void handleGailTradingGetConfig(const httplib::Request& req, httplib::Response& res);
+        void handleGailTradingSetConfig(const httplib::Request& req, httplib::Response& res);
+        void handleGailTradingPause(const httplib::Request& req, httplib::Response& res);
+        void handleGailTradingResume(const httplib::Request& req, httplib::Response& res);
+        void handleGailTradingOverride(const httplib::Request& req, httplib::Response& res);
+        void handleGailTradingEvaluate(const httplib::Request& req, httplib::Response& res);
     };
 
 } // namespace NMC::Server

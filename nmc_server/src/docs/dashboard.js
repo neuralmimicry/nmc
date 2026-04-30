@@ -194,7 +194,18 @@
         traceyAgentLogLevel: document.getElementById("traceyAgentLogLevel"),
         traceyAgentLogCategory: document.getElementById("traceyAgentLogCategory"),
         traceyAgentLogSearch: document.getElementById("traceyAgentLogSearch"),
-        traceyAgentLogRows: document.getElementById("traceyAgentLogRows")
+        traceyAgentLogRows: document.getElementById("traceyAgentLogRows"),
+        // Gail Trading
+        gailTradingCard: document.getElementById("gailTradingCard"),
+        gailTradingMetric: document.getElementById("gailTradingMetric"),
+        gailTradingModal: document.getElementById("gailTradingModal"),
+        gailTradingModalClose: document.getElementById("gailTradingModalClose"),
+        gailTradingModalSubtitle: document.getElementById("gailTradingModalSubtitle"),
+        gailTradingModalBody: document.getElementById("gailTradingModalBody"),
+        openGailTradingBtn: document.getElementById("openGailTradingBtn"),
+        gailTradingPauseBtn: document.getElementById("gailTradingPauseBtn"),
+        gailTradingResumeBtn: document.getElementById("gailTradingResumeBtn"),
+        gailTradingEvaluateBtn: document.getElementById("gailTradingEvaluateBtn")
     };
 
     let authToken = loadToken();
@@ -653,6 +664,171 @@
             || nodes.traceyControlStatus.textContent === "Tracey service is not granted.") {
             nodes.traceyControlStatus.textContent = "";
             nodes.traceyControlStatus.style.borderColor = "";
+        }
+    }
+
+    // --- Gail Trading access helpers ---
+
+    function hasGailTradingVisibility() {
+        return Boolean(serviceAccess.isServiceVisible(authIdentity || {}, "gail_trading"));
+    }
+
+    function canControlGailTrading() {
+        return Boolean(serviceAccess.canControlService(authIdentity || {}, "gail_trading"));
+    }
+
+    function applyGailTradingAccessUi() {
+        const visible = hasGailTradingVisibility();
+        const controllable = canControlGailTrading();
+        if (nodes.gailTradingCard) {
+            nodes.gailTradingCard.hidden = !visible;
+        }
+        if (nodes.openGailTradingBtn) {
+            nodes.openGailTradingBtn.hidden = !visible;
+        }
+        [nodes.gailTradingPauseBtn, nodes.gailTradingResumeBtn, nodes.gailTradingEvaluateBtn].forEach((btn) => {
+            if (btn) {
+                btn.disabled = !controllable;
+            }
+        });
+    }
+
+    let gailTradingModalRequestSeq = 0;
+
+    function setGailTradingModalOpen(open) {
+        if (!nodes.gailTradingModal) {
+            return;
+        }
+        nodes.gailTradingModal.hidden = !open;
+        updateModalBodyLock();
+    }
+
+    function closeGailTradingModal() {
+        gailTradingModalRequestSeq += 1;
+        setGailTradingModalOpen(false);
+    }
+
+    function renderGailTradingModal(statusData, portfolioData, historyData, logsData) {
+        if (!nodes.gailTradingModalBody) {
+            return;
+        }
+        const s = (statusData && statusData.payload) ? statusData.payload : {};
+        const portfolio = (portfolioData && portfolioData.payload) ? portfolioData.payload : {};
+        const history = (historyData && historyData.payload && Array.isArray(historyData.payload.trades))
+            ? historyData.payload.trades : [];
+        const logs = (logsData && logsData.payload && Array.isArray(logsData.payload.logs))
+            ? logsData.payload.logs : [];
+
+        const paused = s.paused ? "Paused" : (s.enabled ? "Running" : "Disabled");
+        const lastEval = s.last_evaluation_at
+            ? new Date(s.last_evaluation_at * 1000).toLocaleString()
+            : "—";
+        const lastTrade = s.last_trade_at
+            ? new Date(s.last_trade_at * 1000).toLocaleString()
+            : "—";
+
+        const currencies = portfolio.currencies
+            ? Object.entries(portfolio.currencies)
+                .filter(([, b]) => b && b.total > 0)
+                .map(([sym, b]) =>
+                    `<tr><td>${escapeHtml(sym)}</td><td>${escapeHtml(String(b.total))}</td><td>${b.value_usd != null ? "$" + Number(b.value_usd).toFixed(2) : "—"}</td></tr>`
+                ).join("")
+            : "";
+
+        const historyRows = history.slice(0, 20).map((t) =>
+            `<tr><td>${escapeHtml(t.symbol || "—")}</td><td>${escapeHtml(t.side || "—")}</td><td>${t.amount_usd != null ? "$" + Number(t.amount_usd).toFixed(2) : "—"}</td><td>${escapeHtml(t.exchange || "—")}</td><td>${t.executed_at ? new Date(t.executed_at * 1000).toLocaleString() : "—"}</td></tr>`
+        ).join("");
+
+        const logRows = logs.slice(0, 50).map((l) =>
+            `<tr><td>${l.timestamp ? new Date(l.timestamp * 1000).toLocaleString() : "—"}</td><td>${escapeHtml(l.level || "")}</td><td>${escapeHtml(l.category || "")}</td><td>${escapeHtml(l.message || "")}</td></tr>`
+        ).join("");
+
+        nodes.gailTradingModalBody.innerHTML = `
+            <div class="trading-status-grid">
+                <div class="trading-stat"><span>Status</span><strong>${escapeHtml(paused)}</strong></div>
+                <div class="trading-stat"><span>Evaluations</span><strong>${escapeHtml(String(s.evaluation_count || 0))}</strong></div>
+                <div class="trading-stat"><span>Trades</span><strong>${escapeHtml(String(s.trade_count || 0))}</strong></div>
+                <div class="trading-stat"><span>Last Evaluation</span><strong>${escapeHtml(lastEval)}</strong></div>
+                <div class="trading-stat"><span>Last Trade</span><strong>${escapeHtml(lastTrade)}</strong></div>
+                <div class="trading-stat"><span>Portfolio Value</span><strong>${portfolio.total_value_usd != null ? "$" + Number(portfolio.total_value_usd).toFixed(2) : "—"}</strong></div>
+            </div>
+            ${currencies ? `
+            <h4>Portfolio Holdings</h4>
+            <table class="trading-table"><thead><tr><th>Symbol</th><th>Balance</th><th>USD Value</th></tr></thead><tbody>${currencies}</tbody></table>` : ""}
+            ${historyRows ? `
+            <h4>Recent Trades</h4>
+            <table class="trading-table"><thead><tr><th>Symbol</th><th>Side</th><th>Amount</th><th>Exchange</th><th>Time</th></tr></thead><tbody>${historyRows}</tbody></table>` : ""}
+            ${logRows ? `
+            <h4>Activity Log</h4>
+            <div class="trading-log-wrap"><table class="trading-table trading-log"><thead><tr><th>Time</th><th>Level</th><th>Category</th><th>Message</th></tr></thead><tbody>${logRows}</tbody></table></div>` : ""}
+            ${s.last_error ? `<p class="trading-error">Last error: ${escapeHtml(s.last_error)}</p>` : ""}
+        `;
+    }
+
+    async function openGailTradingModal() {
+        if (!nodes.gailTradingModalBody) {
+            return;
+        }
+        const seq = ++gailTradingModalRequestSeq;
+        setGailTradingModalOpen(true);
+        if (nodes.gailTradingModalSubtitle) {
+            nodes.gailTradingModalSubtitle.textContent = "Loading trading bridge data…";
+        }
+        nodes.gailTradingModalBody.innerHTML = `<p class="empty">Loading…</p>`;
+
+        const [statusRes, portfolioRes, historyRes, logsRes] = await Promise.all([
+            fetchJson("/gail/trading/status"),
+            fetchJson("/gail/trading/portfolio"),
+            fetchJson("/gail/trading/history"),
+            fetchJson("/gail/trading/logs")
+        ]);
+
+        if (seq !== gailTradingModalRequestSeq) {
+            return;
+        }
+        if (nodes.gailTradingModalSubtitle) {
+            nodes.gailTradingModalSubtitle.textContent = "Gail Trading Bridge";
+        }
+        renderGailTradingModal(statusRes, portfolioRes, historyRes, logsRes);
+    }
+
+    function initializeGailTradingUi() {
+        if (nodes.gailTradingModalClose) {
+            nodes.gailTradingModalClose.addEventListener("click", closeGailTradingModal);
+        }
+        if (nodes.openGailTradingBtn) {
+            nodes.openGailTradingBtn.addEventListener("click", openGailTradingModal);
+        }
+        if (nodes.gailTradingCard) {
+            nodes.gailTradingCard.addEventListener("click", (e) => {
+                if (e.target.closest("button")) {
+                    return;
+                }
+                openGailTradingModal();
+            });
+        }
+        if (nodes.gailTradingPauseBtn) {
+            nodes.gailTradingPauseBtn.addEventListener("click", async () => {
+                nodes.gailTradingPauseBtn.disabled = true;
+                await fetchJson("/gail/trading/pause", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+                nodes.gailTradingPauseBtn.disabled = false;
+                openGailTradingModal();
+            });
+        }
+        if (nodes.gailTradingResumeBtn) {
+            nodes.gailTradingResumeBtn.addEventListener("click", async () => {
+                nodes.gailTradingResumeBtn.disabled = true;
+                await fetchJson("/gail/trading/resume", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+                nodes.gailTradingResumeBtn.disabled = false;
+                openGailTradingModal();
+            });
+        }
+        if (nodes.gailTradingEvaluateBtn) {
+            nodes.gailTradingEvaluateBtn.addEventListener("click", async () => {
+                nodes.gailTradingEvaluateBtn.disabled = true;
+                await fetchJson("/gail/trading/evaluate", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+                nodes.gailTradingEvaluateBtn.disabled = false;
+            });
         }
     }
 
@@ -7336,6 +7512,7 @@
     async function refreshDashboard() {
         setPill(nodes.refreshPill, "Refresh", "Updating", "rgba(245,158,11,0.8)");
         const traceyVisible = hasTraceyVisibility();
+        const tradingVisible = hasGailTradingVisibility();
 
         const [
             k8sListRes,
@@ -7350,7 +7527,8 @@
             connectionRes,
             openshiftResourcesRes,
             openstackResourcesRes,
-            proxmoxResourcesRes
+            proxmoxResourcesRes,
+            gailTradingStatusRes
         ] = await Promise.all([
             fetchJson("/k8s/list"),
             fetchJson("/vcluster/list"),
@@ -7381,7 +7559,10 @@
             fetchJson("/connections/status"),
             fetchJson("/openshift/resources"),
             fetchJson("/openstack/resources"),
-            fetchJson("/proxmox/resources")
+            fetchJson("/proxmox/resources"),
+            tradingVisible
+                ? fetchJson("/gail/trading/status")
+                : Promise.resolve({ ok: true, status: 200, payload: null })
         ]);
 
         const allResponses = [
@@ -7397,7 +7578,8 @@
             connectionRes,
             openshiftResourcesRes,
             openstackResourcesRes,
-            proxmoxResourcesRes
+            proxmoxResourcesRes,
+            gailTradingStatusRes
         ];
         updateAuthPill(allResponses);
 
@@ -7570,12 +7752,31 @@
             refreshTraceyInsights();
         }
 
+        // --- Gail Trading card update ---
+        if (tradingVisible && nodes.gailTradingMetric) {
+            const ts = gailTradingStatusRes.ok && gailTradingStatusRes.payload
+                ? gailTradingStatusRes.payload
+                : null;
+            if (ts) {
+                const stateLabel = ts.paused ? "Paused" : (ts.enabled ? "Active" : "Disabled");
+                const trades = ts.trade_count != null ? ts.trade_count : 0;
+                nodes.gailTradingMetric.textContent = `${stateLabel} · ${trades} trades`;
+            } else {
+                nodes.gailTradingMetric.textContent = gailTradingStatusRes.ok ? "No data" : "Unavailable";
+            }
+        }
+
+        if (nodes.gailTradingModal && !nodes.gailTradingModal.hidden) {
+            openGailTradingModal();
+        }
+
         setPill(nodes.refreshPill, "Refresh", `Updated ${nowIsoTime()}`, "rgba(216,210,202,0.45)");
     }
 
     function initializeSessionUi() {
         updateSessionLabel();
         applyTraceyAccessUi();
+        applyGailTradingAccessUi();
         if (!nodes.logoutBtn) {
             return;
         }
@@ -7588,6 +7789,7 @@
     initializeSessionUi();
     initializeClusterDetailsUi();
     initializeTraceyInsightsUi();
+    initializeGailTradingUi();
     renderTraceyAdaptiveOverview(null);
     renderTraceyFleetOverview(null);
     renderTraceyRackDetail(null);
@@ -7600,6 +7802,7 @@
             await refreshAuthIdentity();
         }
         applyTraceyAccessUi();
+        applyGailTradingAccessUi();
         await refreshDashboard();
         await applyTraceyUrlState();
     })();

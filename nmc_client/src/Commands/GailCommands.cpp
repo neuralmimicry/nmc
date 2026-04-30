@@ -480,6 +480,200 @@ public:
     }
 };
 
+// ---------------------------------------------------------------------------
+// Gail Trading Bridge commands
+// ---------------------------------------------------------------------------
+
+class GailTradingRootCommand final : public GailCommandBase {
+public:
+    GailTradingRootCommand() : GailCommandBase("trading", "Manage the Gail crypto trading bridge") {
+        usage = "nmc gail trading [command]";
+        examples = "nmc gail trading status\nnmc gail trading pause\nnmc gail trading resume";
+    }
+
+    int execute(const std::map<std::string, std::string>&,
+                const std::vector<std::string>&,
+                const CLI::GlobalFlags&) override {
+        printHelp();
+        return 0;
+    }
+};
+
+// Simple GET command that proxies to a Gail trading endpoint.
+class GailTradingGetCommand final : public GailCommandBase {
+public:
+    GailTradingGetCommand(const std::string& name,
+                          const std::string& description,
+                          const std::string& gailPath,
+                          const std::string& usageStr,
+                          const std::string& examplesStr,
+                          const std::string& successMessage,
+                          bool hasLimitFlag = false)
+        : GailCommandBase(name, description)
+        , gailPath_(gailPath)
+        , successMessage_(successMessage)
+        , hasLimitFlag_(hasLimitFlag) {
+        usage = usageStr;
+        examples = examplesStr;
+        addClientFlags();
+        if (hasLimitFlag_) {
+            addFlag(CLI::Flag("n", "limit", "Maximum number of items to return", CLI::FlagType::Int, false));
+        }
+    }
+
+    int execute(const std::map<std::string, std::string>& parsedFlags,
+                const std::vector<std::string>& parsedArgs,
+                const CLI::GlobalFlags& globalFlags) override {
+        if (!validateArguments(parsedArgs) || !validateFlags(parsedFlags)) {
+            return 1;
+        }
+
+        std::string path = gailPath_;
+        if (hasLimitFlag_ && hasFlag(parsedFlags, "limit")) {
+            int limit = 50;
+            std::string parseError;
+            if (!parsePositiveInt(parsedFlags, "limit", 50, limit, parseError)) {
+                return printAndReturn(errorResponse(parseError), globalFlags);
+            }
+            path += "?limit=" + std::to_string(limit);
+        }
+
+        std::string error;
+        auto client = createClient(parsedFlags, error);
+        if (!client) {
+            return printAndReturn(errorResponse(error), globalFlags);
+        }
+
+        auto response = client->request("GET", path);
+        if (response.success) {
+            response.message = successMessage_;
+        }
+        return printAndReturn(response, globalFlags);
+    }
+
+private:
+    std::string gailPath_;
+    std::string successMessage_;
+    bool hasLimitFlag_;
+};
+
+// Simple POST command that sends an optional JSON body to a Gail trading endpoint.
+class GailTradingPostCommand final : public GailCommandBase {
+public:
+    GailTradingPostCommand(const std::string& name,
+                           const std::string& description,
+                           const std::string& gailPath,
+                           const std::string& usageStr,
+                           const std::string& examplesStr,
+                           const std::string& successMessage,
+                           bool acceptsJsonBody = false)
+        : GailCommandBase(name, description)
+        , gailPath_(gailPath)
+        , successMessage_(successMessage)
+        , acceptsJsonBody_(acceptsJsonBody) {
+        usage = usageStr;
+        examples = examplesStr;
+        addClientFlags();
+        if (acceptsJsonBody_) {
+            addFlag(CLI::Flag("j", "json", "JSON payload to send", CLI::FlagType::String, false));
+            addFlag(CLI::Flag("f", "json-file", "Path to JSON file to send", CLI::FlagType::String, false));
+        }
+    }
+
+    int execute(const std::map<std::string, std::string>& parsedFlags,
+                const std::vector<std::string>& parsedArgs,
+                const CLI::GlobalFlags& globalFlags) override {
+        if (!validateArguments(parsedArgs) || !validateFlags(parsedFlags)) {
+            return 1;
+        }
+
+        nlohmann::json body = nlohmann::json::object();
+        if (acceptsJsonBody_ && (hasFlag(parsedFlags, "json") || hasFlag(parsedFlags, "json-file"))) {
+            std::string parseError;
+            if (!parseJsonFlagOrFile(parsedFlags, "json", "json-file", body, parseError, true)) {
+                return printAndReturn(errorResponse(parseError), globalFlags);
+            }
+        }
+
+        std::string error;
+        auto client = createClient(parsedFlags, error);
+        if (!client) {
+            return printAndReturn(errorResponse(error), globalFlags);
+        }
+
+        auto response = client->postJson(gailPath_, body);
+        if (response.success) {
+            response.message = successMessage_;
+        }
+        return printAndReturn(response, globalFlags);
+    }
+
+private:
+    std::string gailPath_;
+    std::string successMessage_;
+    bool acceptsJsonBody_;
+};
+
+// Override command: accepts --action, --symbol, --amount flags.
+class GailTradingOverrideCommand final : public GailCommandBase {
+public:
+    GailTradingOverrideCommand() : GailCommandBase("override", "Inject a one-shot trade override into the trading bridge") {
+        usage = "nmc gail trading override --action ACTION --symbol SYMBOL [--amount USD] [--exchange EXCHANGE]";
+        examples = "nmc gail trading override --action buy --symbol BTC/USDT --amount 10.0 --exchange binance";
+        addClientFlags();
+        addFlag(CLI::Flag("a", "action", "Trade action: buy, sell, strong_buy, strong_sell, cancel, hold", CLI::FlagType::String, true));
+        addFlag(CLI::Flag("s", "symbol", "Trading pair symbol, e.g. BTC/USDT", CLI::FlagType::String, true));
+        addFlag(CLI::Flag("m", "amount", "USD amount to trade", CLI::FlagType::String, false));
+        addFlag(CLI::Flag("e", "exchange", "Exchange name", CLI::FlagType::String, false));
+    }
+
+    int execute(const std::map<std::string, std::string>& parsedFlags,
+                const std::vector<std::string>& parsedArgs,
+                const CLI::GlobalFlags& globalFlags) override {
+        if (!validateArguments(parsedArgs) || !validateFlags(parsedFlags)) {
+            return 1;
+        }
+
+        const std::string action = trimCopy(optionalFlag(parsedFlags, "action"));
+        const std::string symbol = trimCopy(optionalFlag(parsedFlags, "symbol"));
+        if (action.empty()) {
+            return printAndReturn(errorResponse("--action is required (buy, sell, strong_buy, strong_sell, cancel, hold)"), globalFlags);
+        }
+        if (symbol.empty()) {
+            return printAndReturn(errorResponse("--symbol is required (e.g. BTC/USDT)"), globalFlags);
+        }
+
+        nlohmann::json body = {
+            {"action", action},
+            {"symbol", symbol}
+        };
+        const std::string amountStr = trimCopy(optionalFlag(parsedFlags, "amount"));
+        if (!amountStr.empty()) {
+            try {
+                body["amount_usd"] = std::stod(amountStr);
+            } catch (const std::exception&) {
+                return printAndReturn(errorResponse("--amount must be a valid number"), globalFlags);
+            }
+        }
+        const std::string exchange = trimCopy(optionalFlag(parsedFlags, "exchange"));
+        if (!exchange.empty()) {
+            body["exchange"] = exchange;
+        }
+
+        std::string error;
+        auto client = createClient(parsedFlags, error);
+        if (!client) {
+            return printAndReturn(errorResponse(error), globalFlags);
+        }
+
+        auto response = client->postJson("/v1/trading/override", body);
+        if (response.success) {
+            response.message = "Trade override submitted.";
+        }
+        return printAndReturn(response, globalFlags);
+    }
+};
+
 } // namespace
 
 std::shared_ptr<NMC::CLI::Command> buildGailCommandTree() {
@@ -537,6 +731,99 @@ std::shared_ptr<NMC::CLI::Command> buildGailCommandTree() {
         "nmc gail aer-decode --json-file ./aer-decode.json",
         "Gail AER decode completed."));
     root->addSubcommand(std::make_shared<GailRequestCommand>());
+
+    // Trading bridge subcommand tree
+    auto trading = std::make_shared<GailTradingRootCommand>();
+    trading->addSubcommand(std::make_shared<GailTradingGetCommand>(
+        "status",
+        "Show Gail trading bridge status",
+        "/v1/trading/status",
+        "nmc gail trading status [--base-url URL] [--api-token TOKEN]",
+        "nmc gail trading status",
+        "Trading bridge status retrieved."));
+    trading->addSubcommand(std::make_shared<GailTradingGetCommand>(
+        "portfolio",
+        "Show OctoBot portfolio holdings",
+        "/v1/trading/portfolio",
+        "nmc gail trading portfolio [--base-url URL] [--api-token TOKEN]",
+        "nmc gail trading portfolio",
+        "Portfolio retrieved."));
+    trading->addSubcommand(std::make_shared<GailTradingGetCommand>(
+        "positions",
+        "Show open OctoBot positions",
+        "/v1/trading/positions",
+        "nmc gail trading positions [--base-url URL] [--api-token TOKEN]",
+        "nmc gail trading positions",
+        "Open positions retrieved."));
+    trading->addSubcommand(std::make_shared<GailTradingGetCommand>(
+        "history",
+        "Show recent executed trades",
+        "/v1/trading/history",
+        "nmc gail trading history [--limit N] [--base-url URL] [--api-token TOKEN]",
+        "nmc gail trading history --limit 20",
+        "Trade history retrieved.",
+        /*hasLimitFlag=*/true));
+    trading->addSubcommand(std::make_shared<GailTradingGetCommand>(
+        "logs",
+        "Show trading bridge activity log",
+        "/v1/trading/logs",
+        "nmc gail trading logs [--limit N] [--base-url URL] [--api-token TOKEN]",
+        "nmc gail trading logs --limit 100",
+        "Activity log retrieved.",
+        /*hasLimitFlag=*/true));
+    trading->addSubcommand(std::make_shared<GailTradingGetCommand>(
+        "exchanges",
+        "List available OctoBot exchanges",
+        "/v1/trading/exchanges",
+        "nmc gail trading exchanges [--base-url URL] [--api-token TOKEN]",
+        "nmc gail trading exchanges",
+        "Exchanges retrieved."));
+    trading->addSubcommand(std::make_shared<GailTradingGetCommand>(
+        "currencies",
+        "List available trading currencies/pairs",
+        "/v1/trading/currencies",
+        "nmc gail trading currencies [--base-url URL] [--api-token TOKEN]",
+        "nmc gail trading currencies",
+        "Currencies retrieved."));
+    trading->addSubcommand(std::make_shared<GailTradingGetCommand>(
+        "config",
+        "Show current trading bridge configuration",
+        "/v1/trading/config",
+        "nmc gail trading config [--base-url URL] [--api-token TOKEN]",
+        "nmc gail trading config",
+        "Trading config retrieved."));
+    trading->addSubcommand(std::make_shared<GailTradingPostCommand>(
+        "config-set",
+        "Update trading bridge configuration at runtime",
+        "/v1/trading/config",
+        "nmc gail trading config-set --json JSON|--json-file FILE [--base-url URL] [--api-token TOKEN]",
+        "nmc gail trading config-set --json '{\"micro_trade_max_usd\":15.0}'",
+        "Trading config updated.",
+        /*acceptsJsonBody=*/true));
+    trading->addSubcommand(std::make_shared<GailTradingPostCommand>(
+        "pause",
+        "Pause the trading bridge evaluation loop",
+        "/v1/trading/pause",
+        "nmc gail trading pause [--base-url URL] [--api-token TOKEN]",
+        "nmc gail trading pause",
+        "Trading bridge paused."));
+    trading->addSubcommand(std::make_shared<GailTradingPostCommand>(
+        "resume",
+        "Resume the trading bridge evaluation loop",
+        "/v1/trading/resume",
+        "nmc gail trading resume [--base-url URL] [--api-token TOKEN]",
+        "nmc gail trading resume",
+        "Trading bridge resumed."));
+    trading->addSubcommand(std::make_shared<GailTradingOverrideCommand>());
+    trading->addSubcommand(std::make_shared<GailTradingPostCommand>(
+        "evaluate",
+        "Trigger an immediate trading evaluation cycle",
+        "/v1/trading/evaluate",
+        "nmc gail trading evaluate [--base-url URL] [--api-token TOKEN]",
+        "nmc gail trading evaluate",
+        "Evaluation triggered."));
+    root->addSubcommand(trading);
+
     return root;
 }
 

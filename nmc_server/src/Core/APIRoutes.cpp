@@ -5636,6 +5636,62 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
             handleAarnnProxy(req, res, plane);
         });
 
+        // --- Gail Trading Bridge Routes ---
+        // These proxy Gail's /v1/trading/* endpoints so the NMC dashboard and CLI
+        // can observe and control the trading bridge without direct Gail connectivity.
+        svr.Get("/gail/trading/status", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            handleGailTradingStatus(req, res);
+        });
+        svr.Get("/gail/trading/portfolio", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            handleGailTradingPortfolio(req, res);
+        });
+        svr.Get("/gail/trading/positions", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            handleGailTradingPositions(req, res);
+        });
+        svr.Get("/gail/trading/history", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            handleGailTradingHistory(req, res);
+        });
+        svr.Get("/gail/trading/logs", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            handleGailTradingLogs(req, res);
+        });
+        svr.Get("/gail/trading/exchanges", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            handleGailTradingExchanges(req, res);
+        });
+        svr.Get("/gail/trading/currencies", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            handleGailTradingCurrencies(req, res);
+        });
+        svr.Get("/gail/trading/config", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            handleGailTradingGetConfig(req, res);
+        });
+        svr.Post("/gail/trading/config", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            handleGailTradingSetConfig(req, res);
+        });
+        svr.Post("/gail/trading/pause", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            handleGailTradingPause(req, res);
+        });
+        svr.Post("/gail/trading/resume", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            handleGailTradingResume(req, res);
+        });
+        svr.Post("/gail/trading/override", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            handleGailTradingOverride(req, res);
+        });
+        svr.Post("/gail/trading/evaluate", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            handleGailTradingEvaluate(req, res);
+        });
+
         // --- VCluster Routes ---
         svr.Post("/vcluster/create", [this, guard](const httplib::Request& req, httplib::Response& res) {
             if (!guard(req, res)) return;
@@ -14661,6 +14717,189 @@ echo "Continuum recruitment completed for ${NMC_NODE_NAME:-unknown-node} (${NMC_
         } catch (const std::exception& e) {
             sendErrorResponse(res, 500, "Server error: " + std::string(e.what()));
         }
+    }
+
+
+    // -----------------------------------------------------------------------
+    // Gail Trading Bridge — proxy helpers and handlers
+    // -----------------------------------------------------------------------
+
+    std::string APIRoutes::resolveGailBaseUrl() const {
+        std::string url = normalizeHttpBaseUrl(getenvTrimmedOr("NMC_GAIL_BASE_URL", "GAIL_BASE_URL"));
+        if (url.empty()) {
+            url = normalizeHttpBaseUrl(getenvTrimmedOr("NMC_GAIL_URL", "GAIL_URL"));
+        }
+        return url;
+    }
+
+    std::string APIRoutes::resolveGailApiToken() const {
+        static constexpr std::array<const char*, 6> keys = {
+            "NMC_GAIL_API_TOKEN",
+            "GAIL_API_TOKEN",
+            "NMC_GAIL_BEARER_TOKEN",
+            "GAIL_BEARER_TOKEN",
+            "NMC_GAIL_AUTH_TOKEN",
+            "GAIL_AUTH_TOKEN"
+        };
+        for (const char* key : keys) {
+            std::string val = getenvTrimmed(key);
+            if (!val.empty()) {
+                return val;
+            }
+        }
+        return {};
+    }
+
+    bool APIRoutes::proxyGailTradingRequest(
+        const httplib::Request& req,
+        httplib::Response& res,
+        const std::string& gailPath,
+        const std::string& method,
+        const std::string& body
+    ) {
+        const std::string baseUrl = resolveGailBaseUrl();
+        if (baseUrl.empty()) {
+            sendErrorResponse(res, 503, "Gail service is not configured (NMC_GAIL_BASE_URL not set).");
+            return false;
+        }
+
+        TraceyEndpoint endpoint;
+        if (!parseTraceyEndpoint(baseUrl, endpoint)) {
+            sendErrorResponse(res, 503, "Gail base URL is invalid: " + baseUrl);
+            return false;
+        }
+
+        const std::string apiToken = resolveGailApiToken();
+        httplib::Headers headers{
+            {"Accept", "application/json"},
+        };
+        if (!apiToken.empty()) {
+            headers.emplace("Authorization", "Bearer " + apiToken);
+        }
+
+        // Forward query string from incoming request to upstream.
+        std::string upstreamPath = buildTraceyPath(endpoint, gailPath);
+        if (!req.params.empty()) {
+            bool first = (upstreamPath.find('?') == std::string::npos);
+            for (const auto& [k, v] : req.params) {
+                upstreamPath += (first ? '?' : '&');
+                upstreamPath += k + '=' + v;
+                first = false;
+            }
+        }
+
+        const auto doRequest = [&](auto& client) -> httplib::Result {
+            client.set_connection_timeout(10);
+            client.set_read_timeout(60);
+            client.set_write_timeout(30);
+            if (method == "GET") {
+                return client.Get(upstreamPath.c_str(), headers);
+            }
+            if (method == "POST") {
+                return client.Post(upstreamPath.c_str(), headers,
+                                   body.empty() ? "{}" : body,
+                                   "application/json");
+            }
+            // Fallback: treat as GET.
+            return client.Get(upstreamPath.c_str(), headers);
+        };
+
+        httplib::Result result;
+        if (endpoint.https) {
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+            httplib::SSLClient client(endpoint.host, endpoint.port);
+            client.enable_server_certificate_verification(true);
+            result = doRequest(client);
+#else
+            sendErrorResponse(res, 503, "HTTPS Gail proxy unavailable: httplib built without OpenSSL support.");
+            return false;
+#endif
+        } else {
+            httplib::Client client(endpoint.host, endpoint.port);
+            result = doRequest(client);
+        }
+
+        if (!result) {
+            sendErrorResponse(res, 502, "Gail proxy request failed: " + httplib::to_string(result.error()));
+            return false;
+        }
+
+        const int upstreamStatus = result->status;
+        nlohmann::json upstreamData = {
+            {"gail_path", gailPath},
+            {"upstream_status", upstreamStatus}
+        };
+
+        nlohmann::json parsedBody = nlohmann::json::parse(result->body, nullptr, false);
+        if (!parsedBody.is_discarded()) {
+            upstreamData["payload"] = parsedBody;
+        } else if (!result->body.empty()) {
+            upstreamData["text"] = result->body;
+        } else {
+            upstreamData["payload"] = nlohmann::json::object();
+        }
+
+        Models::CloudResponse apiResponse;
+        apiResponse.success = upstreamStatus >= 200 && upstreamStatus < 300;
+        apiResponse.message = apiResponse.success
+            ? "Gail trading request completed."
+            : ("Gail trading request failed with HTTP " + std::to_string(upstreamStatus) + ".");
+        apiResponse.data = upstreamData;
+        sendJsonResponse(res, apiResponse);
+        res.status = upstreamStatus;
+        return true;
+    }
+
+    void APIRoutes::handleGailTradingStatus(const httplib::Request& req, httplib::Response& res) {
+        proxyGailTradingRequest(req, res, "/v1/trading/status", "GET");
+    }
+
+    void APIRoutes::handleGailTradingPortfolio(const httplib::Request& req, httplib::Response& res) {
+        proxyGailTradingRequest(req, res, "/v1/trading/portfolio", "GET");
+    }
+
+    void APIRoutes::handleGailTradingPositions(const httplib::Request& req, httplib::Response& res) {
+        proxyGailTradingRequest(req, res, "/v1/trading/positions", "GET");
+    }
+
+    void APIRoutes::handleGailTradingHistory(const httplib::Request& req, httplib::Response& res) {
+        proxyGailTradingRequest(req, res, "/v1/trading/history", "GET");
+    }
+
+    void APIRoutes::handleGailTradingLogs(const httplib::Request& req, httplib::Response& res) {
+        proxyGailTradingRequest(req, res, "/v1/trading/logs", "GET");
+    }
+
+    void APIRoutes::handleGailTradingExchanges(const httplib::Request& req, httplib::Response& res) {
+        proxyGailTradingRequest(req, res, "/v1/trading/exchanges", "GET");
+    }
+
+    void APIRoutes::handleGailTradingCurrencies(const httplib::Request& req, httplib::Response& res) {
+        proxyGailTradingRequest(req, res, "/v1/trading/currencies", "GET");
+    }
+
+    void APIRoutes::handleGailTradingGetConfig(const httplib::Request& req, httplib::Response& res) {
+        proxyGailTradingRequest(req, res, "/v1/trading/config", "GET");
+    }
+
+    void APIRoutes::handleGailTradingSetConfig(const httplib::Request& req, httplib::Response& res) {
+        proxyGailTradingRequest(req, res, "/v1/trading/config", "POST", req.body);
+    }
+
+    void APIRoutes::handleGailTradingPause(const httplib::Request& req, httplib::Response& res) {
+        proxyGailTradingRequest(req, res, "/v1/trading/pause", "POST", req.body);
+    }
+
+    void APIRoutes::handleGailTradingResume(const httplib::Request& req, httplib::Response& res) {
+        proxyGailTradingRequest(req, res, "/v1/trading/resume", "POST", req.body);
+    }
+
+    void APIRoutes::handleGailTradingOverride(const httplib::Request& req, httplib::Response& res) {
+        proxyGailTradingRequest(req, res, "/v1/trading/override", "POST", req.body);
+    }
+
+    void APIRoutes::handleGailTradingEvaluate(const httplib::Request& req, httplib::Response& res) {
+        proxyGailTradingRequest(req, res, "/v1/trading/evaluate", "POST", req.body);
     }
 
 } // namespace NMC::Server
