@@ -71,7 +71,7 @@ jobs:
       - name: Install client build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
+          sudo apt-get install -y --allow-downgrades --no-install-recommends \
             build-essential cmake pkg-config libcurl4-openssl-dev
 
       - name: Configure client build for functional tests
@@ -200,7 +200,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
+          sudo apt-get install -y --allow-downgrades --no-install-recommends \
             build-essential cmake pkg-config libcurl4-openssl-dev dpkg-dev
 
       - name: Configure
@@ -245,7 +245,7 @@ jobs:
           set -euo pipefail
           deb_path="$(readlink -f "$(find dist -maxdepth 1 -type f -name 'nmc-client_*.deb' | head -n 1)")"
           sudo apt-get update
-          sudo apt-get install -y "$deb_path"
+          sudo apt-get install -y --allow-downgrades "$deb_path"
           nmc version --no-check
           dpkg-query -W -f='${Version}\n' nmc-client
 
@@ -365,7 +365,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
+          sudo apt-get install -y --allow-downgrades --no-install-recommends \
             build-essential cmake git pkg-config libssl-dev libspdlog-dev \
             libwebsockets-dev libcurl4-openssl-dev libpq-dev libpqxx-dev \
             autoconf automake libtool ca-certificates curl gawk dpkg-dev patchelf
@@ -409,7 +409,7 @@ jobs:
           set -euo pipefail
           deb_path="$(readlink -f "$(find dist -maxdepth 1 -type f -name 'nmc-server_*.deb' | head -n 1)")"
           sudo apt-get update
-          sudo apt-get install -y "$deb_path"
+          sudo apt-get install -y --allow-downgrades "$deb_path"
           test -x /usr/bin/nmc_server
           test -f /usr/share/nmc-server/docs/index.html
           ldd /usr/bin/nmc_server | tee /tmp/nmc-server.ldd
