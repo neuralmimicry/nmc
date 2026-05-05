@@ -72,6 +72,11 @@ run bash -n \
   scripts/package-release.sh \
   scripts/preflight.sh
 
+log "checking PowerShell packaging script for CI-hostile parameter names"
+if grep -nE '^[[:space:]]*\[[^]]+\][[:space:]]*\$Input([,[:space:]]|$)' scripts/package-release.ps1; then
+  die "scripts/package-release.ps1 must not declare a parameter named Input; it collides with PowerShell's automatic input variable"
+fi
+
 if command -v pwsh >/dev/null 2>&1; then
   log "validating PowerShell packaging script"
   run pwsh -NoLogo -NoProfile -Command \

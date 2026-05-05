@@ -389,7 +389,7 @@ jobs:
           .\scripts\package-release.ps1 `
             -Component '${{ matrix.component }}' `
             -Version '${{ needs.version.outputs.build_version }}' `
-            -Input '${{ matrix.executable }}' `
+            -InputPath '${{ matrix.executable }}' `
             -Platform '${{ matrix.platform }}' `
             -Rename '${{ matrix.rename }}' `
             -OutputDir .\dist

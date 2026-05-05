@@ -7,7 +7,8 @@ param(
     [string]$Version,
 
     [Parameter(Mandatory = $true)]
-    [string]$Input,
+    [Alias('Input')]
+    [string]$InputPath,
 
     [Parameter(Mandatory = $true)]
     [string]$Platform,
@@ -20,6 +21,10 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+if ([string]::IsNullOrWhiteSpace($InputPath)) {
+    throw 'Input artifact path is required.'
+}
+
 if ([string]::IsNullOrWhiteSpace($Rename)) {
     if ($Component -eq 'client') {
         $Rename = 'nmc.exe'
@@ -30,7 +35,7 @@ if ([string]::IsNullOrWhiteSpace($Rename)) {
 }
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$inputPath = (Resolve-Path $Input).Path
+$resolvedInputPath = (Resolve-Path -LiteralPath $InputPath).Path
 $archiveBaseName = "nmc-$Component-$Version-$Platform"
 $outputPath = New-Item -ItemType Directory -Force -Path $OutputDir
 $stageRoot = Join-Path $outputPath.FullName '.stage'
@@ -42,16 +47,16 @@ if (Test-Path $stageRoot) {
     Remove-Item -Recurse -Force $stageRoot
 }
 New-Item -ItemType Directory -Force -Path $payloadDir | Out-Null
-Copy-Item $inputPath (Join-Path $payloadDir $Rename)
+Copy-Item -LiteralPath $resolvedInputPath -Destination (Join-Path $payloadDir $Rename)
 
 $readmePath = Join-Path $repoRoot 'README.md'
 if (Test-Path $readmePath) {
-    Copy-Item $readmePath (Join-Path $payloadDir 'README.md')
+    Copy-Item -LiteralPath $readmePath -Destination (Join-Path $payloadDir 'README.md')
 }
 
 $versionPath = Join-Path $repoRoot 'VERSION'
 if (Test-Path $versionPath) {
-    Copy-Item $versionPath (Join-Path $payloadDir 'VERSION')
+    Copy-Item -LiteralPath $versionPath -Destination (Join-Path $payloadDir 'VERSION')
 }
 
 if (Test-Path $archivePath) {
