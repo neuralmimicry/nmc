@@ -156,6 +156,34 @@ nmc_find_version_file() {
   return 1
 }
 
+nmc_derive_local_build_version() {
+  local script_dir="$1"
+  local candidate output build_version version_source
+
+  for candidate in \
+    "$script_dir/derive-version.sh" \
+    "$script_dir/scripts/derive-version.sh"
+  do
+    [[ -r "$candidate" ]] || continue
+    output="$(bash "$candidate" 2>/dev/null)" || continue
+    build_version="$(
+      printf '%s\n' "$output" \
+        | awk -F= '$1 == "NMC_BUILD_VERSION" { print $2; exit }'
+    )"
+    version_source="$(
+      printf '%s\n' "$output" \
+        | awk -F= '$1 == "NMC_VERSION_SOURCE" { print $2; exit }'
+    )"
+
+    if [[ -n "$build_version" && "$version_source" != "default" ]]; then
+      printf '%s\n' "$build_version"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
 nmc_find_local_deb() {
   local package_name="$1"
   local release_version="$2"

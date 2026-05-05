@@ -1131,6 +1131,10 @@ struct TraceyCVEIntel::Impl {
         defaultSliceCount = static_cast<std::size_t>(parseEnvInt64("NMC_TRACEY_ASSESSMENT_SLICE_COUNT", static_cast<int64_t>(defaultSliceCount), 1, 32));
         maxMatchesPerReport = static_cast<std::size_t>(parseEnvInt64("NMC_TRACEY_CVE_MAX_MATCHES", static_cast<int64_t>(maxMatchesPerReport), 8, 512));
 
+        if (!enabled) {
+            return;
+        }
+
         std::error_code ec;
         std::filesystem::create_directories(rootPath, ec);
         loadCachedIndex();

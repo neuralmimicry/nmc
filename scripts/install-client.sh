@@ -15,7 +15,7 @@ matching private GitHub release asset.
 
 Options:
   --deb-file PATH            Local nmc-client .deb to install.
-  --release-version VERSION  Release version to install. Defaults to VERSION or latest release.
+  --release-version VERSION  Release version to install. Defaults to local build version, VERSION, or latest release.
   --repo OWNER/NAME          GitHub repository. Default: neuralmimicry/nmc
   --dry-run                  Show planned actions without changing the system.
   -h, --help                 Show this help text.
@@ -26,8 +26,8 @@ Environment:
 
 Examples:
   ./scripts/install-client.sh
-  sudo ./scripts/install-client.sh --release-version 0.0.3
-  sudo ./scripts/install-client.sh --deb-file ./dist/nmc-client_0.0.3_amd64.deb
+  sudo ./scripts/install-client.sh --release-version 0.0.0136
+  sudo ./scripts/install-client.sh --deb-file ./dist/nmc-client_0.0.0136_amd64.deb
 USAGE
 }
 
@@ -128,7 +128,9 @@ PACKAGE_ARCH="$(nmc_detect_deb_arch)"
 TOKEN="$(nmc_github_token || true)"
 
 if [[ -z "$PACKAGE_RELEASE_VERSION" ]]; then
-  if version_file="$(nmc_find_version_file "$SCRIPT_DIR" 2>/dev/null)"; then
+  if PACKAGE_RELEASE_VERSION="$(nmc_derive_local_build_version "$SCRIPT_DIR" 2>/dev/null)"; then
+    :
+  elif version_file="$(nmc_find_version_file "$SCRIPT_DIR" 2>/dev/null)"; then
     PACKAGE_RELEASE_VERSION="$(nmc_read_version_file "$version_file")"
   else
     PACKAGE_RELEASE_VERSION="$(nmc_resolve_latest_release_version "$RELEASE_REPO" "$TOKEN")"
@@ -171,6 +173,13 @@ nmc_log
 
 run apt-get update
 run apt-get install -y "$DEB_SOURCE_PATH"
+if (( ! DRY_RUN )) && [[ ! -x "$CLIENT_PACKAGED_BIN" ]]; then
+  nmc_warn "packaged client binary is missing after install; reinstalling ${DEB_SOURCE_PATH}"
+  run apt-get install -y --allow-downgrades --reinstall "$DEB_SOURCE_PATH"
+fi
+if (( ! DRY_RUN )) && [[ ! -x "$CLIENT_PACKAGED_BIN" ]]; then
+  nmc_die "packaged client binary was not installed: $CLIENT_PACKAGED_BIN"
+fi
 reconcile_client_command_path "$CLIENT_PACKAGED_BIN" "$CLIENT_INSTALL_PATH"
 
 if (( ! DRY_RUN )); then

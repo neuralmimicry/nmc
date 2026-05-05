@@ -16,7 +16,7 @@ matching private GitHub release assets.
 Options:
   --server-deb-file PATH      Local nmc-server .deb to install.
   --client-deb-file PATH      Local nmc-client .deb to install when client install is enabled.
-  --release-version VERSION   Release version to install. Defaults to VERSION or latest release.
+  --release-version VERSION   Release version to install. Defaults to local build version, VERSION, or latest release.
   --repo OWNER/NAME           GitHub repository. Default: neuralmimicry/nmc
   --run-user USER             Service user. Default: nmc
   --run-group GROUP           Service group. Default: same as run-user
@@ -37,8 +37,8 @@ Environment:
 
 Examples:
   sudo ./scripts/install-server.sh
-  sudo ./scripts/install-server.sh --release-version 0.0.3
-  sudo ./scripts/install-server.sh --server-deb-file ./dist/nmc-server_0.0.3_amd64.deb
+  sudo ./scripts/install-server.sh --release-version 0.0.0136
+  sudo ./scripts/install-server.sh --server-deb-file ./dist/nmc-server_0.0.0136_amd64.deb
 USAGE
 }
 
@@ -57,6 +57,8 @@ KUBECONFIG_SOURCE_PATH=""
 INSTALL_CLIENT=1
 SKIP_START=0
 FORCE_ENV_FILE=0
+K8S_HEALTH_MONITOR="${NMC_K8S_HEALTH_MONITOR:-false}"
+TRACEY_CVE_ENABLED="${NMC_TRACEY_CVE_ENABLED:-false}"
 RUN_PREFIX=()
 CLIENT_PACKAGED_BIN="/usr/bin/nmc"
 CLIENT_INSTALL_PATH="/usr/local/bin/nmc"
@@ -258,7 +260,9 @@ PACKAGE_ARCH="$(nmc_detect_deb_arch)"
 TOKEN="$(nmc_github_token || true)"
 
 if [[ -z "$PACKAGE_RELEASE_VERSION" ]]; then
-  if version_file="$(nmc_find_version_file "$SCRIPT_DIR" 2>/dev/null)"; then
+  if PACKAGE_RELEASE_VERSION="$(nmc_derive_local_build_version "$SCRIPT_DIR" 2>/dev/null)"; then
+    :
+  elif version_file="$(nmc_find_version_file "$SCRIPT_DIR" 2>/dev/null)"; then
     PACKAGE_RELEASE_VERSION="$(nmc_read_version_file "$version_file")"
   else
     PACKAGE_RELEASE_VERSION="$(nmc_resolve_latest_release_version "$RELEASE_REPO" "$TOKEN")"
@@ -333,6 +337,13 @@ nmc_log
 
 run apt-get update
 run apt-get install -y "$SERVER_DEB_SOURCE_PATH"
+if (( ! DRY_RUN )) && [[ ! -x /usr/bin/nmc_server ]]; then
+  nmc_warn "packaged server binary is missing after install; reinstalling ${SERVER_DEB_SOURCE_PATH}"
+  run apt-get install -y --allow-downgrades --reinstall "$SERVER_DEB_SOURCE_PATH"
+fi
+if (( ! DRY_RUN )) && [[ ! -x /usr/bin/nmc_server ]]; then
+  nmc_die "packaged server binary was not installed: /usr/bin/nmc_server"
+fi
 if ((INSTALL_CLIENT)); then
   run apt-get install -y "$CLIENT_DEB_SOURCE_PATH"
   reconcile_client_command_path "$CLIENT_PACKAGED_BIN" "$CLIENT_INSTALL_PATH"
@@ -366,10 +377,12 @@ if [[ ! -e "$ENV_FILE_PATH" || "$FORCE_ENV_FILE" -eq 1 ]]; then
 # NMC_TRACEY_LOCAL_AGENT_ID=tracey-continuum-local
 # NMC_TRACEY_LOCAL_STATUS_ADDR=http://127.0.0.1:48000
 # NMC_TRACEY_STATE_ROOT=/var/lib/nmc/tracey-state
-# NMC_TRACEY_PERSIST_FLUSH_MS=5000
+# NMC_TRACEY_PERSIST_FLUSH_MS=60000
+# NMC_TRACEY_HISTORY_MAX_SAMPLES=240
+# NMC_TRACEY_AGENT_LOG_MAX_ENTRIES=100
 # NMC_TRACEY_POSTGRES_DSN=
 # NMC_TRACEY_STATUS_BEARER_TOKEN=
-# NMC_POSTGRES_DSN=
+# NMC_POSTGRES_DSN="
 else
   nmc_log "keeping existing environment file: ${ENV_FILE_PATH}"
 fi
@@ -385,6 +398,8 @@ Group=${RUN_GROUP}
 WorkingDirectory=${STATE_DIR}
 Environment=NMC_DOCS_DIR=/usr/share/nmc-server/docs
 Environment=NMC_LOG_FILE=${STATE_DIR}/logs/nmc_server.log
+Environment=NMC_K8S_HEALTH_MONITOR=${K8S_HEALTH_MONITOR}
+Environment=NMC_TRACEY_CVE_ENABLED=${TRACEY_CVE_ENABLED}
 EnvironmentFile=-${ENV_FILE_PATH}
 ExecStart=/usr/bin/nmc_server --port ${PORT} -k /etc/nmc/kubeconfig
 Restart=on-failure

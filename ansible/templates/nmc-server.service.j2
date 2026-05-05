@@ -14,6 +14,8 @@ Group={{ nmc_run_group }}
 WorkingDirectory={{ nmc_service_working_dir_effective }}
 Environment=NMC_DOCS_DIR={{ nmc_docs_dir_effective }}
 Environment=NMC_LOG_FILE={{ nmc_log_file_path_effective }}
+Environment=NMC_K8S_HEALTH_MONITOR={{ (nmc_k8s_health_monitor_enabled | bool) | ternary('true', 'false') }}
+Environment=NMC_TRACEY_CVE_ENABLED={{ (nmc_tracey_cve_enabled | bool) | ternary('true', 'false') }}
 EnvironmentFile=-/etc/nmc/nmc.env
 ExecStart={{ nmc_server_binary_path_effective }} --port {{ nmc_port }} -k /etc/nmc/kubeconfig
 Restart=on-failure

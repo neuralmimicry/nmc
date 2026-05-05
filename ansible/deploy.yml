@@ -75,6 +75,7 @@
     nmc_nvidia_device_plugin_url: "https://raw.githubusercontent.com/NVIDIA/k8s-device-plugin/master/deployments/static/nvidia-device-plugin.yml"
     nmc_k8s_api_wait_seconds: 180
     nmc_k8s_restart_on_failure: true
+    nmc_k8s_health_monitor_enabled: false
 
     # GPU
     nmc_gpu_auto: true
@@ -102,7 +103,10 @@
     nmc_tracey_state_dir: "/var/lib/tracey"
     nmc_tracey_cve_root: "/var/lib/nmc/tracey_cve"
     nmc_tracey_state_root: "/var/lib/nmc/tracey-state"
-    nmc_tracey_persist_flush_ms: 5000
+    nmc_tracey_persist_flush_ms: 60000
+    nmc_tracey_history_max_samples: 240
+    nmc_tracey_agent_log_max_entries: 100
+    nmc_tracey_cve_enabled: false
     nmc_tracey_postgres_dsn: ""
     nmc_postgres_dsn: ""
     nmc_tracey_auth_mode: "off"
@@ -291,6 +295,17 @@
       register: nmc_version_file
       failed_when: false
 
+    - name: Derive repository build version
+      when: nmc_install_mode == "package"
+      ansible.builtin.command:
+        argv:
+          - bash
+          - "{{ nmc_repo_dir }}/scripts/derive-version.sh"
+          - "--build-version"
+      register: nmc_build_version_cmd
+      changed_when: false
+      failed_when: false
+
     - name: Derive NMC server package version and architecture
       when: nmc_install_mode == "package"
       ansible.builtin.set_fact:
@@ -300,7 +315,14 @@
           {{
             (nmc_package_version | trim)
             if (nmc_package_version | trim | length) > 0
-            else ((nmc_version_file.content | default('') | b64decode | trim))
+            else (
+              (nmc_build_version_cmd.stdout | default('') | trim)
+              if (
+                (nmc_build_version_cmd.rc | default(1) | int) == 0
+                and (nmc_build_version_cmd.stdout | default('') | trim | length) > 0
+              )
+              else ((nmc_version_file.content | default('') | b64decode | trim))
+            )
           }}
 
     - name: Derive NMC Debian package version and release tag
@@ -1076,6 +1098,29 @@
         deb: "{{ nmc_package_download_path_effective }}"
         state: present
       register: nmc_package_install
+      notify:
+        - Restart nmc-server
+
+    - name: Check packaged NMC server binary after package install
+      when: nmc_install_mode == "package"
+      ansible.builtin.stat:
+        path: "{{ nmc_packaged_server_binary_path }}"
+      register: nmc_packaged_binary_after_install
+
+    - name: Repair NMC server Debian package when packaged binary is missing
+      when:
+        - nmc_install_mode == "package"
+        - not (nmc_packaged_binary_after_install.stat.exists | default(false))
+      ansible.builtin.command:
+        argv:
+          - apt-get
+          - install
+          - "-y"
+          - "--allow-downgrades"
+          - "--reinstall"
+          - "{{ nmc_package_download_path_effective }}"
+      register: nmc_package_repair
+      changed_when: nmc_package_repair.rc == 0
       notify:
         - Restart nmc-server
 

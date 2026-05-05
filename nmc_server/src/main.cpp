@@ -9,6 +9,7 @@
 #include <string>
 #include <vector>        // Required for std::vector
 #include <algorithm>     // Required for std::find
+#include <cctype>
 #include <exception>
 #include <cstdlib>
 #include <regex>         // For catching std::regex_error
@@ -24,6 +25,33 @@
 static std::atomic<bool> k8sHealthy{false};
 
 namespace {
+    bool envFlagEnabled(const char* value, bool defaultValue = true) {
+        if (!value || !*value) {
+            return defaultValue;
+        }
+
+        std::string normalized(value);
+        std::transform(normalized.begin(), normalized.end(), normalized.begin(), [](unsigned char ch) {
+            return static_cast<char>(std::tolower(ch));
+        });
+
+        if (normalized == "0" || normalized == "false" || normalized == "off" || normalized == "no") {
+            return false;
+        }
+        if (normalized == "1" || normalized == "true" || normalized == "on" || normalized == "yes") {
+            return true;
+        }
+        return defaultValue;
+    }
+
+    bool k8sHealthMonitorEnabled() {
+        const char* value = std::getenv("NMC_K8S_HEALTH_MONITOR");
+        if (!value || !*value) {
+            value = std::getenv("NM_K8S_HEALTH_MONITOR");
+        }
+        return envFlagEnabled(value, true);
+    }
+
     std::string resolveLogFilePath() {
         const char* logPathEnv = std::getenv("NMC_LOG_FILE");
         if (logPathEnv && *logPathEnv) {
@@ -268,9 +296,15 @@ int main(int argc, char* argv[]) {
         spdlog::info("Kubernetes C client global environment set up");
 
         // start health-monitor thread
-        if (k8s) {
+        const bool monitorEnabled = k8sHealthMonitorEnabled();
+        if (k8s && monitorEnabled) {
             std::thread monitorThread(monitorK8sHealth, k8s);
             monitorThread.detach();
+        } else if (k8s) {
+            spdlog::info("K8s health monitor disabled by NMC_K8S_HEALTH_MONITOR.");
+            apiClient_free(k8s);
+            k8s = nullptr;
+            freeK8sClientConfig(k8sConfig);
         } else {
             k8sHealthy.store(false);
             spdlog::warn("K8s health monitor is disabled due to Kubernetes client initialization failure");
