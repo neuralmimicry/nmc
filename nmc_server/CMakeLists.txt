@@ -247,6 +247,11 @@ if (CMAKE_CXX_COMPILER_ID MATCHES "(GNU|Clang)")
     )
 endif()
 
-# Copy documentation files to the build directory
-file(COPY "${CMAKE_SOURCE_DIR}/src/docs"
-        DESTINATION "${CMAKE_CURRENT_BINARY_DIR}")
+# Keep documentation files in the build directory current when dashboard
+# assets change without requiring a fresh CMake configure step.
+add_custom_target(nmc_server_docs ALL
+        COMMAND "${CMAKE_COMMAND}" -E copy_directory
+        "${CMAKE_SOURCE_DIR}/src/docs"
+        "${CMAKE_CURRENT_BINARY_DIR}/docs"
+        COMMENT "Copying nmc_server documentation assets")
+add_dependencies(nmc_server nmc_server_docs)

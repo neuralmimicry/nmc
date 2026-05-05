@@ -17,7 +17,9 @@
         refiner: { public_access_level: SERVICE_ACCESS_REQUEST },
         billing: { public_access_level: SERVICE_ACCESS_NONE },
         continuum: { public_access_level: SERVICE_ACCESS_OBSERVE },
+        gail: { public_access_level: SERVICE_ACCESS_NONE },
         tracey: { public_access_level: SERVICE_ACCESS_OBSERVE },
+        gail_trading: { public_access_level: SERVICE_ACCESS_NONE },
         aarnn: { public_access_level: SERVICE_ACCESS_REQUEST },
         webots: { public_access_level: SERVICE_ACCESS_REQUEST }
     };

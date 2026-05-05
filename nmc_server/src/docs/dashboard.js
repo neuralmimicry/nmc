@@ -198,6 +198,10 @@
         // Gail Trading
         gailTradingCard: document.getElementById("gailTradingCard"),
         gailTradingMetric: document.getElementById("gailTradingMetric"),
+        gailTradingPanel: document.getElementById("gailTradingPanel"),
+        gailTradingPanelStatus: document.getElementById("gailTradingPanelStatus"),
+        gailTradingPanelEvaluation: document.getElementById("gailTradingPanelEvaluation"),
+        gailTradingPanelTrade: document.getElementById("gailTradingPanelTrade"),
         gailTradingModal: document.getElementById("gailTradingModal"),
         gailTradingModalClose: document.getElementById("gailTradingModalClose"),
         gailTradingModalSubtitle: document.getElementById("gailTradingModalSubtitle"),
@@ -468,6 +472,12 @@
         if (!basePath) {
             return path;
         }
+        if (/^(?:[a-z][a-z0-9+.-]*:)?\/\//i.test(path)) {
+            return path;
+        }
+        if (path === basePath || path.startsWith(`${basePath}/`)) {
+            return path;
+        }
         if (!path.startsWith("/")) {
             return `${basePath}/${path}`;
         }
@@ -522,12 +532,14 @@
             authIdentity = null;
             updateSessionLabel();
             applyTraceyAccessUi();
+            applyGailTradingAccessUi();
             return null;
         }
         authIdentity = normalizedIdentity;
         localStorage.setItem(IDENTITY_STORAGE_KEY, JSON.stringify(authIdentity));
         updateSessionLabel();
         applyTraceyAccessUi();
+        applyGailTradingAccessUi();
         return authIdentity;
     }
 
@@ -670,11 +682,17 @@
     // --- Gail Trading access helpers ---
 
     function hasGailTradingVisibility() {
-        return Boolean(serviceAccess.isServiceVisible(authIdentity || {}, "gail_trading"));
+        return Boolean(
+            serviceAccess.isServiceVisible(authIdentity || {}, "gail_trading")
+            || serviceAccess.isServiceVisible(authIdentity || {}, "gail")
+        );
     }
 
     function canControlGailTrading() {
-        return Boolean(serviceAccess.canControlService(authIdentity || {}, "gail_trading"));
+        return Boolean(
+            serviceAccess.canControlService(authIdentity || {}, "gail_trading")
+            || serviceAccess.canControlService(authIdentity || {}, "gail")
+        );
     }
 
     function applyGailTradingAccessUi() {
@@ -682,6 +700,9 @@
         const controllable = canControlGailTrading();
         if (nodes.gailTradingCard) {
             nodes.gailTradingCard.hidden = !visible;
+        }
+        if (nodes.gailTradingPanel) {
+            nodes.gailTradingPanel.hidden = !visible;
         }
         if (nodes.openGailTradingBtn) {
             nodes.openGailTradingBtn.hidden = !visible;
@@ -694,6 +715,52 @@
     }
 
     let gailTradingModalRequestSeq = 0;
+
+    function gailTradingData(response, fallback = {}) {
+        const topLevelData = responseData(response && response.payload);
+        const upstreamPayload = topLevelData
+            && typeof topLevelData === "object"
+            && Object.prototype.hasOwnProperty.call(topLevelData, "payload")
+            ? topLevelData.payload
+            : topLevelData;
+        const data = responseData(upstreamPayload);
+        return data == null ? fallback : data;
+    }
+
+    function gailTradingItems(response, preferredKey) {
+        const data = gailTradingData(response, {});
+        if (Array.isArray(data)) {
+            return data;
+        }
+        if (!data || typeof data !== "object") {
+            return [];
+        }
+        if (preferredKey && Array.isArray(data[preferredKey])) {
+            return data[preferredKey];
+        }
+        if (Array.isArray(data.items)) {
+            return data.items;
+        }
+        if (Array.isArray(data.data)) {
+            return data.data;
+        }
+        return [];
+    }
+
+    function gailTradingErrorMessage(response, fallback = "Unable to load Gail Trading data.") {
+        const payload = response && response.payload && typeof response.payload === "object" ? response.payload : {};
+        const data = responseData(payload) || {};
+        const upstream = data && typeof data === "object" ? data.payload : null;
+        const upstreamText = upstream && typeof upstream === "object"
+            ? (upstream.message || upstream.error || upstream.detail || "")
+            : "";
+        return String(payload.message || upstreamText || response.error || fallback);
+    }
+
+    function formatGailTradingTimestamp(value) {
+        const ts = Number(value || 0);
+        return ts > 0 ? new Date(ts * 1000).toLocaleString() : "--";
+    }
 
     function setGailTradingModalOpen(open) {
         if (!nodes.gailTradingModal) {
@@ -712,12 +779,16 @@
         if (!nodes.gailTradingModalBody) {
             return;
         }
-        const s = (statusData && statusData.payload) ? statusData.payload : {};
-        const portfolio = (portfolioData && portfolioData.payload) ? portfolioData.payload : {};
-        const history = (historyData && historyData.payload && Array.isArray(historyData.payload.trades))
-            ? historyData.payload.trades : [];
-        const logs = (logsData && logsData.payload && Array.isArray(logsData.payload.logs))
-            ? logsData.payload.logs : [];
+        if (!statusData || !statusData.ok) {
+            nodes.gailTradingModalBody.innerHTML = `
+                <p class="trading-error">${escapeHtml(gailTradingErrorMessage(statusData))}</p>
+            `;
+            return;
+        }
+        const s = gailTradingData(statusData, {});
+        const portfolio = gailTradingData(portfolioData, {});
+        const history = gailTradingItems(historyData, "trades");
+        const logs = gailTradingItems(logsData, "logs");
 
         const paused = s.paused ? "Paused" : (s.enabled ? "Running" : "Disabled");
         const lastEval = s.last_evaluation_at
@@ -727,7 +798,7 @@
             ? new Date(s.last_trade_at * 1000).toLocaleString()
             : "—";
 
-        const currencies = portfolio.currencies
+        const currencies = portfolio && portfolio.currencies
             ? Object.entries(portfolio.currencies)
                 .filter(([, b]) => b && b.total > 0)
                 .map(([sym, b]) =>
@@ -868,7 +939,7 @@
                 ...authHeaders(),
                 ...(options.headers || {})
             };
-            const response = await fetch(path, {
+            const response = await fetch(withBase(path), {
                 method: options.method || "GET",
                 headers,
                 cache: "no-store",
@@ -7754,9 +7825,7 @@
 
         // --- Gail Trading card update ---
         if (tradingVisible && nodes.gailTradingMetric) {
-            const ts = gailTradingStatusRes.ok && gailTradingStatusRes.payload
-                ? gailTradingStatusRes.payload
-                : null;
+            const ts = gailTradingStatusRes.ok ? gailTradingData(gailTradingStatusRes, null) : null;
             if (ts) {
                 const stateLabel = ts.paused ? "Paused" : (ts.enabled ? "Active" : "Disabled");
                 const trades = ts.trade_count != null ? ts.trade_count : 0;
@@ -7764,6 +7833,19 @@
             } else {
                 nodes.gailTradingMetric.textContent = gailTradingStatusRes.ok ? "No data" : "Unavailable";
             }
+        }
+        if (tradingVisible) {
+            const ts = gailTradingStatusRes.ok ? gailTradingData(gailTradingStatusRes, null) : null;
+            const stateLabel = ts
+                ? (ts.paused ? "Paused" : (ts.enabled ? "Active" : "Disabled"))
+                : (gailTradingStatusRes.ok ? "No data" : "Unavailable");
+            setCheck(nodes.gailTradingPanelStatus, stateLabel, ts && ts.enabled && !ts.paused ? "#22c55e" : (ts ? "#f59e0b" : "#ef4444"));
+            setCheck(nodes.gailTradingPanelEvaluation, ts ? formatGailTradingTimestamp(ts.last_evaluation_at) : "--", ts ? "#22c55e" : "#9ca3af");
+            setCheck(nodes.gailTradingPanelTrade, ts ? formatGailTradingTimestamp(ts.last_trade_at) : "--", ts ? "#22c55e" : "#9ca3af");
+        } else {
+            setCheck(nodes.gailTradingPanelStatus, "Not granted", "#9ca3af");
+            setCheck(nodes.gailTradingPanelEvaluation, "--", "#9ca3af");
+            setCheck(nodes.gailTradingPanelTrade, "--", "#9ca3af");
         }
 
         if (nodes.gailTradingModal && !nodes.gailTradingModal.hidden) {

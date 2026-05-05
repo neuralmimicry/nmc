@@ -200,9 +200,11 @@ namespace NMC::Server {
             nlohmann::json resolved = nlohmann::json::object();
             const bool isAdmin = role == "admin"
                                  || std::find(groups.begin(), groups.end(), "admin") != groups.end();
-            static constexpr std::array<const char*, 3> defaultServices = {
+            static constexpr std::array<const char*, 5> defaultServices = {
                     "continuum",
                     "tracey",
+                    "gail",
+                    "gail_trading",
                     "aarnn"
             };
             for (const char* serviceKey : defaultServices) {
@@ -496,6 +498,12 @@ namespace NMC::Server {
                 }
                 return {"tracey", SERVICE_ACCESS_OBSERVE};
             }
+            if (path.rfind("/gail/trading/", 0) == 0) {
+                if (method == "GET") {
+                    return {"gail_trading", SERVICE_ACCESS_OBSERVE};
+                }
+                return {"gail_trading", SERVICE_ACCESS_CONTROL};
+            }
             if (path.rfind("/aarnn/", 0) == 0) {
                 if (path == "/aarnn/proxy/runtime") {
                     return {"aarnn", SERVICE_ACCESS_USE};
@@ -517,6 +525,10 @@ namespace NMC::Server {
         bool claimsAllowRoute(const nlohmann::json& claims, const httplib::Request& req) {
             const ServiceRouteRequirement requirement = routeAccessRequirement(req);
             if (requirement.serviceKey.empty()) {
+                return true;
+            }
+            if (requirement.serviceKey == "gail_trading"
+                && claimsAllowServiceAccess(claims, "gail", requirement.accessLevel)) {
                 return true;
             }
             return claimsAllowServiceAccess(claims, requirement.serviceKey, requirement.accessLevel);

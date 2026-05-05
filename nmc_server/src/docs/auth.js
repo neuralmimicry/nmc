@@ -25,6 +25,12 @@
         if (!basePath) {
             return path;
         }
+        if (/^(?:[a-z][a-z0-9+.-]*:)?\/\//i.test(path)) {
+            return path;
+        }
+        if (path === basePath || path.startsWith(`${basePath}/`)) {
+            return path;
+        }
         if (!path.startsWith("/")) {
             return `${basePath}/${path}`;
         }

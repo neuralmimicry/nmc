@@ -442,6 +442,11 @@ h1 {
     color: var(--accent-2);
 }
 
+.panel-action-btn:disabled {
+    cursor: not-allowed;
+    opacity: 0.48;
+}
+
 .panel-title-row h3 {
     margin: 0;
     font-size: 1rem;
@@ -609,6 +614,53 @@ td {
 .cluster-modal-body {
     display: grid;
     gap: 0.8rem;
+}
+
+.trading-status-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 0.65rem;
+}
+
+.trading-stat {
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 8px;
+    background: rgba(10, 16, 24, 0.76);
+    padding: 0.72rem;
+    display: grid;
+    gap: 0.26rem;
+}
+
+.trading-stat span {
+    color: var(--muted);
+    font-size: 0.72rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.trading-stat strong {
+    color: #ffffff;
+    font-family: var(--font-mono);
+    font-size: 1rem;
+}
+
+.trading-table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.trading-log-wrap {
+    max-height: 320px;
+    overflow: auto;
+}
+
+.trading-error {
+    margin: 0;
+    border: 1px solid rgba(239, 68, 68, 0.36);
+    border-radius: 8px;
+    background: rgba(127, 29, 29, 0.26);
+    color: #fecaca;
+    padding: 0.72rem;
 }
 
 .tracey-controls {

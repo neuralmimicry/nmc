@@ -6,6 +6,8 @@
 
 #include <cctype>
 #include <cstdlib>
+#include <fstream>
+#include <sstream>
 #include <string>
 
 namespace NMC::Server {
@@ -32,6 +34,58 @@ namespace NMC::Server {
                 }
             }
             return "./docs";
+        }
+
+        std::string docsAssetContentType(const std::string& relativePath) {
+            if (relativePath.size() >= 3 && relativePath.rfind(".js") == relativePath.size() - 3) {
+                return "application/javascript";
+            }
+            if (relativePath.size() >= 4 && relativePath.rfind(".css") == relativePath.size() - 4) {
+                return "text/css";
+            }
+            if (relativePath.size() >= 4 && relativePath.rfind(".png") == relativePath.size() - 4) {
+                return "image/png";
+            }
+            if (relativePath.size() >= 4 && relativePath.rfind(".jpg") == relativePath.size() - 4) {
+                return "image/jpeg";
+            }
+            if (relativePath.size() >= 5 && relativePath.rfind(".json") == relativePath.size() - 5) {
+                return "application/json";
+            }
+            if (relativePath.size() >= 4 && relativePath.rfind(".ico") == relativePath.size() - 4) {
+                return "image/x-icon";
+            }
+            if (relativePath.size() >= 4 && relativePath.rfind(".txt") == relativePath.size() - 4) {
+                return "text/plain";
+            }
+            return "application/octet-stream";
+        }
+
+        bool docsAssetPathAllowed(const std::string& relativePath) {
+            return !relativePath.empty()
+                   && relativePath.find("..") == std::string::npos
+                   && relativePath.find('\\') == std::string::npos
+                   && relativePath.front() != '/';
+        }
+
+        void serveDocsAsset(const std::string& docsDir,
+                            const std::string& relativePath,
+                            httplib::Response& res) {
+            if (!docsAssetPathAllowed(relativePath)) {
+                res.status = 404;
+                res.set_content("Not found", "text/plain");
+                return;
+            }
+            const std::string path = docsDir + "/" + relativePath;
+            std::ifstream file(path, std::ios::binary);
+            if (!file.is_open()) {
+                res.status = 404;
+                res.set_content("Not found", "text/plain");
+                return;
+            }
+            std::ostringstream buffer;
+            buffer << file.rdbuf();
+            res.set_content(buffer.str(), docsAssetContentType(relativePath));
         }
     }
 
@@ -75,6 +129,14 @@ namespace NMC::Server {
         });
         svr.Get(R"(^/services/health/monitoring/login/?$)", [docsLoginPath](const httplib::Request& req, httplib::Response& res) {
             res.set_content(Utils::readFile(docsLoginPath), "text/html");
+        });
+        svr.Get(R"(^/services/health/monitoring/(dashboard\.css|dashboard\.js|service-access\.js|auth\.js|style\.css)$)", [docsDir](const httplib::Request& req, httplib::Response& res) {
+            const std::string relativePath = req.matches.size() > 1 ? req.matches[1].str() : "";
+            serveDocsAsset(docsDir, relativePath, res);
+        });
+        svr.Get(R"(^/services/health/monitoring/public/([A-Za-z0-9._-]+)$)", [docsDir](const httplib::Request& req, httplib::Response& res) {
+            const std::string fileName = req.matches.size() > 1 ? req.matches[1].str() : "";
+            serveDocsAsset(docsDir, "public/" + fileName, res);
         });
         svr.Post(R"(^/services/health/monitoring/auth/login/?$)", [this](const httplib::Request& req, httplib::Response& res) {
             handleAuthLogin(req, res);

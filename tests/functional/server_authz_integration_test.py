@@ -96,6 +96,30 @@ TOKEN_IDENTITIES: dict[str, dict[str, Any]] = {
             "tracey": build_service_access_entry("tracey", "control", "observe"),
         },
     ),
+    "gail-trading-observe-token": build_identity(
+        "gail-trading-observer",
+        service_access={
+            "gail_trading": build_service_access_entry("gail_trading", "observe", "none"),
+        },
+    ),
+    "gail-trading-control-token": build_identity(
+        "gail-trading-controller",
+        service_access={
+            "gail_trading": build_service_access_entry("gail_trading", "control", "none"),
+        },
+    ),
+    "gail-observe-token": build_identity(
+        "gail-observer",
+        service_access={
+            "gail": build_service_access_entry("gail", "observe", "none"),
+        },
+    ),
+    "gail-control-token": build_identity(
+        "gail-controller",
+        service_access={
+            "gail": build_service_access_entry("gail", "control", "none"),
+        },
+    ),
     "aarnn-request-token": build_identity(
         "aarnn-requester",
         service_access={
@@ -275,6 +299,20 @@ class MockBackend:
             )
             return
 
+        if path_only.startswith("/v1/trading/"):
+            request_payload = parse_json(body)
+            self._send_json(
+                handler,
+                200,
+                {
+                    "ok": True,
+                    "path": path_only,
+                    "method": handler.command,
+                    "payload": request_payload,
+                },
+            )
+            return
+
         if path_only == "/tracey-target/control/tracey_guard":
             request_payload = parse_json(body)
             self._send_json(
@@ -325,6 +363,8 @@ class NmcServerProcess:
                 "NMC_AARNN_DISCOVERY_ENABLED": "0",
                 "NMC_AARNN_RUNTIME_URL": f"{self._backend_base_url}/runtime",
                 "NMC_AARNN_CONTROL_URL": f"{self._backend_base_url}/control",
+                "NMC_GAIL_BASE_URL": self._backend_base_url,
+                "NMC_GAIL_API_TOKEN": "gail-backend-token",
             }
         )
         log_file = self._log_path.open("w", encoding="utf-8")
@@ -636,6 +676,96 @@ def test_aarnn_route_authorisation(server: NmcServerProcess, backend: MockBacken
     )
 
 
+def test_gail_trading_route_authorisation(server: NmcServerProcess, backend: MockBackend) -> None:
+    backend.clear_records()
+    status, _ = request_json(server.base_url, "GET", "/gail/trading/status", token="continuum-observe-token")
+    assert_status(status, 403, "gail trading observe route denied without gail_trading access")
+    assert_true(
+        backend.count_requests("/v1/trading/status", "GET") == 0,
+        "denied Gail Trading status requests should not reach Gail",
+    )
+
+    status, payload = request_json(
+        server.base_url,
+        "GET",
+        "/gail/trading/status",
+        token="gail-trading-observe-token",
+    )
+    assert_status(status, 200, "gail trading observe route allowed")
+    assert_true(
+        (((payload.get("data") or {}).get("payload") or {}).get("ok")) is True,
+        "Gail Trading status should proxy with observe access",
+    )
+    assert_true(
+        backend.count_requests("/v1/trading/status", "GET") == 1,
+        "allowed Gail Trading status requests should reach Gail exactly once",
+    )
+
+    status, payload = request_json(
+        server.base_url,
+        "GET",
+        "/gail/trading/status",
+        token="gail-observe-token",
+    )
+    assert_status(status, 200, "gail trading observe route allowed with Gail service access")
+    assert_true(
+        (((payload.get("data") or {}).get("payload") or {}).get("ok")) is True,
+        "Gail Trading status should proxy with Gail observe access",
+    )
+    assert_true(
+        backend.count_requests("/v1/trading/status", "GET") == 2,
+        "Gail service access should reach Gail status exactly once",
+    )
+
+    backend.clear_records()
+    status, _ = request_json(
+        server.base_url,
+        "POST",
+        "/gail/trading/pause",
+        token="gail-trading-observe-token",
+        payload={},
+    )
+    assert_status(status, 403, "gail trading control route denied with observe access")
+    assert_true(
+        backend.count_requests("/v1/trading/pause", "POST") == 0,
+        "denied Gail Trading control requests should not reach Gail",
+    )
+
+    status, payload = request_json(
+        server.base_url,
+        "POST",
+        "/gail/trading/pause",
+        token="gail-trading-control-token",
+        payload={},
+    )
+    assert_status(status, 200, "gail trading control route allowed")
+    assert_true(
+        (((payload.get("data") or {}).get("payload") or {}).get("ok")) is True,
+        "Gail Trading control should proxy with control access",
+    )
+    assert_true(
+        backend.count_requests("/v1/trading/pause", "POST") == 1,
+        "allowed Gail Trading control requests should reach Gail exactly once",
+    )
+
+    status, payload = request_json(
+        server.base_url,
+        "POST",
+        "/gail/trading/pause",
+        token="gail-control-token",
+        payload={},
+    )
+    assert_status(status, 200, "gail trading control route allowed with Gail service access")
+    assert_true(
+        (((payload.get("data") or {}).get("payload") or {}).get("ok")) is True,
+        "Gail Trading control should proxy with Gail control access",
+    )
+    assert_true(
+        backend.count_requests("/v1/trading/pause", "POST") == 2,
+        "Gail service control access should reach Gail pause exactly once",
+    )
+
+
 def main() -> int:
     if not NMC_SERVER_BIN.exists():
         print(
@@ -656,6 +786,7 @@ def main() -> int:
         test_continuum_route_authorisation(server)
         test_tracey_route_authorisation(server, backend)
         test_aarnn_route_authorisation(server, backend)
+        test_gail_trading_route_authorisation(server, backend)
     except AssertionError as exc:
         log_output = server.log_path.read_text(encoding="utf-8", errors="replace") if server.log_path.exists() else ""
         print(f"[server-authz-test] FAILED: {exc}", file=sys.stderr)
@@ -668,7 +799,7 @@ def main() -> int:
         backend.stop()
 
     print(
-        "[server-authz-test] OK: validated end-to-end Continuum, Tracey, and AARNN route authorisation "
+        "[server-authz-test] OK: validated end-to-end Continuum, Tracey, Gail Trading, and AARNN route authorisation "
         "against the real nmc_server process."
     )
     return 0
