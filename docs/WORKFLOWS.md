@@ -234,6 +234,10 @@ These routes are intentionally operational. They belong in Continuum because the
 - `nmc version` reports the local client version and, unless `--no-check` is used, checks the latest GitHub release.
 - `nmc_server` performs the same release check at startup.
 - `GET /server/version` exposes the server version, release-check status, and latest-version metadata through the API.
+- `scripts/derive-version.sh` derives the build version, build number, commit, and release tag from `VERSION`, git history, and optional environment overrides.
+- GitHub Actions compiles that derived build version into both client and server binaries.
+- Default-branch pushes run verification and packaging before creating an immutable `v<build-version>` tag and publishing release assets.
+- The release matrix packages client artifacts for Linux, Windows, and macOS across `amd64` and `arm64`; server artifacts are Linux-only across `amd64` and `arm64`.
 
 ## 10. Current Split State
 

@@ -1,6 +1,6 @@
 # NMC Testing Strategy
 
-This repository uses a mix of static contract tests and executable CLI tests to protect the command surface and server safety invariants.
+This repository uses a mix of static contract tests and executable CLI/server tests to protect the command surface, server safety invariants, and release workflow assumptions.
 
 ## 1. Goals
 
@@ -8,6 +8,8 @@ The current test suite focuses on:
 - client/server interface drift
 - command-to-route coverage drift
 - adaptive loop contract drift
+- Tracey network simulation and CLI simulation drift
+- recruited-node capacity contract drift
 - server guard, redaction, and route authorisation regressions
 - CLI payload serialisation and failure behaviour
 
@@ -30,6 +32,12 @@ Current tests:
   - ensures `GET /tracey/adaptive` stays registered on the server
   - checks that fallback loop synthesis, placement-policy selection, and the stable response envelope remain wired in
   - verifies that the adaptive summary still exposes the keys required by the CLI and dashboard surfaces
+- `tracey_cli_simulation_contract_test.py`
+  - ensures Tracey CLI simulation flags, validation, and client query wiring remain aligned
+- `tracey_network_simulation_contract_test.py`
+  - ensures Tracey network expansion payloads and dashboard simulation controls remain wired end to end
+- `node_recruit_capacity_contract_test.py`
+  - ensures recruited-node capacity and Tracey metadata remain represented in the node recruitment flow
 - `server_safety_contract_test.py`
   - ensures guarded routes use the shared request guard
   - ensures sensitive endpoint prefixes remain excluded from body logging
@@ -107,22 +115,23 @@ The harness runs without a live Kubernetes cluster, but the build path is still 
 From the repository root:
 
 ```bash
-python3 tests/contracts/api_route_contract_test.py
-python3 tests/contracts/command_coverage_contract_test.py
-python3 tests/contracts/tracey_adaptive_contract_test.py
-python3 tests/contracts/server_safety_contract_test.py
-python3 tests/functional/client_cli_integration_test.py
-python3 tests/functional/server_authz_integration_test.py
+bash scripts/preflight.sh
+```
+
+For faster client-only local checks:
+
+```bash
+bash scripts/preflight.sh --skip-server
 ```
 
 ## 5. Recommended CI Gate
 
 Minimum CI gate for this repository:
-1. build `nmc_client`
-2. build `nmc_server`
-3. run all contract tests
-4. run the functional CLI mock-server test
-5. run the server authorisation integration test
+1. derive version metadata with `scripts/derive-version.sh`
+2. run `scripts/preflight.sh --ci` on self-hosted Linux `X64` and `ARM64`
+3. package client artifacts for Linux, Windows, and macOS across `amd64` and `arm64`
+4. package server artifacts for Linux `amd64` and `arm64`
+5. create the immutable release tag only after all packaging jobs succeed
 
 ## 6. What These Tests Protect
 
@@ -133,6 +142,7 @@ Minimum CI gate for this repository:
 - CLI query strings and JSON payloads are checked against real process execution rather than mocked command objects.
 - Shared `service_access` authorisation is validated end to end for Continuum, Tracey, and AARNN routes.
 - Denied Tracey and AARNN guarded requests are checked to ensure they do not reach protected upstream targets.
+- Release tags are generated from the same build version compiled into the client and server binaries.
 
 ## 7. Current Gaps
 

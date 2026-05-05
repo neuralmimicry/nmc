@@ -214,13 +214,20 @@ The lightweight unauthenticated liveness route is `GET /health`.
 
 ## Deployment and Release
 
+- GitHub Actions automation lives in `.github/workflows/build-and-release.yml`; the older standalone CI workflow has been folded into this single verification, packaging, version-tag, and release path.
+- Every pull request and branch push runs `scripts/preflight.sh --ci` on the self-hosted Linux `X64` and `ARM64` runners.
+- Default-branch pushes package release artifacts first, then create an immutable annotated tag from `scripts/derive-version.sh`, for example `v0.0.0134`, and create or update the matching GitHub release.
+- Non-default branch pushes verify only, avoiding release-tag collisions across divergent branch histories.
+- Manual `workflow_dispatch` runs can package any selected ref, and publish only when `publish_release` is enabled.
 - Linux releases now publish `nmc-client_<version>_<arch>.deb` and `nmc-server_<version>_<arch>.deb` for `amd64` and `arm64`.
-- `.github/workflows/build-and-release.yml` builds those Linux client/server artifacts automatically on push using self-hosted Ubuntu runners labelled `self-hosted`, `Linux`, and either `X64` or `ARM64`; those runners must provide passwordless `sudo` for dependency installation.
+- Release packaging emits client archives for Linux, Windows, and macOS across `amd64` and `arm64`; server release artifacts are Linux-only for `amd64` and `arm64`.
+- Linux client/server artifacts build on self-hosted Ubuntu runners labelled `self-hosted`, `Linux`, and either `X64` or `ARM64`; those runners must provide passwordless `sudo` for dependency installation.
 - `scripts/install-client.sh` installs the private-release CLI package on Linux.
 - `scripts/install-server.sh` installs the private-release server package, writes the systemd unit, and configures packaged docs/log paths.
 - `deploy.sh` remains the source-build/bootstrap path for full host provisioning.
 - `ansible/deploy.yml` provides the same deployment path in Ansible form.
 - `VERSION` drives the shared semantic version for client and server builds.
+- `scripts/derive-version.sh` turns `VERSION`, git history, and optional environment overrides into the build version, tag, commit metadata, and workflow outputs.
 - `scripts/package-release.sh` and `scripts/package-release.ps1` build versioned release archives and checksum files, and Linux builds also emit Debian packages.
 
 ## Documentation Map

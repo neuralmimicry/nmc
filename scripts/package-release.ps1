@@ -49,6 +49,11 @@ if (Test-Path $readmePath) {
     Copy-Item $readmePath (Join-Path $payloadDir 'README.md')
 }
 
+$versionPath = Join-Path $repoRoot 'VERSION'
+if (Test-Path $versionPath) {
+    Copy-Item $versionPath (Join-Path $payloadDir 'VERSION')
+}
+
 if (Test-Path $archivePath) {
     Remove-Item -Force $archivePath
 }

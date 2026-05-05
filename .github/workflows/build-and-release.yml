@@ -1,31 +1,29 @@
-name: Build and Release
+---
+name: Build, Version, and Release
 
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-
-on:
+"on":
   pull_request:
-    branches:
-      - main
   push:
     branches:
       - "**"
-    tags:
-      - "v*"
   workflow_dispatch:
     inputs:
       publish_release:
-        description: "Publish a GitHub release from the selected v* tag ref"
+        description: "Create or update the GitHub release for this ref."
         required: true
         type: boolean
         default: false
+      release_tag:
+        description: "Optional tag to use when publishing. Defaults to v<build-version>."
+        required: false
+        type: string
       draft_release:
-        description: "Mark a manually published release as draft"
+        description: "Mark a manually published release as draft."
         required: true
         type: boolean
         default: false
       prerelease:
-        description: "Mark a manually published release as prerelease"
+        description: "Mark a manually published release as prerelease."
         required: true
         type: boolean
         default: false
@@ -33,159 +31,53 @@ on:
 permissions:
   contents: read
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 concurrency:
-  group: build-and-release-${{ github.ref }}
-  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+  group: nmc-build-version-release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  contract-test:
-    name: Contract Tests (Routes + Command Coverage)
-    runs-on: [self-hosted, Linux, X64]
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Run API route contract test
-        run: python3 tests/contracts/api_route_contract_test.py
-
-      - name: Run command coverage contract test
-        run: python3 tests/contracts/command_coverage_contract_test.py
-
-  safety-test:
-    name: Safety Test (Server Guard/Redaction)
-    runs-on: [self-hosted, Linux, X64]
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Run server safety contract test
-        run: python3 tests/contracts/server_safety_contract_test.py
-
-  functional-test:
-    name: Functional Test (CLI Mock Integration)
-    runs-on: [self-hosted, Linux, X64]
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Install client build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --allow-downgrades --no-install-recommends \
-            build-essential cmake pkg-config libcurl4-openssl-dev
-
-      - name: Configure client build for functional tests
-        run: cmake -S nmc_client -B nmc_client/build -DCMAKE_BUILD_TYPE=Release
-
-      - name: Build client for functional tests
-        run: cmake --build nmc_client/build --config Release -- -j"$(nproc)"
-
-      - name: Run functional CLI integration test
-        run: python3 tests/functional/client_cli_integration_test.py
-
-  shell-script-test:
-    name: Shell Script Syntax
-    runs-on: [self-hosted, Linux, X64]
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Validate shell scripts
-        run: |
-          bash -n \
-            deploy.sh \
-            scripts/install-common.sh \
-            scripts/install-client.sh \
-            scripts/install-server.sh \
-            scripts/package-release.sh
-
-  release-metadata:
-    name: Release Metadata
-    runs-on: [self-hosted, Linux, X64]
-    needs:
-      - contract-test
-      - safety-test
-      - functional-test
-      - shell-script-test
+  version:
+    name: Version metadata
+    runs-on: ubuntu-latest
     outputs:
-      artifact_version: ${{ steps.meta.outputs.artifact_version }}
-      release_tag: ${{ steps.meta.outputs.release_tag }}
-      publish_release: ${{ steps.meta.outputs.publish_release }}
-      create_release_tag: ${{ steps.meta.outputs.create_release_tag }}
+      release_version: ${{ steps.version.outputs.release_version }}
+      build_version: ${{ steps.version.outputs.build_version }}
+      build_number: ${{ steps.version.outputs.build_number }}
+      git_commit: ${{ steps.version.outputs.git_commit }}
+      commit_short: ${{ steps.version.outputs.commit_short }}
+      version_source: ${{ steps.version.outputs.version_source }}
+      tag: ${{ steps.version.outputs.tag }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v6
+      - name: Check out repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
 
-      - name: Compute artifact metadata
-        id: meta
+      - name: Derive NMC version metadata
+        id: version
         shell: bash
-        env:
-          MANUAL_PUBLISH_REQUEST: >-
-            ${{ github.event_name == 'workflow_dispatch' && inputs.publish_release || false }}
-        run: |
-          set -euo pipefail
-          source_version="$(tr -d '[:space:]' < VERSION)"
-          candidate_tag="v${source_version}"
-          short_sha="${GITHUB_SHA:0:7}"
-          release_tag=""
-          publish_release="false"
-          create_release_tag="false"
+        run: bash scripts/derive-version.sh --github-output
 
-          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
-            release_tag="${GITHUB_REF#refs/tags/}"
-            artifact_version="${release_tag#v}"
-            if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
-              publish_release="true"
-            elif [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" && \
-                    "${MANUAL_PUBLISH_REQUEST}" == "true" ]]; then
-              publish_release="true"
-            fi
-          elif [[ "${GITHUB_EVENT_NAME}" == "push" && \
-                  "${GITHUB_REF}" == "refs/heads/main" ]]; then
-            if git ls-remote --exit-code --tags --refs origin \
-              "refs/tags/${candidate_tag}" >/dev/null 2>&1; then
-              artifact_version="${source_version}-dev.${GITHUB_RUN_NUMBER}.${short_sha}"
-            else
-              release_tag="${candidate_tag}"
-              artifact_version="${source_version}"
-              publish_release="true"
-              create_release_tag="true"
-            fi
-          else
-            artifact_version="${source_version}-dev.${GITHUB_RUN_NUMBER}.${short_sha}"
-          fi
-
-          if [[ -n "$release_tag" && "$artifact_version" != "$source_version" ]]; then
-            echo "::error::Tag ${release_tag} does not match VERSION"
-            echo "::error::version ${source_version}"
-            exit 1
-          fi
-
-          echo "artifact_version=$artifact_version" >> "$GITHUB_OUTPUT"
-          echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
-          echo "publish_release=$publish_release" >> "$GITHUB_OUTPUT"
-          echo "create_release_tag=$create_release_tag" >> "$GITHUB_OUTPUT"
-
-  package-client-linux:
-    name: Package Client (Linux ${{ matrix.deb_arch }})
-    runs-on:
-      - self-hosted
-      - Linux
-      - ${{ matrix.runner_arch }}
-    needs: release-metadata
+  verify:
+    name: Verify (${{ matrix.arch }})
+    needs: version
+    runs-on: ${{ fromJSON(matrix.runs_on) }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - runner_arch: X64
-            platform: linux-x86_64
-            deb_arch: amd64
-          - runner_arch: ARM64
-            platform: linux-aarch64
-            deb_arch: arm64
+          - arch: amd64
+            runs_on: '["self-hosted","Linux","X64"]'
+          - arch: arm64
+            runs_on: '["self-hosted","Linux","ARM64"]'
     steps:
-      - name: Checkout
-        uses: actions/checkout@v6
+      - name: Check out repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
 
       - name: Assert Ubuntu self-hosted runner
         shell: bash
@@ -197,293 +89,479 @@ jobs:
             exit 1
           fi
 
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --allow-downgrades --no-install-recommends \
-            build-essential cmake pkg-config libcurl4-openssl-dev dpkg-dev
-
-      - name: Configure
-        run: >-
-          cmake -S nmc_client -B nmc_client/build -DCMAKE_BUILD_TYPE=Release
-          -DNMC_CLIENT_VERSION=${{ needs.release-metadata.outputs.artifact_version }}
-
-      - name: Build
-        run: cmake --build nmc_client/build --config Release -- -j"$(nproc)"
-
-      - name: Smoke test built client
-        run: ./nmc_client/build/nmc version --no-check
-
-      - name: Package
+      - name: Install verification dependencies
         shell: bash
         run: |
           set -euo pipefail
-          ./scripts/package-release.sh \
-            --component client \
-            --version "${{ needs.release-metadata.outputs.artifact_version }}" \
-            --input ./nmc_client/build/nmc \
-            --platform "${{ matrix.platform }}" \
-            --rename nmc \
-            --deb-arch "${{ matrix.deb_arch }}" \
-            --output-dir ./dist
-
-      - name: Validate Debian package metadata
-        run: |
-          set -euo pipefail
-          deb_path="$(find dist -maxdepth 1 -type f -name 'nmc-client_*.deb' | head -n 1)"
-          [[ -n "$deb_path" ]]
-          expected_version="$(basename "$deb_path" | sed -E 's/^nmc-client_(.*)_[^_]+\.deb$/\1/')"
-          actual_package="$(dpkg-deb -f "$deb_path" Package)"
-          actual_version="$(dpkg-deb -f "$deb_path" Version)"
-          actual_arch="$(dpkg-deb -f "$deb_path" Architecture)"
-          [[ "$actual_package" == "nmc-client" ]]
-          [[ "$actual_version" == "$expected_version" ]]
-          [[ "$actual_arch" == "${{ matrix.deb_arch }}" ]]
-
-      - name: Smoke install Debian package
-        run: |
-          set -euo pipefail
-          deb_path="$(readlink -f "$(find dist -maxdepth 1 -type f -name 'nmc-client_*.deb' | head -n 1)")"
           sudo apt-get update
-          sudo apt-get install -y --allow-downgrades "$deb_path"
-          nmc version --no-check
-          dpkg-query -W -f='${Version}\n' nmc-client
+          sudo apt-get install -y --allow-downgrades --no-install-recommends \
+            autoconf \
+            automake \
+            build-essential \
+            ca-certificates \
+            cmake \
+            curl \
+            gawk \
+            git \
+            libcurl4-openssl-dev \
+            libpq-dev \
+            libpqxx-dev \
+            libspdlog-dev \
+            libssl-dev \
+            libtool \
+            libwebsockets-dev \
+            pkg-config \
+            python3
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-assets-client-${{ matrix.platform }}
-          path: dist/*
-          if-no-files-found: error
-          retention-days: 14
+      - name: Run canonical CI preflight
+        env:
+          NMC_VERSION: ${{ needs.version.outputs.build_version }}
+          NMC_BUILD_NUMBER: ${{ needs.version.outputs.build_number }}
+          NMC_GIT_COMMIT: ${{ github.sha }}
+        shell: bash
+        run: bash scripts/preflight.sh --ci
 
-  package-client-cross:
-    name: Package Client (${{ matrix.platform }})
-    runs-on: ${{ matrix.runner }}
-    needs: release-metadata
+  package:
+    name: Package (${{ matrix.component }} ${{ matrix.platform }})
+    needs:
+      - version
+      - verify
     if: >-
-      github.event_name == 'workflow_dispatch' ||
-      startsWith(github.ref, 'refs/tags/v')
+      ${{
+        github.event_name == 'workflow_dispatch' ||
+        (
+          github.event_name == 'push' &&
+          startsWith(github.ref, 'refs/heads/') &&
+          github.ref_name == github.event.repository.default_branch
+        )
+      }}
+    runs-on: ${{ fromJSON(matrix.runs_on) }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - runner: windows-latest
-            platform: windows-x86_64
-            executable: .\nmc_client\build\Release\nmc.exe
-            archive_ext: zip
-          - runner: macos-latest
-            platform: macos-aarch64
+          - component: client
+            os: linux
+            arch: amd64
+            runs_on: '["self-hosted","Linux","X64"]'
+            platform: linux-amd64
+            source_dir: nmc_client
+            build_dir: nmc_client/build
             executable: ./nmc_client/build/nmc
-            archive_ext: tar.gz
+            rename: nmc
+            deb_arch: amd64
+            can_execute: true
+          - component: client
+            os: linux
+            arch: arm64
+            runs_on: '["self-hosted","Linux","ARM64"]'
+            platform: linux-arm64
+            source_dir: nmc_client
+            build_dir: nmc_client/build
+            executable: ./nmc_client/build/nmc
+            rename: nmc
+            deb_arch: arm64
+            can_execute: true
+          - component: server
+            os: linux
+            arch: amd64
+            runs_on: '["self-hosted","Linux","X64"]'
+            platform: linux-amd64
+            source_dir: nmc_server
+            build_dir: nmc_server/build
+            executable: ./nmc_server/build/nmc_server
+            rename: nmc_server
+            deb_arch: amd64
+            can_execute: false
+          - component: server
+            os: linux
+            arch: arm64
+            runs_on: '["self-hosted","Linux","ARM64"]'
+            platform: linux-arm64
+            source_dir: nmc_server
+            build_dir: nmc_server/build
+            executable: ./nmc_server/build/nmc_server
+            rename: nmc_server
+            deb_arch: arm64
+            can_execute: false
+          - component: client
+            os: windows
+            arch: amd64
+            runs_on: '["windows-2025"]'
+            platform: windows-amd64
+            source_dir: nmc_client
+            build_dir: nmc_client/build
+            executable: .\nmc_client\build\Release\nmc.exe
+            rename: nmc.exe
+            deb_arch: ""
+            can_execute: true
+            cmake_arch: x64
+            vcpkg_triplet: x64-windows
+          - component: client
+            os: windows
+            arch: arm64
+            runs_on: '["windows-11-arm"]'
+            platform: windows-arm64
+            source_dir: nmc_client
+            build_dir: nmc_client/build
+            executable: .\nmc_client\build\Release\nmc.exe
+            rename: nmc.exe
+            deb_arch: ""
+            can_execute: true
+            cmake_arch: ARM64
+            vcpkg_triplet: arm64-windows
+          - component: client
+            os: macos
+            arch: amd64
+            runs_on: '["macos-15-intel"]'
+            platform: macos-amd64
+            source_dir: nmc_client
+            build_dir: nmc_client/build
+            executable: ./nmc_client/build/nmc
+            rename: nmc
+            deb_arch: ""
+            can_execute: true
+          - component: client
+            os: macos
+            arch: arm64
+            runs_on: '["macos-15"]'
+            platform: macos-arm64
+            source_dir: nmc_client
+            build_dir: nmc_client/build
+            executable: ./nmc_client/build/nmc
+            rename: nmc
+            deb_arch: ""
+            can_execute: true
     steps:
-      - name: Checkout
-        uses: actions/checkout@v6
+      - name: Check out repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
 
-      - name: Configure
-        run: >-
-          cmake -S nmc_client -B nmc_client/build -DCMAKE_BUILD_TYPE=Release
-          -DNMC_CLIENT_VERSION=${{ needs.release-metadata.outputs.artifact_version }}
-
-      - name: Build
-        run: cmake --build nmc_client/build --config Release
-
-      - name: Smoke test
+      - name: Assert Ubuntu self-hosted runner
+        if: ${{ matrix.os == 'linux' }}
         shell: bash
         run: |
           set -euo pipefail
-          if [[ "${{ runner.os }}" == "Windows" ]]; then
-            pwsh -NoLogo -NoProfile -Command '.\nmc_client\build\Release\nmc.exe version --no-check'
-          else
-            ./nmc_client/build/nmc version --no-check
+          source /etc/os-release
+          if [[ "${ID:-}" != "ubuntu" ]]; then
+            echo "::error::Expected an Ubuntu self-hosted runner, found ${PRETTY_NAME:-unknown}"
+            exit 1
           fi
 
-      - name: Package Windows release artifact
-        if: ${{ runner.os == 'Windows' }}
+      - name: Install Linux dependencies
+        if: ${{ matrix.os == 'linux' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          packages=(
+            build-essential
+            ca-certificates
+            cmake
+            dpkg-dev
+            git
+            libcurl4-openssl-dev
+            pkg-config
+          )
+          if [[ "${{ matrix.component }}" == "server" ]]; then
+            packages+=(
+              autoconf
+              automake
+              curl
+              gawk
+              libpq-dev
+              libpqxx-dev
+              libspdlog-dev
+              libssl-dev
+              libtool
+              libwebsockets-dev
+              patchelf
+            )
+          fi
+          sudo apt-get update
+          sudo apt-get install -y --allow-downgrades --no-install-recommends "${packages[@]}"
+
+      - name: Install macOS dependencies
+        if: ${{ matrix.os == 'macos' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! brew list curl >/dev/null 2>&1; then
+            brew install curl
+          fi
+          echo "CMAKE_PREFIX_PATH=$(brew --prefix curl)" >> "$GITHUB_ENV"
+
+      - name: Install Windows dependencies
+        if: ${{ matrix.os == 'windows' }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vcpkg = Get-Command vcpkg -ErrorAction SilentlyContinue
+          if (-not $vcpkg) {
+            throw 'vcpkg is required on Windows packaging runners'
+          }
+          & $vcpkg.Source install "curl:${{ matrix.vcpkg_triplet }}"
+          $vcpkgRoot = $env:VCPKG_INSTALLATION_ROOT
+          if ([string]::IsNullOrWhiteSpace($vcpkgRoot)) {
+            $candidateRoot = Split-Path -Parent (Split-Path -Parent $vcpkg.Source)
+            if (Test-Path (Join-Path $candidateRoot 'scripts\buildsystems\vcpkg.cmake')) {
+              $vcpkgRoot = $candidateRoot
+            }
+          }
+          if ([string]::IsNullOrWhiteSpace($vcpkgRoot)) {
+            throw 'VCPKG_INSTALLATION_ROOT is not set and vcpkg root could not be inferred'
+          }
+          $toolchain = Join-Path $vcpkgRoot 'scripts\buildsystems\vcpkg.cmake'
+          if (-not (Test-Path $toolchain)) {
+            throw "vcpkg toolchain file was not found: $toolchain"
+          }
+          "VCPKG_TOOLCHAIN=$toolchain" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Configure Unix build
+        if: ${{ matrix.os != 'windows' }}
+        env:
+          BUILD_VERSION: ${{ needs.version.outputs.build_version }}
+          COMPONENT: ${{ matrix.component }}
+          SOURCE_DIR: ${{ matrix.source_dir }}
+          BUILD_DIR: ${{ matrix.build_dir }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          version_arg="-DNMC_CLIENT_VERSION=${BUILD_VERSION}"
+          if [[ "$COMPONENT" == "server" ]]; then
+            version_arg="-DNMC_SERVER_VERSION=${BUILD_VERSION}"
+          fi
+          cmake -S "$SOURCE_DIR" -B "$BUILD_DIR" \
+            -DCMAKE_BUILD_TYPE=Release \
+            "$version_arg"
+
+      - name: Configure Windows build
+        if: ${{ matrix.os == 'windows' }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $args = @(
+            '-S', '${{ matrix.source_dir }}',
+            '-B', '${{ matrix.build_dir }}',
+            '-A', '${{ matrix.cmake_arch }}',
+            '-DCMAKE_BUILD_TYPE=Release',
+            '-DNMC_CLIENT_VERSION=${{ needs.version.outputs.build_version }}',
+            "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_TOOLCHAIN",
+            '-DVCPKG_TARGET_TRIPLET=${{ matrix.vcpkg_triplet }}'
+          )
+          cmake @args
+
+      - name: Build Unix artifact
+        if: ${{ matrix.os != 'windows' }}
+        env:
+          BUILD_DIR: ${{ matrix.build_dir }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          jobs="$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu || true)"
+          if [[ -z "$jobs" || ! "$jobs" =~ ^[0-9]+$ || "$jobs" -lt 1 ]]; then
+            jobs=2
+          fi
+          cmake --build "$BUILD_DIR" --config Release --parallel "$jobs"
+
+      - name: Build Windows artifact
+        if: ${{ matrix.os == 'windows' }}
+        shell: pwsh
+        run: cmake --build '${{ matrix.build_dir }}' --config Release --parallel
+
+      - name: Smoke test client
+        if: ${{ matrix.can_execute && matrix.component == 'client' }}
+        shell: bash
+        env:
+          OS_NAME: ${{ matrix.os }}
+        run: |
+          set -euo pipefail
+          if [[ "$OS_NAME" == "windows" ]]; then
+            pwsh -NoLogo -NoProfile -Command '& ".\nmc_client\build\Release\nmc.exe" version --no-check'
+          else
+            "${{ matrix.executable }}" version --no-check
+          fi
+
+      - name: Package Windows artifact
+        if: ${{ matrix.os == 'windows' }}
         shell: pwsh
         run: |
           .\scripts\package-release.ps1 `
-            -Component client `
-            -Version "${{ needs.release-metadata.outputs.artifact_version }}" `
-            -Input .\nmc_client\build\Release\nmc.exe `
-            -Platform "${{ matrix.platform }}" `
-            -Rename nmc.exe `
+            -Component '${{ matrix.component }}' `
+            -Version '${{ needs.version.outputs.build_version }}' `
+            -Input '${{ matrix.executable }}' `
+            -Platform '${{ matrix.platform }}' `
+            -Rename '${{ matrix.rename }}' `
             -OutputDir .\dist
 
-      - name: Package Unix release artifact
-        if: ${{ runner.os != 'Windows' }}
+      - name: Package Unix artifact
+        if: ${{ matrix.os != 'windows' }}
         shell: bash
+        env:
+          COMPONENT: ${{ matrix.component }}
+          BUILD_VERSION: ${{ needs.version.outputs.build_version }}
+          INPUT: ${{ matrix.executable }}
+          PLATFORM: ${{ matrix.platform }}
+          RENAME: ${{ matrix.rename }}
+          DEB_ARCH: ${{ matrix.deb_arch }}
         run: |
           set -euo pipefail
-          ./scripts/package-release.sh \
-            --component client \
-            --version "${{ needs.release-metadata.outputs.artifact_version }}" \
-            --input ./nmc_client/build/nmc \
-            --platform "${{ matrix.platform }}" \
-            --rename nmc \
+          args=(
+            --component "$COMPONENT"
+            --version "$BUILD_VERSION"
+            --input "$INPUT"
+            --platform "$PLATFORM"
+            --rename "$RENAME"
             --output-dir ./dist
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-assets-client-${{ matrix.platform }}
-          path: dist/*
-          if-no-files-found: error
-          retention-days: 14
-
-  package-server-linux:
-    name: Package Server (Linux ${{ matrix.deb_arch }})
-    runs-on:
-      - self-hosted
-      - Linux
-      - ${{ matrix.runner_arch }}
-    needs: release-metadata
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner_arch: X64
-            platform: linux-x86_64
-            deb_arch: amd64
-          - runner_arch: ARM64
-            platform: linux-aarch64
-            deb_arch: arm64
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Assert Ubuntu self-hosted runner
-        shell: bash
-        run: |
-          set -euo pipefail
-          source /etc/os-release
-          if [[ "${ID:-}" != "ubuntu" ]]; then
-            echo "::error::Expected an Ubuntu self-hosted runner, found ${PRETTY_NAME:-unknown}"
-            exit 1
+          )
+          if [[ -n "$DEB_ARCH" ]]; then
+            args+=(--deb-arch "$DEB_ARCH")
           fi
-
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --allow-downgrades --no-install-recommends \
-            build-essential cmake git pkg-config libssl-dev libspdlog-dev \
-            libwebsockets-dev libcurl4-openssl-dev libpq-dev libpqxx-dev \
-            autoconf automake libtool ca-certificates curl gawk dpkg-dev patchelf
-
-      - name: Configure
-        run: >-
-          cmake -S nmc_server -B nmc_server/build -DCMAKE_BUILD_TYPE=Release
-          -DNMC_SERVER_VERSION=${{ needs.release-metadata.outputs.artifact_version }}
-
-      - name: Build
-        run: cmake --build nmc_server/build --config Release -- -j"$(nproc)"
-
-      - name: Package
-        shell: bash
-        run: |
-          set -euo pipefail
-          ./scripts/package-release.sh \
-            --component server \
-            --version "${{ needs.release-metadata.outputs.artifact_version }}" \
-            --input ./nmc_server/build/nmc_server \
-            --platform "${{ matrix.platform }}" \
-            --rename nmc_server \
-            --deb-arch "${{ matrix.deb_arch }}" \
-            --output-dir ./dist
+          bash scripts/package-release.sh "${args[@]}"
 
       - name: Validate Debian package metadata
+        if: ${{ matrix.deb_arch != '' }}
+        shell: bash
+        env:
+          COMPONENT: ${{ matrix.component }}
+          DEB_ARCH: ${{ matrix.deb_arch }}
         run: |
           set -euo pipefail
-          deb_path="$(find dist -maxdepth 1 -type f -name 'nmc-server_*.deb' | head -n 1)"
-          [[ -n "$deb_path" ]]
-          expected_version="$(basename "$deb_path" | sed -E 's/^nmc-server_(.*)_[^_]+\.deb$/\1/')"
+          deb_path="$(find dist -maxdepth 1 -type f -name "nmc-${COMPONENT}_*.deb" | head -n 1)"
+          if [[ -z "$deb_path" ]]; then
+            echo "::error::Expected a Debian package under dist/"
+            exit 1
+          fi
+          expected_version="$(basename "$deb_path" | sed -E "s/^nmc-${COMPONENT}_(.*)_[^_]+\.deb$/\1/")"
           actual_package="$(dpkg-deb -f "$deb_path" Package)"
           actual_version="$(dpkg-deb -f "$deb_path" Version)"
           actual_arch="$(dpkg-deb -f "$deb_path" Architecture)"
-          [[ "$actual_package" == "nmc-server" ]]
+          [[ "$actual_package" == "nmc-${COMPONENT}" ]]
           [[ "$actual_version" == "$expected_version" ]]
-          [[ "$actual_arch" == "${{ matrix.deb_arch }}" ]]
+          [[ "$actual_arch" == "$DEB_ARCH" ]]
 
       - name: Smoke install Debian package
+        if: ${{ matrix.deb_arch != '' }}
+        shell: bash
+        env:
+          COMPONENT: ${{ matrix.component }}
         run: |
           set -euo pipefail
-          deb_path="$(readlink -f "$(find dist -maxdepth 1 -type f -name 'nmc-server_*.deb' | head -n 1)")"
+          deb_path="$(readlink -f "$(find dist -maxdepth 1 -type f -name "nmc-${COMPONENT}_*.deb" | head -n 1)")"
           sudo apt-get update
           sudo apt-get install -y --allow-downgrades "$deb_path"
-          test -x /usr/bin/nmc_server
-          test -f /usr/share/nmc-server/docs/index.html
-          ldd /usr/bin/nmc_server | tee /tmp/nmc-server.ldd
-          ! grep -q 'not found' /tmp/nmc-server.ldd
-          current_rpath="$(patchelf --print-rpath /usr/bin/nmc_server)"
-          [[ "$current_rpath" == '$ORIGIN/../lib/nmc-server' ]]
-          dpkg-query -W -f='${Version}\n' nmc-server
+          if [[ "$COMPONENT" == "client" ]]; then
+            nmc version --no-check
+          else
+            test -x /usr/bin/nmc_server
+            test -f /usr/share/nmc-server/docs/index.html
+            ldd /usr/bin/nmc_server | tee /tmp/nmc-server.ldd
+            ! grep -q 'not found' /tmp/nmc-server.ldd
+            current_rpath="$(patchelf --print-rpath /usr/bin/nmc_server)"
+            [[ "$current_rpath" == '$ORIGIN/../lib/nmc-server' ]]
+          fi
+          dpkg-query -W -f='${Version}\n' "nmc-${COMPONENT}"
 
-      - name: Upload artifact
+      - name: Upload packaged artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: release-assets-server-${{ matrix.platform }}
+          name: nmc-${{ needs.version.outputs.build_version }}-${{ matrix.component }}-${{ matrix.platform }}
           path: dist/*
           if-no-files-found: error
           retention-days: 14
 
-  publish-release:
-    name: Publish Release
-    runs-on: [self-hosted, Linux, X64]
+  create-version-tag:
+    name: Create version tag
     needs:
-      - release-metadata
-      - package-client-linux
-      - package-client-cross
-      - package-server-linux
+      - version
+      - verify
+      - package
     if: >-
-      always() &&
-      needs.release-metadata.outputs.publish_release == 'true' &&
-      needs.package-client-linux.result == 'success' &&
-      needs.package-server-linux.result == 'success' &&
-      (
-        needs.package-client-cross.result == 'success' ||
-        needs.package-client-cross.result == 'skipped'
-      )
+      ${{
+        (
+          github.event_name == 'push' &&
+          startsWith(github.ref, 'refs/heads/') &&
+          github.ref_name == github.event.repository.default_branch
+        ) ||
+        (github.event_name == 'workflow_dispatch' && inputs.publish_release)
+      }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Create immutable tag for this commit
+        id: tag
+        shell: bash
+        env:
+          DEFAULT_TAG: ${{ needs.version.outputs.tag }}
+          REQUESTED_TAG: ${{ inputs.release_tag }}
+          BUILD_VERSION: ${{ needs.version.outputs.build_version }}
+        run: |
+          set -euo pipefail
+          tag="${REQUESTED_TAG:-$DEFAULT_TAG}"
+
+          git check-ref-format "refs/tags/${tag}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch --force --tags origin
+
+          if git show-ref --tags --verify --quiet "refs/tags/${tag}"; then
+            existing_commit="$(git rev-list -n 1 "${tag}")"
+            if [[ "${existing_commit}" != "${GITHUB_SHA}" ]]; then
+              echo "::error::Tag ${tag} already points to ${existing_commit}, not ${GITHUB_SHA}"
+              exit 1
+            fi
+            echo "Tag ${tag} already exists for ${GITHUB_SHA}"
+          else
+            git tag -a "${tag}" "${GITHUB_SHA}" \
+              -m "NMC ${BUILD_VERSION} (${GITHUB_SHA})"
+            git push origin "refs/tags/${tag}"
+          fi
+
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+
+  publish-release:
+    name: Publish GitHub release
+    needs:
+      - version
+      - create-version-tag
+      - package
+    if: >-
+      ${{
+        (
+          github.event_name == 'push' &&
+          startsWith(github.ref, 'refs/heads/') &&
+          github.ref_name == github.event.repository.default_branch
+        ) ||
+        (github.event_name == 'workflow_dispatch' && inputs.publish_release)
+      }}
+    runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - name: Validate publish target
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [[ -z "${{ needs.release-metadata.outputs.release_tag }}" ]]; then
-            echo "::error::Publishing requires a resolved release tag"
-            exit 1
-          fi
-
-      - name: Ensure release tag exists on GitHub
-        if: ${{ needs.release-metadata.outputs.create_release_tag == 'true' }}
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          RELEASE_TAG: ${{ needs.release-metadata.outputs.release_tag }}
-        run: |
-          set -euo pipefail
-          if gh api "repos/${GH_REPO}/git/ref/tags/${RELEASE_TAG}" >/dev/null 2>&1; then
-            exit 0
-          fi
-
-          gh api "repos/${GH_REPO}/git/refs" \
-            --method POST \
-            -f ref="refs/tags/${RELEASE_TAG}" \
-            -f sha="${GITHUB_SHA}"
-
       - name: Download packaged artifacts
         uses: actions/download-artifact@v5
         with:
           path: ./dist
+          pattern: nmc-${{ needs.version.outputs.build_version }}-*
+          merge-multiple: true
 
       - name: Create or update GitHub release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          RELEASE_TAG: ${{ needs.release-metadata.outputs.release_tag }}
+          RELEASE_TAG: ${{ needs.create-version-tag.outputs.tag }}
+          BUILD_VERSION: ${{ needs.version.outputs.build_version }}
+          RELEASE_VERSION: ${{ needs.version.outputs.release_version }}
+          COMMIT_SHORT: ${{ needs.version.outputs.commit_short }}
           DRAFT_RELEASE: >-
             ${{ github.event_name == 'workflow_dispatch' && inputs.draft_release }}
           MANUAL_PRERELEASE: >-
@@ -496,30 +574,40 @@ jobs:
             exit 1
           fi
 
-          title="NMC ${RELEASE_TAG}"
           prerelease="${MANUAL_PRERELEASE}"
-          if [[ "${GITHUB_EVENT_NAME}" != "workflow_dispatch" && "${RELEASE_TAG}" == *-* ]]; then
+          if [[ "${GITHUB_EVENT_NAME}" != "workflow_dispatch" && "${BUILD_VERSION}" == *-* ]]; then
             prerelease="true"
           fi
 
+          notes="$(mktemp)"
+          cat >"$notes" <<NOTES
+          Automated NMC release for ${GITHUB_SHA}.
+
+          Build version: ${BUILD_VERSION}
+          Source version: ${RELEASE_VERSION}
+          Commit: ${COMMIT_SHORT}
+          Workflow run: ${GITHUB_RUN_ID}
+          NOTES
+
           if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
             gh release upload "${RELEASE_TAG}" "${files[@]}" --clobber
-            exit 0
+            gh release edit "${RELEASE_TAG}" \
+              --target "${GITHUB_SHA}" \
+              --title "NMC ${BUILD_VERSION}" \
+              --notes-file "$notes"
+          else
+            args=(
+              "${RELEASE_TAG}"
+              "${files[@]}"
+              --target "${GITHUB_SHA}"
+              --title "NMC ${BUILD_VERSION}"
+              --notes-file "$notes"
+            )
+            if [[ "${DRAFT_RELEASE}" == "true" ]]; then
+              args+=(--draft)
+            fi
+            if [[ "${prerelease}" == "true" ]]; then
+              args+=(--prerelease)
+            fi
+            gh release create "${args[@]}"
           fi
-
-          args=(
-            "${RELEASE_TAG}"
-            "${files[@]}"
-            --target "${GITHUB_SHA}"
-            --title "${title}"
-            --generate-notes
-          )
-
-          if [[ "${DRAFT_RELEASE}" == "true" ]]; then
-            args+=(--draft)
-          fi
-          if [[ "${prerelease}" == "true" ]]; then
-            args+=(--prerelease)
-          fi
-
-          gh release create "${args[@]}"
