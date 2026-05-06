@@ -110,6 +110,10 @@ namespace NMC::Server {
             if (!guard(req, res)) return;
             handleGailTradingEvaluate(req, res);
         });
+        svr.Get("/gail/status/api-issues", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            handleGailApiIssues(req, res);
+        });
 
         // --- OpenShift Routes ---
         svr.Get("/openshift/resources", [this, guard](const httplib::Request& req, httplib::Response& res) {
@@ -1755,6 +1759,10 @@ namespace NMC::Server {
 
     void APIRoutes::handleGailTradingEvaluate(const httplib::Request& req, httplib::Response& res) {
         proxyGailTradingRequest(req, res, "/v1/trading/evaluate", "POST", req.body);
+    }
+
+    void APIRoutes::handleGailApiIssues(const httplib::Request& req, httplib::Response& res) {
+        proxyGailTradingRequest(req, res, "/v1/status/api-issues", "GET");
     }
 
 } // namespace NMC::Server

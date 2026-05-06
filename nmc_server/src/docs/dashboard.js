@@ -200,6 +200,7 @@
         gailTradingMetric: document.getElementById("gailTradingMetric"),
         gailTradingPanel: document.getElementById("gailTradingPanel"),
         gailTradingPanelStatus: document.getElementById("gailTradingPanelStatus"),
+        gailTradingPanelIssues: document.getElementById("gailTradingPanelIssues"),
         gailTradingPanelEvaluation: document.getElementById("gailTradingPanelEvaluation"),
         gailTradingPanelTrade: document.getElementById("gailTradingPanelTrade"),
         gailTradingModal: document.getElementById("gailTradingModal"),
@@ -747,6 +748,14 @@
         return [];
     }
 
+    function gailApiIssuesData(response) {
+        const data = gailTradingData(response, {});
+        if (data && typeof data === "object" && data.api_issues && typeof data.api_issues === "object") {
+            return data.api_issues;
+        }
+        return data && typeof data === "object" ? data : {};
+    }
+
     function gailTradingErrorMessage(response, fallback = "Unable to load Gail Trading data.") {
         const payload = response && response.payload && typeof response.payload === "object" ? response.payload : {};
         const data = responseData(payload) || {};
@@ -775,7 +784,7 @@
         setGailTradingModalOpen(false);
     }
 
-    function renderGailTradingModal(statusData, portfolioData, historyData, logsData) {
+    function renderGailTradingModal(statusData, portfolioData, historyData, logsData, issuesData) {
         if (!nodes.gailTradingModalBody) {
             return;
         }
@@ -789,6 +798,10 @@
         const portfolio = gailTradingData(portfolioData, {});
         const history = gailTradingItems(historyData, "trades");
         const logs = gailTradingItems(logsData, "logs");
+        const issues = gailApiIssuesData(issuesData);
+        const issueList = issues && issues.issues && typeof issues.issues === "object"
+            ? Object.values(issues.issues)
+            : [];
 
         const paused = s.paused ? "Paused" : (s.enabled ? "Running" : "Disabled");
         const lastEval = s.last_evaluation_at
@@ -814,6 +827,16 @@
             `<tr><td>${l.timestamp ? new Date(l.timestamp * 1000).toLocaleString() : "—"}</td><td>${escapeHtml(l.level || "")}</td><td>${escapeHtml(l.category || "")}</td><td>${escapeHtml(l.message || "")}</td></tr>`
         ).join("");
 
+        const issueRows = issueList
+            .filter((issue) => issue && (issue.active || issue.status === "mitigating"))
+            .slice(0, 20)
+            .map((issue) => {
+                const seen = issue.last_seen_at ? new Date(issue.last_seen_at * 1000).toLocaleString() : "—";
+                const retry = issue.next_retry_at ? new Date(issue.next_retry_at * 1000).toLocaleTimeString() : "—";
+                return `<tr><td>${escapeHtml(issue.provider || issue.api || "—")}</td><td>${escapeHtml(issue.category || "—")}</td><td>${escapeHtml(issue.status || "—")}</td><td>${escapeHtml(issue.mitigation || issue.summary || "—")}</td><td>${escapeHtml(seen)}</td><td>${escapeHtml(retry)}</td></tr>`;
+            })
+            .join("");
+
         nodes.gailTradingModalBody.innerHTML = `
             <div class="trading-status-grid">
                 <div class="trading-stat"><span>Status</span><strong>${escapeHtml(paused)}</strong></div>
@@ -829,6 +852,9 @@
             ${historyRows ? `
             <h4>Recent Trades</h4>
             <table class="trading-table"><thead><tr><th>Symbol</th><th>Side</th><th>Amount</th><th>Exchange</th><th>Time</th></tr></thead><tbody>${historyRows}</tbody></table>` : ""}
+            ${issueRows ? `
+            <h4>API Issues Being Mitigated</h4>
+            <div class="trading-log-wrap"><table class="trading-table trading-log"><thead><tr><th>Provider</th><th>Category</th><th>Status</th><th>Mitigation</th><th>Seen</th><th>Retry</th></tr></thead><tbody>${issueRows}</tbody></table></div>` : ""}
             ${logRows ? `
             <h4>Activity Log</h4>
             <div class="trading-log-wrap"><table class="trading-table trading-log"><thead><tr><th>Time</th><th>Level</th><th>Category</th><th>Message</th></tr></thead><tbody>${logRows}</tbody></table></div>` : ""}
@@ -847,11 +873,12 @@
         }
         nodes.gailTradingModalBody.innerHTML = `<p class="empty">Loading…</p>`;
 
-        const [statusRes, portfolioRes, historyRes, logsRes] = await Promise.all([
+        const [statusRes, portfolioRes, historyRes, logsRes, issuesRes] = await Promise.all([
             fetchJson("/gail/trading/status"),
             fetchJson("/gail/trading/portfolio"),
             fetchJson("/gail/trading/history"),
-            fetchJson("/gail/trading/logs")
+            fetchJson("/gail/trading/logs"),
+            fetchJson("/gail/status/api-issues")
         ]);
 
         if (seq !== gailTradingModalRequestSeq) {
@@ -860,7 +887,7 @@
         if (nodes.gailTradingModalSubtitle) {
             nodes.gailTradingModalSubtitle.textContent = "Gail Trading Bridge";
         }
-        renderGailTradingModal(statusRes, portfolioRes, historyRes, logsRes);
+        renderGailTradingModal(statusRes, portfolioRes, historyRes, logsRes, issuesRes);
     }
 
     function initializeGailTradingUi() {
@@ -7599,7 +7626,8 @@
             openshiftResourcesRes,
             openstackResourcesRes,
             proxmoxResourcesRes,
-            gailTradingStatusRes
+            gailTradingStatusRes,
+            gailApiIssuesRes
         ] = await Promise.all([
             fetchJson("/k8s/list"),
             fetchJson("/vcluster/list"),
@@ -7633,6 +7661,9 @@
             fetchJson("/proxmox/resources"),
             tradingVisible
                 ? fetchJson("/gail/trading/status")
+                : Promise.resolve({ ok: true, status: 200, payload: null }),
+            tradingVisible
+                ? fetchJson("/gail/status/api-issues")
                 : Promise.resolve({ ok: true, status: 200, payload: null })
         ]);
 
@@ -7650,7 +7681,8 @@
             openshiftResourcesRes,
             openstackResourcesRes,
             proxmoxResourcesRes,
-            gailTradingStatusRes
+            gailTradingStatusRes,
+            gailApiIssuesRes
         ];
         updateAuthPill(allResponses);
 
@@ -7836,14 +7868,23 @@
         }
         if (tradingVisible) {
             const ts = gailTradingStatusRes.ok ? gailTradingData(gailTradingStatusRes, null) : null;
+            const apiIssues = gailApiIssuesData(gailApiIssuesRes);
+            const issueSummary = apiIssues && apiIssues.summary ? apiIssues.summary : {};
+            const activeIssues = Number(issueSummary.active || 0);
             const stateLabel = ts
                 ? (ts.paused ? "Paused" : (ts.enabled ? "Active" : "Disabled"))
                 : (gailTradingStatusRes.ok ? "No data" : "Unavailable");
             setCheck(nodes.gailTradingPanelStatus, stateLabel, ts && ts.enabled && !ts.paused ? "#22c55e" : (ts ? "#f59e0b" : "#ef4444"));
+            setCheck(
+                nodes.gailTradingPanelIssues,
+                gailApiIssuesRes.ok ? `${activeIssues} active` : "Unavailable",
+                !gailApiIssuesRes.ok ? "#ef4444" : (activeIssues > 0 ? "#f59e0b" : "#22c55e")
+            );
             setCheck(nodes.gailTradingPanelEvaluation, ts ? formatGailTradingTimestamp(ts.last_evaluation_at) : "--", ts ? "#22c55e" : "#9ca3af");
             setCheck(nodes.gailTradingPanelTrade, ts ? formatGailTradingTimestamp(ts.last_trade_at) : "--", ts ? "#22c55e" : "#9ca3af");
         } else {
             setCheck(nodes.gailTradingPanelStatus, "Not granted", "#9ca3af");
+            setCheck(nodes.gailTradingPanelIssues, "--", "#9ca3af");
             setCheck(nodes.gailTradingPanelEvaluation, "--", "#9ca3af");
             setCheck(nodes.gailTradingPanelTrade, "--", "#9ca3af");
         }

@@ -460,6 +460,7 @@ namespace NMC::Server {
         void handleGailTradingResume(const httplib::Request& req, httplib::Response& res);
         void handleGailTradingOverride(const httplib::Request& req, httplib::Response& res);
         void handleGailTradingEvaluate(const httplib::Request& req, httplib::Response& res);
+        void handleGailApiIssues(const httplib::Request& req, httplib::Response& res);
     };
 
 } // namespace NMC::Server

@@ -649,6 +649,15 @@ td {
     border-collapse: collapse;
 }
 
+.trading-table th,
+.trading-table td {
+    padding: 0.48rem 0.55rem;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    text-align: left;
+    vertical-align: top;
+    overflow-wrap: anywhere;
+}
+
 .trading-log-wrap {
     max-height: 320px;
     overflow: auto;
