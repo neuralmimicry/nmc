@@ -229,6 +229,26 @@ class MockServer:
             )
             return
 
+        if handler.command == "GET" and path_only == "/gail/status/api-issues":
+            self._send_json(
+                handler,
+                200,
+                {
+                    "success": True,
+                    "message": "Gail API issues retrieved.",
+                    "data": {"route": "gail_api_issues_proxy", "path": handler.path},
+                },
+            )
+            return
+
+        if handler.command == "GET" and path_only == "/v1/status/api-issues":
+            self._send_json(
+                handler,
+                200,
+                {"route": "gail_api_issues_direct", "path": handler.path},
+            )
+            return
+
         if handler.command == "POST" and path_only == "/v1/llm/complete":
             try:
                 payload = json.loads(body) if body else {}
@@ -1280,6 +1300,33 @@ def test_gail_request_raw_body_serialization(server: MockServer, home_dir: pathl
     assert_true(req.content_type == "text/plain", f"gail request wrong content-type: {req.content_type!r}")
 
 
+def test_gail_api_issues_uses_server_route_by_default(server: MockServer, home_dir: pathlib.Path) -> None:
+    server.clear_records()
+    result = run_nmc(["gail", "api-issues"], home_dir)
+    assert_success(result, "gail api-issues")
+
+    records = server.records()
+    assert_true(len(records) == 1, f"gail api-issues expected 1 request, got {len(records)}")
+    req = records[0]
+    assert_true(req.method == "GET", f"gail api-issues expected GET, got {req.method}")
+    assert_true(req.path == "/gail/status/api-issues", f"gail api-issues wrong path: {req.path}")
+
+
+def test_gail_api_issues_direct_mode_uses_gail_endpoint(server: MockServer, home_dir: pathlib.Path) -> None:
+    server.clear_records()
+    result = run_nmc(
+        ["gail", "api-issues", "--direct", "--base-url", server.base_url],
+        home_dir,
+    )
+    assert_success(result, "gail api-issues direct")
+
+    records = server.records()
+    assert_true(len(records) == 1, f"gail api-issues direct expected 1 request, got {len(records)}")
+    req = records[0]
+    assert_true(req.method == "GET", f"gail api-issues direct expected GET, got {req.method}")
+    assert_true(req.path == "/v1/status/api-issues", f"gail api-issues direct wrong path: {req.path}")
+
+
 def test_gail_trading_status_uses_server_route_by_default(server: MockServer, home_dir: pathlib.Path) -> None:
     server.clear_records()
     result = run_nmc(["gail", "trading", "status"], home_dir)
@@ -1401,6 +1448,8 @@ def main() -> int:
             test_gail_complete_serialization_and_auth_header(server, home_dir)
             test_gail_transcribe_multipart_serialization(server, home_dir)
             test_gail_request_raw_body_serialization(server, home_dir)
+            test_gail_api_issues_uses_server_route_by_default(server, home_dir)
+            test_gail_api_issues_direct_mode_uses_gail_endpoint(server, home_dir)
             test_gail_trading_status_uses_server_route_by_default(server, home_dir)
             test_gail_trading_override_uses_server_route_and_payload(server, home_dir)
             test_gail_trading_direct_mode_uses_gail_endpoint(server, home_dir)

@@ -43,7 +43,7 @@ Primary modules:
 - `nmc_server/src/Core/APIRoutes.*`: route registration, guards, resource handlers, Tracey state
 - `nmc_server/src/Core/APIRoutes_DocsAuth.cpp`: docs, login/session, and server-metadata route registration
 - `nmc_server/src/Core/APIRoutes_DomainCrud.cpp`: bucket/connection/k8s/vcluster/model/ssh route registration, CRUD handlers, and server snapshot persistence glue
-- `nmc_server/src/Core/APIRoutes_DomainProxy.cpp`: AARNN discovery/proxy, provider portal handlers, Gail trading proxy handlers, and their route registration
+- `nmc_server/src/Core/APIRoutes_DomainProxy.cpp`: AARNN discovery/proxy, provider portal handlers, Gail trading/status/API-issue proxy handlers, and their route registration
 - `nmc_server/src/Core/APIRoutes_ReleaseOperate.cpp`: release/operate route registration for Refiner runtime control, VM lifecycle, and node recruitment
 - `nmc_server/src/Core/APIRoutes_ReleaseOperateExecution.cpp`: VM lifecycle handlers, same-hardware recruit-capacity assessment, and node recruitment execution
 - `nmc_server/src/Core/APIRoutes_Tracey.cpp`: Tracey route registration for fleet telemetry, adaptive control, assessment, and per-agent operations

@@ -618,6 +618,7 @@ GailCommand::GailCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client)
     usage = "nmc gail [command]";
     examples = "nmc gail health --base-url https://gail.internal.example\n"
                "nmc gail status --probe-engines\n"
+               "nmc gail api-issues\n"
                "nmc gail trading status";
 }
 
@@ -626,6 +627,37 @@ int GailCommand::execute(const std::map<std::string, std::string>&,
                          const CLI::GlobalFlags&) {
     printHelp();
     return 0;
+}
+
+GailApiIssuesCommand::GailApiIssuesCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client)
+    : BaseCommand("api-issues", "Show Gail provider and API issues being mitigated", std::move(client)) {
+    usage = "nmc gail api-issues [--direct] [--base-url URL] [--api-token TOKEN]";
+    examples = "nmc gail api-issues\nnmc gail api-issues --direct --base-url https://gail.internal.example";
+    addDirectTradingFlags(*this);
+}
+
+int GailApiIssuesCommand::execute(const std::map<std::string, std::string>& parsedFlags,
+                                  const std::vector<std::string>& parsedArgs,
+                                  const CLI::GlobalFlags& globalFlags) {
+    if (!validateArguments(parsedArgs) || !validateFlags(parsedFlags)) {
+        return 1;
+    }
+
+    Models::CloudResponse response;
+    if (shouldUseDirectGailTrading(apiClient, parsedFlags)) {
+        std::string error;
+        auto client = createDirectTradingClient(parsedFlags, error);
+        if (!client) {
+            return printAndReturnResponse(errorResponse(error), globalFlags);
+        }
+        response = client->request("GET", "/v1/status/api-issues");
+    } else {
+        response = apiClient->getGailApiIssues();
+    }
+    if (response.success) {
+        response.message = "Gail API issues retrieved.";
+    }
+    return printAndReturnResponse(response, globalFlags);
 }
 
 GailTradingCommand::GailTradingCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client)

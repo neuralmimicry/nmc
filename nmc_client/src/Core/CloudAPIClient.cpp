@@ -659,6 +659,13 @@ namespace NMC::Core {
         return processHttpResponse(res, "Server version metadata retrieved.");
     }
 
+    Models::CloudResponse CloudAPIClient::getGailApiIssues() {
+        auto res = cli->Get("/gail/status/api-issues");
+        auto apiResponse = processHttpResponse(res, "Gail API issues retrieved.");
+        unwrapStandardEnvelopeResponse(apiResponse);
+        return apiResponse;
+    }
+
     Models::CloudResponse CloudAPIClient::getGailTradingStatus() {
         auto res = cli->Get("/gail/trading/status");
         auto apiResponse = processHttpResponse(res, "Trading bridge status retrieved.");

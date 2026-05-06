@@ -56,7 +56,8 @@ The current `APIRoutes` split is:
 - `nmc_server/src/Core/APIRoutes_ControlSurface.cpp` owns request logging, auth/session flows, access checks, and server-metadata handlers.
 - `nmc_server/src/Core/APIRoutes_TraceyAdaptiveAssessment.cpp` owns adaptive placement assembly and compromise-assessment handlers.
 - `nmc_server/src/Core/APIRoutes_DomainCrud.cpp` owns bucket/connection/k8s/vcluster/model/ssh route registration, the server-side CRUD handlers, and server snapshot serialisation.
-- `nmc_server/src/Core/APIRoutes_DomainProxy.cpp` owns AARNN discovery/proxy handlers, provider-portal handlers, Gail trading/status proxy handlers, and their route registration.
+- `nmc_server/src/Core/APIRoutes_DomainProxy.cpp` owns AARNN discovery/proxy handlers, provider-portal handlers, Gail trading/status/API-issue proxy handlers, and their route registration.
+- `nmc gail api-issues` reads the Continuum-proxied Gail issue registry at `/gail/status/api-issues`; add `--direct --base-url <gail-url>` to call Gail's `/v1/status/api-issues` endpoint directly.
 - `nmc_server/src/Core/APIRoutes_TraceyRuntime.cpp` owns Tracey discovery, polling, state snapshots, fleet/runtime detail, analytics, and per-agent control/runtime handlers.
 - `nmc_server/src/Core/APIRoutes_InternalHelpers.inl` now holds the shared internal helper layer reused by the remaining route units.
 

@@ -124,6 +124,7 @@ namespace NMC::Core {
         // OpenShift / OpenStack / Proxmox Continuum Operations (via provider portal APIs)
         Models::CloudResponse getServerHealth();
         Models::CloudResponse getServerVersion();
+        Models::CloudResponse getGailApiIssues();
         Models::CloudResponse getGailTradingStatus();
         Models::CloudResponse getGailTradingPortfolio();
         Models::CloudResponse getGailTradingPositions();
