@@ -173,7 +173,7 @@ namespace NMC::Server {
             traceyDiscoveryBindAddr = "0.0.0.0";
         }
         traceyDiscoveryPort = static_cast<int>(
-                parseInt64Value(envOr("NMC_TRACEY_DISCOVERY_PORT", "NM_TRACEY_DISCOVERY_PORT"), 47990, 1, 65535)
+                parseInt64Value(envOr("NMC_TRACEY_DISCOVERY_PORT", "NM_TRACEY_DISCOVERY_PORT"), 47991, 1, 65535)
         );
         traceyDiscoveryMaxAgeMs = parseInt64Value(
                 envOr("NMC_TRACEY_DISCOVERY_MAX_AGE_MS", "NM_TRACEY_DISCOVERY_MAX_AGE_MS"),

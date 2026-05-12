@@ -1339,6 +1339,53 @@ namespace NMC::Server {
             }
         }
 
+        struct StatusPeerHint {
+            std::string agentId;
+            std::string statusAddr;
+            std::string source;
+            bool coordinatorKnown{false};
+            bool coordinator{false};
+            int64_t coordinatorEpoch{0};
+        };
+        std::vector<StatusPeerHint> statusPeerHints;
+
+        if (statusPayload.is_object()) {
+            const auto pushHint = [&](StatusPeerHint hint) {
+                if (hint.agentId.empty() || hint.statusAddr.empty()) {
+                    return;
+                }
+                statusPeerHints.push_back(std::move(hint));
+            };
+
+            StatusPeerHint proxyHint;
+            proxyHint.agentId = firstStringValue(statusPayload, {"proxy_agent_id", "proxyAgentId", "proxy_id", "proxyId"});
+            proxyHint.statusAddr = firstStringValue(statusPayload, {"proxy_addr", "proxyAddr", "proxy_url", "proxyUrl"});
+            proxyHint.source = "status_proxy";
+            pushHint(std::move(proxyHint));
+
+            const auto* peerLocations = firstArrayValue(statusPayload, {"peer_locations", "peerLocations", "peers"});
+            if (peerLocations != nullptr) {
+                for (const auto& peerNode : *peerLocations) {
+                    if (!peerNode.is_object()) {
+                        continue;
+                    }
+                    StatusPeerHint peerHint;
+                    peerHint.agentId = firstStringValue(peerNode, {"agent_id", "agentId", "id"});
+                    peerHint.statusAddr = firstStringValue(
+                            peerNode,
+                            {"status_addr", "statusAddr", "status_url", "statusUrl"}
+                    );
+                    peerHint.source = "status_peer";
+                    if (peerNode.contains("is_coordinator") && peerNode["is_coordinator"].is_boolean()) {
+                        peerHint.coordinatorKnown = true;
+                        peerHint.coordinator = peerNode["is_coordinator"].get<bool>();
+                    }
+                    peerHint.coordinatorEpoch = firstInt64Value(peerNode, {"coordinator_epoch", "coordinatorEpoch", "epoch"}, 0);
+                    pushHint(std::move(peerHint));
+                }
+            }
+        }
+
         std::lock_guard<std::mutex> lock(dataMutex);
         auto& agent = traceyAgents[agentId];
         const std::string previousStatus = normalizeTraceyStatus(agent.status);
@@ -1365,6 +1412,65 @@ namespace NMC::Server {
         if (statusPayload.is_object()) {
             if (statusPayload.contains("is_coordinator") && statusPayload["is_coordinator"].is_boolean()) {
                 agent.coordinator = statusPayload["is_coordinator"].get<bool>();
+            }
+            if (statusPayload.contains("coordinator_epoch") && statusPayload["coordinator_epoch"].is_number_integer()) {
+                agent.coordinatorEpoch = statusPayload["coordinator_epoch"].get<int64_t>();
+            }
+        }
+
+        for (const auto& hint : statusPeerHints) {
+            if (hint.agentId.empty() || hint.agentId == agentId || hint.statusAddr.empty()) {
+                continue;
+            }
+
+            TraceyEndpoint hintedEndpoint;
+            if (!parseTraceyEndpoint(hint.statusAddr, hintedEndpoint)) {
+                continue;
+            }
+            if (!isLocalOrPrivateHost(hintedEndpoint.host, traceyAllowPublicAddr)) {
+                continue;
+            }
+
+            auto& peer = traceyAgents[hint.agentId];
+            const bool wasNewPeer = peer.agentId.empty();
+            const std::string previousPeerStatusAddr = peer.statusAddr;
+            peer.agentId = hint.agentId;
+            peer.source = mergeTraceySource(peer.source, hint.source);
+            peer.statusAddr = hintedEndpoint.normalized;
+            peer.statusReachable = true;
+            peer.lastSeenEpochMs = std::max(peer.lastSeenEpochMs, nowMs);
+            peer.stale = false;
+            peer.nextQueryEpochMs = nowMs;
+            if (peer.status.empty()) {
+                peer.status = "unknown";
+            }
+            if (peer.linkState.empty() || peer.linkState == "offline" || peer.linkState == "announcement-only") {
+                peer.linkState = "discovered";
+            }
+            peer.linkSecurity = deriveLinkSecurity(peer.signaturePresent, &hintedEndpoint, traceyTlsVerify);
+            if (peer.lastError == "Status endpoint is invalid or disallowed by policy.") {
+                peer.lastError.clear();
+            }
+            if (hint.coordinatorKnown) {
+                peer.coordinator = hint.coordinator;
+            }
+            if (hint.coordinatorEpoch > 0) {
+                peer.coordinatorEpoch = std::max(peer.coordinatorEpoch, hint.coordinatorEpoch);
+            }
+
+            if (wasNewPeer || previousPeerStatusAddr != peer.statusAddr) {
+                appendTraceyAgentLogLocked(
+                        peer.agentId,
+                        nowMs,
+                        "info",
+                        "status_poll",
+                        "Discovered Tracey peer endpoint from status snapshot.",
+                        {
+                                {"discovered_from_agent_id", agentId},
+                                {"discovered_status_addr", peer.statusAddr},
+                                {"discovery_source", hint.source}
+                        }
+                );
             }
         }
 
