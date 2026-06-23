@@ -1,0 +1,99 @@
+name: Initialise Wiki
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+    paths:
+      - '.github/workflows/init-wiki.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  init-wiki:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Push wiki Home page
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          WIKI_DIR="$(mktemp -d)"
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.wiki.git" "$WIKI_DIR" 2>/dev/null || true
+          cd "$WIKI_DIR"
+          [ -d .git ] || { git init -b master; git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.wiki.git"; }
+          cat > Home.md << 'WIKIEOF'
+# NeuralMimicry Continuum (NMC) — Wiki Home
+
+**NMC** is the `release` and `operate` control plane for the NeuralMimicry platform. It ships two C++ binaries — `nmc` (operator CLI) and `nmc_server` (HTTP control plane) — covering Kubernetes/vcluster management, Tracey fleet telemetry, VM and node operations, and provider portal orchestration.
+
+> ☕ [Support NeuralMimicry on Crowdfunder](https://www.crowdfunder.co.uk/p/qr/aWggxwPW?utm_campaign=sharemodal&utm_medium=referral&utm_source=shortlink)
+
+---
+
+## Quick navigation
+
+| Page | Description |
+|---|---|
+| [Getting Started](Getting-Started) | Build the CLI and server from source |
+| [CLI Reference](CLI-Reference) | All `nmc` subcommands with examples |
+| [Server Configuration](Server-Configuration) | Auth modes, port, kubeconfig, environment variables |
+| [Tracey Integration](Tracey-Integration) | Fleet telemetry, adaptive planning, and assessment |
+| [Deployment](Deployment) | Ansible role, Debian packages, systemd service |
+| [Contributing](Contributing) | Build dependencies, preflight script, PR guidelines |
+
+---
+
+## Build
+
+```bash
+# CLI
+cmake -S nmc_client -B nmc_client/build
+cmake --build nmc_client/build -j4
+
+# Server
+cmake -S nmc_server -B nmc_server/build
+cmake --build nmc_server/build -j4
+```
+
+## Common CLI commands
+
+```bash
+./nmc_client/build/nmc --help
+./nmc_client/build/nmc connection make local http://127.0.0.1:8080 --default
+./nmc_client/build/nmc server health
+./nmc_client/build/nmc k8s list
+./nmc_client/build/nmc vcluster create demo --namespace vcluster-demo
+./nmc_client/build/nmc tracey fleet
+./nmc_client/build/nmc tracey adaptive
+./nmc_client/build/nmc refiner deploy --manifest ./refiner-k8s.yaml --namespace refiner
+./nmc_client/build/nmc refiner status --namespace refiner
+```
+
+## Server auth modes
+
+| Mode | Description |
+|---|---|
+| `token` (default) | `Authorization: Bearer <token>` or `X-NMC-Token` |
+| `oidc` | OIDC-based authentication |
+| `off` | No authentication (development only) |
+
+Set via `NMC_AUTH_MODE` environment variable.
+
+## Get involved
+
+- 🐛 [Report a bug or request a feature](https://github.com/neuralmimicry/nmc/issues)
+- 💬 [Join the discussion](https://github.com/neuralmimicry/nmc/discussions)
+- 📧 Direct support: [info@neuralmimicry.ai](mailto:info@neuralmimicry.ai) · **£1,000/day + VAT**
+- 🌐 [neuralmimicry.ai](https://neuralmimicry.ai)
+WIKIEOF
+          git config user.email "actions@github.com"
+          git config user.name "GitHub Actions"
+          git add Home.md
+          git diff --cached --quiet && echo "No changes" && exit 0
+          git commit -m "docs: initialise wiki Home page"
+          git push -u origin HEAD:master 2>&1 || git push -u origin HEAD:main 2>&1
