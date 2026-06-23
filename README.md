@@ -1,5 +1,13 @@
 # NeuralMimicry Continuum (NMC)
 
+## Sponsor NeuralMimicry
+
+NMC is the open-source release and operate control plane for the NeuralMimicry platform — a C++ CLI and HTTP server providing Kubernetes management, virtual cluster orchestration, Tracey fleet telemetry, and provider portal integration for OpenShift, OpenStack, and Proxmox. NeuralMimicry is an independent open-source initiative and we rely on community support to sustain this work.
+
+**[☕ Support us on Crowdfunder](https://www.crowdfunder.co.uk/p/qr/aWggxwPW?utm_campaign=sharemodal&utm_medium=referral&utm_source=shortlink)**
+
+---
+
 [![Build and Release](https://github.com/neuralmimicry/nmc/actions/workflows/build-and-release.yml/badge.svg)](https://github.com/neuralmimicry/nmc/actions/workflows/build-and-release.yml)
 
 NeuralMimicry Continuum ships two C++ binaries:
