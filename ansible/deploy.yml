@@ -33,10 +33,21 @@
     nmc_package_download_path: ""
     nmc_package_checksum: ""
     nmc_package_validate_certs: true
+    nmc_package_github_token_file: >-
+      {{
+        lookup('env', 'NMC_GITHUB_TOKEN_FILE')
+        | default('/dev/null', true)
+      }}
     nmc_package_github_token: >-
       {{
         lookup('env', 'GITHUB_TOKEN')
         | default(lookup('env', 'GH_TOKEN'), true)
+        | default(
+            lookup('file', nmc_package_github_token_file, errors='ignore')
+            | default('', true)
+            | trim,
+            true
+          )
         | default('', true)
       }}
     nmc_package_arch_map:

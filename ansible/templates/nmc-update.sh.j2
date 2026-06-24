@@ -39,21 +39,49 @@ git_as_user() {
   run_as_user git -C "$REPO_DIR" "$@"
 }
 
+update_remote_url() {
+  local origin_url repo_path
+  origin_url="$(git_as_user remote get-url origin)"
+
+  if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+    case "$origin_url" in
+      git@github.com:*)
+        repo_path="${origin_url#git@github.com:}"
+        printf 'https://x-access-token:%s@github.com/%s\n' "$GITHUB_TOKEN" "$repo_path"
+        return
+        ;;
+      https://github.com/*)
+        repo_path="${origin_url#https://github.com/}"
+        printf 'https://x-access-token:%s@github.com/%s\n' "$GITHUB_TOKEN" "$repo_path"
+        return
+        ;;
+    esac
+  fi
+
+  printf '%s\n' "$origin_url"
+}
+
 if [[ -n "$(git_as_user status --porcelain)" ]]; then
   echo "Working tree dirty; skipping update" >&2
   exit 0
 fi
 
-git_as_user fetch origin "$REPO_BRANCH"
+REMOTE_URL="$(update_remote_url)"
+if ! git_as_user ls-remote --exit-code "$REMOTE_URL" "$REPO_BRANCH" >/dev/null 2>&1; then
+  echo "Unable to reach origin branch '$REPO_BRANCH'; skipping update" >&2
+  exit 0
+fi
+
+git_as_user fetch "$REMOTE_URL" "$REPO_BRANCH"
 LOCAL="$(git_as_user rev-parse HEAD)"
-REMOTE="$(git_as_user rev-parse "origin/$REPO_BRANCH")"
+REMOTE="$(git_as_user rev-parse FETCH_HEAD)"
 
 if [[ "$LOCAL" == "$REMOTE" ]]; then
   exit 0
 fi
 
 git_as_user checkout "$REPO_BRANCH"
-git_as_user pull --ff-only origin "$REPO_BRANCH"
+git_as_user pull --ff-only "$REMOTE_URL" "$REPO_BRANCH"
 
 if [[ "$INSTALL_MODE" == "package" ]]; then
   release_version="$(tr -d '[:space:]' < "$REPO_DIR/VERSION")"
