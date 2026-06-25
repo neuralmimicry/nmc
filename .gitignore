@@ -34,3 +34,9 @@
 build/
 build_fresh/
 cmake-build-debug/
+log.txt
+check_errors.txt
+.output.txt
+logs/
+tracey.log*
+loader/tracey-loader.manifest.json
