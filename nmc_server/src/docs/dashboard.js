@@ -31,6 +31,8 @@
         traceyMetric: document.getElementById("traceyMetric"),
         traceyAdaptiveMetric: document.getElementById("traceyAdaptiveMetric"),
         traceyAdaptiveLabel: document.getElementById("traceyAdaptiveLabel"),
+        aiLabMetric: document.getElementById("aiLabMetric"),
+        aiLabCard: document.getElementById("aiLabCard"),
         traceyCard: document.getElementById("traceyCard"),
         traceyAdaptiveCard: document.getElementById("traceyAdaptiveCard"),
         traceyAdaptivePolicySelect: document.getElementById("traceyAdaptivePolicySelect"),
@@ -43,6 +45,7 @@
         proxmoxRows: document.getElementById("proxmoxRows"),
         traceyRows: document.getElementById("traceyRows"),
         traceyNetworkRows: document.getElementById("traceyNetworkRows"),
+        aiLabRows: document.getElementById("aiLabRows"),
         traceyAdaptiveSummaryCards: document.getElementById("traceyAdaptiveSummaryCards"),
         traceyAdaptivePhaseList: document.getElementById("traceyAdaptivePhaseList"),
         traceyAdaptiveRecommendationList: document.getElementById("traceyAdaptiveRecommendationList"),
@@ -637,6 +640,9 @@
         const traceyControllable = canControlTracey();
         if (nodes.traceyCard) {
             nodes.traceyCard.hidden = !traceyVisible;
+        }
+        if (nodes.aiLabCard) {
+            nodes.aiLabCard.hidden = !traceyVisible;
         }
         if (nodes.openTraceyInsightsBtn) {
             nodes.openTraceyInsightsBtn.hidden = !traceyVisible;
@@ -7620,6 +7626,7 @@
             proxmoxClustersRes,
             vmListRes,
             traceyAgentsRes,
+            aiLabRes,
             traceyAdaptiveRes,
             k8sHealthRes,
             connectionRes,
@@ -7652,6 +7659,18 @@
                     }
                 }),
             traceyVisible
+                ? fetchJson("/tracey/ai-lab")
+                : Promise.resolve({
+                    ok: true,
+                    status: 200,
+                    payload: {
+                        data: {
+                            summary: {},
+                            reports: []
+                        }
+                    }
+                }),
+            traceyVisible
                 ? fetchJson(buildTraceyAdaptivePath())
                 : Promise.resolve({ ok: true, status: 200, payload: {} }),
             fetchJson("/k8s/healthz"),
@@ -7675,6 +7694,7 @@
             proxmoxClustersRes,
             vmListRes,
             traceyAgentsRes,
+            aiLabRes,
             traceyAdaptiveRes,
             k8sHealthRes,
             connectionRes,
@@ -7802,10 +7822,28 @@
                 return `<tr><td>${escapeHtml(node)}</td><td>${escapeHtml(source)}</td><td>${escapeHtml(announceAddr)}</td><td>${escapeHtml(statusAddr)}</td><td>${statusBadge(linkState)}</td><td>${escapeHtml(linkSecurity)}</td><td>${escapeHtml(failureText)}</td></tr>`;
             });
             renderRows(nodes.traceyNetworkRows, traceyNetworkRows, "No discovered Tracey nodes yet.", 7);
+
+            const aiLabData = responseData(aiLabRes.payload) || {};
+            const aiLabSummary = aiLabData.summary || {};
+            const aiLabReports = Array.isArray(aiLabData.reports) ? aiLabData.reports : [];
+            if (nodes.aiLabMetric) {
+                nodes.aiLabMetric.textContent = `${Number(aiLabSummary.reports || 0)} / ${Number(aiLabSummary.policy_stopped || 0)}`;
+            }
+            const aiLabRows = aiLabReports.slice(0, 8).map((report) => {
+                const scenarioId = String(report.scenario_id || "unknown");
+                const scenarioName = String(report.scenario_name || scenarioId);
+                const evidence = String(report.evidence_root || "-");
+                return `<tr><td><strong>${escapeHtml(scenarioName)}</strong><br><span class="muted">${escapeHtml(scenarioId)}</span></td><td>${statusBadge(report.status || "unknown")}</td><td>${Number(report.actions_executed || 0)} / ${Number(report.actions_proposed || 0)}</td><td>${Number(report.policy_rejections || 0)} rejected</td><td>${Number(report.events_emitted || 0)}</td><td><code>${escapeHtml(evidence)}</code></td></tr>`;
+            });
+            renderRows(nodes.aiLabRows, aiLabRows, "No AI lab reports received yet.", 6);
         } else {
             nodes.traceyMetric.textContent = "--";
+            if (nodes.aiLabMetric) {
+                nodes.aiLabMetric.textContent = "--";
+            }
             renderRows(nodes.traceyRows, [], "Tracey access is not granted.", 5);
             renderRows(nodes.traceyNetworkRows, [], "Tracey access is not granted.", 7);
+            renderRows(nodes.aiLabRows, [], "Tracey access is not granted.", 6);
         }
 
         const adaptiveData = traceyVisible && traceyAdaptiveRes.ok ? (responseData(traceyAdaptiveRes.payload) || {}) : null;

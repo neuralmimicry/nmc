@@ -166,6 +166,31 @@
     </section>
 
     <section class="endpoint-section">
+        <h2>GET /tracey/ai-lab</h2>
+        <p>Returns AI-lab scenario report summaries posted by the controlled red-team runner.</p>
+        <ul>
+            <li><code>summary.reports</code> - retained bounded report count</li>
+            <li><code>summary.policy_stopped</code> - scenarios stopped by policy</li>
+            <li><code>summary.actions_proposed</code>, <code>summary.policy_rejections</code>, <code>summary.events_emitted</code></li>
+            <li><code>reports[]</code> - latest scenario status, action totals, evidence path, and raw payload</li>
+        </ul>
+    </section>
+
+    <section class="endpoint-section">
+        <h2>POST /tracey/ai-lab/report</h2>
+        <p>Accepts one final scenario report from <code>nm-red-team --scenario</code>. The payload is a summary object, not raw exploit output.</p>
+        <pre><code class="language-json">{
+  "scenario_id": "seeded-credential-and-data-staging",
+  "scenario_name": "Seeded credential misuse and synthetic data staging",
+  "status": "completed",
+  "actions_proposed": 6,
+  "policy_rejections": 0,
+  "events_emitted": 6,
+  "evidence_root": "evidence/seeded-credential-and-data-staging"
+}</code></pre>
+    </section>
+
+    <section class="endpoint-section">
         <h2>GET /tracey/agents/{agent_id}/assessment/plan</h2>
         <p>Builds the server-generated assessment assignment for one Tracey agent.</p>
         <ul>

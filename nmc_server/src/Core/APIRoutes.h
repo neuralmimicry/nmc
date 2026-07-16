@@ -168,6 +168,21 @@ namespace NMC::Server {
             std::string message;
             nlohmann::json context;
         };
+        struct AiLabReport {
+            std::string scenarioId;
+            std::string scenarioName;
+            std::string status;
+            std::string evidenceRoot;
+            int64_t receivedEpochMs{0};
+            int64_t startedEpochMs{0};
+            int64_t finishedEpochMs{0};
+            int actionsProposed{0};
+            int actionsExecuted{0};
+            int policyRejections{0};
+            int approvalsRequired{0};
+            int eventsEmitted{0};
+            nlohmann::json payload;
+        };
         struct AarnnOrchestratorRecord {
             std::string orchestratorId;
             std::string clusterId;
@@ -196,6 +211,7 @@ namespace NMC::Server {
         std::unordered_map<std::string, TraceyRequirement> traceyRequirements;
         std::unordered_map<std::string, std::deque<TraceyStatusSample>> traceyAgentHistory;
         std::unordered_map<std::string, std::deque<TraceyAgentLogEntry>> traceyAgentLogs;
+        std::deque<AiLabReport> aiLabReports;
         std::unordered_map<std::string, AarnnOrchestratorRecord> aarnnOrchestrators;
         int64_t traceyStaleAfterSeconds;
         bool traceyEnforceManagedResources;
@@ -212,6 +228,7 @@ namespace NMC::Server {
         int64_t traceyStatusMaxBackoffMs;
         size_t traceyHistoryMaxSamples;
         size_t traceyAgentLogMaxEntries;
+        size_t aiLabReportMaxEntries;
         std::string traceyStatusBearerToken;
         std::string traceyLocalAgentId;
         std::thread traceyDiscoveryThread;
@@ -353,6 +370,8 @@ namespace NMC::Server {
         void handleTraceyAssessmentFleet(const httplib::Request& req, httplib::Response& res);
         void handleTraceyAssessmentPlan(const httplib::Request& req, httplib::Response& res);
         void handleTraceyAssessmentReport(const httplib::Request& req, httplib::Response& res);
+        void handleAiLabStatus(const httplib::Request& req, httplib::Response& res);
+        void handleAiLabReport(const httplib::Request& req, httplib::Response& res);
         void handleTraceyAgentCompromise(const httplib::Request& req, httplib::Response& res);
         void handleTraceyAgentControl(const httplib::Request& req, httplib::Response& res);
         void handleTraceyAgentDeepDive(const httplib::Request& req, httplib::Response& res);
@@ -424,10 +443,12 @@ namespace NMC::Server {
         nlohmann::json traceyRequirementToJson(const TraceyRequirement& requirement) const;
         nlohmann::json traceyStatusSampleToJson(const TraceyStatusSample& sample) const;
         nlohmann::json traceyAgentLogToJson(const TraceyAgentLogEntry& entry) const;
+        nlohmann::json aiLabReportToJson(const AiLabReport& report) const;
         TraceyAgent traceyAgentFromJson(const nlohmann::json& payload) const;
         TraceyRequirement traceyRequirementFromJson(const nlohmann::json& payload) const;
         TraceyStatusSample traceyStatusSampleFromJson(const nlohmann::json& payload) const;
         TraceyAgentLogEntry traceyAgentLogFromJson(const nlohmann::json& payload) const;
+        AiLabReport aiLabReportFromJson(const nlohmann::json& payload) const;
 
         // Declare an instance of K8sHandlers
         std::unique_ptr<K8sHandlers> k8sHandlers;

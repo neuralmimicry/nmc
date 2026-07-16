@@ -211,6 +211,12 @@ namespace NMC::Server {
                 50,
                 50000
         ));
+        aiLabReportMaxEntries = static_cast<size_t>(parseInt64Value(
+                envOr("NMC_AI_LAB_REPORT_MAX_ENTRIES", "NM_AI_LAB_REPORT_MAX_ENTRIES"),
+                200,
+                10,
+                50000
+        ));
         const char* traceyStatusTokenEnv = envOr("NMC_TRACEY_STATUS_BEARER_TOKEN", "NM_TRACEY_STATUS_BEARER_TOKEN");
         traceyStatusBearerToken = traceyStatusTokenEnv ? trim(traceyStatusTokenEnv) : "";
 

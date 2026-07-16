@@ -172,6 +172,7 @@ set(NMC_SERVER_SOURCES
         src/Core/APIRoutes_DomainProxy.cpp
         src/Core/APIRoutes_ReleaseOperate.cpp
         src/Core/APIRoutes_ReleaseOperateExecution.cpp
+        src/Core/APIRoutes_AiLab.cpp
         src/Core/APIRoutes_Tracey.cpp
         src/Core/APIRoutes_TraceyAdaptiveAssessment.cpp
         src/Core/APIRoutes_TraceyRuntime.cpp

@@ -34,6 +34,14 @@ namespace NMC::Server {
             if (!guard(req, res)) return;
             handleTraceyAssessmentFleet(req, res);
         });
+        svr.Get("/tracey/ai-lab", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            handleAiLabStatus(req, res);
+        });
+        svr.Post("/tracey/ai-lab/report", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            handleAiLabReport(req, res);
+        });
         svr.Get("/tracey/racks", [this, guard](const httplib::Request& req, httplib::Response& res) {
             if (!guard(req, res)) return;
             handleListTraceyRacks(req, res);

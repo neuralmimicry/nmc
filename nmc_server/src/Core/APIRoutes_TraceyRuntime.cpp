@@ -454,16 +454,22 @@ namespace NMC::Server {
                 requirements.push_back(traceyRequirementToJson(it->second));
             }
         }
+        nlohmann::json aiLab = nlohmann::json::array();
+        for (const auto& report : aiLabReports) {
+            aiLab.push_back(aiLabReportToJson(report));
+        }
 
         return {
                 {"schema_version", 1},
                 {"generated_epoch_ms", nowMs > 0 ? nowMs : nowEpochMs()},
                 {"tracey_history_max_samples", traceyHistoryMaxSamples},
                 {"tracey_agent_log_max_entries", traceyAgentLogMaxEntries},
+                {"ai_lab_report_max_entries", aiLabReportMaxEntries},
                 {"tracey_agents", std::move(agents)},
                 {"tracey_requirements", std::move(requirements)},
                 {"tracey_agent_history", std::move(history)},
-                {"tracey_agent_logs", std::move(logs)}
+                {"tracey_agent_logs", std::move(logs)},
+                {"ai_lab_reports", std::move(aiLab)}
         };
     }
 
@@ -476,6 +482,7 @@ namespace NMC::Server {
         traceyRequirements.clear();
         traceyAgentHistory.clear();
         traceyAgentLogs.clear();
+        aiLabReports.clear();
 
         for (const auto& agentPayload : snapshot.value("tracey_agents", nlohmann::json::array())) {
             TraceyAgent agent = traceyAgentFromJson(agentPayload);
@@ -545,6 +552,22 @@ namespace NMC::Server {
             }
             if (!dequeEntries.empty()) {
                 traceyAgentLogs[agentId] = std::move(dequeEntries);
+            }
+        }
+        std::vector<AiLabReport> restoredReports;
+        for (const auto& reportPayload : snapshot.value("ai_lab_reports", nlohmann::json::array())) {
+            AiLabReport report = aiLabReportFromJson(reportPayload);
+            if (!report.scenarioId.empty()) {
+                restoredReports.push_back(std::move(report));
+            }
+        }
+        std::sort(restoredReports.begin(), restoredReports.end(), [](const AiLabReport& left, const AiLabReport& right) {
+            return left.receivedEpochMs < right.receivedEpochMs;
+        });
+        for (const auto& report : restoredReports) {
+            aiLabReports.push_back(report);
+            while (aiLabReports.size() > aiLabReportMaxEntries) {
+                aiLabReports.pop_front();
             }
         }
     }
