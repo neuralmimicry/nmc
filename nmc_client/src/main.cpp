@@ -129,6 +129,8 @@ int main(int argc, char* argv[]) {
     traceyCmd->addSubcommand(std::make_shared<NMC::Commands::TraceyAssessmentCommand>(apiClient));
     traceyCmd->addSubcommand(std::make_shared<NMC::Commands::TraceyAssessmentPlanCommand>(apiClient));
     traceyCmd->addSubcommand(std::make_shared<NMC::Commands::TraceyAssessmentReportCommand>(apiClient));
+    traceyCmd->addSubcommand(std::make_shared<NMC::Commands::TraceyAiLabCommand>(apiClient));
+    traceyCmd->addSubcommand(std::make_shared<NMC::Commands::TraceyAiLabReportCommand>(apiClient));
     traceyCmd->addSubcommand(std::make_shared<NMC::Commands::TraceyRacksCommand>(apiClient));
     traceyCmd->addSubcommand(std::make_shared<NMC::Commands::TraceyRackCommand>(apiClient));
     traceyCmd->addSubcommand(std::make_shared<NMC::Commands::TraceyAnalysisCommand>(apiClient));

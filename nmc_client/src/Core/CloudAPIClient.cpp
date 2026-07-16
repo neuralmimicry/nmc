@@ -999,6 +999,20 @@ namespace NMC::Core {
         return processHttpResponse(res, "Tracey assessment report submitted.");
     }
 
+    Models::CloudResponse CloudAPIClient::getTraceyAiLabStatus() {
+        auto res = cli->Get("/tracey/ai-lab");
+        return processHttpResponse(res, "Tracey AI lab reports retrieved.");
+    }
+
+    Models::CloudResponse CloudAPIClient::submitTraceyAiLabReport(const nlohmann::json& reportPayload) {
+        auto res = cli->Post(
+                "/tracey/ai-lab/report",
+                reportPayload.dump(),
+                "application/json"
+        );
+        return processHttpResponse(res, "Tracey AI lab report submitted.");
+    }
+
     Models::CloudResponse CloudAPIClient::listTraceyRacks() {
         auto res = cli->Get("/tracey/racks");
         return processHttpResponse(res, "Tracey racks listed.");

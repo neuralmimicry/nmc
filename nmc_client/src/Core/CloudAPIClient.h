@@ -182,6 +182,8 @@ namespace NMC::Core {
         Models::CloudResponse getTraceyAssessmentFleet();
         Models::CloudResponse getTraceyAssessmentPlan(const std::string& agentId);
         Models::CloudResponse submitTraceyAssessmentReport(const std::string& agentId, const nlohmann::json& reportPayload);
+        Models::CloudResponse getTraceyAiLabStatus();
+        Models::CloudResponse submitTraceyAiLabReport(const nlohmann::json& reportPayload);
         Models::CloudResponse listTraceyRacks();
         Models::CloudResponse getTraceyRackDetails(const std::string& rackId,
                                                    const TraceySimulationQuery& simulation = TraceySimulationQuery{});

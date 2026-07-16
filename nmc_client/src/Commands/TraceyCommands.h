@@ -89,6 +89,22 @@ public:
                 const CLI::GlobalFlags& globalFlags) override;
 };
 
+class TraceyAiLabCommand : public BaseCommand {
+public:
+    TraceyAiLabCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client);
+    int execute(const std::map<std::string, std::string>& parsedFlags,
+                const std::vector<std::string>& parsedArgs,
+                const CLI::GlobalFlags& globalFlags) override;
+};
+
+class TraceyAiLabReportCommand : public BaseCommand {
+public:
+    TraceyAiLabReportCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client);
+    int execute(const std::map<std::string, std::string>& parsedFlags,
+                const std::vector<std::string>& parsedArgs,
+                const CLI::GlobalFlags& globalFlags) override;
+};
+
 class TraceyRacksCommand : public BaseCommand {
 public:
     TraceyRacksCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client);

@@ -444,6 +444,53 @@ int TraceyAssessmentReportCommand::execute(const std::map<std::string, std::stri
     return response.success ? 0 : 1;
 }
 
+TraceyAiLabCommand::TraceyAiLabCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client)
+    : BaseCommand("ai-lab", "List AI-assisted adversary-emulation lab reports", std::move(client)) {
+    usage = "nmc tracey ai-lab";
+    examples = "nmc tracey ai-lab";
+}
+
+int TraceyAiLabCommand::execute(const std::map<std::string, std::string>& parsedFlags,
+                                const std::vector<std::string>& parsedArgs,
+                                const CLI::GlobalFlags& globalFlags) {
+    if (!validateArguments(parsedArgs) || !validateFlags(parsedFlags)) {
+        return 1;
+    }
+    Models::CloudResponse response = apiClient->getTraceyAiLabStatus();
+    printOutput(response, globalFlags);
+    return response.success ? 0 : 1;
+}
+
+TraceyAiLabReportCommand::TraceyAiLabReportCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client)
+    : BaseCommand("ai-lab-report", "Submit an AI lab adversary-emulation report payload", std::move(client)) {
+    usage = "nmc tracey ai-lab-report --payload JSON";
+    examples = R"(nmc tracey ai-lab-report --payload '{"scenario_id":"s1","status":"completed"}')";
+    addFlag(CLI::Flag("p", "payload", "AI lab report JSON payload (object)", CLI::FlagType::String, true));
+}
+
+int TraceyAiLabReportCommand::execute(const std::map<std::string, std::string>& parsedFlags,
+                                      const std::vector<std::string>& parsedArgs,
+                                      const CLI::GlobalFlags& globalFlags) {
+    if (!validateArguments(parsedArgs) || !validateFlags(parsedFlags)) {
+        return 1;
+    }
+
+    std::string parseError;
+    nlohmann::json payload;
+    if (!parseJsonFlag(parsedFlags, "payload", payload, parseError, true)) {
+        if (parseError.empty()) {
+            parseError = "Tracey AI lab report requires --payload JSON object.";
+        }
+        Models::CloudResponse response{false, parseError, nlohmann::json::object(), 400};
+        printOutput(response, globalFlags);
+        return 1;
+    }
+
+    Models::CloudResponse response = apiClient->submitTraceyAiLabReport(payload);
+    printOutput(response, globalFlags);
+    return response.success ? 0 : 1;
+}
+
 TraceyRacksCommand::TraceyRacksCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client)
     : BaseCommand("racks", "List Tracey rack-level summaries", std::move(client)) {
     usage = "nmc tracey racks";
