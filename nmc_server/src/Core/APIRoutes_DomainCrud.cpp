@@ -189,6 +189,10 @@ namespace NMC::Server {
         // --- Gail Trading Bridge Routes ---
         // These proxy Gail's /v1/trading/* endpoints so the NMC dashboard and CLI
         // can observe and control the trading bridge without direct Gail connectivity.
+        svr.Get("/gail/trading/overview", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            handleGailTradingOverview(req, res);
+        });
         svr.Get("/gail/trading/status", [this, guard](const httplib::Request& req, httplib::Response& res) {
             if (!guard(req, res)) return;
             handleGailTradingStatus(req, res);

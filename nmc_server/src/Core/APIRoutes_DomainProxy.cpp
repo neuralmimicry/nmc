@@ -18,12 +18,15 @@
 #include <cctype>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <ifaddrs.h>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <map>
 #include <netdb.h>
 #include <poll.h>
+#include <regex>
 #include <set>
 #include <sstream>
 #include <sys/socket.h>
@@ -37,6 +40,307 @@ namespace NMC::Server {
 
     namespace {
 #include "APIRoutes_InternalHelpers.inl"
+
+        nlohmann::json unwrapGailEnvelope(const nlohmann::json& payload) {
+            nlohmann::json current = payload;
+            for (int depth = 0; depth < 4; ++depth) {
+                if (!current.is_object()) {
+                    break;
+                }
+                auto dataIt = current.find("data");
+                if (dataIt != current.end() && !dataIt->is_null()) {
+                    current = *dataIt;
+                    continue;
+                }
+                auto payloadIt = current.find("payload");
+                if (payloadIt != current.end() && !payloadIt->is_null()) {
+                    current = *payloadIt;
+                    continue;
+                }
+                break;
+            }
+            return current;
+        }
+
+        nlohmann::json extractArrayPayload(const nlohmann::json& payload,
+                                           std::initializer_list<const char*> preferredKeys) {
+            if (payload.is_array()) {
+                return payload;
+            }
+            if (!payload.is_object()) {
+                return nlohmann::json::array();
+            }
+            for (const char* key : preferredKeys) {
+                const auto it = payload.find(key);
+                if (it != payload.end() && it->is_array()) {
+                    return *it;
+                }
+            }
+            const auto itemsIt = payload.find("items");
+            if (itemsIt != payload.end() && itemsIt->is_array()) {
+                return *itemsIt;
+            }
+            const auto dataIt = payload.find("data");
+            if (dataIt != payload.end() && dataIt->is_array()) {
+                return *dataIt;
+            }
+            return nlohmann::json::array();
+        }
+
+        std::string normalizeTradingAction(const std::string& rawAction, const std::string& messageLower) {
+            std::string action = toLower(trim(rawAction));
+            std::replace(action.begin(), action.end(), '-', '_');
+            std::replace(action.begin(), action.end(), ' ', '_');
+            if (action == "buy" || action == "sell" || action == "hold"
+                || action == "strong_buy" || action == "strong_sell" || action == "cancel") {
+                return action;
+            }
+            if (messageLower.find("strong_buy") != std::string::npos || messageLower.find("strong buy") != std::string::npos) {
+                return "strong_buy";
+            }
+            if (messageLower.find("strong_sell") != std::string::npos || messageLower.find("strong sell") != std::string::npos) {
+                return "strong_sell";
+            }
+            if (messageLower.find(" buy") != std::string::npos || messageLower.rfind("buy", 0) == 0) {
+                return "buy";
+            }
+            if (messageLower.find(" sell") != std::string::npos || messageLower.rfind("sell", 0) == 0) {
+                return "sell";
+            }
+            if (messageLower.find(" hold") != std::string::npos || messageLower.rfind("hold", 0) == 0) {
+                return "hold";
+            }
+            if (messageLower.find("cancel") != std::string::npos) {
+                return "cancel";
+            }
+            return "";
+        }
+
+        std::string extractTradingSymbolFromMessage(const std::string& message) {
+            static const std::regex pattern(R"(([A-Za-z0-9]{2,15}/[A-Za-z0-9]{2,15}))");
+            std::smatch match;
+            if (std::regex_search(message, match, pattern) && match.size() > 1) {
+                return trim(match[1].str());
+            }
+            return "";
+        }
+
+        void appendUniqueString(std::vector<std::string>& values,
+                                std::set<std::string>& seen,
+                                const std::string& value) {
+            const std::string trimmed = trim(value);
+            if (trimmed.empty() || seen.find(trimmed) != seen.end()) {
+                return;
+            }
+            seen.insert(trimmed);
+            values.push_back(trimmed);
+        }
+
+        bool parseBoundedPositiveInt(const httplib::Params& params,
+                                     const std::string& key,
+                                     int fallback,
+                                     int maxValue,
+                                     int& valueOut) {
+            valueOut = fallback;
+            const auto it = params.find(key);
+            if (it == params.end()) {
+                return true;
+            }
+            const std::string candidate = trim(it->second);
+            if (candidate.empty()) {
+                return true;
+            }
+            try {
+                int parsed = std::stoi(candidate);
+                if (parsed <= 0) {
+                    return false;
+                }
+                valueOut = std::min(parsed, maxValue);
+                return true;
+            } catch (const std::exception&) {
+                return false;
+            }
+        }
+
+        int64_t countActiveApiIssues(const nlohmann::json& issuesPayload) {
+            if (!issuesPayload.is_object()) {
+                return 0;
+            }
+            const auto summaryIt = issuesPayload.find("summary");
+            if (summaryIt != issuesPayload.end() && summaryIt->is_object()) {
+                const int64_t summaryActive = firstInt64Value(*summaryIt, {"active", "active_issues"}, -1);
+                if (summaryActive >= 0) {
+                    return summaryActive;
+                }
+            }
+            const auto issuesIt = issuesPayload.find("issues");
+            if (issuesIt == issuesPayload.end() || !issuesIt->is_object()) {
+                return 0;
+            }
+            int64_t activeCount = 0;
+            for (const auto& [issueId, issueNode] : issuesIt->items()) {
+                (void)issueId;
+                if (!issueNode.is_object()) {
+                    continue;
+                }
+                const bool active = issueNode.contains("active")
+                                    ? jsonBoolValue(issueNode["active"], false)
+                                    : (toLower(firstStringValue(issueNode, {"status"}, "")) == "active");
+                if (active) {
+                    activeCount += 1;
+                }
+            }
+            return activeCount;
+        }
+
+        int64_t normalizeEpochSeconds(double rawTimestamp) {
+            if (!std::isfinite(rawTimestamp) || rawTimestamp <= 0.0) {
+                return 0;
+            }
+            // Accept mixed upstream timestamp units (seconds/milliseconds/microseconds)
+            // and normalize to epoch-seconds for dashboard consistency.
+            if (rawTimestamp >= 1.0e14) {
+                rawTimestamp /= 1000000.0;
+            } else if (rawTimestamp >= 1.0e12) {
+                rawTimestamp /= 1000.0;
+            }
+            return static_cast<int64_t>(std::floor(rawTimestamp));
+        }
+
+        int64_t timestampFromJsonNode(const nlohmann::json& node) {
+            if (node.is_number_float()) {
+                return normalizeEpochSeconds(node.get<double>());
+            }
+            if (node.is_number_integer()) {
+                return normalizeEpochSeconds(static_cast<double>(node.get<int64_t>()));
+            }
+            if (node.is_number_unsigned()) {
+                return normalizeEpochSeconds(static_cast<double>(node.get<uint64_t>()));
+            }
+            if (node.is_string()) {
+                const std::string value = trim(node.get<std::string>());
+                if (value.empty()) {
+                    return 0;
+                }
+                try {
+                    return normalizeEpochSeconds(std::stod(value));
+                } catch (const std::exception&) {
+                    return 0;
+                }
+            }
+            return 0;
+        }
+
+        int64_t firstTimestampValue(const nlohmann::json& objectNode,
+                                    std::initializer_list<const char*> keys,
+                                    int64_t fallback) {
+            if (!objectNode.is_object()) {
+                return fallback;
+            }
+            for (const char* key : keys) {
+                const auto it = objectNode.find(key);
+                if (it == objectNode.end() || it->is_null()) {
+                    continue;
+                }
+                const int64_t parsed = timestampFromJsonNode(*it);
+                if (parsed > 0) {
+                    return parsed;
+                }
+            }
+            return fallback;
+        }
+
+        int64_t extractEventTimestamp(const nlohmann::json& payload) {
+            return firstTimestampValue(
+                payload,
+                {
+                    "timestamp",
+                    "timestamp_s",
+                    "timestamp_sec",
+                    "ts",
+                    "executed_at",
+                    "created_at",
+                    "seen_at",
+                    "last_seen_at",
+                    "updated_at",
+                    "event_time"
+                },
+                0
+            );
+        }
+
+        nlohmann::json nullableNumber(double value) {
+            if (!std::isfinite(value)) {
+                return nullptr;
+            }
+            return value;
+        }
+
+        void sortJsonArrayByTimestampDesc(nlohmann::json& values) {
+            if (!values.is_array() || values.empty()) {
+                return;
+            }
+            std::vector<nlohmann::json> sorted(values.begin(), values.end());
+            std::stable_sort(
+                sorted.begin(),
+                sorted.end(),
+                [](const nlohmann::json& left, const nlohmann::json& right) {
+                    return extractEventTimestamp(left) > extractEventTimestamp(right);
+                }
+            );
+            values = std::move(sorted);
+        }
+
+        void truncateJsonArray(nlohmann::json& values, std::size_t maxItems) {
+            if (!values.is_array() || values.size() <= maxItems) {
+                return;
+            }
+            values.erase(values.begin() + static_cast<nlohmann::json::difference_type>(maxItems), values.end());
+        }
+
+        nlohmann::json normalizeRecentTrade(const nlohmann::json& trade) {
+            if (!trade.is_object()) {
+                return trade;
+            }
+
+            nlohmann::json normalized = trade;
+            const int64_t timestamp = extractEventTimestamp(trade);
+            if (timestamp > 0) {
+                normalized["timestamp"] = timestamp;
+            }
+
+            const std::string symbol = firstStringValue(trade, {"symbol", "pair", "instrument"});
+            if (!symbol.empty()) {
+                normalized["symbol"] = symbol;
+            }
+
+            const std::string action = normalizeTradingAction(
+                firstStringValue(trade, {"side", "action", "decision", "signal"}),
+                ""
+            );
+            if (!action.empty()) {
+                normalized["action"] = action;
+                if (!normalized.contains("side") || normalized["side"].is_null()
+                    || (normalized["side"].is_string() && trim(normalized["side"].get<std::string>()).empty())) {
+                    normalized["side"] = action;
+                }
+            }
+
+            const double amountUsd = firstDoubleValue(
+                trade,
+                {"amount_usd", "notional_usd", "value_usd"},
+                std::numeric_limits<double>::quiet_NaN()
+            );
+            if (std::isfinite(amountUsd)) {
+                normalized["amount_usd"] = amountUsd;
+            }
+
+            const std::string exchange = firstStringValue(trade, {"exchange", "venue"});
+            if (!exchange.empty()) {
+                normalized["exchange"] = exchange;
+            }
+            return normalized;
+        }
     }
 
     void APIRoutes::registerDomainProxyRoutes(httplib::Server& svr, const APIRoutes::RouteGuard& guard) {
@@ -58,6 +362,10 @@ namespace NMC::Server {
         // --- Gail Trading Bridge Routes ---
         // These proxy Gail's /v1/trading/* endpoints so the NMC dashboard and CLI
         // can observe and control the trading bridge without direct Gail connectivity.
+        svr.Get("/gail/trading/overview", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            handleGailTradingOverview(req, res);
+        });
         svr.Get("/gail/trading/status", [this, guard](const httplib::Request& req, httplib::Response& res) {
             if (!guard(req, res)) return;
             handleGailTradingStatus(req, res);
@@ -1609,22 +1917,32 @@ namespace NMC::Server {
         return {};
     }
 
-    bool APIRoutes::proxyGailTradingRequest(
-        const httplib::Request& req,
-        httplib::Response& res,
+    bool APIRoutes::fetchGailTradingPayload(
+        const httplib::Params* queryParams,
         const std::string& gailPath,
         const std::string& method,
-        const std::string& body
-    ) {
+        const std::string& body,
+        int& upstreamStatusOut,
+        nlohmann::json& parsedPayloadOut,
+        std::string& rawBodyOut,
+        std::string& errorOut
+    ) const {
+        upstreamStatusOut = 0;
+        parsedPayloadOut = nullptr;
+        rawBodyOut.clear();
+        errorOut.clear();
+
         const std::string baseUrl = resolveGailBaseUrl();
         if (baseUrl.empty()) {
-            sendErrorResponse(res, 503, "Gail service is not configured (NMC_GAIL_BASE_URL not set).");
+            upstreamStatusOut = 503;
+            errorOut = "Gail service is not configured (NMC_GAIL_BASE_URL not set).";
             return false;
         }
 
         TraceyEndpoint endpoint;
         if (!parseTraceyEndpoint(baseUrl, endpoint)) {
-            sendErrorResponse(res, 503, "Gail base URL is invalid: " + baseUrl);
+            upstreamStatusOut = 503;
+            errorOut = "Gail base URL is invalid: " + baseUrl;
             return false;
         }
 
@@ -1636,11 +1954,10 @@ namespace NMC::Server {
             headers.emplace("Authorization", "Bearer " + apiToken);
         }
 
-        // Forward query string from incoming request to upstream.
         std::string upstreamPath = buildTraceyPath(endpoint, gailPath);
-        if (!req.params.empty()) {
+        if (queryParams != nullptr && !queryParams->empty()) {
             bool first = (upstreamPath.find('?') == std::string::npos);
-            for (const auto& [k, v] : req.params) {
+            for (const auto& [k, v] : *queryParams) {
                 upstreamPath += (first ? '?' : '&');
                 upstreamPath += k + '=' + v;
                 first = false;
@@ -1655,11 +1972,13 @@ namespace NMC::Server {
                 return client.Get(upstreamPath.c_str(), headers);
             }
             if (method == "POST") {
-                return client.Post(upstreamPath.c_str(), headers,
-                                   body.empty() ? "{}" : body,
-                                   "application/json");
+                return client.Post(
+                    upstreamPath.c_str(),
+                    headers,
+                    body.empty() ? "{}" : body,
+                    "application/json"
+                );
             }
-            // Fallback: treat as GET.
             return client.Get(upstreamPath.c_str(), headers);
         };
 
@@ -1670,7 +1989,8 @@ namespace NMC::Server {
             client.enable_server_certificate_verification(true);
             result = doRequest(client);
 #else
-            sendErrorResponse(res, 503, "HTTPS Gail proxy unavailable: httplib built without OpenSSL support.");
+            upstreamStatusOut = 503;
+            errorOut = "HTTPS Gail proxy unavailable: httplib built without OpenSSL support.";
             return false;
 #endif
         } else {
@@ -1679,21 +1999,56 @@ namespace NMC::Server {
         }
 
         if (!result) {
-            sendErrorResponse(res, 502, "Gail proxy request failed: " + httplib::to_string(result.error()));
+            upstreamStatusOut = 502;
+            errorOut = "Gail proxy request failed: " + httplib::to_string(result.error());
             return false;
         }
 
-        const int upstreamStatus = result->status;
+        upstreamStatusOut = result->status;
+        const nlohmann::json parsedBody = nlohmann::json::parse(result->body, nullptr, false);
+        if (!parsedBody.is_discarded()) {
+            parsedPayloadOut = parsedBody;
+            return true;
+        }
+        rawBodyOut = result->body;
+        return true;
+    }
+
+    bool APIRoutes::proxyGailTradingRequest(
+        const httplib::Request& req,
+        httplib::Response& res,
+        const std::string& gailPath,
+        const std::string& method,
+        const std::string& body
+    ) {
+        int upstreamStatus = 0;
+        nlohmann::json parsedPayload;
+        std::string rawBody;
+        std::string errorMessage;
+        const bool fetched = fetchGailTradingPayload(
+            &req.params,
+            gailPath,
+            method,
+            body,
+            upstreamStatus,
+            parsedPayload,
+            rawBody,
+            errorMessage
+        );
+        if (!fetched) {
+            sendErrorResponse(res, upstreamStatus > 0 ? upstreamStatus : 502, errorMessage);
+            return false;
+        }
+
         nlohmann::json upstreamData = {
             {"gail_path", gailPath},
             {"upstream_status", upstreamStatus}
         };
 
-        nlohmann::json parsedBody = nlohmann::json::parse(result->body, nullptr, false);
-        if (!parsedBody.is_discarded()) {
-            upstreamData["payload"] = parsedBody;
-        } else if (!result->body.empty()) {
-            upstreamData["text"] = result->body;
+        if (!parsedPayload.is_null()) {
+            upstreamData["payload"] = parsedPayload;
+        } else if (!rawBody.empty()) {
+            upstreamData["text"] = rawBody;
         } else {
             upstreamData["payload"] = nlohmann::json::object();
         }
@@ -1707,6 +2062,625 @@ namespace NMC::Server {
         sendJsonResponse(res, apiResponse);
         res.status = upstreamStatus;
         return true;
+    }
+
+    void APIRoutes::handleGailTradingOverview(const httplib::Request& req, httplib::Response& res) {
+        int sharedLimit = -1;
+        int historyLimit = 50;
+        int logLimit = 80;
+
+        if (!parseBoundedPositiveInt(req.params, "limit", -1, 500, sharedLimit)) {
+            sendErrorResponse(res, 400, "Invalid query parameter 'limit'; expected a positive integer.");
+            return;
+        }
+        if (sharedLimit > 0) {
+            historyLimit = sharedLimit;
+            logLimit = sharedLimit;
+        }
+        if (!parseBoundedPositiveInt(req.params, "history_limit", historyLimit, 500, historyLimit)
+            || !parseBoundedPositiveInt(req.params, "history-limit", historyLimit, 500, historyLimit)) {
+            sendErrorResponse(res, 400, "Invalid query parameter 'history_limit'; expected a positive integer.");
+            return;
+        }
+        if (!parseBoundedPositiveInt(req.params, "log_limit", logLimit, 500, logLimit)
+            || !parseBoundedPositiveInt(req.params, "log-limit", logLimit, 500, logLimit)) {
+            sendErrorResponse(res, 400, "Invalid query parameter 'log_limit'; expected a positive integer.");
+            return;
+        }
+
+        struct SourceFetch {
+            std::string name;
+            std::string path;
+            int statusCode{0};
+            bool requestOk{false};
+            bool upstreamOk{false};
+            int64_t durationMs{0};
+            nlohmann::json payload = nlohmann::json::object();
+            std::string rawText;
+            std::string error;
+        };
+
+        auto fetchSource = [this](const std::string& sourceName,
+                                  const std::string& sourcePath,
+                                  const httplib::Params* queryParams) -> SourceFetch {
+            SourceFetch source;
+            source.name = sourceName;
+            source.path = sourcePath;
+            const int64_t startedMs = nowEpochMs();
+            source.requestOk = fetchGailTradingPayload(
+                queryParams,
+                sourcePath,
+                "GET",
+                "",
+                source.statusCode,
+                source.payload,
+                source.rawText,
+                source.error
+            );
+            source.durationMs = std::max<int64_t>(0, nowEpochMs() - startedMs);
+            source.upstreamOk = source.requestOk && source.statusCode >= 200 && source.statusCode < 300;
+            if (source.payload.is_null()) {
+                source.payload = nlohmann::json::object();
+            }
+            return source;
+        };
+
+        httplib::Params historyParams;
+        historyParams.emplace("limit", std::to_string(historyLimit));
+        httplib::Params logParams;
+        logParams.emplace("limit", std::to_string(logLimit));
+
+        auto statusFuture = std::async(std::launch::async, fetchSource, "status", "/v1/trading/status", nullptr);
+        auto portfolioFuture = std::async(std::launch::async, fetchSource, "portfolio", "/v1/trading/portfolio", nullptr);
+        auto positionsFuture = std::async(std::launch::async, fetchSource, "positions", "/v1/trading/positions", nullptr);
+        auto historyFuture = std::async(std::launch::async, fetchSource, "history", "/v1/trading/history", &historyParams);
+        auto logsFuture = std::async(std::launch::async, fetchSource, "logs", "/v1/trading/logs", &logParams);
+        auto issuesFuture = std::async(std::launch::async, fetchSource, "api_issues", "/v1/status/api-issues", nullptr);
+
+        const SourceFetch statusSource = statusFuture.get();
+        const SourceFetch portfolioSource = portfolioFuture.get();
+        const SourceFetch positionsSource = positionsFuture.get();
+        const SourceFetch historySource = historyFuture.get();
+        const SourceFetch logsSource = logsFuture.get();
+        const SourceFetch issuesSource = issuesFuture.get();
+
+        const nlohmann::json statusPayload = unwrapGailEnvelope(statusSource.payload);
+        const nlohmann::json portfolioPayload = unwrapGailEnvelope(portfolioSource.payload);
+        const nlohmann::json positionsPayload = unwrapGailEnvelope(positionsSource.payload);
+        const nlohmann::json historyPayload = unwrapGailEnvelope(historySource.payload);
+        const nlohmann::json logsPayload = unwrapGailEnvelope(logsSource.payload);
+        const nlohmann::json issuesEnvelope = unwrapGailEnvelope(issuesSource.payload);
+
+        const nlohmann::json statusObject = statusPayload.is_object() ? statusPayload : nlohmann::json::object();
+        const nlohmann::json portfolioRawObject = portfolioPayload.is_object() ? portfolioPayload : nlohmann::json::object();
+        const nlohmann::json portfolioObject = [&portfolioRawObject]() {
+            const auto* nestedPortfolio = firstObjectValue(portfolioRawObject, {"portfolio", "snapshot", "balances"});
+            return nestedPortfolio != nullptr ? *nestedPortfolio : portfolioRawObject;
+        }();
+        const nlohmann::json positionsItems = extractArrayPayload(positionsPayload, {"positions"});
+        nlohmann::json historyItems = extractArrayPayload(historyPayload, {"trades", "history"});
+        nlohmann::json logsItems = extractArrayPayload(logsPayload, {"logs", "events"});
+        const nlohmann::json issuesObject = issuesEnvelope.is_object() && issuesEnvelope.contains("api_issues")
+                                               && issuesEnvelope["api_issues"].is_object()
+                                            ? issuesEnvelope["api_issues"]
+                                            : (issuesEnvelope.is_object() ? issuesEnvelope : nlohmann::json::object());
+
+        for (auto& trade : historyItems) {
+            trade = normalizeRecentTrade(trade);
+        }
+        sortJsonArrayByTimestampDesc(historyItems);
+        sortJsonArrayByTimestampDesc(logsItems);
+        truncateJsonArray(historyItems, static_cast<std::size_t>(historyLimit));
+        truncateJsonArray(logsItems, static_cast<std::size_t>(logLimit));
+
+        std::vector<std::string> currentSymbols;
+        std::set<std::string> symbolSeen;
+        std::vector<std::string> currentStrategies;
+        std::set<std::string> strategySeen;
+
+        auto collectStringCandidates = [&](const nlohmann::json& source,
+                                           std::initializer_list<const char*> keys,
+                                           std::vector<std::string>& output,
+                                           std::set<std::string>& seen) {
+            if (!source.is_object()) {
+                return;
+            }
+            for (const char* key : keys) {
+                const auto it = source.find(key);
+                if (it == source.end() || it->is_null()) {
+                    continue;
+                }
+                if (it->is_string()) {
+                    appendUniqueString(output, seen, it->get<std::string>());
+                    continue;
+                }
+                if (it->is_array()) {
+                    for (const auto& item : *it) {
+                        if (item.is_string()) {
+                            appendUniqueString(output, seen, item.get<std::string>());
+                        } else if (item.is_object()) {
+                            appendUniqueString(output, seen, firstStringValue(item, {"symbol", "name", "id", "strategy"}));
+                        }
+                    }
+                }
+            }
+        };
+
+        collectStringCandidates(statusObject, {"active_symbols", "current_symbols", "symbols_in_scope", "symbols"}, currentSymbols, symbolSeen);
+        collectStringCandidates(statusObject, {"active_strategies", "current_strategies", "strategies"}, currentStrategies, strategySeen);
+
+        for (const auto& position : positionsItems) {
+            if (!position.is_object()) {
+                continue;
+            }
+            appendUniqueString(
+                currentSymbols,
+                symbolSeen,
+                firstStringValue(position, {"symbol", "pair", "instrument"})
+            );
+        }
+
+        nlohmann::json decisionSummary = {
+            {"buy", 0},
+            {"sell", 0},
+            {"hold", 0},
+            {"strong_buy", 0},
+            {"strong_sell", 0},
+            {"cancel", 0},
+            {"other", 0}
+        };
+        nlohmann::json decisions = nlohmann::json::array();
+        nlohmann::json inFlight = nlohmann::json::array();
+        nlohmann::json missedOpportunities = nlohmann::json::array();
+        nlohmann::json upcomingOpportunities = nlohmann::json::array();
+        std::set<std::string> inFlightSeen;
+        std::set<std::string> missedSeen;
+        std::set<std::string> upcomingSeen;
+
+        int64_t successCount = 0;
+        int64_t failureCount = 0;
+        nlohmann::json lastSuccess = nullptr;
+        nlohmann::json lastFailure = nullptr;
+
+        auto bumpDecision = [&](const std::string& action) {
+            const std::string key = action.empty() ? "other" : action;
+            if (!decisionSummary.contains(key)) {
+                decisionSummary[key] = 0;
+            }
+            decisionSummary[key] = decisionSummary.value(key, 0) + 1;
+        };
+
+        auto updateOutcomeSnapshot = [](nlohmann::json& target, const nlohmann::json& candidate) {
+            if (candidate.is_null()) {
+                return;
+            }
+            if (target.is_null() || extractEventTimestamp(candidate) > extractEventTimestamp(target)) {
+                target = candidate;
+            }
+        };
+
+        auto appendOpportunity = [](nlohmann::json& target,
+                                    std::set<std::string>& seen,
+                                    const std::string& symbol,
+                                    const std::string& strategy,
+                                    const std::string& message,
+                                    int64_t timestamp,
+                                    const std::string& source) {
+            const std::string key = symbol + "|" + strategy + "|" + message;
+            if (key.empty() || seen.find(key) != seen.end()) {
+                return;
+            }
+            seen.insert(key);
+            target.push_back(
+                nlohmann::json{
+                    {"symbol", symbol},
+                    {"strategy", strategy},
+                    {"message", message},
+                    {"timestamp", timestamp > 0 ? nlohmann::json(timestamp) : nlohmann::json(nullptr)},
+                    {"source", source}
+                }
+            );
+        };
+
+        for (const auto& trade : historyItems) {
+            if (!trade.is_object()) {
+                continue;
+            }
+            const int64_t timestamp = extractEventTimestamp(trade);
+            const std::string symbol = firstStringValue(trade, {"symbol", "pair", "instrument"});
+            const std::string action = normalizeTradingAction(
+                firstStringValue(trade, {"side", "action", "decision", "signal"}),
+                ""
+            );
+            const std::string exchange = firstStringValue(trade, {"exchange", "venue"});
+            const double amountUsd = firstDoubleValue(trade, {"amount_usd", "notional_usd", "value_usd"}, std::numeric_limits<double>::quiet_NaN());
+
+            appendUniqueString(currentSymbols, symbolSeen, symbol);
+            bumpDecision(action);
+
+            nlohmann::json decision = {
+                {"timestamp", timestamp > 0 ? nlohmann::json(timestamp) : nlohmann::json(nullptr)},
+                {"symbol", symbol},
+                {"action", action.empty() ? nlohmann::json("other") : nlohmann::json(action)},
+                {"exchange", exchange},
+                {"amount_usd", nullableNumber(amountUsd)},
+                {"reason", firstStringValue(trade, {"reason", "summary", "note"})},
+                {"source", "trade_history"}
+            };
+            decisions.push_back(decision);
+            successCount += 1;
+            updateOutcomeSnapshot(lastSuccess, decision);
+        }
+
+        for (const auto& log : logsItems) {
+            if (!log.is_object()) {
+                continue;
+            }
+
+            const int64_t timestamp = extractEventTimestamp(log);
+            const std::string level = toLower(firstStringValue(log, {"level", "severity"}));
+            const std::string category = toLower(firstStringValue(log, {"category", "component", "type"}));
+            std::string message = firstStringValue(log, {"message", "detail", "summary", "text"});
+            if (message.empty()) {
+                const auto it = log.find("message");
+                if (it != log.end() && !it->is_null() && !it->is_string()) {
+                    message = it->dump();
+                }
+            }
+            const std::string messageLower = toLower(message);
+            std::string symbol = firstStringValue(log, {"symbol", "pair", "instrument", "currency_pair"});
+            if (symbol.empty()) {
+                symbol = extractTradingSymbolFromMessage(message);
+            }
+            const std::string strategy = firstStringValue(log, {"strategy", "strategy_name", "algorithm", "workflow"});
+            const std::string action = normalizeTradingAction(
+                firstStringValue(log, {"decision", "action", "signal", "side"}),
+                messageLower
+            );
+
+            appendUniqueString(currentSymbols, symbolSeen, symbol);
+            appendUniqueString(currentStrategies, strategySeen, strategy);
+
+            const bool isFailure = level == "error" || level == "fatal" || level == "critical"
+                                   || messageLower.find("failed") != std::string::npos
+                                   || messageLower.find("timeout") != std::string::npos
+                                   || messageLower.find("insufficient") != std::string::npos
+                                   || messageLower.find("missingfunds") != std::string::npos
+                                   || messageLower.find("schema validation") != std::string::npos;
+            const bool isSuccess = !isFailure
+                                   && (messageLower.find("executed") != std::string::npos
+                                       || messageLower.find("filled") != std::string::npos
+                                       || messageLower.find("completed") != std::string::npos
+                                       || messageLower.find("order placed") != std::string::npos
+                                       || messageLower.find("succeeded") != std::string::npos);
+            const bool looksInFlight = messageLower.find("evaluat") != std::string::npos
+                                       || messageLower.find("analy") != std::string::npos
+                                       || messageLower.find("comput") != std::string::npos
+                                       || messageLower.find("scor") != std::string::npos;
+
+            if (looksInFlight
+                && messageLower.find("complete") == std::string::npos
+                && messageLower.find("failed") == std::string::npos) {
+                const std::string key = symbol + "|" + strategy + "|" + message;
+                if (!key.empty() && inFlightSeen.find(key) == inFlightSeen.end()) {
+                    inFlightSeen.insert(key);
+                    inFlight.push_back(
+                        nlohmann::json{
+                            {"timestamp", timestamp > 0 ? nlohmann::json(timestamp) : nlohmann::json(nullptr)},
+                            {"symbol", symbol},
+                            {"strategy", strategy},
+                            {"category", category},
+                            {"message", message}
+                        }
+                    );
+                }
+            }
+
+            if (!action.empty()) {
+                bumpDecision(action);
+                decisions.push_back(
+                    nlohmann::json{
+                        {"timestamp", timestamp > 0 ? nlohmann::json(timestamp) : nlohmann::json(nullptr)},
+                        {"symbol", symbol},
+                        {"action", action},
+                        {"strategy", strategy},
+                        {"category", category},
+                        {"message", message},
+                        {"source", "activity_log"}
+                    }
+                );
+            }
+
+            if (isFailure) {
+                failureCount += 1;
+                updateOutcomeSnapshot(
+                    lastFailure,
+                    nlohmann::json{
+                        {"timestamp", timestamp > 0 ? nlohmann::json(timestamp) : nlohmann::json(nullptr)},
+                        {"symbol", symbol},
+                        {"strategy", strategy},
+                        {"category", category},
+                        {"message", message},
+                        {"level", level}
+                    }
+                );
+            }
+            if (isSuccess) {
+                successCount += 1;
+                updateOutcomeSnapshot(
+                    lastSuccess,
+                    nlohmann::json{
+                        {"timestamp", timestamp > 0 ? nlohmann::json(timestamp) : nlohmann::json(nullptr)},
+                        {"symbol", symbol},
+                        {"strategy", strategy},
+                        {"category", category},
+                        {"message", message},
+                        {"level", level}
+                    }
+                );
+            }
+
+            const bool looksMissed = messageLower.find("missed opportunit") != std::string::npos
+                                     || messageLower.find("missingfunds") != std::string::npos
+                                     || (messageLower.find("insufficient") != std::string::npos
+                                         && messageLower.find("balance") != std::string::npos);
+            const bool looksUpcoming = messageLower.find("opportunit") != std::string::npos
+                                       || messageLower.find("candidate") != std::string::npos
+                                       || messageLower.find("potential") != std::string::npos
+                                       || messageLower.find("watchlist") != std::string::npos
+                                       || messageLower.find("setup") != std::string::npos;
+            if (looksMissed) {
+                appendOpportunity(
+                    missedOpportunities,
+                    missedSeen,
+                    symbol,
+                    strategy,
+                    message,
+                    timestamp,
+                    "activity_log"
+                );
+            } else if (looksUpcoming) {
+                appendOpportunity(
+                    upcomingOpportunities,
+                    upcomingSeen,
+                    symbol,
+                    strategy,
+                    message,
+                    timestamp,
+                    "activity_log"
+                );
+            }
+        }
+
+        auto ingestStatusOpportunityArray = [&](const char* key,
+                                                nlohmann::json& target,
+                                                std::set<std::string>& seen,
+                                                const std::string& sourceTag) {
+            const auto it = statusObject.find(key);
+            if (it == statusObject.end() || !it->is_array()) {
+                return;
+            }
+            for (const auto& item : *it) {
+                if (item.is_string()) {
+                    appendOpportunity(target, seen, "", "", item.get<std::string>(), 0, sourceTag);
+                    continue;
+                }
+                if (!item.is_object()) {
+                    continue;
+                }
+                appendOpportunity(
+                    target,
+                    seen,
+                    firstStringValue(item, {"symbol", "pair", "instrument"}),
+                    firstStringValue(item, {"strategy", "strategy_name"}),
+                    firstStringValue(item, {"message", "summary", "reason"}),
+                    extractEventTimestamp(item),
+                    sourceTag
+                );
+            }
+        };
+
+        ingestStatusOpportunityArray("missed_opportunities", missedOpportunities, missedSeen, "status");
+        ingestStatusOpportunityArray("upcoming_opportunities", upcomingOpportunities, upcomingSeen, "status");
+        ingestStatusOpportunityArray("potential_opportunities", upcomingOpportunities, upcomingSeen, "status");
+
+        sortJsonArrayByTimestampDesc(decisions);
+        sortJsonArrayByTimestampDesc(inFlight);
+        sortJsonArrayByTimestampDesc(missedOpportunities);
+        sortJsonArrayByTimestampDesc(upcomingOpportunities);
+        truncateJsonArray(decisions, 40);
+        truncateJsonArray(inFlight, 25);
+        truncateJsonArray(missedOpportunities, 25);
+        truncateJsonArray(upcomingOpportunities, 25);
+
+        const bool enabled = statusObject.contains("enabled") ? jsonBoolValue(statusObject["enabled"], false) : false;
+        const bool paused = statusObject.contains("paused") ? jsonBoolValue(statusObject["paused"], false) : false;
+        const std::string bridgeState = paused ? "paused" : (enabled ? "running" : "disabled");
+        const int64_t evaluationCount = firstInt64Value(statusObject, {"evaluation_count", "evaluations", "evaluationCount"}, 0);
+        const int64_t tradeCount = firstInt64Value(
+            statusObject,
+            {"trade_count", "trades", "tradeCount"},
+            static_cast<int64_t>(historyItems.size())
+        );
+        const int64_t lastEvaluationAt = firstTimestampValue(statusObject, {"last_evaluation_at", "lastEvaluationAt"}, 0);
+        const int64_t lastTradeAt = firstTimestampValue(statusObject, {"last_trade_at", "lastTradeAt"}, 0);
+
+        double portfolioValueUsd = firstDoubleValue(
+            portfolioObject,
+            {"total_value_usd", "portfolio_value_usd", "totalValueUsd", "value_usd"},
+            firstDoubleValue(
+                statusObject,
+                {"portfolio_value_usd", "portfolioValueUsd", "total_value_usd", "totalValueUsd"},
+                std::numeric_limits<double>::quiet_NaN()
+            )
+        );
+        if (!std::isfinite(portfolioValueUsd)) {
+            const auto* currenciesObject = firstObjectValue(portfolioObject, {"currencies", "balances"});
+            if (currenciesObject != nullptr) {
+                double summedUsd = 0.0;
+                bool sawUsdValue = false;
+                for (const auto& [symbol, balance] : currenciesObject->items()) {
+                    (void)symbol;
+                    if (!balance.is_object()) {
+                        continue;
+                    }
+                    const double valueUsd = firstDoubleValue(
+                        balance,
+                        {"value_usd", "usd_value", "estimated_value_usd"},
+                        std::numeric_limits<double>::quiet_NaN()
+                    );
+                    if (std::isfinite(valueUsd)) {
+                        summedUsd += valueUsd;
+                        sawUsdValue = true;
+                    }
+                }
+                if (sawUsdValue) {
+                    portfolioValueUsd = summedUsd;
+                }
+            }
+        }
+        const double baselineValueUsd = firstDoubleValue(
+            statusObject,
+            {"baseline_value_usd", "initial_portfolio_value_usd", "starting_balance_usd", "start_value_usd"},
+            std::numeric_limits<double>::quiet_NaN()
+        );
+        const double realizedPnlUsd = firstDoubleValue(
+            statusObject,
+            {"realized_pnl_usd", "realized_profit_usd", "realized_usd"},
+            std::numeric_limits<double>::quiet_NaN()
+        );
+        const double unrealizedPnlUsd = firstDoubleValue(
+            statusObject,
+            {"unrealized_pnl_usd", "unrealized_profit_usd", "unrealized_usd"},
+            std::numeric_limits<double>::quiet_NaN()
+        );
+        double totalPnlUsd = firstDoubleValue(
+            statusObject,
+            {"total_pnl_usd", "pnl_usd", "profit_usd"},
+            std::numeric_limits<double>::quiet_NaN()
+        );
+        if (!std::isfinite(totalPnlUsd) && std::isfinite(realizedPnlUsd) && std::isfinite(unrealizedPnlUsd)) {
+            totalPnlUsd = realizedPnlUsd + unrealizedPnlUsd;
+        }
+        double roiPct = firstDoubleValue(
+            statusObject,
+            {"roi_pct", "roi_percent", "roi_percentage"},
+            std::numeric_limits<double>::quiet_NaN()
+        );
+        if (!std::isfinite(roiPct) && std::isfinite(totalPnlUsd) && std::isfinite(baselineValueUsd) && baselineValueUsd > 0.0) {
+            roiPct = (totalPnlUsd / baselineValueUsd) * 100.0;
+        }
+        if (!std::isfinite(roiPct) && std::isfinite(portfolioValueUsd) && std::isfinite(baselineValueUsd) && baselineValueUsd > 0.0) {
+            roiPct = ((portfolioValueUsd - baselineValueUsd) / baselineValueUsd) * 100.0;
+        }
+        const std::string roiStatus = std::isfinite(roiPct)
+                                      || std::isfinite(totalPnlUsd)
+                                      || std::isfinite(realizedPnlUsd)
+                                      || std::isfinite(unrealizedPnlUsd)
+                                        ? "available"
+                                        : (evaluationCount > 0 ? "pending" : "unavailable");
+
+        nlohmann::json upstream = nlohmann::json::object();
+        int unavailableSources = 0;
+        for (const SourceFetch* source : {&statusSource, &portfolioSource, &positionsSource, &historySource, &logsSource, &issuesSource}) {
+            if (!source->upstreamOk) {
+                unavailableSources += 1;
+            }
+            upstream[source->name] = {
+                {"path", source->path},
+                {"ok", source->upstreamOk},
+                {"http_status", source->statusCode},
+                {"duration_ms", source->durationMs},
+                {"error", source->error.empty() ? nlohmann::json(nullptr) : nlohmann::json(source->error)}
+            };
+        }
+
+        nlohmann::json overview = {
+            {"generated_at_epoch_ms", nowEpochMs()},
+            {"limits", {
+                {"history_limit", historyLimit},
+                {"log_limit", logLimit}
+            }},
+            {"bridge", {
+                {"state", bridgeState},
+                {"enabled", enabled},
+                {"paused", paused},
+                {"evaluation_count", evaluationCount},
+                {"trade_count", tradeCount},
+                {"last_evaluation_at", lastEvaluationAt > 0 ? nlohmann::json(lastEvaluationAt) : nlohmann::json(nullptr)},
+                {"last_trade_at", lastTradeAt > 0 ? nlohmann::json(lastTradeAt) : nlohmann::json(nullptr)},
+                {"last_error", firstStringValue(statusObject, {"last_error", "error", "lastError"}, "")}
+            }},
+            {"computation", {
+                {"current_symbols", currentSymbols},
+                {"current_strategies", currentStrategies},
+                {"in_flight", inFlight}
+            }},
+            {"execution", {
+                {"success_count", successCount},
+                {"failure_count", failureCount},
+                {"decision_summary", decisionSummary},
+                {"last_success", lastSuccess},
+                {"last_failure", lastFailure}
+            }},
+            {"decisions", {
+                {"latest", decisions},
+                {"count", decisions.size()}
+            }},
+            {"opportunities", {
+                {"missed", missedOpportunities},
+                {"upcoming", upcomingOpportunities},
+                {"missed_count", missedOpportunities.size()},
+                {"upcoming_count", upcomingOpportunities.size()}
+            }},
+            {"roi", {
+                {"status", roiStatus},
+                {"portfolio_value_usd", nullableNumber(portfolioValueUsd)},
+                {"baseline_value_usd", nullableNumber(baselineValueUsd)},
+                {"realized_pnl_usd", nullableNumber(realizedPnlUsd)},
+                {"unrealized_pnl_usd", nullableNumber(unrealizedPnlUsd)},
+                {"total_pnl_usd", nullableNumber(totalPnlUsd)},
+                {"roi_pct", nullableNumber(roiPct)}
+            }},
+            {"portfolio", {
+                {"total_value_usd", nullableNumber(portfolioValueUsd)},
+                {"currency_count", portfolioObject.contains("currencies") && portfolioObject["currencies"].is_object()
+                                       ? static_cast<int64_t>(portfolioObject["currencies"].size())
+                                       : 0},
+                {"currencies", portfolioObject.contains("currencies") && portfolioObject["currencies"].is_object()
+                                   ? portfolioObject["currencies"]
+                                   : nlohmann::json::object()}
+            }},
+            {"positions", {
+                {"open_count", positionsItems.size()},
+                {"items", positionsItems}
+            }},
+            {"trades", {
+                {"recent_count", historyItems.size()},
+                {"recent", historyItems}
+            }},
+            {"api_issues", {
+                {"active", countActiveApiIssues(issuesObject)},
+                {"details", issuesObject}
+            }},
+            {"logs", logsItems},
+            {"upstream", upstream}
+        };
+
+        Models::CloudResponse apiResponse;
+        apiResponse.success = statusSource.upstreamOk;
+        if (apiResponse.success && unavailableSources == 0) {
+            apiResponse.message = "Gail trading overview retrieved.";
+        } else if (apiResponse.success) {
+            apiResponse.message = "Gail trading overview retrieved with partial upstream telemetry.";
+        } else {
+            apiResponse.message = "Gail trading overview unavailable.";
+        }
+        apiResponse.data = overview;
+        sendJsonResponse(res, apiResponse);
+        if (!apiResponse.success) {
+            res.status = statusSource.statusCode > 0 ? statusSource.statusCode : 502;
+        }
     }
 
     void APIRoutes::handleGailTradingStatus(const httplib::Request& req, httplib::Response& res) {

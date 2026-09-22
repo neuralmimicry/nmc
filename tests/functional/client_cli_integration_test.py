@@ -181,7 +181,7 @@ class MockServer:
         control_match = re.match(r"^/tracey/agents/([^/]+)/control$", path_only)
         deepdive_match = re.match(r"^/tracey/agents/([^/]+)/deepdive$", path_only)
         gail_trading_get_match = re.match(
-            r"^/(gail/trading|v1/trading)/(status|portfolio|positions|history|logs|exchanges|currencies|config)$",
+            r"^/(gail/trading|v1/trading)/(overview|status|portfolio|positions|history|logs|exchanges|currencies|config)$",
             path_only,
         )
         gail_trading_post_match = re.match(
@@ -1339,6 +1339,24 @@ def test_gail_trading_status_uses_server_route_by_default(server: MockServer, ho
     assert_true(req.path == "/gail/trading/status", f"gail trading status wrong path: {req.path}")
 
 
+def test_gail_trading_overview_uses_server_route_with_limits(server: MockServer, home_dir: pathlib.Path) -> None:
+    server.clear_records()
+    result = run_nmc(
+        ["gail", "trading", "overview", "--history-limit", "75", "--log-limit", "125"],
+        home_dir,
+    )
+    assert_success(result, "gail trading overview")
+
+    records = server.records()
+    assert_true(len(records) == 1, f"gail trading overview expected 1 request, got {len(records)}")
+    req = records[0]
+    assert_true(req.method == "GET", f"gail trading overview expected GET, got {req.method}")
+    assert_true(
+        req.path == "/gail/trading/overview?history_limit=75&log_limit=125",
+        f"gail trading overview wrong path: {req.path}",
+    )
+
+
 def test_gail_trading_override_uses_server_route_and_payload(server: MockServer, home_dir: pathlib.Path) -> None:
     server.clear_records()
     result = run_nmc(
@@ -1451,6 +1469,7 @@ def main() -> int:
             test_gail_api_issues_uses_server_route_by_default(server, home_dir)
             test_gail_api_issues_direct_mode_uses_gail_endpoint(server, home_dir)
             test_gail_trading_status_uses_server_route_by_default(server, home_dir)
+            test_gail_trading_overview_uses_server_route_with_limits(server, home_dir)
             test_gail_trading_override_uses_server_route_and_payload(server, home_dir)
             test_gail_trading_direct_mode_uses_gail_endpoint(server, home_dir)
             test_gail_invalid_json_fails_before_network(server, home_dir)

@@ -663,7 +663,7 @@ int GailApiIssuesCommand::execute(const std::map<std::string, std::string>& pars
 GailTradingCommand::GailTradingCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client)
     : BaseCommand("trading", "Manage the Gail crypto trading bridge", std::move(client)) {
     usage = "nmc gail trading [command]";
-    examples = "nmc gail trading status\nnmc gail trading pause\nnmc gail trading resume";
+    examples = "nmc gail trading overview\nnmc gail trading status\nnmc gail trading pause\nnmc gail trading resume";
 }
 
 int GailTradingCommand::execute(const std::map<std::string, std::string>&,
@@ -671,6 +671,50 @@ int GailTradingCommand::execute(const std::map<std::string, std::string>&,
                                 const CLI::GlobalFlags&) {
     printHelp();
     return 0;
+}
+
+GailTradingOverviewCommand::GailTradingOverviewCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client)
+    : BaseCommand("overview", "Show an aggregated live Gail trading overview", std::move(client)) {
+    usage = "nmc gail trading overview [--history-limit N] [--log-limit N]";
+    examples = "nmc gail trading overview --history-limit 80 --log-limit 120";
+    addFlag(CLI::Flag(
+        "h",
+        "history-limit",
+        "Maximum number of recent trade history rows to include",
+        CLI::FlagType::Int,
+        false
+    ));
+    addFlag(CLI::Flag(
+        "l",
+        "log-limit",
+        "Maximum number of activity log rows to include",
+        CLI::FlagType::Int,
+        false
+    ));
+}
+
+int GailTradingOverviewCommand::execute(const std::map<std::string, std::string>& parsedFlags,
+                                        const std::vector<std::string>& parsedArgs,
+                                        const CLI::GlobalFlags& globalFlags) {
+    if (!validateArguments(parsedArgs) || !validateFlags(parsedFlags)) {
+        return 1;
+    }
+
+    int historyLimit = -1;
+    int logLimit = -1;
+    std::string parseError;
+    if (!parsePositiveInt(parsedFlags, "history-limit", -1, historyLimit, parseError)) {
+        return printAndReturnResponse(errorResponse(parseError), globalFlags);
+    }
+    if (!parsePositiveInt(parsedFlags, "log-limit", -1, logLimit, parseError)) {
+        return printAndReturnResponse(errorResponse(parseError), globalFlags);
+    }
+
+    Models::CloudResponse response = apiClient->getGailTradingOverview(historyLimit, logLimit);
+    if (response.success) {
+        response.message = "Trading overview retrieved.";
+    }
+    return printAndReturnResponse(response, globalFlags);
 }
 
 GailTradingStatusCommand::GailTradingStatusCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client)

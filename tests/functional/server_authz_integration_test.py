@@ -301,6 +301,28 @@ class MockBackend:
 
         if path_only.startswith("/v1/trading/"):
             request_payload = parse_json(body)
+            if path_only == "/v1/trading/status":
+                upstream_payload = {
+                    "enabled": True,
+                    "paused": False,
+                    "evaluation_count": 4,
+                    "trade_count": 1,
+                    "last_trade_at": 1_700_000_123,
+                }
+            elif path_only == "/v1/trading/history":
+                upstream_payload = {
+                    "trades": [
+                        {
+                            "symbol": "BTC/USDT",
+                            "action": "buy",
+                            "ts": 1_700_000_123,
+                            "amount_usd": 25.5,
+                            "exchange": "binance",
+                        }
+                    ]
+                }
+            else:
+                upstream_payload = {}
             self._send_json(
                 handler,
                 200,
@@ -308,7 +330,7 @@ class MockBackend:
                     "ok": True,
                     "path": path_only,
                     "method": handler.command,
-                    "payload": request_payload,
+                    "payload": upstream_payload if handler.command == "GET" else request_payload,
                 },
             )
             return
@@ -715,6 +737,34 @@ def test_gail_trading_route_authorisation(server: NmcServerProcess, backend: Moc
     assert_true(
         backend.count_requests("/v1/trading/status", "GET") == 2,
         "Gail service access should reach Gail status exactly once",
+    )
+
+    backend.clear_records()
+    status, payload = request_json(
+        server.base_url,
+        "GET",
+        "/gail/trading/overview",
+        token="gail-trading-observe-token",
+    )
+    assert_status(status, 200, "gail trading overview route allowed with observe access")
+    assert_true(
+        isinstance((payload.get("data") or {}).get("bridge"), dict),
+        "Gail Trading overview should return an aggregated bridge payload with observe access",
+    )
+    recent_trades = ((payload.get("data") or {}).get("trades") or {}).get("recent") or []
+    assert_true(len(recent_trades) == 1, "Gail Trading overview should expose recent trades")
+    recent_trade = recent_trades[0]
+    assert_true(recent_trade.get("timestamp") == 1_700_000_123, "recent trade timestamp should be canonical epoch seconds")
+    assert_true(recent_trade.get("side") == "buy", "recent trade side should be canonicalized from Gail action")
+    assert_true(recent_trade.get("action") == "buy", "recent trade action should remain available")
+    assert_true(
+        backend.count_requests("/v1/trading/status", "GET") == 1
+        and backend.count_requests("/v1/trading/portfolio", "GET") == 1
+        and backend.count_requests("/v1/trading/positions", "GET") == 1
+        and backend.count_requests("/v1/trading/history", "GET") == 1
+        and backend.count_requests("/v1/trading/logs", "GET") == 1
+        and backend.count_requests("/v1/status/api-issues", "GET") == 1,
+        "allowed Gail Trading overview requests should gather each upstream source exactly once",
     )
 
     backend.clear_records()

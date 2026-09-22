@@ -461,6 +461,16 @@ namespace NMC::Server {
         // dashboard and CLI can access trading data without direct Gail connectivity.
         std::string resolveGailBaseUrl() const;
         std::string resolveGailApiToken() const;
+        bool fetchGailTradingPayload(
+            const httplib::Params* queryParams,
+            const std::string& gailPath,
+            const std::string& method,
+            const std::string& body,
+            int& upstreamStatusOut,
+            nlohmann::json& parsedPayloadOut,
+            std::string& rawBodyOut,
+            std::string& errorOut
+        ) const;
         bool proxyGailTradingRequest(
             const httplib::Request& req,
             httplib::Response& res,
@@ -468,6 +478,7 @@ namespace NMC::Server {
             const std::string& method,
             const std::string& body = ""
         );
+        void handleGailTradingOverview(const httplib::Request& req, httplib::Response& res);
         void handleGailTradingStatus(const httplib::Request& req, httplib::Response& res);
         void handleGailTradingPortfolio(const httplib::Request& req, httplib::Response& res);
         void handleGailTradingPositions(const httplib::Request& req, httplib::Response& res);

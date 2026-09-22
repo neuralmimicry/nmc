@@ -182,6 +182,7 @@ int main(int argc, char* argv[]) {
     gailCmd->addSubcommand(std::make_shared<NMC::Commands::GailApiIssuesCommand>(apiClient));
 
     auto gailTradingCmd = std::make_shared<NMC::Commands::GailTradingCommand>(apiClient);
+    gailTradingCmd->addSubcommand(std::make_shared<NMC::Commands::GailTradingOverviewCommand>(apiClient));
     gailTradingCmd->addSubcommand(std::make_shared<NMC::Commands::GailTradingStatusCommand>(apiClient));
     gailTradingCmd->addSubcommand(std::make_shared<NMC::Commands::GailTradingPortfolioCommand>(apiClient));
     gailTradingCmd->addSubcommand(std::make_shared<NMC::Commands::GailTradingPositionsCommand>(apiClient));

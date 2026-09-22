@@ -203,6 +203,10 @@
         gailTradingMetric: document.getElementById("gailTradingMetric"),
         gailTradingPanel: document.getElementById("gailTradingPanel"),
         gailTradingPanelStatus: document.getElementById("gailTradingPanelStatus"),
+        gailTradingPanelComputation: document.getElementById("gailTradingPanelComputation"),
+        gailTradingPanelDecision: document.getElementById("gailTradingPanelDecision"),
+        gailTradingPanelRoi: document.getElementById("gailTradingPanelRoi"),
+        gailTradingPanelOpportunity: document.getElementById("gailTradingPanelOpportunity"),
         gailTradingPanelIssues: document.getElementById("gailTradingPanelIssues"),
         gailTradingPanelEvaluation: document.getElementById("gailTradingPanelEvaluation"),
         gailTradingPanelTrade: document.getElementById("gailTradingPanelTrade"),
@@ -722,6 +726,7 @@
     }
 
     let gailTradingModalRequestSeq = 0;
+    let gailTradingModalLastSuccessfulResponse = null;
 
     function gailTradingData(response, fallback = {}) {
         const topLevelData = responseData(response && response.payload);
@@ -772,9 +777,159 @@
         return String(payload.message || upstreamText || response.error || fallback);
     }
 
+    function normalizeGailTradingEpochSeconds(value) {
+        if (value == null || value === "") {
+            return null;
+        }
+        const raw = Number(value);
+        if (!Number.isFinite(raw) || raw <= 0) {
+            return null;
+        }
+        if (raw >= 1e14) {
+            return raw / 1e6;
+        }
+        if (raw >= 1e12) {
+            return raw / 1e3;
+        }
+        return raw;
+    }
+
+    function gailTradingFiniteNumber(value) {
+        if (value == null || value === "") {
+            return null;
+        }
+        const n = Number(value);
+        return Number.isFinite(n) ? n : null;
+    }
+
+    function gailTradingFirstFinite(...values) {
+        for (const value of values) {
+            const n = gailTradingFiniteNumber(value);
+            if (n != null) {
+                return n;
+            }
+        }
+        return null;
+    }
+
+    function gailTradingEntryTimestamp(entry) {
+        if (!entry || typeof entry !== "object") {
+            return null;
+        }
+        return normalizeGailTradingEpochSeconds(
+            entry.timestamp ?? entry.ts ?? entry.executed_at ?? entry.created_at ?? entry.updated_at ?? entry.last_seen_at
+        );
+    }
+
+    function gailTradingLatestTimestampFromArray(entries) {
+        if (!Array.isArray(entries) || entries.length === 0) {
+            return null;
+        }
+        let latest = null;
+        entries.forEach((entry) => {
+            const ts = gailTradingEntryTimestamp(entry);
+            if (ts != null && (latest == null || ts > latest)) {
+                latest = ts;
+            }
+        });
+        return latest;
+    }
+
+    function gailTradingResolvedPortfolioValueUsd(overview) {
+        const portfolio = overview && overview.portfolio && typeof overview.portfolio === "object" ? overview.portfolio : {};
+        const roi = overview && overview.roi && typeof overview.roi === "object" ? overview.roi : {};
+        const directValue = gailTradingFirstFinite(
+            portfolio.total_value_usd,
+            portfolio.portfolio_value_usd,
+            roi.portfolio_value_usd
+        );
+        if (directValue != null) {
+            return directValue;
+        }
+        if (!portfolio.currencies || typeof portfolio.currencies !== "object") {
+            return null;
+        }
+        let total = 0;
+        let hasComponent = false;
+        Object.values(portfolio.currencies).forEach((balance) => {
+            if (!balance || typeof balance !== "object") {
+                return;
+            }
+            const valueUsd = gailTradingFirstFinite(balance.value_usd, balance.usd_value, balance.estimated_value_usd);
+            if (valueUsd != null) {
+                total += valueUsd;
+                hasComponent = true;
+            }
+        });
+        return hasComponent ? total : null;
+    }
+
+    function gailTradingResolvedBridgeTimestamp(overview, key) {
+        const bridge = overview && overview.bridge && typeof overview.bridge === "object" ? overview.bridge : {};
+        const direct = normalizeGailTradingEpochSeconds(bridge[key]);
+        if (direct != null) {
+            return direct;
+        }
+        const decisions = overview && overview.decisions && Array.isArray(overview.decisions.latest)
+            ? overview.decisions.latest
+            : [];
+        const trades = overview && overview.trades && Array.isArray(overview.trades.recent)
+            ? overview.trades.recent
+            : [];
+        const inFlight = overview && overview.computation && Array.isArray(overview.computation.in_flight)
+            ? overview.computation.in_flight
+            : [];
+        const logs = overview && Array.isArray(overview.logs) ? overview.logs : [];
+        if (key === "last_trade_at") {
+            return gailTradingLatestTimestampFromArray(trades) ?? gailTradingLatestTimestampFromArray(decisions);
+        }
+        return gailTradingLatestTimestampFromArray(inFlight)
+            ?? gailTradingLatestTimestampFromArray(logs)
+            ?? gailTradingLatestTimestampFromArray(decisions);
+    }
+
     function formatGailTradingTimestamp(value) {
-        const ts = Number(value || 0);
-        return ts > 0 ? new Date(ts * 1000).toLocaleString() : "--";
+        const ts = normalizeGailTradingEpochSeconds(value);
+        return ts != null ? new Date(ts * 1000).toLocaleString() : "--";
+    }
+
+    function formatGailTradingUsd(value) {
+        const n = gailTradingFiniteNumber(value);
+        return n != null ? `$${n.toFixed(2)}` : "—";
+    }
+
+    function formatGailTradingPercent(value) {
+        const n = Number(value);
+        return Number.isFinite(n) ? `${n.toFixed(2)}%` : "—";
+    }
+
+    function gailTradingOverviewData(response, fallback = {}) {
+        const data = gailTradingData(response, fallback);
+        return data && typeof data === "object" ? data : fallback;
+    }
+
+    function gailTradingBridgeState(overview) {
+        const bridge = overview && overview.bridge && typeof overview.bridge === "object" ? overview.bridge : {};
+        const state = String(bridge.state || "").toLowerCase();
+        if (state) {
+            return state === "running"
+                ? "Running"
+                : (state === "paused" ? "Paused" : (state === "disabled" ? "Disabled" : bridge.state));
+        }
+        if (bridge.paused) {
+            return "Paused";
+        }
+        if (bridge.enabled) {
+            return "Running";
+        }
+        return "Disabled";
+    }
+
+    function gailTradingLatestDecision(overview) {
+        const decisions = overview && overview.decisions && Array.isArray(overview.decisions.latest)
+            ? overview.decisions.latest
+            : [];
+        return decisions.length > 0 && decisions[0] && typeof decisions[0] === "object" ? decisions[0] : null;
     }
 
     function setGailTradingModalOpen(open) {
@@ -790,110 +945,167 @@
         setGailTradingModalOpen(false);
     }
 
-    function renderGailTradingModal(statusData, portfolioData, historyData, logsData, issuesData) {
+    function renderGailTradingModal(overviewResponse) {
         if (!nodes.gailTradingModalBody) {
             return;
         }
-        if (!statusData || !statusData.ok) {
+        if (!overviewResponse || !overviewResponse.ok) {
             nodes.gailTradingModalBody.innerHTML = `
-                <p class="trading-error">${escapeHtml(gailTradingErrorMessage(statusData))}</p>
+                <p class="trading-error">${escapeHtml(gailTradingErrorMessage(overviewResponse, "Unable to load Gail trading overview."))}</p>
             `;
             return;
         }
-        const s = gailTradingData(statusData, {});
-        const portfolio = gailTradingData(portfolioData, {});
-        const history = gailTradingItems(historyData, "trades");
-        const logs = gailTradingItems(logsData, "logs");
-        const issues = gailApiIssuesData(issuesData);
-        const issueList = issues && issues.issues && typeof issues.issues === "object"
-            ? Object.values(issues.issues)
-            : [];
+        const overview = gailTradingOverviewData(overviewResponse, {});
+        const bridge = overview.bridge && typeof overview.bridge === "object" ? overview.bridge : {};
+        const computation = overview.computation && typeof overview.computation === "object" ? overview.computation : {};
+        const execution = overview.execution && typeof overview.execution === "object" ? overview.execution : {};
+        const roi = overview.roi && typeof overview.roi === "object" ? overview.roi : {};
+        const portfolio = overview.portfolio && typeof overview.portfolio === "object" ? overview.portfolio : {};
+        const positions = overview.positions && typeof overview.positions === "object" ? overview.positions : {};
+        const trades = overview.trades && typeof overview.trades === "object" ? overview.trades : {};
+        const decisions = overview.decisions && typeof overview.decisions === "object" ? overview.decisions : {};
+        const opportunities = overview.opportunities && typeof overview.opportunities === "object" ? overview.opportunities : {};
+        const apiIssues = overview.api_issues && typeof overview.api_issues === "object" ? overview.api_issues : {};
+        const upstream = overview.upstream && typeof overview.upstream === "object" ? overview.upstream : {};
+        const overviewTimestamp = normalizeGailTradingEpochSeconds(overview.generated_at_epoch_ms);
+        const portfolioValueUsd = gailTradingResolvedPortfolioValueUsd(overview);
+        const lastEvaluationAt = gailTradingResolvedBridgeTimestamp(overview, "last_evaluation_at");
+        const lastTradeAt = gailTradingResolvedBridgeTimestamp(overview, "last_trade_at");
 
-        const paused = s.paused ? "Paused" : (s.enabled ? "Running" : "Disabled");
-        const lastEval = s.last_evaluation_at
-            ? new Date(s.last_evaluation_at * 1000).toLocaleString()
-            : "—";
-        const lastTrade = s.last_trade_at
-            ? new Date(s.last_trade_at * 1000).toLocaleString()
-            : "—";
-
-        const currencies = portfolio && portfolio.currencies
-            ? Object.entries(portfolio.currencies)
-                .filter(([, b]) => b && b.total > 0)
-                .map(([sym, b]) =>
-                    `<tr><td>${escapeHtml(sym)}</td><td>${escapeHtml(String(b.total))}</td><td>${b.value_usd != null ? "$" + Number(b.value_usd).toFixed(2) : "—"}</td></tr>`
-                ).join("")
+        const decisionRows = Array.isArray(decisions.latest)
+            ? decisions.latest.slice(0, 20).map((entry) =>
+                `<tr><td>${formatGailTradingTimestamp(gailTradingEntryTimestamp(entry) ?? overviewTimestamp)}</td><td>${escapeHtml(entry.symbol || "—")}</td><td>${escapeHtml(entry.action || "—")}</td><td>${escapeHtml(entry.strategy || "—")}</td><td>${escapeHtml(entry.source || "—")}</td><td>${escapeHtml(entry.reason || entry.message || "—")}</td></tr>`
+            ).join("")
             : "";
-
-        const historyRows = history.slice(0, 20).map((t) =>
-            `<tr><td>${escapeHtml(t.symbol || "—")}</td><td>${escapeHtml(t.side || "—")}</td><td>${t.amount_usd != null ? "$" + Number(t.amount_usd).toFixed(2) : "—"}</td><td>${escapeHtml(t.exchange || "—")}</td><td>${t.executed_at ? new Date(t.executed_at * 1000).toLocaleString() : "—"}</td></tr>`
+        const inFlightRows = Array.isArray(computation.in_flight)
+            ? computation.in_flight.slice(0, 20).map((entry) =>
+                `<tr><td>${formatGailTradingTimestamp(gailTradingEntryTimestamp(entry) ?? overviewTimestamp)}</td><td>${escapeHtml(entry.symbol || "—")}</td><td>${escapeHtml(entry.strategy || "—")}</td><td>${escapeHtml(entry.category || "—")}</td><td>${escapeHtml(entry.message || "—")}</td></tr>`
+            ).join("")
+            : "";
+        const recentTrades = Array.isArray(trades.recent) ? trades.recent : [];
+        const tradeRows = recentTrades.slice(0, 20).map((entry) =>
+            `<tr><td>${formatGailTradingTimestamp(gailTradingEntryTimestamp(entry) ?? overviewTimestamp)}</td><td>${escapeHtml(entry.symbol || entry.pair || "—")}</td><td>${escapeHtml(entry.side || entry.action || "—")}</td><td>${formatGailTradingUsd(entry.amount_usd || entry.notional_usd || entry.value_usd)}</td><td>${escapeHtml(entry.exchange || entry.venue || "—")}</td></tr>`
         ).join("");
-
-        const logRows = logs.slice(0, 50).map((l) =>
-            `<tr><td>${l.timestamp ? new Date(l.timestamp * 1000).toLocaleString() : "—"}</td><td>${escapeHtml(l.level || "")}</td><td>${escapeHtml(l.category || "")}</td><td>${escapeHtml(l.message || "")}</td></tr>`
+        const openPositions = Array.isArray(positions.items) ? positions.items : [];
+        const positionRows = openPositions.slice(0, 20).map((entry) =>
+            `<tr><td>${escapeHtml(entry.symbol || entry.pair || "—")}</td><td>${escapeHtml(entry.side || "—")}</td><td>${escapeHtml(String(entry.size || entry.quantity || entry.amount || "—"))}</td><td>${formatGailTradingUsd(entry.value_usd || entry.notional_usd)}</td><td>${escapeHtml(entry.exchange || entry.venue || "—")}</td></tr>`
         ).join("");
-
-        const issueRows = issueList
-            .filter((issue) => issue && (issue.active || issue.status === "mitigating"))
-            .slice(0, 20)
-            .map((issue) => {
-                const seen = issue.last_seen_at ? new Date(issue.last_seen_at * 1000).toLocaleString() : "—";
-                const retry = issue.next_retry_at ? new Date(issue.next_retry_at * 1000).toLocaleTimeString() : "—";
-                return `<tr><td>${escapeHtml(issue.provider || issue.api || "—")}</td><td>${escapeHtml(issue.category || "—")}</td><td>${escapeHtml(issue.status || "—")}</td><td>${escapeHtml(issue.mitigation || issue.summary || "—")}</td><td>${escapeHtml(seen)}</td><td>${escapeHtml(retry)}</td></tr>`;
-            })
+        const currencies = portfolio && portfolio.currencies && typeof portfolio.currencies === "object"
+            ? Object.entries(portfolio.currencies)
+                .map(([symbol, balance]) => {
+                    const total = balance && typeof balance === "object"
+                        ? (balance.total ?? balance.free ?? balance.available ?? 0)
+                        : balance;
+                    const valueUsd = balance && typeof balance === "object"
+                        ? (balance.value_usd ?? balance.usd_value ?? null)
+                        : null;
+                    return `<tr><td>${escapeHtml(symbol)}</td><td>${escapeHtml(String(total ?? "—"))}</td><td>${formatGailTradingUsd(valueUsd)}</td></tr>`;
+                })
+                .join("")
+            : "";
+        const missedRows = Array.isArray(opportunities.missed)
+            ? opportunities.missed.slice(0, 20).map((entry) =>
+                `<tr><td>${formatGailTradingTimestamp(gailTradingEntryTimestamp(entry) ?? overviewTimestamp)}</td><td>${escapeHtml(entry.symbol || "—")}</td><td>${escapeHtml(entry.strategy || "—")}</td><td>${escapeHtml(entry.message || "—")}</td><td>${escapeHtml(entry.source || "—")}</td></tr>`
+            ).join("")
+            : "";
+        const upcomingRows = Array.isArray(opportunities.upcoming)
+            ? opportunities.upcoming.slice(0, 20).map((entry) =>
+                `<tr><td>${formatGailTradingTimestamp(gailTradingEntryTimestamp(entry) ?? overviewTimestamp)}</td><td>${escapeHtml(entry.symbol || "—")}</td><td>${escapeHtml(entry.strategy || "—")}</td><td>${escapeHtml(entry.message || "—")}</td><td>${escapeHtml(entry.source || "—")}</td></tr>`
+            ).join("")
+            : "";
+        const logs = Array.isArray(overview.logs) ? overview.logs : [];
+        const logRows = logs.slice(0, 60).map((entry) =>
+            `<tr><td>${formatGailTradingTimestamp(gailTradingEntryTimestamp(entry) ?? overviewTimestamp)}</td><td>${escapeHtml(entry.level || entry.severity || "—")}</td><td>${escapeHtml(entry.category || entry.component || "—")}</td><td>${escapeHtml(entry.message || entry.summary || "—")}</td></tr>`
+        ).join("");
+        const upstreamRows = Object.entries(upstream)
+            .map(([source, details]) =>
+                `<tr><td>${escapeHtml(source)}</td><td>${details && details.ok ? "ok" : "degraded"}</td><td>${escapeHtml(String(details && details.http_status != null ? details.http_status : "—"))}</td><td>${escapeHtml(String(details && details.duration_ms != null ? `${details.duration_ms}ms` : "—"))}</td><td>${escapeHtml(details && details.error ? details.error : "—")}</td></tr>`
+            )
             .join("");
 
         nodes.gailTradingModalBody.innerHTML = `
             <div class="trading-status-grid">
-                <div class="trading-stat"><span>Status</span><strong>${escapeHtml(paused)}</strong></div>
-                <div class="trading-stat"><span>Evaluations</span><strong>${escapeHtml(String(s.evaluation_count || 0))}</strong></div>
-                <div class="trading-stat"><span>Trades</span><strong>${escapeHtml(String(s.trade_count || 0))}</strong></div>
-                <div class="trading-stat"><span>Last Evaluation</span><strong>${escapeHtml(lastEval)}</strong></div>
-                <div class="trading-stat"><span>Last Trade</span><strong>${escapeHtml(lastTrade)}</strong></div>
-                <div class="trading-stat"><span>Portfolio Value</span><strong>${portfolio.total_value_usd != null ? "$" + Number(portfolio.total_value_usd).toFixed(2) : "—"}</strong></div>
+                <div class="trading-stat"><span>Status</span><strong>${escapeHtml(gailTradingBridgeState(overview))}</strong></div>
+                <div class="trading-stat"><span>Evaluations</span><strong>${escapeHtml(String(bridge.evaluation_count || 0))}</strong></div>
+                <div class="trading-stat"><span>Trades</span><strong>${escapeHtml(String(bridge.trade_count || trades.recent_count || 0))}</strong></div>
+                <div class="trading-stat"><span>Current Symbols</span><strong>${escapeHtml(String(Array.isArray(computation.current_symbols) ? computation.current_symbols.length : 0))}</strong></div>
+                <div class="trading-stat"><span>In Flight</span><strong>${escapeHtml(String(Array.isArray(computation.in_flight) ? computation.in_flight.length : 0))}</strong></div>
+                <div class="trading-stat"><span>Success / Failure</span><strong>${escapeHtml(String(execution.success_count || 0))} / ${escapeHtml(String(execution.failure_count || 0))}</strong></div>
+                <div class="trading-stat"><span>Portfolio Value</span><strong>${formatGailTradingUsd(portfolioValueUsd)}</strong></div>
+                <div class="trading-stat"><span>ROI</span><strong>${formatGailTradingPercent(roi.roi_pct)}</strong></div>
+                <div class="trading-stat"><span>Missed / Upcoming</span><strong>${escapeHtml(String(opportunities.missed_count || 0))} / ${escapeHtml(String(opportunities.upcoming_count || 0))}</strong></div>
+                <div class="trading-stat"><span>API Issues</span><strong>${escapeHtml(String(apiIssues.active || 0))}</strong></div>
+                <div class="trading-stat"><span>Last Evaluation</span><strong>${formatGailTradingTimestamp(lastEvaluationAt)}</strong></div>
+                <div class="trading-stat"><span>Last Trade</span><strong>${formatGailTradingTimestamp(lastTradeAt)}</strong></div>
             </div>
+            ${inFlightRows ? `
+            <h4>Current Computation</h4>
+            <table class="trading-table"><thead><tr><th>Time</th><th>Symbol</th><th>Strategy</th><th>Category</th><th>Message</th></tr></thead><tbody>${inFlightRows}</tbody></table>` : ""}
+            ${decisionRows ? `
+            <h4>Latest Decisions</h4>
+            <div class="trading-log-wrap"><table class="trading-table trading-log"><thead><tr><th>Time</th><th>Symbol</th><th>Action</th><th>Strategy</th><th>Source</th><th>Detail</th></tr></thead><tbody>${decisionRows}</tbody></table></div>` : ""}
+            ${tradeRows ? `
+            <h4>Recent Trades</h4>
+            <table class="trading-table"><thead><tr><th>Time</th><th>Symbol</th><th>Side</th><th>Amount</th><th>Exchange</th></tr></thead><tbody>${tradeRows}</tbody></table>` : ""}
+            ${positionRows ? `
+            <h4>Open Positions</h4>
+            <table class="trading-table"><thead><tr><th>Symbol</th><th>Side</th><th>Size</th><th>USD Value</th><th>Exchange</th></tr></thead><tbody>${positionRows}</tbody></table>` : ""}
             ${currencies ? `
             <h4>Portfolio Holdings</h4>
             <table class="trading-table"><thead><tr><th>Symbol</th><th>Balance</th><th>USD Value</th></tr></thead><tbody>${currencies}</tbody></table>` : ""}
-            ${historyRows ? `
-            <h4>Recent Trades</h4>
-            <table class="trading-table"><thead><tr><th>Symbol</th><th>Side</th><th>Amount</th><th>Exchange</th><th>Time</th></tr></thead><tbody>${historyRows}</tbody></table>` : ""}
-            ${issueRows ? `
-            <h4>API Issues Being Mitigated</h4>
-            <div class="trading-log-wrap"><table class="trading-table trading-log"><thead><tr><th>Provider</th><th>Category</th><th>Status</th><th>Mitigation</th><th>Seen</th><th>Retry</th></tr></thead><tbody>${issueRows}</tbody></table></div>` : ""}
+            ${missedRows ? `
+            <h4>Missed Opportunities</h4>
+            <div class="trading-log-wrap"><table class="trading-table trading-log"><thead><tr><th>Time</th><th>Symbol</th><th>Strategy</th><th>Reason</th><th>Source</th></tr></thead><tbody>${missedRows}</tbody></table></div>` : ""}
+            ${upcomingRows ? `
+            <h4>Upcoming Opportunities</h4>
+            <div class="trading-log-wrap"><table class="trading-table trading-log"><thead><tr><th>Time</th><th>Symbol</th><th>Strategy</th><th>Signal</th><th>Source</th></tr></thead><tbody>${upcomingRows}</tbody></table></div>` : ""}
             ${logRows ? `
             <h4>Activity Log</h4>
             <div class="trading-log-wrap"><table class="trading-table trading-log"><thead><tr><th>Time</th><th>Level</th><th>Category</th><th>Message</th></tr></thead><tbody>${logRows}</tbody></table></div>` : ""}
-            ${s.last_error ? `<p class="trading-error">Last error: ${escapeHtml(s.last_error)}</p>` : ""}
+            ${upstreamRows ? `
+            <h4>Upstream Source Health</h4>
+            <div class="trading-log-wrap"><table class="trading-table trading-log"><thead><tr><th>Source</th><th>Status</th><th>HTTP</th><th>Latency</th><th>Error</th></tr></thead><tbody>${upstreamRows}</tbody></table></div>` : ""}
+            ${bridge.last_error ? `<p class="trading-error">Last error: ${escapeHtml(bridge.last_error)}</p>` : ""}
         `;
     }
 
-    async function openGailTradingModal() {
+    async function refreshGailTradingModal(options = {}) {
+        const { showLoading = false, forceErrorRender = false } = options;
         if (!nodes.gailTradingModalBody) {
             return;
         }
         const seq = ++gailTradingModalRequestSeq;
-        setGailTradingModalOpen(true);
-        if (nodes.gailTradingModalSubtitle) {
-            nodes.gailTradingModalSubtitle.textContent = "Loading trading bridge data…";
+        if (showLoading && nodes.gailTradingModalSubtitle) {
+            nodes.gailTradingModalSubtitle.textContent = "Loading trading overview…";
         }
-        nodes.gailTradingModalBody.innerHTML = `<p class="empty">Loading…</p>`;
+        if (showLoading && !gailTradingModalLastSuccessfulResponse) {
+            nodes.gailTradingModalBody.innerHTML = `<p class="empty">Loading…</p>`;
+        }
 
-        const [statusRes, portfolioRes, historyRes, logsRes, issuesRes] = await Promise.all([
-            fetchJson("/gail/trading/status"),
-            fetchJson("/gail/trading/portfolio"),
-            fetchJson("/gail/trading/history"),
-            fetchJson("/gail/trading/logs"),
-            fetchJson("/gail/status/api-issues")
-        ]);
+        const overviewRes = await fetchJson("/gail/trading/overview?history_limit=80&log_limit=120");
 
         if (seq !== gailTradingModalRequestSeq) {
             return;
         }
-        if (nodes.gailTradingModalSubtitle) {
-            nodes.gailTradingModalSubtitle.textContent = "Gail Trading Bridge";
+        if (overviewRes && overviewRes.ok) {
+            gailTradingModalLastSuccessfulResponse = overviewRes;
+            if (nodes.gailTradingModalSubtitle) {
+                nodes.gailTradingModalSubtitle.textContent = "Gail Trading Overview";
+            }
+            renderGailTradingModal(overviewRes);
+            return;
         }
-        renderGailTradingModal(statusRes, portfolioRes, historyRes, logsRes, issuesRes);
+        if (nodes.gailTradingModalSubtitle) {
+            nodes.gailTradingModalSubtitle.textContent = "Gail Trading Overview (stale)";
+        }
+        if (forceErrorRender || !gailTradingModalLastSuccessfulResponse) {
+            renderGailTradingModal(overviewRes);
+        }
+    }
+
+    async function openGailTradingModal() {
+        setGailTradingModalOpen(true);
+        await refreshGailTradingModal({ showLoading: true, forceErrorRender: true });
     }
 
     function initializeGailTradingUi() {
@@ -916,7 +1128,7 @@
                 nodes.gailTradingPauseBtn.disabled = true;
                 await fetchJson("/gail/trading/pause", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
                 nodes.gailTradingPauseBtn.disabled = false;
-                openGailTradingModal();
+                void refreshGailTradingModal({ showLoading: false, forceErrorRender: true });
             });
         }
         if (nodes.gailTradingResumeBtn) {
@@ -924,7 +1136,7 @@
                 nodes.gailTradingResumeBtn.disabled = true;
                 await fetchJson("/gail/trading/resume", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
                 nodes.gailTradingResumeBtn.disabled = false;
-                openGailTradingModal();
+                void refreshGailTradingModal({ showLoading: false, forceErrorRender: true });
             });
         }
         if (nodes.gailTradingEvaluateBtn) {
@@ -932,6 +1144,7 @@
                 nodes.gailTradingEvaluateBtn.disabled = true;
                 await fetchJson("/gail/trading/evaluate", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
                 nodes.gailTradingEvaluateBtn.disabled = false;
+                void refreshGailTradingModal({ showLoading: false, forceErrorRender: true });
             });
         }
     }
@@ -7633,8 +7846,7 @@
             openshiftResourcesRes,
             openstackResourcesRes,
             proxmoxResourcesRes,
-            gailTradingStatusRes,
-            gailApiIssuesRes
+            gailTradingOverviewRes
         ] = await Promise.all([
             fetchJson("/k8s/list"),
             fetchJson("/vcluster/list"),
@@ -7679,10 +7891,7 @@
             fetchJson("/openstack/resources"),
             fetchJson("/proxmox/resources"),
             tradingVisible
-                ? fetchJson("/gail/trading/status")
-                : Promise.resolve({ ok: true, status: 200, payload: null }),
-            tradingVisible
-                ? fetchJson("/gail/status/api-issues")
+                ? fetchJson("/gail/trading/overview?history_limit=40&log_limit=60")
                 : Promise.resolve({ ok: true, status: 200, payload: null })
         ]);
 
@@ -7701,8 +7910,7 @@
             openshiftResourcesRes,
             openstackResourcesRes,
             proxmoxResourcesRes,
-            gailTradingStatusRes,
-            gailApiIssuesRes
+            gailTradingOverviewRes
         ];
         updateAuthPill(allResponses);
 
@@ -7894,41 +8102,104 @@
         }
 
         // --- Gail Trading card update ---
+        const tradingOverview = tradingVisible && gailTradingOverviewRes.ok
+            ? gailTradingOverviewData(gailTradingOverviewRes, null)
+            : null;
         if (tradingVisible && nodes.gailTradingMetric) {
-            const ts = gailTradingStatusRes.ok ? gailTradingData(gailTradingStatusRes, null) : null;
-            if (ts) {
-                const stateLabel = ts.paused ? "Paused" : (ts.enabled ? "Active" : "Disabled");
-                const trades = ts.trade_count != null ? ts.trade_count : 0;
+            if (tradingOverview) {
+                const bridge = tradingOverview.bridge && typeof tradingOverview.bridge === "object" ? tradingOverview.bridge : {};
+                const stateLabel = gailTradingBridgeState(tradingOverview);
+                const trades = bridge.trade_count != null ? bridge.trade_count : 0;
                 nodes.gailTradingMetric.textContent = `${stateLabel} · ${trades} trades`;
             } else {
-                nodes.gailTradingMetric.textContent = gailTradingStatusRes.ok ? "No data" : "Unavailable";
+                nodes.gailTradingMetric.textContent = gailTradingOverviewRes.ok ? "No data" : "Unavailable";
             }
         }
         if (tradingVisible) {
-            const ts = gailTradingStatusRes.ok ? gailTradingData(gailTradingStatusRes, null) : null;
-            const apiIssues = gailApiIssuesData(gailApiIssuesRes);
-            const issueSummary = apiIssues && apiIssues.summary ? apiIssues.summary : {};
-            const activeIssues = Number(issueSummary.active || 0);
-            const stateLabel = ts
-                ? (ts.paused ? "Paused" : (ts.enabled ? "Active" : "Disabled"))
-                : (gailTradingStatusRes.ok ? "No data" : "Unavailable");
-            setCheck(nodes.gailTradingPanelStatus, stateLabel, ts && ts.enabled && !ts.paused ? "#22c55e" : (ts ? "#f59e0b" : "#ef4444"));
+            const bridge = tradingOverview && tradingOverview.bridge && typeof tradingOverview.bridge === "object"
+                ? tradingOverview.bridge
+                : {};
+            const computation = tradingOverview && tradingOverview.computation && typeof tradingOverview.computation === "object"
+                ? tradingOverview.computation
+                : {};
+            const execution = tradingOverview && tradingOverview.execution && typeof tradingOverview.execution === "object"
+                ? tradingOverview.execution
+                : {};
+            const roi = tradingOverview && tradingOverview.roi && typeof tradingOverview.roi === "object"
+                ? tradingOverview.roi
+                : {};
+            const opportunities = tradingOverview && tradingOverview.opportunities && typeof tradingOverview.opportunities === "object"
+                ? tradingOverview.opportunities
+                : {};
+            const apiIssues = tradingOverview && tradingOverview.api_issues && typeof tradingOverview.api_issues === "object"
+                ? tradingOverview.api_issues
+                : {};
+            const latestDecision = gailTradingLatestDecision(tradingOverview);
+            const lastEvaluationAt = gailTradingResolvedBridgeTimestamp(tradingOverview, "last_evaluation_at");
+            const lastTradeAt = gailTradingResolvedBridgeTimestamp(tradingOverview, "last_trade_at");
+            const activeIssues = Number(apiIssues.active || 0);
+            const inFlightCount = Array.isArray(computation.in_flight) ? computation.in_flight.length : 0;
+            const symbolCount = Array.isArray(computation.current_symbols) ? computation.current_symbols.length : 0;
+            const roiPct = Number(roi.roi_pct);
+            const missedCount = Number(opportunities.missed_count || 0);
+            const upcomingCount = Number(opportunities.upcoming_count || 0);
+            const stateLabel = tradingOverview
+                ? gailTradingBridgeState(tradingOverview)
+                : (gailTradingOverviewRes.ok ? "No data" : "Unavailable");
+            const stateTone = !tradingOverview
+                ? "#ef4444"
+                : (String(stateLabel).toLowerCase() === "running" ? "#22c55e" : "#f59e0b");
+            const roiTone = !Number.isFinite(roiPct)
+                ? "#9ca3af"
+                : (roiPct >= 0 ? "#22c55e" : "#ef4444");
+            const issueTone = !tradingOverview
+                ? "#ef4444"
+                : (activeIssues > 0 ? "#f59e0b" : "#22c55e");
+            setCheck(nodes.gailTradingPanelStatus, stateLabel, stateTone);
+            setCheck(nodes.gailTradingPanelComputation, `${symbolCount} symbols / ${inFlightCount} in-flight`, tradingOverview ? "#22c55e" : "#ef4444");
+            setCheck(
+                nodes.gailTradingPanelDecision,
+                latestDecision ? `${String(latestDecision.action || "decision")} ${String(latestDecision.symbol || "").trim()}`.trim() : "--",
+                latestDecision ? "#22c55e" : "#9ca3af"
+            );
+            setCheck(
+                nodes.gailTradingPanelRoi,
+                Number.isFinite(roiPct) ? `${roiPct.toFixed(2)}%` : String(roi.status || "unavailable"),
+                roiTone
+            );
+            setCheck(
+                nodes.gailTradingPanelOpportunity,
+                `${missedCount} missed / ${upcomingCount} upcoming`,
+                (missedCount > 0 ? "#f59e0b" : "#22c55e")
+            );
             setCheck(
                 nodes.gailTradingPanelIssues,
-                gailApiIssuesRes.ok ? `${activeIssues} active` : "Unavailable",
-                !gailApiIssuesRes.ok ? "#ef4444" : (activeIssues > 0 ? "#f59e0b" : "#22c55e")
+                tradingOverview ? `${activeIssues} active` : "Unavailable",
+                issueTone
             );
-            setCheck(nodes.gailTradingPanelEvaluation, ts ? formatGailTradingTimestamp(ts.last_evaluation_at) : "--", ts ? "#22c55e" : "#9ca3af");
-            setCheck(nodes.gailTradingPanelTrade, ts ? formatGailTradingTimestamp(ts.last_trade_at) : "--", ts ? "#22c55e" : "#9ca3af");
+            setCheck(
+                nodes.gailTradingPanelEvaluation,
+                tradingOverview ? formatGailTradingTimestamp(lastEvaluationAt) : "--",
+                tradingOverview ? "#22c55e" : "#9ca3af"
+            );
+            setCheck(
+                nodes.gailTradingPanelTrade,
+                tradingOverview ? formatGailTradingTimestamp(lastTradeAt) : "--",
+                tradingOverview ? "#22c55e" : "#9ca3af"
+            );
         } else {
             setCheck(nodes.gailTradingPanelStatus, "Not granted", "#9ca3af");
+            setCheck(nodes.gailTradingPanelComputation, "--", "#9ca3af");
+            setCheck(nodes.gailTradingPanelDecision, "--", "#9ca3af");
+            setCheck(nodes.gailTradingPanelRoi, "--", "#9ca3af");
+            setCheck(nodes.gailTradingPanelOpportunity, "--", "#9ca3af");
             setCheck(nodes.gailTradingPanelIssues, "--", "#9ca3af");
             setCheck(nodes.gailTradingPanelEvaluation, "--", "#9ca3af");
             setCheck(nodes.gailTradingPanelTrade, "--", "#9ca3af");
         }
 
         if (nodes.gailTradingModal && !nodes.gailTradingModal.hidden) {
-            openGailTradingModal();
+            void refreshGailTradingModal({ showLoading: false, forceErrorRender: false });
         }
 
         setPill(nodes.refreshPill, "Refresh", `Updated ${nowIsoTime()}`, "rgba(216,210,202,0.45)");

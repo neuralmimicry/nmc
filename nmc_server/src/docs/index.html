@@ -346,11 +346,15 @@
                     <button id="gailTradingPauseBtn" class="panel-action-btn" type="button">Pause</button>
                     <button id="gailTradingResumeBtn" class="panel-action-btn" type="button">Resume</button>
                     <button id="gailTradingEvaluateBtn" class="panel-action-btn" type="button">Evaluate</button>
-                    <span class="panel-tag">/gail/trading/status</span>
+                    <span class="panel-tag">/gail/trading/overview</span>
                 </div>
             </div>
             <div class="checks checks-compact">
                 <div class="check-item"><span>Trading Bridge</span><strong id="gailTradingPanelStatus">Checking</strong></div>
+                <div class="check-item"><span>Current Computation</span><strong id="gailTradingPanelComputation">--</strong></div>
+                <div class="check-item"><span>Latest Decision</span><strong id="gailTradingPanelDecision">--</strong></div>
+                <div class="check-item"><span>ROI</span><strong id="gailTradingPanelRoi">--</strong></div>
+                <div class="check-item"><span>Opportunities</span><strong id="gailTradingPanelOpportunity">--</strong></div>
                 <div class="check-item"><span>API Issues</span><strong id="gailTradingPanelIssues">--</strong></div>
                 <div class="check-item"><span>Last Evaluation</span><strong id="gailTradingPanelEvaluation">--</strong></div>
                 <div class="check-item"><span>Last Trade</span><strong id="gailTradingPanelTrade">--</strong></div>
@@ -1262,7 +1266,7 @@
             <h3 id="gailTradingModalTitle">Gail Trading Bridge</h3>
             <button id="gailTradingModalClose" class="cluster-modal-close" type="button" aria-label="Close Gail Trading details">Close</button>
         </div>
-        <p id="gailTradingModalSubtitle" class="cluster-modal-subtitle">Live status, portfolio, recent trades, and trading activity from Gail.</p>
+        <p id="gailTradingModalSubtitle" class="cluster-modal-subtitle">Live execution, strategy computation, decisions, outcomes, ROI, and opportunity tracking from Gail.</p>
         <div id="gailTradingModalBody" class="cluster-modal-body">
             <p class="empty">No Gail Trading data loaded.</p>
         </div>
