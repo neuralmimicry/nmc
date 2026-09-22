@@ -222,6 +222,9 @@
 
     let authToken = loadToken();
     let authIdentity = loadIdentity();
+    let dashboardRefreshInFlight = false;
+    let authSessionCheckInFlight = false;
+    let authRedirectStarted = false;
     let clusterDetailsRequestSeq = 0;
     let openshiftDetailsRequestSeq = 0;
     let traceyInsightsRequestSeq = 0;
@@ -727,6 +730,7 @@
 
     let gailTradingModalRequestSeq = 0;
     let gailTradingModalLastSuccessfulResponse = null;
+    let gailTradingModalRequestInFlight = false;
 
     function gailTradingData(response, fallback = {}) {
         const topLevelData = responseData(response && response.payload);
@@ -1074,32 +1078,40 @@
         if (!nodes.gailTradingModalBody) {
             return;
         }
+        if (gailTradingModalRequestInFlight) {
+            return;
+        }
+        gailTradingModalRequestInFlight = true;
         const seq = ++gailTradingModalRequestSeq;
-        if (showLoading && nodes.gailTradingModalSubtitle) {
-            nodes.gailTradingModalSubtitle.textContent = "Loading trading overview…";
-        }
-        if (showLoading && !gailTradingModalLastSuccessfulResponse) {
-            nodes.gailTradingModalBody.innerHTML = `<p class="empty">Loading…</p>`;
-        }
-
-        const overviewRes = await fetchJson("/gail/trading/overview?history_limit=80&log_limit=120");
-
-        if (seq !== gailTradingModalRequestSeq) {
-            return;
-        }
-        if (overviewRes && overviewRes.ok) {
-            gailTradingModalLastSuccessfulResponse = overviewRes;
-            if (nodes.gailTradingModalSubtitle) {
-                nodes.gailTradingModalSubtitle.textContent = "Gail Trading Overview";
+        try {
+            if (showLoading && nodes.gailTradingModalSubtitle) {
+                nodes.gailTradingModalSubtitle.textContent = "Loading trading overview…";
             }
-            renderGailTradingModal(overviewRes);
-            return;
-        }
-        if (nodes.gailTradingModalSubtitle) {
-            nodes.gailTradingModalSubtitle.textContent = "Gail Trading Overview (stale)";
-        }
-        if (forceErrorRender || !gailTradingModalLastSuccessfulResponse) {
-            renderGailTradingModal(overviewRes);
+            if (showLoading && !gailTradingModalLastSuccessfulResponse) {
+                nodes.gailTradingModalBody.innerHTML = `<p class="empty">Loading…</p>`;
+            }
+
+            const overviewRes = await fetchJson("/gail/trading/overview?history_limit=80&log_limit=120");
+
+            if (seq !== gailTradingModalRequestSeq) {
+                return;
+            }
+            if (overviewRes && overviewRes.ok) {
+                gailTradingModalLastSuccessfulResponse = overviewRes;
+                if (nodes.gailTradingModalSubtitle) {
+                    nodes.gailTradingModalSubtitle.textContent = "Gail Trading Overview";
+                }
+                renderGailTradingModal(overviewRes);
+                return;
+            }
+            if (nodes.gailTradingModalSubtitle) {
+                nodes.gailTradingModalSubtitle.textContent = "Gail Trading Overview (stale)";
+            }
+            if (forceErrorRender || !gailTradingModalLastSuccessfulResponse) {
+                renderGailTradingModal(overviewRes);
+            }
+        } finally {
+            gailTradingModalRequestInFlight = false;
         }
     }
 
@@ -7814,8 +7826,25 @@
     function updateAuthPill(lastResults) {
         const unauthorized = lastResults.some((r) => r.status === 401);
         if (unauthorized) {
-            setPill(nodes.authPill, "Auth", "Unauthorised", "rgba(239,68,68,0.85)");
-            window.setTimeout(() => redirectToLogin("unauthorized"), 400);
+            setPill(nodes.authPill, "Auth", "Checking session", "rgba(245,158,11,0.8)");
+            if (authToken && !authSessionCheckInFlight) {
+                authSessionCheckInFlight = true;
+                void fetch(withBase("/auth/session"), {
+                    headers: authHeaders(),
+                    cache: "no-store"
+                }).then((response) => {
+                    if (response.status === 401 && !authRedirectStarted) {
+                        authRedirectStarted = true;
+                        window.setTimeout(() => redirectToLogin("unauthorized"), 400);
+                    } else if (response.ok) {
+                        void refreshAuthIdentity();
+                    }
+                }).catch(() => {
+                    // A session probe network error is transient; keep the dashboard visible.
+                }).finally(() => {
+                    authSessionCheckInFlight = false;
+                });
+            }
             return;
         }
 
@@ -7827,6 +7856,18 @@
     }
 
     async function refreshDashboard() {
+        if (dashboardRefreshInFlight) {
+            return;
+        }
+        dashboardRefreshInFlight = true;
+        try {
+            await refreshDashboardOnce();
+        } finally {
+            dashboardRefreshInFlight = false;
+        }
+    }
+
+    async function refreshDashboardOnce() {
         setPill(nodes.refreshPill, "Refresh", "Updating", "rgba(245,158,11,0.8)");
         const traceyVisible = hasTraceyVisibility();
         const tradingVisible = hasGailTradingVisibility();
@@ -8198,8 +8239,12 @@
             setCheck(nodes.gailTradingPanelTrade, "--", "#9ca3af");
         }
 
-        if (nodes.gailTradingModal && !nodes.gailTradingModal.hidden) {
-            void refreshGailTradingModal({ showLoading: false, forceErrorRender: false });
+        if (nodes.gailTradingModal && !nodes.gailTradingModal.hidden && gailTradingOverviewRes.ok) {
+            gailTradingModalLastSuccessfulResponse = gailTradingOverviewRes;
+            if (nodes.gailTradingModalSubtitle) {
+                nodes.gailTradingModalSubtitle.textContent = "Gail Trading Overview";
+            }
+            renderGailTradingModal(gailTradingOverviewRes);
         }
 
         setPill(nodes.refreshPill, "Refresh", `Updated ${nowIsoTime()}`, "rgba(216,210,202,0.45)");

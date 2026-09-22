@@ -62,6 +62,27 @@ namespace NMC::Server {
             return current;
         }
 
+        const nlohmann::json* unwrapGailEnvelopeRef(const nlohmann::json& payload) {
+            const nlohmann::json* current = &payload;
+            for (int depth = 0; depth < 4; ++depth) {
+                if (!current->is_object()) {
+                    break;
+                }
+                const auto dataIt = current->find("data");
+                if (dataIt != current->end() && !dataIt->is_null()) {
+                    current = &*dataIt;
+                    continue;
+                }
+                const auto payloadIt = current->find("payload");
+                if (payloadIt != current->end() && !payloadIt->is_null()) {
+                    current = &*payloadIt;
+                    continue;
+                }
+                break;
+            }
+            return current;
+        }
+
         nlohmann::json extractArrayPayload(const nlohmann::json& payload,
                                            std::initializer_list<const char*> preferredKeys) {
             if (payload.is_array()) {
@@ -191,6 +212,49 @@ namespace NMC::Server {
                 }
             }
             return activeCount;
+        }
+
+        int64_t firstTimestampValue(const nlohmann::json& objectNode,
+                                    std::initializer_list<const char*> keys,
+                                    int64_t fallback);
+
+        nlohmann::json summarizeApiIssues(const nlohmann::json& issuesPayload,
+                                          std::size_t maxSamples = 25) {
+            nlohmann::json summary = {
+                {"active", countActiveApiIssues(issuesPayload)},
+                {"total", 0},
+                {"truncated", false},
+                {"sample", nlohmann::json::array()}
+            };
+            if (!issuesPayload.is_object()) {
+                return summary;
+            }
+
+            const auto issuesIt = issuesPayload.find("issues");
+            if (issuesIt == issuesPayload.end() || !issuesIt->is_object()) {
+                return summary;
+            }
+
+            summary["total"] = issuesIt->size();
+            summary["truncated"] = issuesIt->size() > maxSamples;
+            for (const auto& [issueId, issueNode] : issuesIt->items()) {
+                if (summary["sample"].size() >= maxSamples || !issueNode.is_object()) {
+                    break;
+                }
+                nlohmann::json sample = {
+                    {"id", issueId},
+                    {"active", issueNode.contains("active")
+                        ? jsonBoolValue(issueNode["active"], false)
+                        : toLower(firstStringValue(issueNode, {"status"}, "")) == "active"},
+                    {"status", firstStringValue(issueNode, {"status"}, "")},
+                    {"category", firstStringValue(issueNode, {"category", "type", "component"}, "")},
+                    {"message", firstStringValue(issueNode, {"message", "detail", "summary", "error"}, "")},
+                    {"timestamp", firstTimestampValue(issueNode,
+                        {"timestamp", "timestamp_s", "timestamp_sec", "ts", "created_at", "updated_at"}, 0)}
+                };
+                summary["sample"].push_back(std::move(sample));
+            }
+            return summary;
         }
 
         int64_t normalizeEpochSeconds(double rawTimestamp) {
@@ -2149,7 +2213,7 @@ namespace NMC::Server {
         const nlohmann::json positionsPayload = unwrapGailEnvelope(positionsSource.payload);
         const nlohmann::json historyPayload = unwrapGailEnvelope(historySource.payload);
         const nlohmann::json logsPayload = unwrapGailEnvelope(logsSource.payload);
-        const nlohmann::json issuesEnvelope = unwrapGailEnvelope(issuesSource.payload);
+        const nlohmann::json* issuesEnvelope = unwrapGailEnvelopeRef(issuesSource.payload);
 
         const nlohmann::json statusObject = statusPayload.is_object() ? statusPayload : nlohmann::json::object();
         const nlohmann::json portfolioRawObject = portfolioPayload.is_object() ? portfolioPayload : nlohmann::json::object();
@@ -2160,10 +2224,10 @@ namespace NMC::Server {
         const nlohmann::json positionsItems = extractArrayPayload(positionsPayload, {"positions"});
         nlohmann::json historyItems = extractArrayPayload(historyPayload, {"trades", "history"});
         nlohmann::json logsItems = extractArrayPayload(logsPayload, {"logs", "events"});
-        const nlohmann::json issuesObject = issuesEnvelope.is_object() && issuesEnvelope.contains("api_issues")
-                                               && issuesEnvelope["api_issues"].is_object()
-                                            ? issuesEnvelope["api_issues"]
-                                            : (issuesEnvelope.is_object() ? issuesEnvelope : nlohmann::json::object());
+        const nlohmann::json* issuesObject = issuesEnvelope->is_object() && issuesEnvelope->contains("api_issues")
+                                                 && (*issuesEnvelope)["api_issues"].is_object()
+                                            ? &(*issuesEnvelope)["api_issues"]
+                                            : (issuesEnvelope->is_object() ? issuesEnvelope : nullptr);
 
         for (auto& trade : historyItems) {
             trade = normalizeRecentTrade(trade);
@@ -2660,8 +2724,8 @@ namespace NMC::Server {
                 {"recent", historyItems}
             }},
             {"api_issues", {
-                {"active", countActiveApiIssues(issuesObject)},
-                {"details", issuesObject}
+                {"active", issuesObject != nullptr ? countActiveApiIssues(*issuesObject) : 0},
+                {"details", issuesObject != nullptr ? summarizeApiIssues(*issuesObject) : summarizeApiIssues(nlohmann::json::object())}
             }},
             {"logs", logsItems},
             {"upstream", upstream}
