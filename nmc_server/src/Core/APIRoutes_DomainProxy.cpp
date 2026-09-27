@@ -2224,6 +2224,21 @@ namespace NMC::Server {
         const nlohmann::json positionsItems = extractArrayPayload(positionsPayload, {"positions"});
         nlohmann::json historyItems = extractArrayPayload(historyPayload, {"trades", "history"});
         nlohmann::json logsItems = extractArrayPayload(logsPayload, {"logs", "events"});
+        const std::string tradeSource = firstStringValue(
+            historyPayload,
+            {"source", "trade_source"},
+            "gail_unified_octobot_trade_history"
+        );
+        const std::string tradeExecutionAuthority = firstStringValue(
+            historyPayload,
+            {"execution_authority", "owner"},
+            "gail"
+        );
+        const std::string tradeVenue = firstStringValue(
+            historyPayload,
+            {"venue", "exchange_service"},
+            "octobot"
+        );
         const nlohmann::json* issuesObject = issuesEnvelope->is_object() && issuesEnvelope->contains("api_issues")
                                                  && (*issuesEnvelope)["api_issues"].is_object()
                                             ? &(*issuesEnvelope)["api_issues"]
@@ -2721,7 +2736,11 @@ namespace NMC::Server {
             }},
             {"trades", {
                 {"recent_count", historyItems.size()},
-                {"recent", historyItems}
+                {"recent", historyItems},
+                {"source", tradeSource},
+                {"execution_authority", tradeExecutionAuthority},
+                {"venue", tradeVenue},
+                {"includes_pre_gail_octobot_history", true}
             }},
             {"api_issues", {
                 {"active", issuesObject != nullptr ? countActiveApiIssues(*issuesObject) : 0},

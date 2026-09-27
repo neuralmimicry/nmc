@@ -988,7 +988,7 @@
             : "";
         const recentTrades = Array.isArray(trades.recent) ? trades.recent : [];
         const tradeRows = recentTrades.slice(0, 20).map((entry) =>
-            `<tr><td>${formatGailTradingTimestamp(gailTradingEntryTimestamp(entry) ?? overviewTimestamp)}</td><td>${escapeHtml(entry.symbol || entry.pair || "—")}</td><td>${escapeHtml(entry.side || entry.action || "—")}</td><td>${formatGailTradingUsd(entry.amount_usd || entry.notional_usd || entry.value_usd)}</td><td>${escapeHtml(entry.exchange || entry.venue || "—")}</td></tr>`
+            `<tr><td>${formatGailTradingTimestamp(gailTradingEntryTimestamp(entry) ?? overviewTimestamp)}</td><td>${escapeHtml(entry.symbol || entry.pair || "—")}</td><td>${escapeHtml(entry.side || entry.action || "—")}</td><td>${formatGailTradingUsd(entry.amount_usd || entry.notional_usd || entry.value_usd)}</td><td>${escapeHtml(entry.exchange || entry.venue || "—")}</td><td>${escapeHtml(entry.source === "octobot_imported" ? "OctoBot history" : "Gail")}</td></tr>`
         ).join("");
         const openPositions = Array.isArray(positions.items) ? positions.items : [];
         const positionRows = openPositions.slice(0, 20).map((entry) =>
@@ -1031,7 +1031,7 @@
             <div class="trading-status-grid">
                 <div class="trading-stat"><span>Status</span><strong>${escapeHtml(gailTradingBridgeState(overview))}</strong></div>
                 <div class="trading-stat"><span>Evaluations</span><strong>${escapeHtml(String(bridge.evaluation_count || 0))}</strong></div>
-                <div class="trading-stat"><span>Trades</span><strong>${escapeHtml(String(bridge.trade_count || trades.recent_count || 0))}</strong></div>
+                <div class="trading-stat"><span>Unified Trades</span><strong>${escapeHtml(String(trades.total || trades.recent_count || 0))}</strong></div>
                 <div class="trading-stat"><span>Current Symbols</span><strong>${escapeHtml(String(Array.isArray(computation.current_symbols) ? computation.current_symbols.length : 0))}</strong></div>
                 <div class="trading-stat"><span>In Flight</span><strong>${escapeHtml(String(Array.isArray(computation.in_flight) ? computation.in_flight.length : 0))}</strong></div>
                 <div class="trading-stat"><span>Success / Failure</span><strong>${escapeHtml(String(execution.success_count || 0))} / ${escapeHtml(String(execution.failure_count || 0))}</strong></div>
@@ -1049,8 +1049,9 @@
             <h4>Latest Decisions</h4>
             <div class="trading-log-wrap"><table class="trading-table trading-log"><thead><tr><th>Time</th><th>Symbol</th><th>Action</th><th>Strategy</th><th>Source</th><th>Detail</th></tr></thead><tbody>${decisionRows}</tbody></table></div>` : ""}
             ${tradeRows ? `
-            <h4>Recent Trades</h4>
-            <table class="trading-table"><thead><tr><th>Time</th><th>Symbol</th><th>Side</th><th>Amount</th><th>Exchange</th></tr></thead><tbody>${tradeRows}</tbody></table>` : ""}
+            <h4>Unified OctoBot and Gail Trade History</h4>
+            <p class="muted">Includes pre-Gail OctoBot fills and later Gail-authorized executions.</p>
+            <table class="trading-table"><thead><tr><th>Time</th><th>Symbol</th><th>Side</th><th>Amount</th><th>Exchange</th><th>Source</th></tr></thead><tbody>${tradeRows}</tbody></table>` : ""}
             ${positionRows ? `
             <h4>Open Positions</h4>
             <table class="trading-table"><thead><tr><th>Symbol</th><th>Side</th><th>Size</th><th>USD Value</th><th>Exchange</th></tr></thead><tbody>${positionRows}</tbody></table>` : ""}
