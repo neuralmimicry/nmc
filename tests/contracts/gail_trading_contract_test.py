@@ -34,7 +34,12 @@ def main() -> int:
 
     require(SERVER, 'normalized["timestamp"] = timestamp', "normalized trade timestamp")
     require(SERVER, 'normalized["side"] = action', "normalized trade side")
+    require(SERVER, '{"source", tradeSource}', "unified trade source metadata")
+    require(SERVER, '{"execution_authority", tradeExecutionAuthority}', "trade execution authority metadata")
+    require(SERVER, '{"includes_pre_gail_octobot_history", true}', "pre-Gail history inclusion marker")
     require(DASHBOARD, 'entry.side || entry.action', "dashboard trade side column")
+    require(DASHBOARD, 'entry.source === "octobot_imported"', "dashboard trade provenance column")
+    require(DASHBOARD, "Unified OctoBot and Gail Trade History", "unified trade heading")
     require(DASHBOARD, 'gailTradingEntryTimestamp(entry)', "dashboard trade time column")
     require(DASHBOARD, "if (dashboardRefreshInFlight)", "dashboard refresh overlap guard")
     require(DASHBOARD, 'fetch(withBase("/auth/session")', "session validation before login redirect")
