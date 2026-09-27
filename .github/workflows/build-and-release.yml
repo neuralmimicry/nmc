@@ -41,7 +41,7 @@ concurrency:
 jobs:
   version:
     name: Version metadata
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64]
     outputs:
       release_version: ${{ steps.version.outputs.release_version }}
       build_version: ${{ steps.version.outputs.build_version }}
@@ -184,54 +184,6 @@ jobs:
             rename: nmc_server
             deb_arch: arm64
             can_execute: false
-          - component: client
-            os: windows
-            arch: amd64
-            runs_on: '["windows-2025"]'
-            platform: windows-amd64
-            source_dir: nmc_client
-            build_dir: nmc_client/build
-            executable: .\nmc_client\build\Release\nmc.exe
-            rename: nmc.exe
-            deb_arch: ""
-            can_execute: true
-            cmake_arch: x64
-            vcpkg_triplet: x64-windows
-          - component: client
-            os: windows
-            arch: arm64
-            runs_on: '["windows-11-arm"]'
-            platform: windows-arm64
-            source_dir: nmc_client
-            build_dir: nmc_client/build
-            executable: .\nmc_client\build\Release\nmc.exe
-            rename: nmc.exe
-            deb_arch: ""
-            can_execute: true
-            cmake_arch: ARM64
-            vcpkg_triplet: arm64-windows
-          - component: client
-            os: macos
-            arch: amd64
-            runs_on: '["macos-15-intel"]'
-            platform: macos-amd64
-            source_dir: nmc_client
-            build_dir: nmc_client/build
-            executable: ./nmc_client/build/nmc
-            rename: nmc
-            deb_arch: ""
-            can_execute: true
-          - component: client
-            os: macos
-            arch: arm64
-            runs_on: '["macos-15"]'
-            platform: macos-arm64
-            source_dir: nmc_client
-            build_dir: nmc_client/build
-            executable: ./nmc_client/build/nmc
-            rename: nmc
-            deb_arch: ""
-            can_execute: true
     steps:
       - name: Check out repository
         uses: actions/checkout@v5
@@ -281,44 +233,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --allow-downgrades --no-install-recommends "${packages[@]}"
 
-      - name: Install macOS dependencies
-        if: ${{ matrix.os == 'macos' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          if ! brew list curl >/dev/null 2>&1; then
-            brew install curl
-          fi
-          echo "CMAKE_PREFIX_PATH=$(brew --prefix curl)" >> "$GITHUB_ENV"
-
-      - name: Install Windows dependencies
-        if: ${{ matrix.os == 'windows' }}
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $vcpkg = Get-Command vcpkg -ErrorAction SilentlyContinue
-          if (-not $vcpkg) {
-            throw 'vcpkg is required on Windows packaging runners'
-          }
-          & $vcpkg.Source install "curl:${{ matrix.vcpkg_triplet }}"
-          $vcpkgRoot = $env:VCPKG_INSTALLATION_ROOT
-          if ([string]::IsNullOrWhiteSpace($vcpkgRoot)) {
-            $candidateRoot = Split-Path -Parent (Split-Path -Parent $vcpkg.Source)
-            if (Test-Path (Join-Path $candidateRoot 'scripts\buildsystems\vcpkg.cmake')) {
-              $vcpkgRoot = $candidateRoot
-            }
-          }
-          if ([string]::IsNullOrWhiteSpace($vcpkgRoot)) {
-            throw 'VCPKG_INSTALLATION_ROOT is not set and vcpkg root could not be inferred'
-          }
-          $toolchain = Join-Path $vcpkgRoot 'scripts\buildsystems\vcpkg.cmake'
-          if (-not (Test-Path $toolchain)) {
-            throw "vcpkg toolchain file was not found: $toolchain"
-          }
-          "VCPKG_TOOLCHAIN=$toolchain" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-
       - name: Configure Unix build
-        if: ${{ matrix.os != 'windows' }}
         env:
           BUILD_VERSION: ${{ needs.version.outputs.build_version }}
           COMPONENT: ${{ matrix.component }}
@@ -335,24 +250,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             "$version_arg"
 
-      - name: Configure Windows build
-        if: ${{ matrix.os == 'windows' }}
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $args = @(
-            '-S', '${{ matrix.source_dir }}',
-            '-B', '${{ matrix.build_dir }}',
-            '-A', '${{ matrix.cmake_arch }}',
-            '-DCMAKE_BUILD_TYPE=Release',
-            '-DNMC_CLIENT_VERSION=${{ needs.version.outputs.build_version }}',
-            "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_TOOLCHAIN",
-            '-DVCPKG_TARGET_TRIPLET=${{ matrix.vcpkg_triplet }}'
-          )
-          cmake @args
-
       - name: Build Unix artifact
-        if: ${{ matrix.os != 'windows' }}
         env:
           BUILD_DIR: ${{ matrix.build_dir }}
         shell: bash
@@ -364,38 +262,14 @@ jobs:
           fi
           cmake --build "$BUILD_DIR" --config Release --parallel "$jobs"
 
-      - name: Build Windows artifact
-        if: ${{ matrix.os == 'windows' }}
-        shell: pwsh
-        run: cmake --build '${{ matrix.build_dir }}' --config Release --parallel
-
       - name: Smoke test client
         if: ${{ matrix.can_execute && matrix.component == 'client' }}
         shell: bash
-        env:
-          OS_NAME: ${{ matrix.os }}
         run: |
           set -euo pipefail
-          if [[ "$OS_NAME" == "windows" ]]; then
-            pwsh -NoLogo -NoProfile -Command '& ".\nmc_client\build\Release\nmc.exe" version --no-check'
-          else
-            "${{ matrix.executable }}" version --no-check
-          fi
-
-      - name: Package Windows artifact
-        if: ${{ matrix.os == 'windows' }}
-        shell: pwsh
-        run: |
-          .\scripts\package-release.ps1 `
-            -Component '${{ matrix.component }}' `
-            -Version '${{ needs.version.outputs.build_version }}' `
-            -InputPath '${{ matrix.executable }}' `
-            -Platform '${{ matrix.platform }}' `
-            -Rename '${{ matrix.rename }}' `
-            -OutputDir .\dist
+          "${{ matrix.executable }}" version --no-check
 
       - name: Package Unix artifact
-        if: ${{ matrix.os != 'windows' }}
         shell: bash
         env:
           COMPONENT: ${{ matrix.component }}
@@ -485,7 +359,7 @@ jobs:
         ) ||
         (github.event_name == 'workflow_dispatch' && inputs.publish_release)
       }}
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64]
     permissions:
       contents: write
     outputs:
@@ -542,7 +416,7 @@ jobs:
         ) ||
         (github.event_name == 'workflow_dispatch' && inputs.publish_release)
       }}
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64]
     permissions:
       contents: write
     steps:
