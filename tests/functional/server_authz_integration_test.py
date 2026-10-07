@@ -844,7 +844,7 @@ def request_json(
     path: str,
     *,
     token: str | None = None,
-    payload: dict[str, Any] | None = None,
+    payload: Any | None = None,
 ) -> tuple[int, Any]:
     url = f"{base_url}{path}"
     body = json.dumps(payload).encode("utf-8") if payload is not None else None
@@ -904,6 +904,23 @@ def test_auth_session_supports_static_admin_token(server: NmcServerProcess) -> N
     assert_true("admin" in (payload.get("groups") or []), "static admin token should resolve admin group membership")
     continuum = ((payload.get("service_access") or {}).get("continuum") or {})
     assert_true(continuum.get("can_control") is True, "static admin token should resolve continuum control access")
+
+
+def test_controller_action_rejects_malformed_body_shapes(server: NmcServerProcess) -> None:
+    """Malformed JSON values and fields must return structured HTTP 400 errors."""
+    for body in ([], 7, {"controller_id": 7}):
+        status, payload = request_json(
+            server.base_url,
+            "POST",
+            "/devices/controllers/actions",
+            token="continuum-control-token",
+            payload=body,
+        )
+        assert_status(status, 400, "controller action malformed body")
+        assert_true(
+            (payload.get("error") or {}).get("code") in {"controller_action_invalid", "controller_id_invalid"},
+            "malformed controller action bodies must return a structured client error",
+        )
 
 
 def test_continuum_route_authorisation(server: NmcServerProcess, backend: MockBackend) -> None:
@@ -1686,6 +1703,7 @@ def main() -> int:
         test_auth_session_preserves_service_account_groups(server)
         test_auth_session_supports_static_admin_token(server)
         test_continuum_route_authorisation(server, backend)
+        test_controller_action_rejects_malformed_body_shapes(server)
         test_redfish_vendor_diagnostics(server, redfish)
         test_redfish_vendor_actions(backend.base_url, redfish)
         test_home_assistant_rejects_plain_http_hostnames(server, backend)

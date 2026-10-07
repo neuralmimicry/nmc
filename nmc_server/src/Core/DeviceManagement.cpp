@@ -1959,7 +1959,11 @@ void DeviceManagement::handleControllerAction(const httplib::Request& req, httpl
         sendJson(res, 400, errorBody("controller_action_invalid_json", exception.what()));
         return;
     }
-    const std::string controllerId = request.value("controller_id", std::string{});
+    if (!request.is_object()) {
+        sendJson(res, 400, errorBody("controller_action_invalid", "request body must be a JSON object"));
+        return;
+    }
+    const std::string controllerId = stringField(request, "controller_id");
     if (!safeIdentifier(controllerId)) {
         sendJson(res, 400, errorBody("controller_id_invalid", "controller_id must be a safe inventory identifier"));
         return;
