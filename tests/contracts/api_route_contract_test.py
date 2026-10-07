@@ -65,7 +65,10 @@ def collect_client_routes(client_src: str) -> List[Route]:
         re.MULTILINE | re.DOTALL,
     )
     for method, first_arg_expr in call_first_arg_pattern.findall(src):
-        literal_parts = re.findall(r"\"(/[^\"\?]*)\"", first_arg_expr)
+        # Query parameters are part of the client literal but not the route
+        # registered by the server. Compare the path portion and ignore the
+        # query suffix when collecting the endpoint template.
+        literal_parts = re.findall(r'"(/[^"?]*)(?:\?[^\"]*)?"', first_arg_expr)
         if not literal_parts:
             continue
         template = template_from_literal_parts(literal_parts)
@@ -77,7 +80,7 @@ def collect_client_routes(client_src: str) -> List[Route]:
     var_pattern = re.compile(r"std::string\s+([A-Za-z_]\w*)\s*=\s*(.+?);", re.MULTILINE | re.DOTALL)
     var_paths: Dict[str, set[str]] = {}
     for name, expr in var_pattern.findall(src):
-        literal_parts = re.findall(r"\"(/[^\"\?]*)\"", expr)
+        literal_parts = re.findall(r'"(/[^"?]*)(?:\?[^\"]*)?"', expr)
         if not literal_parts:
             continue
         var_paths.setdefault(name, set()).add(template_from_literal_parts(literal_parts))

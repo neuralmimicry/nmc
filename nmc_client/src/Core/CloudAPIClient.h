@@ -140,6 +140,14 @@ namespace NMC::Core {
         Models::CloudResponse resumeVM(const std::string& id);
         Models::CloudResponse suspendVM(const std::string& id);
 
+        // Provider-scoped AWS, GCP and Azure compute lifecycle operations.
+        Models::CloudResponse getProviderComputeStatus();
+        Models::CloudResponse listProviderInstances(const std::string& provider,
+                                                    const std::string& scope,
+                                                    const std::string& region = "");
+        Models::CloudResponse createProviderInstance(const nlohmann::json& request);
+        Models::CloudResponse actOnProviderInstance(const nlohmann::json& request);
+
         // OpenShift / OpenStack / Proxmox Continuum Operations (via provider portal APIs)
         Models::CloudResponse getServerHealth();
         Models::CloudResponse getServerVersion();

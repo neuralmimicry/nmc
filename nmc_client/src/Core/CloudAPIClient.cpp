@@ -7,6 +7,8 @@
 #include <filesystem> // For creating directories (C++17)
 #include <array>
 #include <cstdlib>
+#include <iomanip>
+#include <sstream>
 
 namespace {
     // Read environment variables without throwing or returning nullptrs.
@@ -31,6 +33,21 @@ namespace {
         }
         path += (path.find('?') == std::string::npos) ? "?" : "&";
         path += key + "=" + value;
+    }
+
+    // Encode query values so provider scope strings cannot alter the request path.
+    std::string encodeQueryValue(const std::string& value) {
+        std::ostringstream encoded;
+        encoded << std::uppercase << std::hex;
+        for (const unsigned char ch : value) {
+            if ((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') ||
+                (ch >= '0' && ch <= '9') || ch == '-' || ch == '_' || ch == '.' || ch == '~') {
+                encoded << static_cast<char>(ch);
+            } else {
+                encoded << '%' << std::setw(2) << std::setfill('0') << static_cast<int>(ch);
+            }
+        }
+        return encoded.str();
     }
 
     void appendTraceySimulationQuery(std::string& path, const NMC::Core::TraceySimulationQuery& simulation) {
@@ -767,6 +784,31 @@ namespace NMC::Core {
     Models::CloudResponse CloudAPIClient::suspendVM(const std::string& id) {
         auto res = cli->Post("/vm/suspend/" + id, "", "application/json");
         return processHttpResponse(res, "VM '" + id + "' suspended successfully.");
+    }
+
+    Models::CloudResponse CloudAPIClient::getProviderComputeStatus() {
+        auto res = cli->Get("/providers/compute");
+        return processHttpResponse(res, "Provider compute adapter status retrieved.");
+    }
+
+    Models::CloudResponse CloudAPIClient::listProviderInstances(const std::string& provider,
+                                                                const std::string& scope,
+                                                                const std::string& region) {
+        std::string path = "/providers/compute/instances?provider=" + encodeQueryValue(provider) +
+                           "&scope=" + encodeQueryValue(scope);
+        if (!region.empty()) path += "&region=" + encodeQueryValue(region);
+        auto res = cli->Get(path);
+        return processHttpResponse(res, "Live provider compute inventory retrieved.");
+    }
+
+    Models::CloudResponse CloudAPIClient::createProviderInstance(const nlohmann::json& request) {
+        auto res = cli->Post("/providers/compute/instances/create", request.dump(), "application/json");
+        return processHttpResponse(res, "Provider instance creation submitted.");
+    }
+
+    Models::CloudResponse CloudAPIClient::actOnProviderInstance(const nlohmann::json& request) {
+        auto res = cli->Post("/providers/compute/instances/action", request.dump(), "application/json");
+        return processHttpResponse(res, "Provider instance action submitted.");
     }
 
 // --- OpenShift / OpenStack / Proxmox Continuum Operations ---

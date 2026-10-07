@@ -7,6 +7,23 @@
 namespace NMC::Server {
 
     void APIRoutes::registerReleaseOperateRoutes(httplib::Server& svr, const APIRoutes::RouteGuard& guard) {
+        svr.Get("/providers/compute", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            handleProviderComputeStatus(req, res);
+        });
+        svr.Get("/providers/compute/instances", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            handleProviderComputeList(req, res);
+        });
+        svr.Post("/providers/compute/instances/create", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            handleProviderComputeCreate(req, res);
+        });
+        svr.Post("/providers/compute/instances/action", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            handleProviderComputeAction(req, res);
+        });
+
         svr.Get("/k8s/refiner/status", [this, guard](const httplib::Request& req, httplib::Response& res) {
             if (!guard(req, res)) return;
             k8sHandlers->handleGetRefinerStatus(req, res);

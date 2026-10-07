@@ -615,12 +615,14 @@ class NmcServerProcess:
         load_kubeconfig: bool = True,
         device_power_control_enabled: bool = False,
         recovery_enabled: bool | str | None = None,
+        provider_environment: dict[str, str] | None = None,
     ) -> None:
         self._backend_base_url = backend_base_url
         self._cluster_id = cluster_id
         self._load_kubeconfig = load_kubeconfig
         self._device_power_control_enabled = device_power_control_enabled
         self._recovery_enabled = recovery_enabled
+        self._provider_environment = dict(provider_environment or {})
         self._tmp_dir = tempfile.TemporaryDirectory(prefix="nmc-server-authz-")
         self._home_dir = pathlib.Path(self._tmp_dir.name)
         self._log_path = self._home_dir / "nmc_server.log"
@@ -666,6 +668,7 @@ class NmcServerProcess:
                 "AUTHZ_HA_TOKEN": "authz-home-assistant-token",
             }
         )
+        env.update(self._provider_environment)
         env.pop("NMC_DEVICE_POWER_CONTROL_ENABLED", None)
         if self._device_power_control_enabled:
             env["NMC_DEVICE_POWER_CONTROL_ENABLED"] = "true"
@@ -807,6 +810,42 @@ def write_device_inventory(home_dir: pathlib.Path, backend_base_url: str) -> pat
     # Match Ansible's protected runtime file rather than the process umask.
     inventory_path.chmod(0o600)
     return inventory_path
+
+
+def write_mock_aws_cli(home_dir: pathlib.Path) -> pathlib.Path:
+    """Install a deterministic fake AWS CLI for provider adapter integration tests."""
+    executable = home_dir / "mock-aws"
+    executable.write_text(
+        """#!/bin/sh
+set -eu
+if [ -n "${NMC_AUTH_TOKEN:-}" ]; then
+  exit 90
+fi
+printf '%s\\n' "$*" >> "$HOME/aws-provider-calls.txt"
+if [ "$1" = "sts" ] && [ "$2" = "get-caller-identity" ]; then
+  printf '%s\\n' '{"Account":"123456789012","Arn":"arn:aws:iam::123456789012:role/nmc-test"}'
+elif [ "$1" = "ec2" ] && [ "$2" = "describe-instances" ]; then
+  printf '%s\\n' '{"Reservations":[{"Instances":[{"InstanceId":"i-0123456789abcdef0","InstanceType":"t3.small","State":{"Name":"running"},"Placement":{"AvailabilityZone":"eu-west-2a"},"PrivateIpAddress":"10.10.0.7","Tags":[{"Key":"Name","Value":"authz-cloud-vm"}]}]}]}'
+elif [ "$1" = "ec2" ] && [ "$2" = "reboot-instances" ]; then
+  printf '%s\\n' '{"RebootingInstances":[]}'
+elif [ "$1" = "ec2" ] && [ "$2" = "run-instances" ]; then
+  printf '%s\\n' '{"Instances":[{"InstanceId":"i-0abcdef1234567890","InstanceType":"t3.small","State":{"Name":"pending"},"Placement":{"AvailabilityZone":"eu-west-2a"},"Tags":[{"Key":"Name","Value":"authz-created-vm"}]}]}'
+else
+  exit 64
+fi
+""",
+        encoding="utf-8",
+    )
+    executable.chmod(0o700)
+    return executable
+
+
+def write_mock_provider_cli(home_dir: pathlib.Path, name: str, body: str) -> pathlib.Path:
+    """Write a fixture-only provider command executable with no real cloud access."""
+    executable = home_dir / f"mock-{name}"
+    executable.write_text(body, encoding="utf-8")
+    executable.chmod(0o700)
+    return executable
 
 
 def wait_for_server_ready(
@@ -1129,6 +1168,214 @@ def test_continuum_route_authorisation(server: NmcServerProcess, backend: MockBa
         },
     )
     assert_status(status, 409, "deployment restart rejects a mismatched cluster identity")
+
+
+def test_provider_compute_lifecycle(server: NmcServerProcess) -> None:
+    """Exercise the three scoped adapters against executable-only provider fixtures."""
+    status, _ = request_json(server.base_url, "GET", "/providers/compute")
+    assert_status(status, 401, "provider adapter status requires authentication")
+
+    status, payload = request_json(
+        server.base_url, "GET", "/providers/compute", token="continuum-observe-token"
+    )
+    assert_status(status, 200, "provider adapter readiness")
+    providers = payload.get("data", [])
+    assert_true(
+        {item.get("provider") for item in providers if item.get("cli_available")} == {"aws", "gcp", "azure"},
+        "the configured AWS, GCP and Azure command fixtures should all be recognised",
+    )
+
+    status, payload = request_json(
+        server.base_url,
+        "GET",
+        "/providers/compute/instances?provider=aws&scope=123456789012&region=eu-west-2",
+        token="continuum-observe-token",
+    )
+    assert_status(status, 200, "AWS live inventory uses the scoped provider identity")
+    aws_instances = payload.get("data", {}).get("instances", [])
+    assert_true(
+        isinstance(aws_instances, list) and len(aws_instances) == 1,
+        f"AWS inventory should contain the exact fixture instance; response was {payload!r}",
+    )
+    assert_true(
+        aws_instances[0].get("id") == "i-0123456789abcdef0"
+        and aws_instances[0].get("name") == "authz-cloud-vm"
+        and aws_instances[0].get("state") == "running"
+        and aws_instances[0].get("private_ip") == "10.10.0.7",
+        "AWS inventory should be normalised from the provider response",
+    )
+
+    aws_call_log = server._home_dir / "aws-provider-calls.txt"
+    call_count_before_scope_rejection = len(aws_call_log.read_text(encoding="utf-8").splitlines())
+    status, _ = request_json(
+        server.base_url,
+        "GET",
+        "/providers/compute/instances?provider=aws&scope=999999999999&region=eu-west-2",
+        token="continuum-observe-token",
+    )
+    assert_status(status, 403, "provider scopes outside the server allow-list are rejected")
+    assert_true(
+        len(aws_call_log.read_text(encoding="utf-8").splitlines()) == call_count_before_scope_rejection,
+        "a rejected provider scope must not launch a provider command",
+    )
+
+    restart_request = {
+        "provider": "aws",
+        "scope": "123456789012",
+        "region": "eu-west-2",
+        "instance_id": "i-0123456789abcdef0",
+        "action": "restart",
+        "request_id": "authz-provider-restart-0001",
+    }
+    call_count_before_observe_denial = len(aws_call_log.read_text(encoding="utf-8").splitlines())
+    status, _ = request_json(
+        server.base_url,
+        "POST",
+        "/providers/compute/instances/action",
+        token="continuum-observe-token",
+        payload=restart_request,
+    )
+    assert_status(status, 403, "provider lifecycle actions require Continuum control access")
+    assert_true(
+        len(aws_call_log.read_text(encoding="utf-8").splitlines()) == call_count_before_observe_denial,
+        "an unauthorised provider action must not launch a provider command",
+    )
+
+    status, payload = request_json(
+        server.base_url,
+        "POST",
+        "/providers/compute/instances/action",
+        token="continuum-control-token",
+        payload=restart_request,
+    )
+    assert_status(status, 200, "approved AWS restart reaches the provider adapter")
+    action_result = payload.get("data", {})
+    assert_true(action_result.get("provider_state_verified") is True,
+                "a successful provider action must report its provider-state verification")
+    assert_true(action_result.get("dependent_service_health") == "not-checked",
+                "provider-state verification must not be reported as dependent-service health")
+    assert_true("ec2 reboot-instances" in aws_call_log.read_text(encoding="utf-8"),
+                "AWS restart must invoke the provider CLI operation")
+
+    call_count_before_delete_gate = len(aws_call_log.read_text(encoding="utf-8").splitlines())
+    delete_request = dict(restart_request, action="delete", request_id="authz-provider-delete-0001")
+    status, _ = request_json(
+        server.base_url,
+        "POST",
+        "/providers/compute/instances/action",
+        token="continuum-control-token",
+        payload=delete_request,
+    )
+    assert_status(status, 423, "provider deletion requires its separate destructive-action gate")
+    assert_true(
+        "terminate-instances" not in aws_call_log.read_text(encoding="utf-8")
+        and len(aws_call_log.read_text(encoding="utf-8").splitlines()) == call_count_before_delete_gate,
+        "a disabled delete must not reach AWS",
+    )
+
+    created_spec = {
+        "name": "authz-created-vm",
+        "region": "eu-west-2",
+        "image_id": "ami-01234567",
+        "instance_type": "t3.small",
+        "subnet_id": "subnet-01234567",
+        "security_group_ids": ["sg-01234567"],
+    }
+    status, payload = request_json(
+        server.base_url,
+        "POST",
+        "/providers/compute/instances/create",
+        token="continuum-control-token",
+        payload={
+            "provider": "aws",
+            "scope": "123456789012",
+            "spec": created_spec,
+            "idempotency_key": "authz-provider-create-0001",
+        },
+    )
+    assert_status(status, 200, "AWS create sends a validated provider request")
+    assert_true(payload.get("data", {}).get("service_health") == "not-checked",
+                "provider creation must not claim post-boot service health")
+    assert_true("ec2 run-instances" in aws_call_log.read_text(encoding="utf-8"),
+                "AWS create must invoke the provider CLI operation")
+
+    gcp_scope = "demo-project-123"
+    status, payload = request_json(
+        server.base_url,
+        "GET",
+        f"/providers/compute/instances?provider=gcp&scope={gcp_scope}&region=europe-west2",
+        token="continuum-observe-token",
+    )
+    assert_status(status, 200, "GCP inventory verifies its project before listing instances")
+    gcp_instances = payload.get("data", {}).get("instances", [])
+    assert_true(len(gcp_instances) == 1 and gcp_instances[0].get("id") == "worker-01"
+                and gcp_instances[0].get("zone") == "europe-west2-a",
+                "GCP inventory should map project instances and zones")
+    status, payload = request_json(
+        server.base_url,
+        "POST",
+        "/providers/compute/instances/action",
+        token="continuum-control-token",
+        payload={
+            "provider": "gcp",
+            "scope": gcp_scope,
+            "zone": "europe-west2-a",
+            "instance_id": "worker-01",
+            "action": "restart",
+            "request_id": "authz-provider-gcp-restart-01",
+        },
+    )
+    assert_status(status, 200, "GCP restart is verified against the exact project and zone")
+    assert_true(payload.get("data", {}).get("provider_state_verified") is True,
+                "GCP lifecycle completion must include a provider-state check")
+
+    azure_scope = "00000000-0000-0000-0000-000000000000"
+    azure_id = f"/subscriptions/{azure_scope}/resourceGroups/rg-test/providers/Microsoft.Compute/virtualMachines/worker-az"
+    status, payload = request_json(
+        server.base_url,
+        "GET",
+        f"/providers/compute/instances?provider=azure&scope={azure_scope}&region=uksouth",
+        token="continuum-observe-token",
+    )
+    assert_status(status, 200, "Azure inventory verifies its subscription before listing instances")
+    azure_instances = payload.get("data", {}).get("instances", [])
+    assert_true(len(azure_instances) == 1 and azure_instances[0].get("id") == azure_id,
+                "Azure inventory should preserve the canonical resource identifier")
+    status, payload = request_json(
+        server.base_url,
+        "POST",
+        "/providers/compute/instances/action",
+        token="continuum-control-token",
+        payload={
+            "provider": "azure",
+            "scope": azure_scope,
+            "region": "uksouth",
+            "instance_id": azure_id,
+            "action": "restart",
+            "request_id": "authz-provider-azure-restart-01",
+        },
+    )
+    assert_status(status, 200, "Azure restart is verified against the canonical subscription resource")
+    assert_true(payload.get("data", {}).get("provider_state_verified") is True,
+                "Azure lifecycle completion must include a provider-state check")
+
+    status, _ = request_json(
+        server.base_url,
+        "POST",
+        "/providers/compute/instances/action",
+        token="continuum-control-token",
+        payload=dict(restart_request, instance_id="i-0123456789abcdef0;touch"),
+    )
+    assert_status(status, 400, "provider identifiers reject shell-style input")
+
+    status, _ = request_json(
+        server.base_url,
+        "POST",
+        "/vm/create",
+        token="continuum-control-token",
+        payload={"name": "legacy-fake-vm"},
+    )
+    assert_status(status, 410, "legacy in-memory VM create no longer reports provider success")
 
 
 def test_redfish_vendor_diagnostics(server: NmcServerProcess, redfish: RedfishBmcMock) -> None:
@@ -1910,7 +2157,58 @@ def main() -> int:
 
     backend = MockBackend()
     backend.start()
-    server = NmcServerProcess(backend.base_url)
+    provider_tmp_dir = tempfile.TemporaryDirectory(prefix="nmc-provider-mocks-")
+    provider_home = pathlib.Path(provider_tmp_dir.name)
+    aws_cli = write_mock_aws_cli(provider_home)
+    gcp_cli = write_mock_provider_cli(
+        provider_home,
+        "gcloud",
+        """#!/bin/sh
+set -eu
+if [ -n "${NMC_AUTH_TOKEN:-}" ]; then exit 90; fi
+if [ "$1" = "projects" ] && [ "$2" = "describe" ]; then
+  printf '%s\\n' '{"projectId":"demo-project-123"}'
+elif [ "$1" = "compute" ] && [ "$2" = "instances" ] && [ "$3" = "list" ]; then
+  printf '%s\\n' '[{"name":"worker-01","machineType":"zones/europe-west2-a/machineTypes/e2-standard-2","zone":"https://compute.googleapis.com/compute/v1/projects/demo-project-123/zones/europe-west2-a","status":"RUNNING","networkInterfaces":[{"networkIP":"10.20.0.7"}]}]'
+elif [ "$1" = "compute" ] && [ "$2" = "instances" ] && [ "$3" = "describe" ]; then
+  printf '%s\\n' '{"name":"worker-01","machineType":"zones/europe-west2-a/machineTypes/e2-standard-2","zone":"https://compute.googleapis.com/compute/v1/projects/demo-project-123/zones/europe-west2-a","status":"RUNNING","networkInterfaces":[{"networkIP":"10.20.0.7"}]}'
+elif [ "$1" = "compute" ] && [ "$2" = "instances" ] && [ "$3" = "reset" ]; then
+  printf '%s\\n' '{}'
+else
+  exit 64
+fi
+""",
+    )
+    azure_cli = write_mock_provider_cli(
+        provider_home,
+        "az",
+        """#!/bin/sh
+set -eu
+if [ -n "${NMC_AUTH_TOKEN:-}" ]; then exit 90; fi
+if [ "$1" = "account" ] && [ "$2" = "show" ]; then
+  printf '%s\\n' '{"id":"00000000-0000-0000-0000-000000000000","name":"NMC test"}'
+elif [ "$1" = "vm" ] && [ "$2" = "list" ]; then
+  printf '%s\\n' '[{"id":"/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-test/providers/Microsoft.Compute/virtualMachines/worker-az","name":"worker-az","location":"uksouth","hardwareProfile":{"vmSize":"Standard_B2s"},"powerState":"VM running","resourceGroup":"rg-test","privateIps":"10.30.0.7"}]'
+elif [ "$1" = "vm" ] && [ "$2" = "restart" ]; then
+  printf '%s\\n' '{"status":"Accepted"}'
+else
+  exit 64
+fi
+""",
+    )
+    server = NmcServerProcess(
+        backend.base_url,
+        provider_environment={
+            "NMC_PROVIDER_AWS_CLI_PATH": str(aws_cli),
+            "NMC_PROVIDER_GCP_CLI_PATH": str(gcp_cli),
+            "NMC_PROVIDER_AZURE_CLI_PATH": str(azure_cli),
+            "NMC_AWS_ALLOWED_SCOPES": "123456789012",
+            "NMC_GCP_ALLOWED_SCOPES": "demo-project-123",
+            "NMC_AZURE_ALLOWED_SCOPES": "00000000-0000-0000-0000-000000000000",
+            "NMC_PROVIDER_MUTATIONS_ENABLED": "true",
+            "NMC_PROVIDER_ALLOW_DELETE": "false",
+        },
+    )
     redfish_tmp_dir = tempfile.TemporaryDirectory(prefix="nmc-redfish-mock-")
     redfish = RedfishBmcMock(pathlib.Path(redfish_tmp_dir.name))
     redfish.start()
@@ -1920,6 +2218,7 @@ def main() -> int:
         test_auth_session_preserves_service_account_groups(server)
         test_auth_session_supports_static_admin_token(server)
         test_continuum_route_authorisation(server, backend)
+        test_provider_compute_lifecycle(server)
         test_controller_action_rejects_malformed_body_shapes(server)
         test_redfish_vendor_diagnostics(server, redfish)
         test_redfish_vendor_actions(backend.base_url, redfish)
@@ -1941,6 +2240,7 @@ def main() -> int:
         return 1
     finally:
         server.stop()
+        provider_tmp_dir.cleanup()
         redfish.stop()
         redfish_tmp_dir.cleanup()
         backend.stop()
