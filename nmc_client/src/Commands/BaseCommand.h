@@ -41,23 +41,24 @@ namespace NMC::Commands {
                 apiClient(std::move(client))
             {}
 
-        // Helper to print output based on global format (no changes needed here)
+        // Print a stable response envelope in the operator-selected format.
         static void printOutput(const Models::CloudResponse& response, const CLI::GlobalFlags& globalFlags) {
+            if (globalFlags.outputFormat == "json" || globalFlags.outputFormat == "json-line") {
+                Core::Utils::printJson({
+                    {"format", "json"},
+                    {"success", response.success},
+                    {"message", response.message},
+                    {"data", response.data}
+                });
+                return;
+            }
+
             if (!response.success) {
                 std::cerr << "Error: " << response.message << std::endl;
                 return;
             }
 
-            if (globalFlags.outputFormat == "json") {
-                if (response.data.is_string()) {
-                    Core::Utils::printJson(response.data.get<std::string>());
-                } else if (response.data.is_null()) {
-                    Core::Utils::printJson(response.message);
-                }
-                else {
-                    Core::Utils::printJson(response.data.dump());
-                }
-            } else if (globalFlags.outputFormat == "yaml") {
+            if (globalFlags.outputFormat == "yaml") {
                 if (response.data.is_string()) {
                     Core::Utils::printYaml(response.data.get<std::string>());
                 } else if (response.data.is_null()) {

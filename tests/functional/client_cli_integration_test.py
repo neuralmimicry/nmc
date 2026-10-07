@@ -696,6 +696,37 @@ def test_k8s_recovery_status_serialization(server: MockServer, home_dir: pathlib
     )
 
 
+def test_k8s_recovery_status_json_output(server: MockServer, home_dir: pathlib.Path) -> None:
+    for output_format in ("json", "json-line"):
+        server.clear_records()
+        result = run_nmc(
+            [
+                "--output", output_format,
+                "k8s", "recovery-status",
+                "--cluster-id", "rk1",
+                "--namespace", "gail",
+                "--deployment", "gail",
+            ],
+            home_dir,
+        )
+        assert_success(result, f"{output_format} k8s deployment recovery status")
+        try:
+            output = json.loads(result.stdout)
+        except json.JSONDecodeError as exc:
+            raise AssertionError(
+                f"--output {output_format} must emit valid JSON without stdout diagnostics: {exc}: {result.stdout!r}"
+            ) from exc
+        assert_true(output.get("format") == "json", "JSON output must identify its selected format")
+        assert_true(output.get("success") is True, "JSON output must preserve response success")
+        assert_true(isinstance(output.get("data"), dict), "JSON output must keep API data as a JSON object")
+        assert_true(
+            output["data"].get("data", {}).get("cluster_id") == "rk1",
+            "JSON output must preserve the nested API response without encoding it as a string",
+        )
+        records = server.records()
+        assert_true(len(records) == 1 and records[0].method == "GET", "JSON recovery status must remain read-only")
+
+
 def test_k8s_restart_preflights_and_uses_idempotency_key(server: MockServer, home_dir: pathlib.Path) -> None:
     server.clear_records()
     result = run_nmc(
@@ -1621,6 +1652,7 @@ def main() -> int:
 
             test_analytics_query_serialization(server, home_dir)
             test_k8s_recovery_status_serialization(server, home_dir)
+            test_k8s_recovery_status_json_output(server, home_dir)
             test_k8s_restart_preflights_and_uses_idempotency_key(server, home_dir)
             test_k8s_restart_rejects_invalid_id_before_network(server, home_dir)
             test_vcluster_create_serializes_advanced_config_file(server, home_dir)

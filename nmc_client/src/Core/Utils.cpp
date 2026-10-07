@@ -9,8 +9,8 @@ std::string padRight(const std::string& s, size_t n) {
     return s;
 }
 
-void printJson(const std::string& data) {
-    std::cout << R"({"format": "json", "data": ")" << data << "\"}" << std::endl;
+void printJson(const nlohmann::json& data) {
+    std::cout << data.dump() << std::endl;
 }
 
 void printYaml(const std::string& data) {
@@ -35,4 +35,3 @@ std::string getConfigPath() {
 }
 
 } // namespace NMC::Core::Utils
-
