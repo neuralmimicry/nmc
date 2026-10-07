@@ -23,6 +23,8 @@ The workflows in this document are therefore runtime-control workflows. They pro
 5. Final-command flags are normalised to long names, so short and long flags map to the same lookup key.
 6. Commands validate arguments before network or shell execution.
 
+For `--output json` and `--output json-line`, the CLI writes one compact JSON object to stdout with `format`, `success`, `message`, and typed `data` fields. Diagnostic connection messages are written to stderr so the stdout stream can be parsed directly by scripts.
+
 ## 2. Connection Management
 
 ### 2.1 Local profile workflow

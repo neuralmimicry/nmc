@@ -1621,7 +1621,7 @@ namespace NMC::Core {
 
         try {
             configFile >> connectionsConfig;
-            std::cout << "Info: Connections loaded from " << configFilePath << std::endl;
+            std::cerr << "Info: Connections loaded from " << configFilePath << std::endl;
         } catch (const nlohmann::json::parse_error &e) {
             std::cerr << "Error: Could not parse config file " << configFilePath << ". It might be corrupted. "
                       << e.what() << std::endl;
