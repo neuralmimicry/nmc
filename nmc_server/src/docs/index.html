@@ -107,6 +107,79 @@
         </article>
     </section>
 
+    <section class="panel network-inventory-panel" id="networkInventoryPanel" aria-labelledby="networkInventoryTitle">
+        <div class="panel-title-row">
+            <div>
+                <h3 id="networkInventoryTitle">Network Device Inventory</h3>
+                <p class="network-intro">Verified Continuum devices enriched with exact-match Tracey agent health. Graph edges show registered management or dependency relationships, not physical cabling.</p>
+            </div>
+            <span class="panel-tag">/devices/inventory</span>
+        </div>
+        <div class="network-inventory-toolbar">
+            <label class="tracey-control network-search">
+                <span>Search devices</span>
+                <input id="networkDeviceSearch" type="search" placeholder="name, address, MAC, service or Tracey agent">
+            </label>
+            <label class="tracey-control">
+                <span>Kind</span>
+                <select id="networkKindFilter"><option value="">All kinds</option></select>
+            </label>
+            <label class="tracey-control">
+                <span>Tracey status</span>
+                <select id="networkTraceyFilter">
+                    <option value="">All statuses</option>
+                    <option value="healthy">Healthy</option>
+                    <option value="degraded">Degraded</option>
+                    <option value="offline">Offline</option>
+                    <option value="none">No attached Tracey agent</option>
+                </select>
+            </label>
+            <button id="networkInventoryRefresh" class="panel-action-btn" type="button">Refresh inventory</button>
+        </div>
+        <div id="networkInventorySummary" class="network-inventory-summary" aria-live="polite">
+            <p class="empty">Loading verified network inventory...</p>
+        </div>
+        <div id="networkInventoryStatus" class="network-inventory-status" role="status" aria-live="polite">Waiting for authenticated inventory.</div>
+        <section class="network-graph-section" aria-labelledby="networkGraphTitle">
+            <div class="panel-title-row">
+                <h4 id="networkGraphTitle">Network and management relationships</h4>
+                <span class="panel-tag">Registered inventory</span>
+            </div>
+            <div class="network-graph-legend" aria-label="Graph legend">
+                <span><i class="network-legend-dot network-state-healthy"></i>Tracey healthy</span>
+                <span><i class="network-legend-dot network-state-degraded"></i>Tracey degraded/recent</span>
+                <span><i class="network-legend-dot network-state-unknown"></i>No current health signal</span>
+                <span>Solid edge: controller manages host · dotted edge: declared dependency</span>
+            </div>
+            <div class="network-graph-wrap">
+                <svg id="networkInventoryGraph" class="network-graph" role="group" aria-label="Interactive network device relationship graph"></svg>
+            </div>
+        </section>
+        <section class="network-table-section" aria-labelledby="networkTableTitle">
+            <div class="panel-title-row">
+                <h4 id="networkTableTitle">Devices and controllers</h4>
+                <span id="networkInventoryCount" class="panel-tag">0 entries</span>
+            </div>
+            <div class="table-wrap network-table-wrap">
+                <table class="detail-table network-table">
+                    <thead>
+                    <tr><th>Name</th><th>Kind / protocol</th><th>Address / MAC</th><th>Observed state</th><th>Tracey agents</th><th>Source</th><th>Details</th></tr>
+                    </thead>
+                    <tbody id="networkInventoryRows"><tr><td colspan="7" class="empty">Waiting for authenticated inventory...</td></tr></tbody>
+                </table>
+            </div>
+        </section>
+        <details id="networkUnlinkedTraceyDetails" class="network-unlinked-tracey" hidden>
+            <summary>Tracey agents without one unambiguous device match (<span id="networkUnlinkedTraceyCount">0</span>)</summary>
+            <div class="table-wrap">
+                <table class="detail-table">
+                    <thead><tr><th>Agent</th><th>Reported host</th><th>Address</th><th>Status</th><th>Last seen</th><th>Details</th></tr></thead>
+                    <tbody id="networkUnlinkedTraceyRows"></tbody>
+                </table>
+            </div>
+        </details>
+    </section>
+
     <section class="grid">
         <article class="panel">
             <div class="panel-title-row">
@@ -1256,6 +1329,19 @@
                     </table>
                 </div>
             </section>
+        </div>
+    </div>
+</div>
+
+<div id="networkDeviceModal" class="cluster-modal-overlay" hidden>
+    <div class="cluster-modal-shell network-device-modal-shell" role="dialog" aria-modal="true" aria-labelledby="networkDeviceModalTitle">
+        <div class="cluster-modal-header">
+            <h3 id="networkDeviceModalTitle">Device details</h3>
+            <button id="networkDeviceModalClose" class="cluster-modal-close" type="button" aria-label="Close device details">Close</button>
+        </div>
+        <p id="networkDeviceModalSubtitle" class="cluster-modal-subtitle">Verified inventory details and available operations.</p>
+        <div id="networkDeviceModalBody" class="cluster-modal-body">
+            <p class="empty">Select a network device to inspect its details.</p>
         </div>
     </div>
 </div>

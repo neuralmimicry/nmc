@@ -60,6 +60,23 @@
         proxmoxResourceStatus: document.getElementById("proxmoxResourceStatus"),
         vmInventoryStatus: document.getElementById("vmInventoryStatus"),
         traceyStatus: document.getElementById("traceyStatus"),
+        networkInventorySummary: document.getElementById("networkInventorySummary"),
+        networkInventoryStatus: document.getElementById("networkInventoryStatus"),
+        networkInventoryCount: document.getElementById("networkInventoryCount"),
+        networkInventoryGraph: document.getElementById("networkInventoryGraph"),
+        networkInventoryRows: document.getElementById("networkInventoryRows"),
+        networkDeviceSearch: document.getElementById("networkDeviceSearch"),
+        networkKindFilter: document.getElementById("networkKindFilter"),
+        networkTraceyFilter: document.getElementById("networkTraceyFilter"),
+        networkInventoryRefresh: document.getElementById("networkInventoryRefresh"),
+        networkUnlinkedTraceyDetails: document.getElementById("networkUnlinkedTraceyDetails"),
+        networkUnlinkedTraceyCount: document.getElementById("networkUnlinkedTraceyCount"),
+        networkUnlinkedTraceyRows: document.getElementById("networkUnlinkedTraceyRows"),
+        networkDeviceModal: document.getElementById("networkDeviceModal"),
+        networkDeviceModalClose: document.getElementById("networkDeviceModalClose"),
+        networkDeviceModalTitle: document.getElementById("networkDeviceModalTitle"),
+        networkDeviceModalSubtitle: document.getElementById("networkDeviceModalSubtitle"),
+        networkDeviceModalBody: document.getElementById("networkDeviceModalBody"),
         clusterDetailsModal: document.getElementById("clusterDetailsModal"),
         clusterDetailsClose: document.getElementById("clusterDetailsClose"),
         clusterDetailsSubtitle: document.getElementById("clusterDetailsSubtitle"),
@@ -225,6 +242,14 @@
     let dashboardRefreshInFlight = false;
     let authSessionCheckInFlight = false;
     let authRedirectStarted = false;
+    const networkInventoryState = {
+        inventory: null,
+        entities: [],
+        traceyAgents: [],
+        traceyAvailable: false,
+        selectedEntity: null,
+        operationRequestSeq: 0
+    };
     let clusterDetailsRequestSeq = 0;
     let openshiftDetailsRequestSeq = 0;
     let traceyInsightsRequestSeq = 0;
@@ -636,6 +661,10 @@
 
     function hasTraceyVisibility() {
         return Boolean(serviceAccess.isServiceVisible(authIdentity || {}, "tracey"));
+    }
+
+    function hasContinuumVisibility() {
+        return Boolean(serviceAccess.isServiceVisible(authIdentity || {}, "continuum"));
     }
 
     function canControlTracey() {
@@ -1300,7 +1329,8 @@
         const k8sOpen = nodes.clusterDetailsModal && !nodes.clusterDetailsModal.hidden;
         const openshiftOpen = nodes.openshiftDetailsModal && !nodes.openshiftDetailsModal.hidden;
         const traceyOpen = nodes.traceyInsightsModal && !nodes.traceyInsightsModal.hidden;
-        document.body.classList.toggle("modal-open", Boolean(k8sOpen || openshiftOpen || traceyOpen));
+        const networkDeviceOpen = nodes.networkDeviceModal && !nodes.networkDeviceModal.hidden;
+        document.body.classList.toggle("modal-open", Boolean(k8sOpen || openshiftOpen || traceyOpen || networkDeviceOpen));
     }
 
     function setClusterDetailsModalOpen(open) {
@@ -7216,6 +7246,7 @@
         }
         closeClusterDetailsModal();
         closeOpenShiftDetailsModal();
+        closeNetworkDeviceModal();
         if (preselectedAgentId) {
             traceyState.selectedAgentId = String(preselectedAgentId).trim();
         }
@@ -7856,6 +7887,489 @@
         }
     }
 
+    function normaliseNetworkIdentity(value) {
+        const raw = String(value || "").trim();
+        if (!raw) return "";
+        try {
+            const url = new URL(raw.includes("://") ? raw : `http://${raw}`);
+            return String(url.hostname || "").replace(/^\[|\]$/g, "").replace(/\.$/, "").toLowerCase();
+        } catch (_error) {
+            return raw.replace(/^\[|\]$/g, "").replace(/\.$/, "").toLowerCase();
+        }
+    }
+
+    function networkAgentIdentityValues(agent) {
+        return [agent.host, agent.announce_addr, agent.status_addr]
+            .map(normaliseNetworkIdentity)
+            .filter(Boolean);
+    }
+
+    function networkDeviceIdentityValues(device) {
+        return [device.id, device.name, ...(Array.isArray(device.addresses) ? device.addresses : [])]
+            .map(normaliseNetworkIdentity)
+            .filter(Boolean);
+    }
+
+    function networkEntityKey(type, id) {
+        return `${type}:${String(id || "")}`;
+    }
+
+    function networkEntityKind(entity) {
+        return entity.entity_type === "controller" ? "controller" : String(entity.kind || "unknown");
+    }
+
+    function networkEntityStatus(entity) {
+        const agents = Array.isArray(entity.tracey_agents) ? entity.tracey_agents : [];
+        if (agents.length) {
+            const states = agents.map((agent) => agent.stale ? "offline" : String(agent.status || "unknown").toLowerCase());
+            if (states.includes("offline")) return "offline";
+            if (states.includes("degraded")) return "degraded";
+            if (states.includes("healthy")) return "healthy";
+            return "unknown";
+        }
+        const lastSeen = Number(entity.last_seen_unix_ms || 0);
+        if (lastSeen > 0 && Date.now() - lastSeen <= 5 * 60 * 1000) return "recently seen";
+        return lastSeen > 0 ? "last seen" : "registered";
+    }
+
+    function networkEntityTone(entity) {
+        const status = networkEntityStatus(entity);
+        if (status === "healthy") return "healthy";
+        if (status === "degraded" || status === "recently seen") return "degraded";
+        if (status === "offline") return "offline";
+        return "unknown";
+    }
+
+    function networkStatusMatches(entity, filter) {
+        if (!filter) return true;
+        const agents = Array.isArray(entity.tracey_agents) ? entity.tracey_agents : [];
+        if (filter === "none") return agents.length === 0;
+        return agents.some((agent) => (agent.stale ? "offline" : String(agent.status || "unknown").toLowerCase()) === filter);
+    }
+
+    /** Join telemetry only where exact registered aliases identify one device. */
+    function joinTraceyAgentsToDevices(devices, agents) {
+        const aliases = new Map();
+        for (const device of devices) {
+            for (const alias of new Set(networkDeviceIdentityValues(device))) {
+                if (!aliases.has(alias)) aliases.set(alias, new Set());
+                aliases.get(alias).add(String(device.id));
+            }
+        }
+        const joined = new Map(devices.map((device) => [String(device.id), []]));
+        const unlinked = [];
+        for (const agent of agents) {
+            const matches = new Set();
+            for (const identity of networkAgentIdentityValues(agent)) {
+                for (const deviceId of aliases.get(identity) || []) matches.add(deviceId);
+            }
+            if (matches.size !== 1) {
+                unlinked.push({ ...agent, match_reason: matches.size > 1 ? "ambiguous exact identity" : "no exact identity match" });
+                continue;
+            }
+            joined.get([...matches][0]).push(agent);
+        }
+        return { joined, unlinked };
+    }
+
+    function networkGroup(entity) {
+        if (entity.entity_type === "controller") return "controllers";
+        const kind = String(entity.kind || "").toLowerCase();
+        if (kind.includes("switch") || kind.includes("router") || kind.includes("network") || kind.includes("gateway")) return "network";
+        if (kind === "home_device" || kind.includes("home") || kind.includes("iot")) return "home";
+        if (kind.includes("host") || kind.includes("server") || kind.includes("compute") || kind.includes("node") || kind.includes("platform")) return "compute";
+        return "services";
+    }
+
+    function getFilteredNetworkEntities() {
+        const query = String(nodes.networkDeviceSearch?.value || "").trim().toLowerCase();
+        const kind = String(nodes.networkKindFilter?.value || "");
+        const traceyFilter = String(nodes.networkTraceyFilter?.value || "");
+        return networkInventoryState.entities.filter((entity) => {
+            if (kind && networkEntityKind(entity) !== kind) return false;
+            if (!networkStatusMatches(entity, traceyFilter)) return false;
+            if (!query) return true;
+            const agentText = (entity.tracey_agents || []).map((agent) => `${agent.agent_id || ""} ${agent.host || ""}`).join(" ");
+            const values = [entity.id, entity.name, entity.kind, entity.protocol, entity.vendor_profile, entity.endpoint,
+                entity.source, ...(entity.addresses || []), ...(entity.mac_addresses || []), ...(entity.depends_on || []),
+                ...(entity.services || []), ...(entity.affected_services || []), agentText];
+            return values.join(" ").toLowerCase().includes(query);
+        });
+    }
+
+    function renderNetworkInventory(inventoryResponse, traceyResponse, traceyVisible) {
+        if (!nodes.networkInventoryStatus) return;
+        if (!inventoryResponse || !inventoryResponse.ok) {
+            networkInventoryState.inventory = null;
+            networkInventoryState.entities = [];
+            networkInventoryState.traceyAgents = [];
+            networkInventoryState.unlinkedTraceyAgents = [];
+            networkInventoryState.traceyAvailable = false;
+            nodes.networkInventorySummary.innerHTML = '<p class="empty">Continuum inventory is unavailable. Sign in and confirm Continuum observe access, then refresh.</p>';
+            nodes.networkInventoryStatus.textContent = inventoryResponse?.status
+                ? `Inventory request returned HTTP ${inventoryResponse.status}.`
+                : "Inventory request was not authorised or did not return JSON.";
+            nodes.networkInventoryRows.innerHTML = '<tr><td colspan="7" class="empty">No inventory data is available.</td></tr>';
+            nodes.networkInventoryGraph.innerHTML = '<text x="24" y="42" class="network-graph-empty">No authenticated inventory is available.</text>';
+            nodes.networkInventoryCount.textContent = "0 entries";
+            nodes.networkUnlinkedTraceyDetails.hidden = true;
+            return;
+        }
+        const inventory = responseData(inventoryResponse.payload) || {};
+        if (!Array.isArray(inventory.devices) || !Array.isArray(inventory.controllers)) {
+            networkInventoryState.inventory = null;
+            networkInventoryState.entities = [];
+            networkInventoryState.traceyAgents = [];
+            networkInventoryState.unlinkedTraceyAgents = [];
+            networkInventoryState.traceyAvailable = false;
+            nodes.networkInventoryStatus.textContent = "Continuum returned an invalid inventory response; no device data was rendered.";
+            nodes.networkInventorySummary.innerHTML = '<p class="empty">Inventory schema is unavailable.</p>';
+            nodes.networkInventoryRows.innerHTML = '<tr><td colspan="7" class="empty">No inventory data is available.</td></tr>';
+            nodes.networkInventoryGraph.innerHTML = '<text x="24" y="42" class="network-graph-empty">Inventory schema is unavailable.</text>';
+            nodes.networkInventoryCount.textContent = "0 entries";
+            nodes.networkUnlinkedTraceyDetails.hidden = true;
+            return;
+        }
+        const traceyData = traceyVisible && traceyResponse?.ok ? responseData(traceyResponse.payload) || {} : {};
+        const agents = Array.isArray(traceyData.agents) ? traceyData.agents : [];
+        networkInventoryState.traceyAvailable = Boolean(traceyVisible && traceyResponse?.ok && Array.isArray(traceyData.agents));
+        const { joined, unlinked } = joinTraceyAgentsToDevices(inventory.devices, agents);
+        const deviceEntities = inventory.devices.map((device) => ({
+            ...device,
+            entity_type: "device",
+            tracey_agents: joined.get(String(device.id)) || []
+        }));
+        const controllerEntities = inventory.controllers.map((controller) => ({
+            ...controller,
+            name: controller.id,
+            entity_type: "controller",
+            kind: controller.vendor_profile || controller.protocol || "controller",
+            addresses: controller.endpoint ? [controller.endpoint] : [],
+            mac_addresses: controller.mac_address ? [controller.mac_address] : [],
+            tracey_agents: []
+        }));
+        networkInventoryState.inventory = inventory;
+        networkInventoryState.traceyAgents = agents;
+        networkInventoryState.entities = [...deviceEntities, ...controllerEntities];
+        networkInventoryState.unlinkedTraceyAgents = unlinked;
+        networkInventoryState.filteredEntities = getFilteredNetworkEntities();
+        renderNetworkInventorySummary(inventory, agents, joined, unlinked, traceyVisible);
+        renderNetworkInventoryFilters();
+        renderNetworkInventoryTable();
+        renderNetworkInventoryGraph();
+        renderUnlinkedTraceyAgents();
+    }
+
+    function renderNetworkInventorySummary(inventory, agents, joined, unlinked, traceyVisible) {
+        const matchedDevices = [...joined.values()].filter((items) => items.length > 0).length;
+        const counts = [
+            ["Registered devices", inventory.devices.length],
+            ["Controllers", inventory.controllers.length],
+            ["Tracey linked", `${matchedDevices} hosts · ${agents.length - unlinked.length} agents`],
+            ["Inventory", inventory.stale ? "STALE" : "within freshness window"]
+        ];
+        nodes.networkInventorySummary.innerHTML = counts.map(([label, value]) => (
+            `<article class="network-summary-card"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></article>`
+        )).join("");
+        nodes.networkInventoryCount.textContent = `${networkInventoryState.entities.length} entries`;
+        const generated = Number(inventory.generated_at_unix_ms || 0);
+        const generatedText = generated > 0 ? new Date(generated).toLocaleString() : "unknown time";
+        const traceyText = !traceyVisible
+            ? "Tracey enrichment is hidden by the current service-access policy."
+            : networkInventoryState.traceyAvailable
+                ? `${unlinked.length} Tracey agent${unlinked.length === 1 ? " is" : "s are"} not linked by one exact device identity.`
+                : "Tracey is authorised but its agent inventory did not return; no empty-match conclusion was made.";
+        nodes.networkInventoryStatus.textContent = `Revision ${inventory.revision || "unknown"} · generated ${generatedText} · ${traceyText}${inventory.stale ? " The inventory is stale; treat observed state as historical and do not use it to authorise changes." : ""}`;
+    }
+
+    function renderNetworkInventoryFilters() {
+        const previous = nodes.networkKindFilter.value;
+        const kinds = [...new Set(networkInventoryState.entities.map(networkEntityKind))].sort();
+        nodes.networkKindFilter.innerHTML = '<option value="">All kinds</option>'
+            + kinds.map((kind) => `<option value="${escapeHtml(kind)}">${escapeHtml(kind)}</option>`).join("");
+        if (kinds.includes(previous)) nodes.networkKindFilter.value = previous;
+        for (const option of nodes.networkTraceyFilter.options) option.disabled = Boolean(option.value && !networkInventoryState.traceyAvailable);
+        if (!networkInventoryState.traceyAvailable) nodes.networkTraceyFilter.value = "";
+        networkInventoryState.filteredEntities = getFilteredNetworkEntities();
+    }
+
+    function renderNetworkInventoryTable() {
+        const entities = getFilteredNetworkEntities();
+        networkInventoryState.filteredEntities = entities;
+        const rows = entities.map((entity) => {
+            const kind = networkEntityKind(entity);
+            const addresses = [...(entity.addresses || [])];
+            const macs = [...(entity.mac_addresses || [])];
+            const location = [...addresses, ...macs].filter(Boolean).join(" · ") || "—";
+            const status = networkEntityStatus(entity);
+            const tracey = entity.tracey_agents?.length
+                ? entity.tracey_agents.map((agent) => `<button class="cluster-link tracey-agent-link" type="button" data-network-agent-id="${escapeHtml(agent.agent_id || "")}">${escapeHtml(agent.agent_id || "Tracey")}</button> ${statusBadge(agent.stale ? "offline" : agent.status || "unknown")}`).join("<br>")
+                : networkInventoryState.traceyAvailable ? "—" : '<span class="muted">unavailable</span>';
+            const protocol = entity.entity_type === "controller" ? entity.protocol || "controller" : kind;
+            const button = `<button class="cluster-link" type="button" data-network-entity="${escapeHtml(networkEntityKey(entity.entity_type, entity.id))}">Open details</button>`;
+            return `<tr><td><strong>${escapeHtml(entity.name || entity.id || "unknown")}</strong><br><code>${escapeHtml(entity.id || "")}</code></td><td>${escapeHtml(protocol)}</td><td>${escapeHtml(location)}</td><td>${statusBadge(status)}</td><td>${tracey}</td><td>${escapeHtml(entity.source || "Continuum registry")}</td><td>${button}</td></tr>`;
+        });
+        nodes.networkInventoryRows.innerHTML = rows.length
+            ? rows.join("")
+            : '<tr><td colspan="7" class="empty">No devices match the selected filters.</td></tr>';
+        nodes.networkInventoryCount.textContent = `${entities.length} of ${networkInventoryState.entities.length} entries`;
+    }
+
+    /** Draw registered inventory and known relationships; this is not a cable map. */
+    function renderNetworkInventoryGraph() {
+        const svg = nodes.networkInventoryGraph;
+        if (!svg) return;
+        const entities = getFilteredNetworkEntities();
+        if (!entities.length) {
+            svg.setAttribute("viewBox", "0 0 1200 100");
+            svg.innerHTML = '<text x="24" y="42" class="network-graph-empty">No devices match the selected filters.</text>';
+            return;
+        }
+        const columns = [
+            { key: "network", label: "Network infrastructure" },
+            { key: "compute", label: "Hosts and compute" },
+            { key: "controllers", label: "BMC controllers" },
+            { key: "home", label: "Home and IoT" },
+            { key: "services", label: "Services and dependencies" }
+        ];
+        const positions = new Map();
+        const grouped = new Map(columns.map((column) => [column.key, []]));
+        for (const entity of entities) grouped.get(networkGroup(entity)).push(entity);
+        for (const values of grouped.values()) values.sort((left, right) => String(left.name || left.id).localeCompare(String(right.name || right.id)));
+        const columnWidth = 218;
+        const columnGap = 18;
+        const nodeWidth = 196;
+        const nodeHeight = 25;
+        const rowGap = 9;
+        let maxRows = 1;
+        columns.forEach((column, columnIndex) => {
+            const values = grouped.get(column.key) || [];
+            maxRows = Math.max(maxRows, values.length);
+            values.forEach((entity, rowIndex) => {
+                positions.set(networkEntityKey(entity.entity_type, entity.id), {
+                    entity,
+                    x: 12 + columnIndex * (columnWidth + columnGap),
+                    y: 55 + rowIndex * (nodeHeight + rowGap),
+                    width: nodeWidth,
+                    height: nodeHeight
+                });
+            });
+        });
+        const height = Math.max(176, 72 + maxRows * (nodeHeight + rowGap));
+        const width = 12 + columns.length * columnWidth + (columns.length - 1) * columnGap;
+        const pieces = [];
+        columns.forEach((column, index) => {
+            const x = 12 + index * (columnWidth + columnGap);
+            pieces.push(`<rect class="network-graph-column" x="${x}" y="8" width="${nodeWidth}" height="${height - 16}" rx="10"></rect>`);
+            pieces.push(`<text class="network-graph-column-title" x="${x + 5}" y="27">${escapeHtml(column.label)}</text>`);
+        });
+        for (const entity of entities) {
+            if (entity.entity_type === "controller") {
+                for (const managedId of entity.manages || []) {
+                    const source = positions.get(networkEntityKey("controller", entity.id));
+                    const target = positions.get(networkEntityKey("device", managedId));
+                    if (source && target) pieces.push(`<line class="network-edge network-edge-manages" x1="${source.x + nodeWidth / 2}" y1="${source.y + nodeHeight / 2}" x2="${target.x + nodeWidth / 2}" y2="${target.y + nodeHeight / 2}"></line>`);
+                }
+            } else {
+                for (const dependencyId of entity.depends_on || []) {
+                    const source = positions.get(networkEntityKey("device", entity.id));
+                    const target = positions.get(networkEntityKey("device", dependencyId));
+                    if (source && target) pieces.push(`<line class="network-edge network-edge-dependency" x1="${source.x + nodeWidth / 2}" y1="${source.y + nodeHeight / 2}" x2="${target.x + nodeWidth / 2}" y2="${target.y + nodeHeight / 2}"></line>`);
+                }
+            }
+        }
+        for (const position of positions.values()) {
+            const { entity, x, y } = position;
+            const key = networkEntityKey(entity.entity_type, entity.id);
+            const name = String(entity.name || entity.id || "unknown");
+            const status = networkEntityStatus(entity);
+            const traceySummary = entity.tracey_agents?.length
+                ? `; ${entity.tracey_agents.length} Tracey agent${entity.tracey_agents.length === 1 ? "" : "s"}: ${entity.tracey_agents.map((agent) => agent.status || "unknown").join(", ")}`
+                : networkInventoryState.traceyAvailable ? "; no exact Tracey identity match" : "; Tracey identity data unavailable or hidden";
+            pieces.push(`<g class="network-graph-node network-node-${networkEntityTone(entity)}" data-network-entity="${escapeHtml(key)}" tabindex="0" role="button" aria-label="Open ${escapeHtml(name)}, ${escapeHtml(status)}${escapeHtml(traceySummary)}"><title>${escapeHtml(name)} · ${escapeHtml(entity.id || "")} · ${escapeHtml(status)}${escapeHtml(traceySummary)}</title><rect x="${x}" y="${y}" width="${nodeWidth}" height="${nodeHeight}" rx="7"></rect><circle cx="${x + 10}" cy="${y + nodeHeight / 2}" r="4"></circle><text x="${x + 20}" y="${y + 17}">${escapeHtml(name.length > 25 ? `${name.slice(0, 22)}…` : name)}</text></g>`);
+        }
+        svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+        svg.innerHTML = pieces.join("");
+    }
+
+    function renderUnlinkedTraceyAgents() {
+        const agents = networkInventoryState.unlinkedTraceyAgents || [];
+        nodes.networkUnlinkedTraceyDetails.hidden = agents.length === 0;
+        nodes.networkUnlinkedTraceyCount.textContent = String(agents.length);
+        const rows = agents.map((agent) => {
+            const lastSeen = Number(agent.last_seen_epoch_ms || 0);
+            const status = agent.stale ? "offline" : agent.status || "unknown";
+            return `<tr><td>${escapeHtml(agent.agent_id || "unknown")}</td><td>${escapeHtml(agent.host || "—")}<br><small>${escapeHtml(agent.match_reason || "unlinked")}</small></td><td>${escapeHtml(agent.announce_addr || agent.status_addr || "—")}</td><td>${statusBadge(status)}</td><td>${lastSeen ? escapeHtml(new Date(lastSeen).toLocaleString()) : "—"}</td><td><button class="cluster-link tracey-agent-link" type="button" data-network-agent-id="${escapeHtml(agent.agent_id || "")}">Tracey details</button></td></tr>`;
+        });
+        nodes.networkUnlinkedTraceyRows.innerHTML = rows.join("");
+    }
+
+    function findNetworkEntity(key) {
+        return networkInventoryState.entities.find((entity) => networkEntityKey(entity.entity_type, entity.id) === key) || null;
+    }
+
+    function networkEntityControllers(entity) {
+        if (entity.entity_type === "controller") return [entity];
+        return networkInventoryState.entities.filter((candidate) => candidate.entity_type === "controller"
+            && ((entity.controller_id && candidate.id === entity.controller_id) || (candidate.manages || []).includes(entity.id)));
+    }
+
+    function networkEntityDetailMarkup(entity) {
+        const rows = [
+            ["Identity", entity.id], ["Kind", networkEntityKind(entity)], ["Environment", entity.environment],
+            ["Criticality", entity.criticality], ["Addresses", (entity.addresses || []).join(", ")],
+            ["MAC addresses", (entity.mac_addresses || []).join(", ")], ["DHCP client IDs", (entity.dhcp_client_ids || []).join(", ")],
+            ["Home Assistant entity", entity.home_assistant_entity],
+            ["Services", (entity.services || []).join(", ")], ["Depends on", (entity.depends_on || []).join(", ")],
+            ["Affected services", (entity.affected_services || []).join(", ")], ["Source", entity.source],
+            ["Last observed", entity.last_seen_unix_ms ? new Date(Number(entity.last_seen_unix_ms)).toLocaleString() : "No live observation recorded"]
+        ].filter(([, value]) => value !== undefined && value !== "" && (!Array.isArray(value) || value.length));
+        return `<dl class="network-detail-grid">${rows.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(Array.isArray(value) ? value.join(", ") : value)}</dd></div>`).join("")}</dl>`;
+    }
+
+    function openNetworkDeviceModal(entity) {
+        if (!entity || !nodes.networkDeviceModal) return;
+        networkInventoryState.operationRequestSeq += 1;
+        networkInventoryState.selectedEntity = entity;
+        nodes.networkDeviceModalTitle.textContent = entity.name || entity.id || "Device details";
+        nodes.networkDeviceModalSubtitle.textContent = entity.entity_type === "controller"
+            ? `${entity.protocol || "Controller"} · ${entity.endpoint || "endpoint not configured"} · ${entity.power_actions_enabled ? "action flag enabled; governed preflight still required" : "power actions disabled by inventory policy"}`
+            : `${networkEntityStatus(entity)} · ${networkEntityKind(entity)} · inventory revision ${networkInventoryState.inventory?.revision || "unknown"}`;
+        const controllers = networkEntityControllers(entity);
+        const traceyAgents = entity.tracey_agents || [];
+        const traceyDetails = traceyAgents.length
+            ? `<section class="network-operation-card"><h4>Tracey health on this host</h4>${traceyAgents.map((agent) => {
+                const age = Number(agent.last_seen_seconds_ago);
+                const lastSeen = Number.isFinite(age) ? `${age}s ago` : agent.last_seen_epoch_ms ? new Date(Number(agent.last_seen_epoch_ms)).toLocaleString() : "time unavailable";
+                return `<p><strong>${escapeHtml(agent.agent_id || "Tracey agent")}</strong> · ${statusBadge(agent.stale ? "offline" : agent.status || "unknown")} · ${escapeHtml(agent.version || "version unknown")} · last seen ${escapeHtml(lastSeen)}</p><p>Reported host: ${escapeHtml(agent.host || "unknown")} · address: ${escapeHtml(agent.status_addr || agent.announce_addr || "unknown")}</p><button class="panel-action-btn" type="button" data-network-agent-id="${escapeHtml(agent.agent_id || "")}">Open Tracey drilldown and controls</button>`;
+            }).join("")}</section>`
+            : `<section class="network-operation-card"><h4>Tracey</h4><p>${networkInventoryState.traceyAvailable ? "No Tracey agent matched this device by exact registered identity." : "Tracey data is unavailable or hidden by service access; identity matching was not evaluated."}</p></section>`;
+        const controllerDetails = controllers.length
+            ? `<section class="network-operation-card"><h4>Controller management</h4>${controllers.map((controller) => `<p><strong>${escapeHtml(controller.id)}</strong> · ${escapeHtml(controller.protocol || "controller")} · ${escapeHtml(controller.endpoint || "endpoint unavailable")} · ${escapeHtml(controller.mac_address || "MAC unavailable")}</p><p>${controller.power_actions_enabled ? "Inventory policy permits actions. This dashboard currently provides diagnostics only; it does not synthesise or submit controller preflight." : "Power actions are disabled by inventory policy."}</p><button class="panel-action-btn" type="button" data-network-operation="diagnostics" data-controller-id="${escapeHtml(controller.id)}">Run read-only controller diagnostics</button>`).join("")}</section>`
+            : '<section class="network-operation-card"><h4>Controller management</h4><p>No verified controller is mapped to this device, so controller operations are unavailable.</p></section>';
+        const canReadDhcp = (entity.mac_addresses || []).length > 0 || (entity.dhcp_client_ids || []).length > 0;
+        const dhcpButton = canReadDhcp ? '<button class="panel-action-btn" type="button" data-network-operation="dhcp">Read matching DHCP lease evidence</button>' : "";
+        const haButton = entity.home_assistant_entity ? '<button class="panel-action-btn" type="button" data-network-operation="home-assistant">Read Home Assistant state</button>' : "";
+        const homeEntity = entity.entity_type === "device" ? entity.home_assistant_entity : "";
+        const readOperations = [dhcpButton, haButton].filter(Boolean).join("");
+        const inventoryStatus = networkInventoryState.inventory?.stale
+            ? '<p class="network-policy-warning">Inventory is stale. Read-only detail can be inspected, but this snapshot cannot authorise a mutation.</p>'
+            : "";
+        nodes.networkDeviceModalBody.innerHTML = `${inventoryStatus}${networkEntityDetailMarkup(entity)}${traceyDetails}${controllerDetails}<section class="network-operation-card"><h4>Live device evidence</h4><p>${homeEntity ? `Home Assistant entity ${escapeHtml(homeEntity)} is allowlisted for read-only state lookup.` : "No Home Assistant entity is associated with this device."}</p><div class="network-operation-actions">${readOperations || '<span class="empty">No DHCP or Home Assistant lookup is registered for this device.</span>'}</div><div class="network-operation-result" id="networkDeviceOperationResult" role="status" aria-live="polite"></div></section>`;
+        nodes.networkDeviceModal.hidden = false;
+        updateModalBodyLock();
+        nodes.networkDeviceModalClose.focus();
+    }
+
+    function closeNetworkDeviceModal() {
+        if (!nodes.networkDeviceModal) return;
+        networkInventoryState.operationRequestSeq += 1;
+        nodes.networkDeviceModal.hidden = true;
+        networkInventoryState.selectedEntity = null;
+        updateModalBodyLock();
+    }
+
+    function renderNetworkOperationResult(result, error = "") {
+        const target = document.getElementById("networkDeviceOperationResult");
+        if (!target) return;
+        if (error) {
+            target.innerHTML = `<p class="trading-error">${escapeHtml(error)}</p>`;
+            return;
+        }
+        target.innerHTML = `<pre>${escapeHtml(JSON.stringify(result, null, 2))}</pre>`;
+    }
+
+    /** Execute bounded, authenticated read-only detail requests for the selected entity. */
+    async function runNetworkDeviceRead(operation, controllerId = "") {
+        const entity = networkInventoryState.selectedEntity;
+        if (!entity) return;
+        const requestSeq = ++networkInventoryState.operationRequestSeq;
+        let path = "";
+        if (operation === "diagnostics") {
+            path = `/devices/controllers/diagnostics?controller_id=${encodeURIComponent(controllerId)}`;
+        } else if (operation === "dhcp") {
+            path = "/devices/dhcp";
+        } else if (operation === "home-assistant") {
+            path = "/devices/home-assistant";
+        }
+        if (!path) return;
+        renderNetworkOperationResult({ status: "Loading current read-only evidence…" });
+        const response = await fetchJson(path);
+        if (requestSeq !== networkInventoryState.operationRequestSeq || networkInventoryState.selectedEntity !== entity) return;
+        const data = responseData(response.payload) || {};
+        if (!response.ok) {
+            renderNetworkOperationResult(null, data.message || data.error?.message || `Read-only operation returned HTTP ${response.status || "network error"}.`);
+            return;
+        }
+        if (operation === "dhcp") {
+            const macs = new Set((entity.mac_addresses || []).map((mac) => String(mac).toLowerCase()));
+            const clientIds = new Set((entity.dhcp_client_ids || []).map(String));
+            const servers = Array.isArray(data.servers) ? data.servers : [];
+            const matches = servers.flatMap((server) => (server.leases || [])
+                .filter((lease) => (lease.mac_address && macs.has(String(lease.mac_address).toLowerCase()))
+                    || (lease.client_id && clientIds.has(String(lease.client_id))))
+                .map((lease) => ({ server_id: server.server_id || server.id, ...lease })));
+            renderNetworkOperationResult({ inventory_revision: data.inventory_revision, stale: data.inventory_stale, matching_leases: matches });
+            return;
+        }
+        if (operation === "home-assistant") {
+            const entityId = entity.home_assistant_entity;
+            const matches = (Array.isArray(data.entities) ? data.entities : []).filter((item) => item.entity_id === entityId);
+            renderNetworkOperationResult({ configured: data.configured, available: data.available, stale_inventory: data.stale_inventory, matching_entities: matches });
+            return;
+        }
+        renderNetworkOperationResult(data);
+    }
+
+    function initializeNetworkInventoryUi() {
+        const rerender = () => {
+            renderNetworkInventoryTable();
+            renderNetworkInventoryGraph();
+        };
+        nodes.networkDeviceSearch?.addEventListener("input", rerender);
+        nodes.networkKindFilter?.addEventListener("change", rerender);
+        nodes.networkTraceyFilter?.addEventListener("change", rerender);
+        nodes.networkInventoryRefresh?.addEventListener("click", () => { void refreshDashboard(); });
+        nodes.networkInventoryRows?.addEventListener("click", (event) => {
+            const button = event.target.closest("button[data-network-entity]");
+            const agentButton = event.target.closest("button[data-network-agent-id]");
+            if (agentButton) {
+                const agentId = String(agentButton.getAttribute("data-network-agent-id") || "").trim();
+                if (agentId) void openTraceyInsightsModal(agentId);
+                return;
+            }
+            if (button) openNetworkDeviceModal(findNetworkEntity(button.getAttribute("data-network-entity")));
+        });
+        nodes.networkInventoryGraph?.addEventListener("click", (event) => {
+            const node = event.target.closest("[data-network-entity]");
+            if (node) openNetworkDeviceModal(findNetworkEntity(node.getAttribute("data-network-entity")));
+        });
+        nodes.networkInventoryGraph?.addEventListener("keydown", (event) => {
+            if (event.key !== "Enter" && event.key !== " ") return;
+            const node = event.target.closest("[data-network-entity]");
+            if (!node) return;
+            event.preventDefault();
+            openNetworkDeviceModal(findNetworkEntity(node.getAttribute("data-network-entity")));
+        });
+        nodes.networkUnlinkedTraceyRows?.addEventListener("click", (event) => {
+            const button = event.target.closest("button[data-network-agent-id]");
+            const agentId = String(button?.getAttribute("data-network-agent-id") || "").trim();
+            if (agentId) void openTraceyInsightsModal(agentId);
+        });
+        nodes.networkDeviceModalClose?.addEventListener("click", closeNetworkDeviceModal);
+        nodes.networkDeviceModal?.addEventListener("click", (event) => {
+            if (event.target === nodes.networkDeviceModal) closeNetworkDeviceModal();
+            const button = event.target.closest("button[data-network-operation]");
+            if (button) void runNetworkDeviceRead(button.getAttribute("data-network-operation"), button.getAttribute("data-controller-id") || "");
+            const agentButton = event.target.closest("button[data-network-agent-id]");
+            const agentId = String(agentButton?.getAttribute("data-network-agent-id") || "").trim();
+            if (agentId) void openTraceyInsightsModal(agentId);
+        });
+        window.addEventListener("keydown", (event) => {
+            if (event.key === "Escape" && nodes.networkDeviceModal && !nodes.networkDeviceModal.hidden) closeNetworkDeviceModal();
+        });
+    }
+
     async function refreshDashboard() {
         if (dashboardRefreshInFlight) {
             return;
@@ -7871,6 +8385,7 @@
     async function refreshDashboardOnce() {
         setPill(nodes.refreshPill, "Refresh", "Updating", "rgba(245,158,11,0.8)");
         const traceyVisible = hasTraceyVisibility();
+        const continuumVisible = hasContinuumVisibility();
         const tradingVisible = hasGailTradingVisibility();
 
         const [
@@ -7880,6 +8395,7 @@
             openstackClustersRes,
             proxmoxClustersRes,
             vmListRes,
+            deviceInventoryRes,
             traceyAgentsRes,
             aiLabRes,
             traceyAdaptiveRes,
@@ -7896,6 +8412,9 @@
             fetchJson("/openstack/clusters"),
             fetchJson("/proxmox/clusters"),
             fetchJson("/vm/list"),
+            continuumVisible
+                ? fetchJson("/devices/inventory")
+                : Promise.resolve({ ok: false, status: 0, payload: null }),
             traceyVisible
                 ? fetchJson("/tracey/agents")
                 : Promise.resolve({
@@ -7944,6 +8463,7 @@
             openstackClustersRes,
             proxmoxClustersRes,
             vmListRes,
+            deviceInventoryRes,
             traceyAgentsRes,
             aiLabRes,
             traceyAdaptiveRes,
@@ -8038,6 +8558,7 @@
 
         const traceyData = responseData(traceyAgentsRes.payload) || {};
         const traceyAgents = Array.isArray(traceyData.agents) ? traceyData.agents : [];
+        renderNetworkInventory(deviceInventoryRes, traceyAgentsRes, traceyVisible);
         const traceySummary = traceyData.summary || {};
         const probeWatchSummary = traceyData.probe_watch_summary || {};
         const tracey_guardSummary = traceyData.tracey_guard_summary || {};
@@ -8266,6 +8787,7 @@
 
     initializeSessionUi();
     initializeClusterDetailsUi();
+    initializeNetworkInventoryUi();
     initializeTraceyInsightsUi();
     initializeGailTradingUi();
     renderTraceyAdaptiveOverview(null);
