@@ -1,5 +1,67 @@
 #include "VClusterCommands.h"
+#include <cstdint>
 #include <iostream>
+#include <filesystem>
+#include <fstream>
+#include <nlohmann/json.hpp>
+
+namespace {
+
+constexpr std::uintmax_t MAX_VCLUSTER_CONFIG_BYTES = 1024 * 1024;
+
+/** Read a bounded JSON object without exposing file contents in error output. */
+bool loadAdvancedConfig(const std::string& configPath, nlohmann::json& config, std::string& error) {
+    std::error_code fileError;
+    if (!std::filesystem::is_regular_file(configPath, fileError) || fileError) {
+        error = "--config-file must name a readable regular file.";
+        return false;
+    }
+
+    const auto fileSize = std::filesystem::file_size(configPath, fileError);
+    if (fileError) {
+        error = "Could not inspect --config-file size.";
+        return false;
+    }
+    if (fileSize > MAX_VCLUSTER_CONFIG_BYTES) {
+        error = "--config-file must not exceed 1 MiB.";
+        return false;
+    }
+
+    std::ifstream input(configPath, std::ios::in | std::ios::binary);
+    if (!input) {
+        error = "Could not open --config-file.";
+        return false;
+    }
+
+    std::string contents(static_cast<std::size_t>(MAX_VCLUSTER_CONFIG_BYTES + 1), '\0');
+    input.read(contents.data(), static_cast<std::streamsize>(contents.size()));
+    const auto bytesRead = input.gcount();
+    if (bytesRead < 0 || static_cast<std::uintmax_t>(bytesRead) > MAX_VCLUSTER_CONFIG_BYTES) {
+        error = "--config-file must not exceed 1 MiB.";
+        return false;
+    }
+    if (input.bad() || (input.fail() && !input.eof())) {
+        error = "Could not read --config-file.";
+        return false;
+    }
+    contents.resize(static_cast<std::size_t>(bytesRead));
+
+    try {
+        config = nlohmann::json::parse(contents);
+    } catch (const nlohmann::json::exception&) {
+        // Do not include parser excerpts: the file may contain sensitive values.
+        error = "--config-file must contain valid JSON.";
+        return false;
+    }
+
+    if (!config.is_object()) {
+        error = "--config-file must contain a JSON object.";
+        return false;
+    }
+    return true;
+}
+
+} // namespace
 
 namespace NMC::Commands {
 
@@ -15,10 +77,13 @@ int VClusterCommand::execute(const std::map<std::string, std::string>& parsedFla
 
 // --- VClusterCreateCommand ---
 VClusterCreateCommand::VClusterCreateCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client) : BaseCommand("create", "Creates a new vcluster", std::move(client)) {
-    usage = "nmc vcluster create NAME [--namespace NAMESPACE]";
-    examples = "nmc vcluster create my-vcluster\nnmc vcluster create my-vcluster --namespace vcluster-my-vcluster";
+    usage = "nmc vcluster create NAME [--namespace NAMESPACE] [--config-file PATH]";
+    examples = "nmc vcluster create my-vcluster\n"
+               "nmc vcluster create my-vcluster --namespace vcluster-my-vcluster\n"
+               "nmc vcluster create my-vcluster --config-file ./vcluster-config.json";
     addArgument(CLI::Argument("NAME", "Name of the vcluster", true, 0));
     addFlag(CLI::Flag("n", "namespace", "Namespace for the vcluster (optional, defaults to vcluster-NAME)", CLI::FlagType::String, false));
+    addFlag(CLI::Flag("c", "config-file", "JSON file containing advanced vcluster configuration", CLI::FlagType::String, false));
 }
 
 int VClusterCreateCommand::execute(const std::map<std::string, std::string>& parsedFlags, const std::vector<std::string>& parsedArgs, const CLI::GlobalFlags& globalFlags) {
@@ -28,6 +93,7 @@ int VClusterCreateCommand::execute(const std::map<std::string, std::string>& par
 
     const std::string& name = parsedArgs[0];
     std::string vclusterNamespace = parsedFlags.count("namespace") ? parsedFlags.at("namespace") : "";
+    nlohmann::json advancedConfig = nlohmann::json::object();
 
     if (name.empty()) {
         std::cerr << "Error: VCluster name is required." << std::endl;
@@ -35,7 +101,16 @@ int VClusterCreateCommand::execute(const std::map<std::string, std::string>& par
         return 1;
     }
 
-    Models::CloudResponse response = apiClient->createVCluster(name, vclusterNamespace);
+    const auto configFlag = parsedFlags.find("config-file");
+    if (configFlag != parsedFlags.end()) {
+        std::string error;
+        if (!loadAdvancedConfig(configFlag->second, advancedConfig, error)) {
+            std::cerr << "Error: " << error << std::endl;
+            return 1;
+        }
+    }
+
+    Models::CloudResponse response = apiClient->createVCluster(name, vclusterNamespace, advancedConfig);
     printOutput(response, globalFlags);
     return response.success ? 0 : 1;
 }

@@ -6,8 +6,8 @@ This is the current-state status for the vcluster surface in this repository.
 
 | Capability | Server API | CLI | Notes |
 |---|---|---|---|
-| Basic create | yes | yes | CLI create currently supports `name` and optional `namespace`. |
-| Advanced create config payload | yes | partial | Available through `POST /vcluster/create` with nested `config` JSON; not exposed through dedicated CLI flags. |
+| Basic create | yes | yes | CLI requires `name` and accepts optional `namespace` and advanced JSON configuration. |
+| Advanced create config payload | yes | yes | Available through `POST /vcluster/create` and `nmc vcluster create --config-file PATH`; the CLI accepts a JSON object up to 1 MiB and validates it before network access. |
 | Delete / get / list / kubeconfig | yes | yes | Fully wired through `CloudAPIClient` and `VClusterCommands.cpp`. |
 | Pause / resume | yes | yes | Implemented with StatefulSet replica patching and annotations. |
 | Backup / restore | yes | yes | Backup uses `ConfigMap` storage in `vcluster-backups`. |
@@ -60,7 +60,7 @@ Registered CLI subcommands:
 
 Use the CLI for day-to-day vcluster lifecycle, inspection, and configuration metadata workflows.
 
-Use the raw server API when you need advanced create-time config sections such as:
+Use `nmc vcluster create NAME --config-file PATH` for advanced create-time settings such as:
 - placement
 - HA
 - ingress/service settings
@@ -69,11 +69,12 @@ Use the raw server API when you need advanced create-time config sections such a
 - monitoring configuration
 - embedded Tracey metadata
 
+Use the raw server API only when integrating a caller that already constructs the nested configuration request.
+
 ## Known Follow-On Improvements
 
 The most natural next implementation steps would be:
-1. expose advanced create-time config through CLI flags or a config file input
-2. make `vclusterConfigsRef` durable across server restarts
-3. hot-apply more config changes in `config-update`
-4. integrate real metrics backends for richer `metrics` output
-5. add the same Tracey managed-resource hook that exists for other server-side create flows
+1. make `vclusterConfigsRef` durable across server restarts
+2. hot-apply more config changes in `config-update`
+3. integrate real metrics backends for richer `metrics` output
+4. add the same Tracey managed-resource hook that exists for other server-side create flows

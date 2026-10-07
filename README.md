@@ -124,10 +124,13 @@ Global output formats currently implemented are:
 ./nmc_client/build/nmc k8s list
 ./nmc_client/build/nmc k8s health
 ./nmc_client/build/nmc vcluster create demo --namespace vcluster-demo
+./nmc_client/build/nmc vcluster create demo-uat --config-file ./vcluster-config.json
 ./nmc_client/build/nmc vcluster health demo
 ./nmc_client/build/nmc vcluster config-get demo
 ./nmc_client/build/nmc vcluster upgrade demo --version 0.20.0
 ```
+
+`vcluster-config.json` is a JSON object containing the advanced server-side vcluster configuration, such as placement, HA, ingress, security/RBAC, sync, monitoring, or Tracey metadata. The CLI validates the file locally, limits it to 1 MiB, and sends it as the nested `config` field without printing its contents.
 
 ### Provider portal workflows
 

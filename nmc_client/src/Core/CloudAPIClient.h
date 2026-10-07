@@ -92,7 +92,10 @@ namespace NMC::Core {
         Models::CloudResponse suspendK8sCluster(const std::string& id);
 
         // VCluster Operations
-        Models::CloudResponse createVCluster(const std::string& name, const std::string& vclusterNamespace = "");
+        Models::CloudResponse createVCluster(
+            const std::string& name,
+            const std::string& vclusterNamespace = "",
+            const nlohmann::json& advancedConfig = nlohmann::json::object());
         Models::CloudResponse deleteVCluster(const std::string& id);
         Models::CloudResponse getVCluster(const std::string& id);
         Models::CloudResponse listVClusters(const std::string& filterName = "");

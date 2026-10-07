@@ -78,13 +78,13 @@ Public routes:
 ### 4.2 VCluster workflow
 
 Basic CLI workflow:
-1. `vcluster create` sends `name` and optional `namespace`.
+1. `vcluster create` sends `name` and optional `namespace`; `--config-file PATH` additionally sends an advanced JSON object as the nested `config` payload (maximum 1 MiB).
 2. `vcluster list/get/get-config` inspect the created virtual cluster.
 3. Lifecycle commands (`pause`, `resume`, `backup`, `restore`, `upgrade`) operate over dedicated `/vcluster/*` routes.
 4. Monitoring/config commands (`config-get`, `config-update`, `metrics`, `health`, `resources`) query or update vcluster metadata.
 
 Server-side advanced workflow:
-1. `POST /vcluster/create` accepts an optional nested `config` JSON payload.
+1. `POST /vcluster/create` accepts an optional nested `config` JSON payload. The CLI exposes this through `nmc vcluster create NAME --config-file PATH` and rejects unreadable files, invalid JSON, non-object JSON and oversized input before making a request.
 2. The server stores a `VClusterConfig` object in memory.
 3. The handler creates:
    - a namespace

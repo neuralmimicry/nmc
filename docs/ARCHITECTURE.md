@@ -138,7 +138,7 @@ The vcluster implementation is split across:
 
 Important distinctions:
 - the server API supports advanced create-time configuration through a nested `config` JSON payload
-- the CLI exposes lifecycle, config, and monitoring subcommands, but `nmc vcluster create` currently only sends `name` and optional `namespace`
+- the CLI exposes lifecycle, config, and monitoring subcommands; `nmc vcluster create --config-file PATH` forwards a bounded JSON object as the server's nested advanced configuration
 - config metadata is stored in the server's in-memory `vclusterConfigsRef` map
 - backups are stored as `ConfigMap` objects in the `vcluster-backups` namespace
 
