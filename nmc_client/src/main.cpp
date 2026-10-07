@@ -8,6 +8,7 @@
 #include "Commands/SSHCommands.h"
 #include "Commands/OpenShiftCommands.h"
 #include "Commands/ProxmoxCommands.h"
+#include "Commands/ProviderCommands.h"
 #include "Commands/ServerCommands.h"
 #include "Commands/TraceyCommands.h"
 #include "Commands/VMCommands.h"
@@ -116,6 +117,15 @@ int main(int argc, char* argv[]) {
     proxmoxCmd->addSubcommand(std::make_shared<NMC::Commands::ProxmoxRequestCommand>(apiClient));
     proxmoxCmd->addSubcommand(std::make_shared<NMC::Commands::ProxmoxStatusCommand>(apiClient));
     parser.registerCommand(proxmoxCmd);
+
+    auto providerCmd = std::make_shared<NMC::Commands::ProviderCommand>(apiClient);
+    auto providerComputeCmd = std::make_shared<NMC::Commands::ProviderComputeCommand>(apiClient);
+    providerComputeCmd->addSubcommand(std::make_shared<NMC::Commands::ProviderComputeStatusCommand>(apiClient));
+    providerComputeCmd->addSubcommand(std::make_shared<NMC::Commands::ProviderComputeInstancesCommand>(apiClient));
+    providerComputeCmd->addSubcommand(std::make_shared<NMC::Commands::ProviderComputeCreateCommand>(apiClient));
+    providerComputeCmd->addSubcommand(std::make_shared<NMC::Commands::ProviderComputeActionCommand>(apiClient));
+    providerCmd->addSubcommand(providerComputeCmd);
+    parser.registerCommand(providerCmd);
 
     auto serverCmd = std::make_shared<NMC::Commands::ServerCommand>(apiClient);
     serverCmd->addSubcommand(std::make_shared<NMC::Commands::ServerHealthCommand>(apiClient));

@@ -122,7 +122,9 @@ def collect_cloud_method_routes(cloud_src: str) -> Dict[str, List[Route]]:
             re.MULTILINE | re.DOTALL,
         )
         for var_name, expr in var_pattern.findall(body):
-            literal_parts = re.findall(r"\"(/[^\"\?]*)\"", expr)
+            # CloudAPIClient paths may append query parameters to a literal;
+            # only the URL path participates in the server route contract.
+            literal_parts = re.findall(r'"(/[^"?]*)(?:\?[^\"]*)?"', expr)
             if not literal_parts:
                 continue
             var_paths[var_name].add(template_from_literal_parts(literal_parts))
@@ -132,7 +134,7 @@ def collect_cloud_method_routes(cloud_src: str) -> Dict[str, List[Route]]:
             re.MULTILINE | re.DOTALL,
         )
         for http_method, first_arg_expr in call_first_arg_pattern.findall(body):
-            literal_parts = re.findall(r"\"(/[^\"\?]*)\"", first_arg_expr)
+            literal_parts = re.findall(r'"(/[^"?]*)(?:\?[^\"]*)?"', first_arg_expr)
             if literal_parts:
                 routes.add(Route(http_method, template_from_literal_parts(literal_parts), False))
                 continue

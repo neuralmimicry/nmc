@@ -11,6 +11,7 @@
 <div class="container">
     <header>
         <h1>Virtual Machine (VM) API Endpoints</h1>
+        <aside role="note"><strong>Deprecated:</strong> these legacy <code>/vm/*</code> routes previously changed process-local records and did not call a cloud provider. Lifecycle and catalogue requests now return HTTP 410. Use the authenticated, provider-scoped <a href="/provider-compute.html">Provider Compute API</a> for live AWS, GCP or Azure resources.</aside>
         <p class="tagline">Provision, manage, and scale virtual machines</p>
         <a href="index.html" class="back-link">&larr; Back to API Home</a>
     </header>

@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Continuum Provider Compute API</title>
+    <link rel="stylesheet" href="/style.css">
+    <style>
+        body { max-width: 1080px; margin: 2rem auto; padding: 0 1.25rem; font: 16px/1.55 system-ui, sans-serif; }
+        code, pre { background: #f2f4f7; border-radius: 4px; }
+        code { padding: .1rem .3rem; }
+        pre { overflow: auto; padding: 1rem; }
+        table { border-collapse: collapse; width: 100%; }
+        th, td { border: 1px solid #d6dbe1; padding: .55rem; text-align: left; vertical-align: top; }
+    </style>
+</head>
+<body>
+<main>
+    <p><a href="/docs">Continuum Control Room</a></p>
+    <h1>Provider Compute API</h1>
+    <p>Continuum can query and operate AWS EC2, Google Compute Engine and Azure virtual machines through the provider's supported command-line tools. These routes use the server's authenticated API and are separate from the legacy in-memory <code>/vm/*</code> routes.</p>
+
+    <h2>Runtime scope</h2>
+    <p>Install the relevant provider CLI on the NMC host and provide its workload identity through the service account's standard credential mechanism. Configure exact account, project or subscription identifiers in the matching allow-list:</p>
+    <pre><code>NMC_AWS_ALLOWED_SCOPES=123456789012
+NMC_GCP_ALLOWED_SCOPES=example-project-123
+NMC_AZURE_ALLOWED_SCOPES=00000000-0000-0000-0000-000000000000</code></pre>
+    <p>Provider credentials are not accepted in API request bodies. Child processes receive only the documented provider credential variables and standard configuration paths; NMC authentication secrets are not forwarded. Provider mutations are disabled by default. Enable them only after configuring scoped credentials, least-privilege provider roles, dependency checks and operational approval:</p>
+    <pre><code>NMC_PROVIDER_MUTATIONS_ENABLED=true
+NMC_PROVIDER_ALLOW_DELETE=true</code></pre>
+    <p>Deletion requires both switches. Do not enable it for routine deployment environments. Production mutation support remains incomplete until service dependencies, durable resource inventory and host/service health verification are configured.</p>
+
+    <h2>Routes</h2>
+    <table>
+        <thead><tr><th>Method and path</th><th>Purpose</th></tr></thead>
+        <tbody>
+        <tr><td><code>GET /providers/compute</code></td><td>Show installed provider CLIs, allow-list configuration and mutation gates. This does not disclose scope identifiers or credentials.</td></tr>
+        <tr><td><code>GET /providers/compute/instances?provider=aws&amp;scope=123456789012&amp;region=eu-west-2</code></td><td>Verify the active provider identity and return live, normalised inventory for the exact allow-listed scope. GCP accepts an optional region filter.</td></tr>
+        <tr><td><code>POST /providers/compute/instances/create</code></td><td>Create one instance from an explicit provider-specific network, image and size specification. AWS and GCP require a stable idempotency key.</td></tr>
+        <tr><td><code>POST /providers/compute/instances/action</code></td><td>Restart, start, stop or delete one exact canonical instance identifier. The active account/project/subscription, scope, region and current instance state are checked first.</td></tr>
+        </tbody>
+    </table>
+
+    <h2>Lifecycle requests</h2>
+    <p>For create, send <code>provider</code>, <code>scope</code>, a provider-specific <code>spec</code> object and an <code>idempotency_key</code>. AWS requires the AMI, instance type, subnet and one or more security groups; public IP association is disabled. GCP requires project, zone, machine type, image project, image, subnet and a service account; public IP assignment is disabled. Azure requires subscription, resource group, location, image, size, administrator SSH key, virtual network, subnet and network security group; public IP assignment is disabled.</p>
+    <p>For actions, send <code>provider</code>, <code>scope</code>, canonical <code>instance_id</code>, <code>action</code>, and the required provider location (<code>region</code> for AWS/Azure or <code>zone</code> for GCP). NMC verifies provider state after the command. Host reachability, dependent service health, service-specific preflight and complete rollback are not inferred from that provider-state check.</p>
+
+    <h2>CLI</h2>
+    <pre><code>nmc provider compute status
+nmc provider compute instances --provider aws --scope 123456789012 --region eu-west-2
+nmc provider compute create --provider aws --scope 123456789012 --spec-file ./instance.json --idempotency-key deployment-request-0001
+nmc provider compute action --provider aws --scope 123456789012 --region eu-west-2 --instance-id i-0123456789abcdef0 --action restart</code></pre>
+
+    <p>Every operation records a redacted audit event. Provider CLI output is bounded, stderr is discarded, commands use direct argument arrays rather than a shell, and each process has a fixed timeout. Configure a provider adapter only when the server runs in a controlled environment with a dedicated least-privilege identity.</p>
+</main>
+</body>
+</html>

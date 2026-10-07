@@ -172,6 +172,7 @@ set(NMC_SERVER_SOURCES
         src/Core/APIRoutes_DomainProxy.cpp
         src/Core/APIRoutes_ReleaseOperate.cpp
         src/Core/APIRoutes_ReleaseOperateExecution.cpp
+        src/Core/APIRoutes_ProviderCompute.cpp
         src/Core/APIRoutes_AiLab.cpp
         src/Core/APIRoutes_Tracey.cpp
         src/Core/APIRoutes_TraceyAdaptiveAssessment.cpp
@@ -186,6 +187,7 @@ set(NMC_SERVER_SOURCES
         src/Core/OpenStackClient.cpp
         src/Core/OpenShiftClient.cpp
         src/Core/ProxmoxClient.cpp
+        src/Core/ProviderCompute.cpp
         src/Core/ServerStateStore.cpp
         src/Core/TraceyCVEIntel.cpp
         src/Core/TraceyStateStore.cpp

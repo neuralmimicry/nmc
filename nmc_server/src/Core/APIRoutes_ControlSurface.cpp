@@ -517,7 +517,9 @@ namespace NMC::Server {
                 || path == "/node/recruit"
                 || path == "/k8s/refiner/scale"
                 || path == "/k8s/deployment/restart"
-                || path == "/devices/controllers/actions") {
+                || path == "/devices/controllers/actions"
+                || path == "/providers/compute/instances/create"
+                || path == "/providers/compute/instances/action") {
                 return {"continuum", SERVICE_ACCESS_CONTROL};
             }
             if (path == "/k8s/deployment/recovery-status") {
@@ -863,6 +865,7 @@ namespace NMC::Server {
         const std::vector<std::string> redactedPrefixes = {
                 "/ssh/create",
                 "/vm/create",
+                "/providers/compute/instances/create",
                 "/model/upload",
                 "/connections/make",
                 "/auth/login",

@@ -333,6 +333,10 @@ namespace NMC::Server {
 
         // --- VM Handlers ---
         void handleCreateVM(const httplib::Request& req, httplib::Response& res);
+        void handleProviderComputeStatus(const httplib::Request& req, httplib::Response& res);
+        void handleProviderComputeList(const httplib::Request& req, httplib::Response& res);
+        void handleProviderComputeCreate(const httplib::Request& req, httplib::Response& res);
+        void handleProviderComputeAction(const httplib::Request& req, httplib::Response& res);
         void handleDeleteVM(const httplib::Request& req, httplib::Response& res);
         void handleGetVM(const httplib::Request& req, httplib::Response& res);
         void handleListVMs(const httplib::Request& req, httplib::Response& res);
