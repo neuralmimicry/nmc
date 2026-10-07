@@ -72,6 +72,8 @@ namespace NMC {
             void handleListK8sClusters(const httplib::Request& req, httplib::Response& res);
             void handleListK8sLocations(const httplib::Request& req, httplib::Response& res);
             void handleK8sHealthCheck(const httplib::Request& req, httplib::Response& res);
+            void handleGetDeploymentRecoveryStatus(const httplib::Request& req, httplib::Response& res);
+            void handleRestartDeployment(const httplib::Request& req, httplib::Response& res);
             void handleResumeK8sCluster(const httplib::Request& req, httplib::Response& res);
             void handleSuspendK8sCluster(const httplib::Request& req, httplib::Response& res);
             void handleGetRefinerStatus(const httplib::Request& req, httplib::Response& res);
@@ -117,11 +119,20 @@ namespace NMC {
             char *basePath;
             sslConfig_t *sslConfig;
             list_t *apiKeys; // List of apiKey_t for authentication
+            // Recovery is allowed only for the cluster identity explicitly
+            // bound to this process's single active kubeconfig context.
+            std::string activeRecoveryClusterId;
+            // The legacy direct-URL fallback intentionally lacks kubeconfig
+            // credentials and must never be used for recovery writes.
+            bool recoveryClientReady{false};
 
             // Internal helper to convert K8s JSON (from generic client) to Models::K8sCluster
             std::optional<Models::K8sCluster> parseKubernetesObjectToK8sCluster(const nlohmann::json& k8sObject);
             // Internal helper for generic client calls
             genericClient_t *getGenericClient(const std::string& group, const std::string& version, const std::string& plural);
+            nlohmann::json inspectDeploymentRecoveryState(const std::string& namespaceName,
+                                                          const std::string& deploymentName,
+                                                          std::string& error);
 
             // VCluster helper methods
             bool createServiceAccount(const std::string& ns, const std::string& name);
@@ -134,6 +145,7 @@ namespace NMC {
             bool clusterMatchesFilter(const nlohmann::json& cluster, const std::string& filterName);
 
             std::mutex& dataMutex; /**< Reference to the mutex (still useful for general thread safety). */
+            std::mutex recoveryMutex; /**< Serializes recovery preflights and conditional recovery writes. */
             std::vector<Models::K8sCluster>& k8sClustersRef; /**< Reference to persisted K8s cluster registry */
             std::unordered_map<std::string, Models::VClusterConfig>& vclusterConfigsRef; /**< Reference to VCluster configs storage */
 

@@ -3,6 +3,7 @@
 #include "Utils.h" // For Utils::generateUniqueId
 #include <algorithm> // Not as much needed now, but keeping for general utility
 #include <cctype>
+#include <cstdlib>
 #include <ctime>
 #include <cstring>
 #include <iostream>
@@ -433,6 +434,10 @@ namespace NMC {
         sslConfig(nullptr),
         apiKeys(nullptr)
         {
+            const char* recoveryClusterId = std::getenv("NMC_K8S_CLUSTER_ID");
+            if (recoveryClusterId) {
+                activeRecoveryClusterId = recoveryClusterId;
+            }
             // Initialize Kubernetes C client
             int rc = 0;
             if (!kubeconfig_path.empty()) {
@@ -442,6 +447,7 @@ namespace NMC {
 
             // Load configuration from kubeconfig file or default locations
             rc = load_kube_config(&basePath, &sslConfig, &apiKeys, nullptr);
+            const bool kubeconfigLoaded = rc == 0;
             if (rc != 0) {
                 // Fallback to direct API server URL if kubeconfig loading fails,
                 // this would require manual auth token handling (not shown here for brevity)
@@ -458,6 +464,7 @@ namespace NMC {
                 std::cerr << "Error: Cannot create a kubernetes client." << std::endl;
                 // You might want to throw an exception or set an internal error state here
             } else {
+                recoveryClientReady = kubeconfigLoaded;
                 std::cout << "Kubernetes API client initialized successfully for server: " << (basePath ? basePath : "unknown") << std::endl;
             }
         }

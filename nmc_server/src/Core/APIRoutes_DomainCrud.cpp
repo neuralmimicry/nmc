@@ -3,6 +3,7 @@
 
 #include "APIRoutes.h"
 #include "K8sHandlers.h"
+#include "DeviceManagement.h"
 #include "VersionCheck.h"
 #include "Utils.h"
 
@@ -40,6 +41,27 @@ namespace NMC::Server {
     }
 
     void APIRoutes::registerDomainCrudRoutes(httplib::Server& svr, const APIRoutes::RouteGuard& guard) {
+        svr.Get("/devices/inventory", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            deviceManagement->handleGetInventory(req, res);
+        });
+        svr.Get("/devices/dhcp", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            deviceManagement->handleGetDhcpObservations(req, res);
+        });
+        svr.Get("/devices/home-assistant", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            deviceManagement->handleGetHomeAssistant(req, res);
+        });
+        svr.Get("/devices/controllers/diagnostics", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            deviceManagement->handleGetControllerDiagnostics(req, res);
+        });
+        svr.Post("/devices/controllers/actions", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            deviceManagement->handleControllerAction(req, res);
+        });
+
         // --- Bucket Routes ---
         svr.Post("/bucket/create", [this, guard](const httplib::Request& req, httplib::Response& res) {
             if (!guard(req, res)) return;
@@ -159,6 +181,14 @@ namespace NMC::Server {
         svr.Get("/k8s/healthz", [this, guard](const httplib::Request& req, httplib::Response& res) {
             if (!guard(req, res)) return;
             k8sHandlers->handleK8sHealthCheck(req, res);
+        });
+        svr.Get("/k8s/deployment/recovery-status", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            k8sHandlers->handleGetDeploymentRecoveryStatus(req, res);
+        });
+        svr.Post("/k8s/deployment/restart", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            k8sHandlers->handleRestartDeployment(req, res);
         });
         svr.Post(R"(/k8s/resume/(.*))", [this, guard](const httplib::Request& req, httplib::Response& res) {
             if (!guard(req, res)) return;

@@ -74,6 +74,20 @@ namespace NMC::Core {
         Models::CloudResponse scaleRefinerDeployment(int replicas,
                                                      const std::string& namespaceName = "refiner",
                                                      const std::string& deploymentName = "refiner");
+        /** Submit one validated Deployment recovery request with a stable idempotency key. */
+        Models::CloudResponse restartDeployment(const std::string& clusterId,
+                                                const std::string& namespaceName,
+                                                const std::string& deploymentName,
+                                                const std::string& requestId);
+        /** Read live Deployment, Pod and host eligibility for a bounded recovery action. */
+        Models::CloudResponse getDeploymentRecoveryStatus(const std::string& clusterId,
+                                                          const std::string& namespaceName,
+                                                          const std::string& deploymentName);
+        Models::CloudResponse getDeviceInventory();
+        Models::CloudResponse getDhcpObservations();
+        Models::CloudResponse getHomeAssistantDevices();
+        Models::CloudResponse getControllerDiagnostics(const std::string& controllerId);
+        Models::CloudResponse executeControllerAction(const nlohmann::json& request);
         Models::CloudResponse resumeK8sCluster(const std::string& id);
         Models::CloudResponse suspendK8sCluster(const std::string& id);
 

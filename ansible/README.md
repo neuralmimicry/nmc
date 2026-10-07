@@ -58,6 +58,8 @@ ansible-playbook -i "localhost," -c local ansible/deploy.yml -K \
 - `nmc_build_user`
 - `nmc_build_group`
 - `nmc_port`
+- `nmc_device_inventory_path`
+- `nmc_preserve_env_file` (default `false`); set `true` only when an existing root-owned mode-0600 `/etc/nmc/nmc.env` contains credentials managed elsewhere. The playbook then updates only the device-registry path and preserves the remaining environment values.
 - `nmc_docs_enabled`
 - `nmc_max_body_bytes`
 - `nmc_log_body_bytes`
@@ -104,6 +106,7 @@ ansible-playbook -i "localhost," -c local ansible/deploy.yml -K \
 
 ### Tracey sidecar
 
+- `nmc_manage_tracey_sidecar` (set to `false` to leave an existing sidecar untouched)
 - `nmc_tracey_sidecar_enabled`
 - `nmc_tracey_bin`
 - `nmc_tracey_repo_dir`

@@ -53,6 +53,24 @@ public:
     int execute(const std::map<std::string, std::string>& parsedFlags, const std::vector<std::string>& parsedArgs, const CLI::GlobalFlags& globalFlags) override;
 };
 
+/** Read Continuum's live, fail-closed Deployment and hosting-node recovery preflight. */
+class K8sRecoveryStatusCommand : public BaseCommand {
+public:
+    explicit K8sRecoveryStatusCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client);
+    int execute(const std::map<std::string, std::string>& parsedFlags,
+                const std::vector<std::string>& parsedArgs,
+                const CLI::GlobalFlags& globalFlags) override;
+};
+
+/** Submit one idempotently identified Deployment restart after its preflight passes. */
+class K8sRestartDeploymentCommand : public BaseCommand {
+public:
+    explicit K8sRestartDeploymentCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client);
+    int execute(const std::map<std::string, std::string>& parsedFlags,
+                const std::vector<std::string>& parsedArgs,
+                const CLI::GlobalFlags& globalFlags) override;
+};
+
 class K8sResumeCommand : public BaseCommand {
 public:
     K8sResumeCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client);

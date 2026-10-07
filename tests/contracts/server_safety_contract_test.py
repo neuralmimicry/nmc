@@ -25,6 +25,7 @@ REDACTION_MINIMUM_PREFIXES = {
     "/openstack/clusters/request",
     "/proxmox/clusters/request",
     "/node/recruit",
+    "/devices/controllers/actions",
 }
 
 

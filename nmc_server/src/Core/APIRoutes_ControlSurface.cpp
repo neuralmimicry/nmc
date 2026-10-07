@@ -513,8 +513,15 @@ namespace NMC::Server {
                 }
                 return {"aarnn", SERVICE_ACCESS_OBSERVE};
             }
-            if (path.rfind("/connections", 0) == 0 || path == "/node/recruit" || path == "/k8s/refiner/scale") {
+            if (path.rfind("/connections", 0) == 0
+                || path == "/node/recruit"
+                || path == "/k8s/refiner/scale"
+                || path == "/k8s/deployment/restart"
+                || path == "/devices/controllers/actions") {
                 return {"continuum", SERVICE_ACCESS_CONTROL};
+            }
+            if (path == "/k8s/deployment/recovery-status") {
+                return {"continuum", SERVICE_ACCESS_OBSERVE};
             }
             if (method == "GET") {
                 return {"continuum", SERVICE_ACCESS_OBSERVE};
@@ -863,6 +870,7 @@ namespace NMC::Server {
                 "/openstack/clusters/request",
                 "/proxmox/clusters/request",
                 "/node/recruit",
+                "/devices/controllers/actions",
                 "/services/health/monitoring/auth/login"
         };
         for (const auto& prefix : redactedPrefixes) {
