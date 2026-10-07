@@ -608,11 +608,13 @@ class NmcServerProcess:
         cluster_id: str | None = "authz-test-cluster",
         load_kubeconfig: bool = True,
         device_power_control_enabled: bool = False,
+        recovery_enabled: bool | str | None = None,
     ) -> None:
         self._backend_base_url = backend_base_url
         self._cluster_id = cluster_id
         self._load_kubeconfig = load_kubeconfig
         self._device_power_control_enabled = device_power_control_enabled
+        self._recovery_enabled = recovery_enabled
         self._tmp_dir = tempfile.TemporaryDirectory(prefix="nmc-server-authz-")
         self._home_dir = pathlib.Path(self._tmp_dir.name)
         self._log_path = self._home_dir / "nmc_server.log"
@@ -664,6 +666,9 @@ class NmcServerProcess:
         env.pop("NMC_K8S_CLUSTER_ID", None)
         if self._cluster_id is not None:
             env["NMC_K8S_CLUSTER_ID"] = self._cluster_id
+        env.pop("NMC_RECOVERY_ENABLED", None)
+        if self._recovery_enabled is not None:
+            env["NMC_RECOVERY_ENABLED"] = str(self._recovery_enabled).lower()
         log_file = self._log_path.open("w", encoding="utf-8")
         self._process = subprocess.Popen(
             [str(NMC_SERVER_BIN), "--port", str(self._port)],
@@ -1061,6 +1066,11 @@ def test_continuum_route_authorisation(server: NmcServerProcess, backend: MockBa
         payload.get("data", {}).get("cluster_id") == "authz-test-cluster",
         "preflight should identify the active cluster context",
     )
+    assert_true(
+        payload.get("data", {}).get("recovery_enabled") is False
+        and any(item.get("code") == "recovery_disabled" for item in payload.get("data", {}).get("blockers", [])),
+        "the default-off recovery policy must be visible in the read-only preflight",
+    )
 
     status, payload = request_json(
         server.base_url,
@@ -1075,9 +1085,12 @@ def test_continuum_route_authorisation(server: NmcServerProcess, backend: MockBa
         },
     )
     assert_true(
-        status in {404, 409, 502, 503} and payload.get("success") is not True,
-        f"an absent or unavailable Deployment must be rejected without reporting restart success (HTTP {status})",
+        status == 403
+        and payload.get("success") is not True
+        and "disabled by policy" in payload.get("message", ""),
+        f"a restart must be suppressed by the default-off recovery policy (HTTP {status})",
     )
+
     status, _ = request_json(
         server.base_url,
         "POST",
@@ -1456,6 +1469,55 @@ def test_recovery_fails_closed_without_authenticated_kubeconfig(backend_base_url
         server.stop()
 
 
+def test_recovery_requires_an_explicit_valid_enable_value(backend_base_url: str) -> None:
+    for configured_value, expected_enabled in (("true", True), ("yes", False)):
+        server = NmcServerProcess(backend_base_url, recovery_enabled=configured_value)
+        try:
+            server.start()
+            status, payload = request_json(
+                server.base_url,
+                "GET",
+                "/k8s/deployment/recovery-status?cluster_id=authz-test-cluster&namespace=gail&deployment=gail",
+                token="continuum-observe-token",
+            )
+            assert_status(status, 200, "read-only recovery policy preflight")
+            data = payload.get("data", {})
+            assert_true(
+                data.get("recovery_enabled") is expected_enabled,
+                f"NMC_RECOVERY_ENABLED={configured_value!r} should resolve to {expected_enabled}",
+            )
+            blockers = data.get("blockers", [])
+            has_policy_blocker = any(item.get("code") == "recovery_disabled" for item in blockers)
+            assert_true(
+                has_policy_blocker is (not expected_enabled),
+                "the read-only preflight should explain policy suppression when the recovery gate is closed",
+            )
+            restart_status, restart_payload = request_json(
+                server.base_url,
+                "POST",
+                "/k8s/deployment/restart",
+                token="continuum-control-token",
+                payload={
+                    "namespace": "recovery-authorization-test",
+                    "cluster_id": "authz-test-cluster",
+                    "deployment": "definitely-absent",
+                    "request_id": "recovery-absent-target-0002",
+                },
+            )
+            if expected_enabled:
+                assert_true(
+                    restart_status in {404, 409, 502, 503} and restart_payload.get("success") is not True,
+                    "an enabled recovery policy must still reject an absent or unavailable Deployment",
+                )
+            else:
+                assert_true(
+                    restart_status == 403 and restart_payload.get("success") is not True,
+                    "an invalid enable value must refuse restart before contacting Kubernetes",
+                )
+        finally:
+            server.stop()
+
+
 def test_tracey_route_authorisation(server: NmcServerProcess, backend: MockBackend) -> None:
     status, payload = request_json(server.base_url, "GET", "/tracey/analytics", token="tracey-observe-token")
     assert_status(status, 200, "tracey observe route")
@@ -1742,6 +1804,7 @@ def main() -> int:
         test_gail_trading_route_authorisation(server, backend)
         test_recovery_fails_closed_without_configured_cluster_identity(backend.base_url)
         test_recovery_fails_closed_without_authenticated_kubeconfig(backend.base_url)
+        test_recovery_requires_an_explicit_valid_enable_value(backend.base_url)
     except AssertionError as exc:
         log_output = server.log_path.read_text(encoding="utf-8", errors="replace") if server.log_path.exists() else ""
         print(f"[server-authz-test] FAILED: {exc}", file=sys.stderr)

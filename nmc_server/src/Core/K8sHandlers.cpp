@@ -438,6 +438,18 @@ namespace NMC {
             if (recoveryClusterId) {
                 activeRecoveryClusterId = recoveryClusterId;
             }
+            const char* recoveryEnabledValue = std::getenv("NMC_RECOVERY_ENABLED");
+            if (recoveryEnabledValue) {
+                const std::string normalisedRecoveryEnabled = toLowerCopy(trimCopy(recoveryEnabledValue));
+                recoveryEnabled = normalisedRecoveryEnabled == "true" || normalisedRecoveryEnabled == "1";
+                if (!normalisedRecoveryEnabled.empty()
+                        && normalisedRecoveryEnabled != "true"
+                        && normalisedRecoveryEnabled != "1"
+                        && normalisedRecoveryEnabled != "false"
+                        && normalisedRecoveryEnabled != "0") {
+                    std::cerr << "Warning: NMC_RECOVERY_ENABLED has an invalid value; workload recovery remains disabled." << std::endl;
+                }
+            }
             // Initialize Kubernetes C client
             int rc = 0;
             if (!kubeconfig_path.empty()) {

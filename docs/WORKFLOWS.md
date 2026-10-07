@@ -74,6 +74,7 @@ Public routes:
 3. `k8s health` maps to `/k8s/healthz`.
 4. `k8s suspend` and `k8s resume` drive server-side lifecycle operations.
 5. `k8s get-config` retrieves kubeconfig material for a cluster.
+6. The read-only recovery preflight inspects one explicitly scoped Deployment and its Pods and Nodes; `POST /k8s/deployment/restart` remains unavailable unless `NMC_RECOVERY_ENABLED=true` is explicitly configured, the request matches `NMC_K8S_CLUSTER_ID`, and every other live safety gate passes. The switch defaults off.
 
 ### 4.2 VCluster workflow
 

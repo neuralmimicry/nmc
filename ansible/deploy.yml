@@ -92,6 +92,11 @@
     nmc_k8s_api_wait_seconds: 180
     nmc_k8s_restart_on_failure: true
     nmc_k8s_health_monitor_enabled: false
+    # Set only to the stable identity of the single active kubeconfig context.
+    nmc_k8s_cluster_id: ""
+    # Workload recovery requires a separate explicit opt-in after the active
+    # kubeconfig and cluster identity have been reviewed.
+    nmc_recovery_enabled: false
 
     # GPU
     nmc_gpu_auto: true
@@ -460,6 +465,16 @@
           on the Ansible controller so the private GitHub release asset can be resolved.
 
   tasks:
+    - name: Validate the explicit recovery scope before deployment
+      ansible.builtin.assert:
+        that:
+          - (not (nmc_recovery_enabled | bool)) or (nmc_k8s_cluster_id | length > 0)
+          - nmc_k8s_cluster_id | length == 0 or nmc_k8s_cluster_id is match('^[a-z0-9]([-a-z0-9]*[a-z0-9])?$')
+          - nmc_k8s_cluster_id | length <= 63
+        fail_msg: >-
+          Recovery stays disabled by default. If enabled, configure a valid stable
+          nmc_k8s_cluster_id matching this server's active kubeconfig context.
+
     - name: Install NMC deployment prerequisites
       ansible.builtin.apt:
         name: >-

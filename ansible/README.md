@@ -93,6 +93,8 @@ ansible-playbook -i "localhost," -c local ansible/deploy.yml -K \
 - `nmc_nvidia_device_plugin_url`
 - `nmc_k8s_api_wait_seconds`
 - `nmc_k8s_restart_on_failure`
+- `nmc_k8s_cluster_id` (the stable identity for this server's active kubeconfig context; leave empty to keep recovery preflight/action blocked)
+- `nmc_recovery_enabled` (defaults to `false`; required to enable guarded workload restart requests)
 
 ### GPU
 
