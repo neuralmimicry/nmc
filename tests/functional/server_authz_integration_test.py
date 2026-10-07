@@ -767,6 +767,7 @@ def write_device_inventory(home_dir: pathlib.Path, backend_base_url: str) -> pat
                         "id": "authz-bmc",
                         "protocol": "redfish",
                         "endpoint": "https://127.0.0.1:9443",
+                        "mac_address": "aa:bb:cc:dd:ee:00",
                         "username_env": "AUTHZ_BMC_USERNAME",
                         "password_env": "AUTHZ_BMC_PASSWORD",
                         "manages": ["authz-device"],
@@ -941,6 +942,10 @@ def test_continuum_route_authorisation(server: NmcServerProcess, backend: MockBa
     assert_true(inventory.get("revision") == "authz-device-inventory-v1", "inventory should expose its active revision")
     assert_true(len(inventory.get("devices", [])) == 1, "inventory should include the registered host")
     assert_true(len(inventory.get("controllers", [])) == 1, "inventory should include the registered BMC")
+    assert_true(
+        inventory["controllers"][0].get("mac_address") == "aa:bb:cc:dd:ee:00",
+        "inventory should expose the registered controller MAC",
+    )
     assert_true("AUTHZ_BMC_PASSWORD" not in json.dumps(inventory), "inventory must not reveal credential references")
 
     status, payload = request_json(server.base_url, "GET", "/devices/home-assistant", token="continuum-observe-token")
@@ -1349,6 +1354,30 @@ def test_device_inventory_rejects_hard_and_symbolic_links(server: NmcServerProce
         if inventory_path.is_symlink():
             inventory_path.unlink()
         saved_path.replace(inventory_path)
+
+
+def test_device_inventory_rejects_invalid_controller_mac(server: NmcServerProcess) -> None:
+    """Controller identities must not be projected from malformed MAC values."""
+    assert_true(server.inventory_path is not None, "integration server should expose its active device inventory")
+    inventory_path = server.inventory_path
+    original_inventory = inventory_path.read_bytes()
+    inventory = json.loads(original_inventory)
+    inventory["controllers"][0]["mac_address"] = "not-a-mac"
+    try:
+        inventory_path.write_text(json.dumps(inventory), encoding="utf-8")
+        status, payload = request_json(
+            server.base_url,
+            "GET",
+            "/devices/inventory",
+            token="continuum-observe-token",
+        )
+        assert_status(status, 503, "invalid controller MAC must block inventory")
+        assert_true(
+            payload.get("error", {}).get("code") == "device_inventory_unavailable",
+            "invalid controller MAC must fail closed",
+        )
+    finally:
+        inventory_path.write_bytes(original_inventory)
 
 
 def test_recovery_fails_closed_without_configured_cluster_identity(backend_base_url: str) -> None:

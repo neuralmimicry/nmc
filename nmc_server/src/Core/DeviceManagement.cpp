@@ -441,7 +441,8 @@ Json queryDhcpServer(const Json& config) {
 
 Json publicController(const Json& source) {
     Json result = Json::object();
-    for (const char* key : {"id", "protocol", "endpoint", "vendor_profile", "manages", "power_actions_enabled", "source"}) {
+    for (const char* key : {"id", "protocol", "endpoint", "vendor_profile", "mac_address",
+                            "manages", "power_actions_enabled", "source"}) {
         if (source.contains(key)) result[key] = source[key];
     }
     return result;
@@ -858,6 +859,12 @@ bool validateInventory(Json& document, std::string& error) {
         }
         if (controller.contains("power_actions_enabled") && !controller["power_actions_enabled"].is_boolean()) {
             error = "controller power_actions_enabled must be a boolean";
+            return false;
+        }
+        if (controller.contains("mac_address")
+            && (!controller["mac_address"].is_string()
+                || canonicalMac(controller["mac_address"].get<std::string>()).empty())) {
+            error = "controller mac_address must be a valid six-octet MAC address";
             return false;
         }
         if (controller.contains("cold_restart_mode") && !controller["cold_restart_mode"].is_string()) {
