@@ -106,6 +106,7 @@ ansible-playbook -i "localhost," -c local ansible/deploy.yml -K \
 
 ### Tracey sidecar
 
+- `nmc_manage_tracey_sidecar` (set to `false` to leave an existing sidecar untouched)
 - `nmc_tracey_sidecar_enabled`
 - `nmc_tracey_bin`
 - `nmc_tracey_repo_dir`

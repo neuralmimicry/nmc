@@ -102,6 +102,9 @@
     nmc_enable_auto_update: true
 
     # Tracey sidecar
+    # Set false to leave an existing Tracey installation and service untouched.
+    # This is useful when deploying NMC independently of Tracey's lifecycle.
+    nmc_manage_tracey_sidecar: true
     nmc_tracey_sidecar_enabled: true
     nmc_tracey_bin: ""
     nmc_tracey_repo_dir: "{{ (nmc_install_dir | dirname) ~ '/tracey' }}"
@@ -171,6 +174,12 @@
         that:
           - nmc_preserve_env_file is boolean
 
+    - name: Validate Tracey sidecar management setting
+      ansible.builtin.assert:
+        that:
+          - nmc_manage_tracey_sidecar is boolean
+          - nmc_tracey_sidecar_enabled is boolean
+
     - name: Inspect the protected runtime environment before preserving it
       ansible.builtin.stat:
         path: /etc/nmc/nmc.env
@@ -222,6 +231,7 @@
       ansible.builtin.debug:
         msg: "Tracey sidecar is using the development discovery key. Set nmc_tracey_discovery_shared_key for production."
       when:
+        - nmc_manage_tracey_sidecar
         - nmc_tracey_sidecar_enabled
         - nmc_tracey_discovery_shared_key == "tracey-dev-key-change-me"
 
@@ -1293,7 +1303,9 @@
           docs={{ nmc_docs_dir_effective }} install_mode={{ nmc_install_mode }}
 
     - name: Configure Tracey sidecar for local Continuum monitoring
-      when: nmc_tracey_sidecar_enabled
+      when:
+        - nmc_manage_tracey_sidecar
+        - nmc_tracey_sidecar_enabled
       block:
         - name: Initialize effective Tracey binary from explicit value
           ansible.builtin.set_fact:
@@ -1487,7 +1499,9 @@
         enabled: false
         state: stopped
       failed_when: false
-      when: not nmc_tracey_sidecar_enabled
+      when:
+        - nmc_manage_tracey_sidecar
+        - not nmc_tracey_sidecar_enabled
 
     - name: Install runtime environment file
       ansible.builtin.template:
@@ -1627,7 +1641,9 @@
       ansible.builtin.systemd:
         name: tracey-sidecar.service
         state: restarted
-      when: nmc_tracey_sidecar_enabled
+      when:
+        - nmc_manage_tracey_sidecar
+        - nmc_tracey_sidecar_enabled
 
     - name: Restart nmc-server
       ansible.builtin.systemd:

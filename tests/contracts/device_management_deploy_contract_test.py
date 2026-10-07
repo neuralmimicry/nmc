@@ -33,6 +33,12 @@ def main() -> int:
         "preservation changes only the registry path and leaves the other secrets intact":
             "Update only the device registry path in a preserved runtime environment" in playbook
             and "regexp: '^NMC_DEVICE_INVENTORY_PATH='" in playbook,
+        "NMC-only deployment can leave an existing Tracey sidecar untouched":
+            'nmc_manage_tracey_sidecar: true' in playbook
+            and "Validate Tracey sidecar management setting" in playbook
+            and "when:\n        - nmc_manage_tracey_sidecar\n        - nmc_tracey_sidecar_enabled" in playbook
+            and "when:\n        - nmc_manage_tracey_sidecar\n        - not nmc_tracey_sidecar_enabled" in playbook
+            and "- nmc_manage_tracey_sidecar\n        - nmc_tracey_sidecar_enabled" in playbook,
         "deployment waits for the unauthenticated health route to return 200":
             'url: "http://127.0.0.1:{{ nmc_port }}/health"' in playbook
             and "status_code: 200" in playbook
