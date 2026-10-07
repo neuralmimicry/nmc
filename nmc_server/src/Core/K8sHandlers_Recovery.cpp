@@ -182,6 +182,7 @@ nlohmann::json K8sHandlers::inspectDeploymentRecoveryState(
     nlohmann::json result = {
             {"namespace", namespaceName},
             {"deployment", deploymentName},
+            {"recovery_enabled", recoveryEnabled},
             {"eligible", false},
             {"blockers", nlohmann::json::array()},
             {"replicasets", nlohmann::json::array()},
@@ -426,6 +427,7 @@ void K8sHandlers::handleGetDeploymentRecoveryStatus(const httplib::Request& req,
                 {"cluster_id", clusterId},
                 {"namespace", namespaceName},
                 {"deployment", deploymentName},
+                {"recovery_enabled", recoveryEnabled},
                 {"eligible", false},
                 {"blockers", {{{"code", "cluster_identity_unconfigured"},
                                 {"detail", "Set NMC_K8S_CLUSTER_ID to the stable identity of this process's active Kubernetes context."}}}}
@@ -440,6 +442,7 @@ void K8sHandlers::handleGetDeploymentRecoveryStatus(const httplib::Request& req,
                 {"cluster_id", clusterId},
                 {"namespace", namespaceName},
                 {"deployment", deploymentName},
+                {"recovery_enabled", recoveryEnabled},
                 {"eligible", false},
                 {"blockers", {{{"code", "kubeconfig_unavailable"},
                                 {"detail", "Recovery requires a successfully loaded kubeconfig; the unauthenticated direct-URL fallback is not eligible."}}}}
@@ -454,6 +457,7 @@ void K8sHandlers::handleGetDeploymentRecoveryStatus(const httplib::Request& req,
                 {"cluster_id", clusterId},
                 {"namespace", namespaceName},
                 {"deployment", deploymentName},
+                {"recovery_enabled", recoveryEnabled},
                 {"eligible", false},
                 {"blockers", {{{"code", "cluster_scope_mismatch"},
                                 {"detail", "Requested cluster identity is not bound to this Continuum Kubernetes client."}}}}
@@ -472,6 +476,15 @@ void K8sHandlers::handleGetDeploymentRecoveryStatus(const httplib::Request& req,
                 {"eligible", false},
                 {"blockers", {{{"code", "malformed_live_state"}, {"detail", error}}}},
         };
+    }
+    state["recovery_enabled"] = recoveryEnabled;
+    if (!recoveryEnabled) {
+        if (!state.contains("blockers") || !state["blockers"].is_array()) {
+            state["blockers"] = nlohmann::json::array();
+        }
+        addBlocker(state["blockers"], "recovery_disabled",
+                "NMC_RECOVERY_ENABLED is not explicitly true; the read-only preflight is allowed, but restart requests remain disabled.");
+        state["eligible"] = false;
     }
     state["cluster_id"] = clusterId;
     Models::CloudResponse response;
@@ -514,6 +527,9 @@ void K8sHandlers::handleRestartDeployment(const httplib::Request& req, httplib::
         }
         if (clusterId != activeRecoveryClusterId) {
             return sendErrorResponse(res, 409, "Requested cluster does not match Continuum's active Kubernetes context; no restart was attempted.");
+        }
+        if (!recoveryEnabled) {
+            return sendErrorResponse(res, 403, "NMC workload recovery is disabled by policy; no restart was attempted.");
         }
 
         genericClient_t* deploymentClient = getGenericClient("apps", "v1", "deployments");

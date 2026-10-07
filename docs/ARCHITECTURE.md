@@ -52,6 +52,7 @@ Primary modules:
 - `nmc_server/src/Core/APIRoutes_TraceyRuntime.cpp`: Tracey discovery, polling, runtime state snapshots, analytics, fleet detail, and per-agent runtime/control handlers
 - `nmc_server/src/Core/APIRoutes_InternalHelpers.inl`: shared internal helper layer used by the split route translation units
 - `nmc_server/src/Core/K8sHandlers*`: Kubernetes and vcluster handlers
+- `nmc_server/src/Core/K8sHandlers_Recovery.cpp`: scoped, opt-in Kubernetes workload recovery; disabled by default
 - `nmc_server/src/Core/OpenShiftClient.*`: OpenShift portal transport
 - `nmc_server/src/Core/OpenStackClient.*`: OpenStack portal transport
 - `nmc_server/src/Core/ProxmoxClient.*`: Proxmox portal transport

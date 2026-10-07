@@ -122,6 +122,9 @@ namespace NMC {
             // Recovery is allowed only for the cluster identity explicitly
             // bound to this process's single active kubeconfig context.
             std::string activeRecoveryClusterId;
+            // A separate explicit switch keeps production recovery disabled
+            // until the operator enables it after validating the scope.
+            bool recoveryEnabled{false};
             // The legacy direct-URL fallback intentionally lacks kubeconfig
             // credentials and must never be used for recovery writes.
             bool recoveryClientReady{false};
