@@ -8249,13 +8249,13 @@
             : '<section class="network-operation-card"><h4>Controller management</h4><p>No verified controller is mapped to this device, so controller operations are unavailable.</p></section>';
         const canReadDhcp = (entity.mac_addresses || []).length > 0 || (entity.dhcp_client_ids || []).length > 0;
         const dhcpButton = canReadDhcp ? '<button class="panel-action-btn" type="button" data-network-operation="dhcp">Read matching DHCP lease evidence</button>' : "";
-        const haButton = entity.home_assistant_entity ? '<button class="panel-action-btn" type="button" data-network-operation="home-assistant">Read Home Assistant state</button>' : "";
+        const haButton = entity.home_assistant_entity ? '<button class="panel-action-btn" type="button" data-network-operation="home-assistant">Reconcile Home Assistant mapping</button>' : "";
         const homeEntity = entity.entity_type === "device" ? entity.home_assistant_entity : "";
         const readOperations = [dhcpButton, haButton].filter(Boolean).join("");
         const inventoryStatus = networkInventoryState.inventory?.stale
             ? '<p class="network-policy-warning">Inventory is stale. Read-only detail can be inspected, but this snapshot cannot authorise a mutation.</p>'
             : "";
-        nodes.networkDeviceModalBody.innerHTML = `${inventoryStatus}${networkEntityDetailMarkup(entity)}${traceyDetails}${controllerDetails}<section class="network-operation-card"><h4>Live device evidence</h4><p>${homeEntity ? `Home Assistant entity ${escapeHtml(homeEntity)} is allowlisted for read-only state lookup.` : "No Home Assistant entity is associated with this device."}</p><div class="network-operation-actions">${readOperations || '<span class="empty">No DHCP or Home Assistant lookup is registered for this device.</span>'}</div><div class="network-operation-result" id="networkDeviceOperationResult" role="status" aria-live="polite"></div></section>`;
+        nodes.networkDeviceModalBody.innerHTML = `${inventoryStatus}${networkEntityDetailMarkup(entity)}${traceyDetails}${controllerDetails}<section class="network-operation-card"><h4>Live device evidence</h4><p>${homeEntity ? `Home Assistant entity ${escapeHtml(homeEntity)} is checked against the explicit entity allowlist and current device registry.` : "No Home Assistant entity is associated with this device."}</p><div class="network-operation-actions">${readOperations || '<span class="empty">No DHCP or Home Assistant lookup is registered for this device.</span>'}</div><div class="network-operation-result" id="networkDeviceOperationResult" role="status" aria-live="polite"></div></section>`;
         nodes.networkDeviceModal.hidden = false;
         updateModalBodyLock();
         nodes.networkDeviceModalClose.focus();
@@ -8290,7 +8290,7 @@
         } else if (operation === "dhcp") {
             path = "/devices/dhcp";
         } else if (operation === "home-assistant") {
-            path = "/devices/home-assistant";
+            path = "/devices/home-assistant/reconciliation";
         }
         if (!path) return;
         renderNetworkOperationResult({ status: "Loading current read-only evidence…" });
@@ -8313,9 +8313,9 @@
             return;
         }
         if (operation === "home-assistant") {
-            const entityId = entity.home_assistant_entity;
-            const matches = (Array.isArray(data.entities) ? data.entities : []).filter((item) => item.entity_id === entityId);
-            renderNetworkOperationResult({ configured: data.configured, available: data.available, stale_inventory: data.stale_inventory, matching_entities: matches });
+            const match = (Array.isArray(data.devices) ? data.devices : []).find((item) => item.device_id === entity.id) || null;
+            renderNetworkOperationResult({ inventory_revision: data.inventory_revision, stale_inventory: data.stale_inventory,
+                summary: data.summary, device_reconciliation: match, unmapped_entities: data.unmapped_entities || [] });
             return;
         }
         renderNetworkOperationResult(data);

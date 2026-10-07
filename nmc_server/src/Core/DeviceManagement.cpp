@@ -1235,7 +1235,9 @@ void DeviceManagement::handleGetHomeAssistant(const httplib::Request&, httplib::
     if (!config.is_object() || !config.contains("base_url") || !config["base_url"].is_string()
         || !config.contains("token_env") || !config["token_env"].is_string()
         || !safeEnvName(config["token_env"].get<std::string>())) {
-        sendJson(res, 200, okBody({{"configured", false}, {"available", false}, {"stale_inventory", inventory.stale}, {"entities", Json::array()}}));
+        sendJson(res, 200, okBody({{"configured", false}, {"available", false},
+                                   {"inventory_revision", inventory.revision},
+                                   {"stale_inventory", inventory.stale}, {"entities", Json::array()}}));
         return;
     }
     if (config.contains("allow_http") && !config["allow_http"].is_boolean()) {
@@ -1309,7 +1311,159 @@ void DeviceManagement::handleGetHomeAssistant(const httplib::Request&, httplib::
             if (state.contains("last_updated") && state["last_updated"].is_string()) entry["last_updated"] = state["last_updated"];
             entities.push_back(std::move(entry));
         }
-        sendJson(res, 200, okBody({{"configured", true}, {"available", true}, {"stale_inventory", inventory.stale}, {"entities", std::move(entities)}}));
+        sendJson(res, 200, okBody({{"configured", true}, {"available", true},
+                                   {"inventory_revision", inventory.revision},
+                                   {"stale_inventory", inventory.stale}, {"entities", std::move(entities)}}));
+    } catch (const std::exception& exception) {
+        sendJson(res, 502, errorBody("home_assistant_response_invalid", exception.what()));
+    }
+}
+
+void DeviceManagement::handleGetHomeAssistantReconciliation(const httplib::Request& req,
+                                                            httplib::Response& res) const {
+    // Reuse the state endpoint so the same URL, TLS, token and entity allowlist
+    // checks protect both views. The revision check below prevents mixing two
+    // different inventory snapshots if the registry changes between reads.
+    httplib::Response stateResponse;
+    handleGetHomeAssistant(req, stateResponse);
+    if (stateResponse.status != 200) {
+        res.status = stateResponse.status;
+        res.set_header("Cache-Control", "no-store");
+        res.set_content(stateResponse.body, "application/json");
+        return;
+    }
+
+    try {
+        const Json statePayload = Json::parse(stateResponse.body);
+        if (!statePayload.is_object() || statePayload.value("success", false) != true
+            || !statePayload.contains("data") || !statePayload["data"].is_object()) {
+            sendJson(res, 502, errorBody("home_assistant_response_invalid",
+                                         "Home Assistant state response did not match the expected envelope"));
+            return;
+        }
+
+        const Json stateData = statePayload["data"];
+        Inventory inventory = loadInventory();
+        if (!inventory.valid) {
+            sendJson(res, 503, errorBody("device_inventory_unavailable", inventory.error));
+            return;
+        }
+        if (!stateData.contains("inventory_revision") || !stateData["inventory_revision"].is_string()
+            || stateData["inventory_revision"].get<std::string>() != inventory.revision) {
+            sendJson(res, 409, errorBody("device_inventory_changed",
+                                         "Inventory changed while Home Assistant evidence was collected; retry reconciliation"));
+            return;
+        }
+
+        const bool configured = stateData.value("configured", false);
+        const bool available = stateData.value("available", false);
+        std::unordered_set<std::string> allowlistedEntities;
+        const Json homeAssistantConfig = inventory.document.value("home_assistant", Json::object());
+        if (homeAssistantConfig.is_object()) {
+            const Json configuredEntities = homeAssistantConfig.value("entities", Json::array());
+            if (configuredEntities.is_array()) {
+                for (const auto& entity : configuredEntities) {
+                    if (entity.is_string()) allowlistedEntities.insert(entity.get<std::string>());
+                }
+            }
+        }
+
+        std::unordered_map<std::string, Json> observedStates;
+        std::unordered_map<std::string, size_t> observedCounts;
+        const Json entities = stateData.value("entities", Json::array());
+        if (!entities.is_array()) {
+            sendJson(res, 502, errorBody("home_assistant_response_invalid",
+                                         "Home Assistant state response entities must be an array"));
+            return;
+        }
+        for (const auto& entity : entities) {
+            if (!entity.is_object() || !entity.contains("entity_id") || !entity["entity_id"].is_string()) continue;
+            const std::string entityId = entity["entity_id"].get<std::string>();
+            if (!allowlistedEntities.count(entityId)) continue;
+            ++observedCounts[entityId];
+            observedStates[entityId] = entity;
+        }
+
+        std::unordered_map<std::string, size_t> inventoryMappingCounts;
+        for (const auto& device : inventory.document["devices"]) {
+            if (device.is_object() && device.contains("home_assistant_entity")
+                && device["home_assistant_entity"].is_string()) {
+                ++inventoryMappingCounts[device["home_assistant_entity"].get<std::string>()];
+            }
+        }
+
+        Json reconciledDevices = Json::array();
+        std::unordered_set<std::string> mappedEntities;
+        size_t matchedCount = 0;
+        size_t missingCount = 0;
+        size_t notConfiguredCount = 0;
+        size_t ambiguousCount = 0;
+        for (const auto& device : inventory.document["devices"]) {
+            if (!device.is_object() || !device.contains("home_assistant_entity")
+                || !device["home_assistant_entity"].is_string()) continue;
+            const std::string deviceId = device.value("id", std::string{});
+            const std::string entityId = device["home_assistant_entity"].get<std::string>();
+            mappedEntities.insert(entityId);
+
+            std::string status;
+            const size_t mappingCount = inventoryMappingCounts[entityId];
+            const size_t stateCount = observedCounts[entityId];
+            if (mappingCount != 1 || stateCount > 1) {
+                status = "ambiguous";
+                ++ambiguousCount;
+            } else if (!configured || !allowlistedEntities.count(entityId)) {
+                status = "not_configured";
+                ++notConfiguredCount;
+            } else if (!available || stateCount == 0) {
+                status = "missing";
+                ++missingCount;
+            } else {
+                status = "matched";
+                ++matchedCount;
+            }
+
+            Json entry{{"device_id", deviceId}, {"entity_id", entityId}, {"status", status}};
+            if (status == "matched") {
+                const Json& state = observedStates.at(entityId);
+                for (const char* key : {"state", "last_changed", "last_updated"}) {
+                    if (state.contains(key) && state[key].is_string()) entry[key] = state[key];
+                }
+            }
+            reconciledDevices.push_back(std::move(entry));
+        }
+
+        Json unmappedEntities = Json::array();
+        Json ambiguousEntities = Json::array();
+        std::unordered_set<std::string> reportedUnmappedEntities;
+        for (const auto& entity : entities) {
+            if (!entity.is_object() || !entity.contains("entity_id") || !entity["entity_id"].is_string()) continue;
+            const std::string entityId = entity["entity_id"].get<std::string>();
+            if (allowlistedEntities.count(entityId) && !mappedEntities.count(entityId)
+                && reportedUnmappedEntities.insert(entityId).second) {
+                Json unmapped{{"entity_id", entityId}};
+                if (observedCounts[entityId] == 1) {
+                    unmapped["status"] = "unmapped";
+                    unmappedEntities.push_back(std::move(unmapped));
+                } else {
+                    unmapped["status"] = "ambiguous";
+                    ambiguousEntities.push_back(std::move(unmapped));
+                }
+            }
+        }
+
+        sendJson(res, 200, okBody({
+            {"configured", configured},
+            {"available", available},
+            {"inventory_revision", inventory.revision},
+            {"stale_inventory", inventory.stale},
+            {"observed_at_unix_ms", nowEpochMs()},
+            {"summary", {{"matched", matchedCount}, {"missing", missingCount},
+                          {"not_configured", notConfiguredCount}, {"ambiguous", ambiguousCount},
+                          {"unmapped_entities", unmappedEntities.size()},
+                          {"ambiguous_entities", ambiguousEntities.size()}}},
+            {"devices", std::move(reconciledDevices)},
+            {"unmapped_entities", std::move(unmappedEntities)},
+            {"ambiguous_entities", std::move(ambiguousEntities)}}));
     } catch (const std::exception& exception) {
         sendJson(res, 502, errorBody("home_assistant_response_invalid", exception.what()));
     }

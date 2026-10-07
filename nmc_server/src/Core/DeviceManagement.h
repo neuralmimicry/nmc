@@ -27,6 +27,8 @@ public:
     void handleGetInventory(const httplib::Request& req, httplib::Response& res) const;
     /** Return only configured, explicitly allowlisted Home Assistant entities. */
     void handleGetHomeAssistant(const httplib::Request& req, httplib::Response& res) const;
+    /** Reconcile allowlisted Home Assistant states to exact inventory entity mappings. */
+    void handleGetHomeAssistantReconciliation(const httplib::Request& req, httplib::Response& res) const;
     /** Collect bounded DHCP lease evidence from configured, authenticated sources. */
     void handleGetDhcpObservations(const httplib::Request& req, httplib::Response& res) const;
     /** Query one registered controller using its declared protocol and profile. */

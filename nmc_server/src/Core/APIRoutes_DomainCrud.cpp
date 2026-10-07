@@ -53,6 +53,10 @@ namespace NMC::Server {
             if (!guard(req, res)) return;
             deviceManagement->handleGetHomeAssistant(req, res);
         });
+        svr.Get("/devices/home-assistant/reconciliation", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            deviceManagement->handleGetHomeAssistantReconciliation(req, res);
+        });
         svr.Get("/devices/controllers/diagnostics", [this, guard](const httplib::Request& req, httplib::Response& res) {
             if (!guard(req, res)) return;
             deviceManagement->handleGetControllerDiagnostics(req, res);

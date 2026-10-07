@@ -498,6 +498,11 @@ namespace NMC::Core {
         return processHttpResponse(res, "Home Assistant device information retrieved.");
     }
 
+    Models::CloudResponse CloudAPIClient::getHomeAssistantReconciliation() {
+        auto res = cli->Get("/devices/home-assistant/reconciliation");
+        return processHttpResponse(res, "Home Assistant device mappings reconciled against the verified inventory.");
+    }
+
     Models::CloudResponse CloudAPIClient::getControllerDiagnostics(const std::string& controllerId) {
         const auto safeIdentifier = [](const std::string& value) {
             return !value.empty() && value.size() <= 128
