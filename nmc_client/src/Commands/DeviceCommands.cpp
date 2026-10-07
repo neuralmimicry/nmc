@@ -46,6 +46,22 @@ int DeviceHomeAssistantCommand::execute(const std::map<std::string, std::string>
     return response.success ? 0 : 1;
 }
 
+DeviceHomeAssistantReconciliationCommand::DeviceHomeAssistantReconciliationCommand(
+        std::shared_ptr<NMC::Core::CloudAPIClient> client)
+    : BaseCommand("home-assistant-reconcile", "Reconcile Home Assistant entities to registered devices", std::move(client)) {
+    usage = "nmc device home-assistant-reconcile";
+    examples = "nmc device home-assistant-reconcile --output json";
+}
+
+int DeviceHomeAssistantReconciliationCommand::execute(const std::map<std::string, std::string>& parsedFlags,
+                                                       const std::vector<std::string>& parsedArgs,
+                                                       const CLI::GlobalFlags& globalFlags) {
+    if (!validateArguments(parsedArgs) || !validateFlags(parsedFlags)) return 1;
+    const auto response = apiClient->getHomeAssistantReconciliation();
+    printOutput(response, globalFlags);
+    return response.success ? 0 : 1;
+}
+
 DeviceDhcpCommand::DeviceDhcpCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client)
     : BaseCommand("dhcp", "Show read-only DHCP leases and client option evidence", std::move(client)) {
     usage = "nmc device dhcp";

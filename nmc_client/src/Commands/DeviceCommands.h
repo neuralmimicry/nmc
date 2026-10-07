@@ -33,6 +33,15 @@ public:
                 const CLI::GlobalFlags& globalFlags) override;
 };
 
+class DeviceHomeAssistantReconciliationCommand : public BaseCommand {
+public:
+    explicit DeviceHomeAssistantReconciliationCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client);
+    /** Show exact Home Assistant entity-to-device reconciliation and drift. */
+    int execute(const std::map<std::string, std::string>& parsedFlags,
+                const std::vector<std::string>& parsedArgs,
+                const CLI::GlobalFlags& globalFlags) override;
+};
+
 class DeviceDhcpCommand : public BaseCommand {
 public:
     explicit DeviceDhcpCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client);

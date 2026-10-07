@@ -176,6 +176,7 @@ int main(int argc, char* argv[]) {
     deviceCmd->addSubcommand(std::make_shared<NMC::Commands::DeviceInventoryCommand>(apiClient));
     deviceCmd->addSubcommand(std::make_shared<NMC::Commands::DeviceDhcpCommand>(apiClient));
     deviceCmd->addSubcommand(std::make_shared<NMC::Commands::DeviceHomeAssistantCommand>(apiClient));
+    deviceCmd->addSubcommand(std::make_shared<NMC::Commands::DeviceHomeAssistantReconciliationCommand>(apiClient));
     deviceCmd->addSubcommand(std::make_shared<NMC::Commands::DeviceDiagnosticsCommand>(apiClient));
     deviceCmd->addSubcommand(std::make_shared<NMC::Commands::DeviceActionCommand>(apiClient));
     parser.registerCommand(deviceCmd);

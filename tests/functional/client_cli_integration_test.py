@@ -233,6 +233,21 @@ class MockServer:
             )
             return
 
+        if handler.command == "GET" and path_only == "/devices/home-assistant/reconciliation":
+            self._send_json(
+                handler,
+                200,
+                {
+                    "success": True,
+                    "message": "Home Assistant device mappings reconciled against the verified inventory.",
+                    "data": {
+                        "inventory_revision": "test-revision",
+                        "summary": {"matched": 2, "missing": 1, "not_configured": 0, "ambiguous": 0},
+                    },
+                },
+            )
+            return
+
         if handler.command == "POST" and path_only == "/k8s/deployment/restart":
             try:
                 payload = json.loads(body) if body else {}
@@ -725,6 +740,24 @@ def test_k8s_recovery_status_json_output(server: MockServer, home_dir: pathlib.P
         )
         records = server.records()
         assert_true(len(records) == 1 and records[0].method == "GET", "JSON recovery status must remain read-only")
+
+
+def test_home_assistant_reconciliation_command_is_read_only(server: MockServer, home_dir: pathlib.Path) -> None:
+    server.clear_records()
+    result = run_nmc(["--output", "json", "device", "home-assistant-reconcile"], home_dir)
+    assert_success(result, "Home Assistant device reconciliation")
+    try:
+        output = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise AssertionError(f"Home Assistant reconciliation must emit valid JSON: {exc}: {result.stdout!r}") from exc
+    assert_true(output.get("success") is True, "CLI JSON must retain successful reconciliation status")
+    assert_true(output.get("data", {}).get("data", {}).get("inventory_revision") == "test-revision",
+                "CLI JSON must preserve the typed reconciliation payload")
+    records = server.records()
+    assert_true(len(records) == 1 and records[0].method == "GET",
+                "Home Assistant inventory reconciliation must use one read-only request")
+    assert_true(records[0].path == "/devices/home-assistant/reconciliation",
+                f"Home Assistant reconciliation used the wrong endpoint: {records[0].path}")
 
 
 def test_k8s_restart_preflights_and_uses_idempotency_key(server: MockServer, home_dir: pathlib.Path) -> None:
@@ -1653,6 +1686,7 @@ def main() -> int:
             test_analytics_query_serialization(server, home_dir)
             test_k8s_recovery_status_serialization(server, home_dir)
             test_k8s_recovery_status_json_output(server, home_dir)
+            test_home_assistant_reconciliation_command_is_read_only(server, home_dir)
             test_k8s_restart_preflights_and_uses_idempotency_key(server, home_dir)
             test_k8s_restart_rejects_invalid_id_before_network(server, home_dir)
             test_vcluster_create_serializes_advanced_config_file(server, home_dir)

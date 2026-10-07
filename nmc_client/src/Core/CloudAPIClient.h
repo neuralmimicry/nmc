@@ -86,6 +86,8 @@ namespace NMC::Core {
         Models::CloudResponse getDeviceInventory();
         Models::CloudResponse getDhcpObservations();
         Models::CloudResponse getHomeAssistantDevices();
+        /** Reconcile allowlisted Home Assistant states against exact inventory device mappings. */
+        Models::CloudResponse getHomeAssistantReconciliation();
         Models::CloudResponse getControllerDiagnostics(const std::string& controllerId);
         Models::CloudResponse executeControllerAction(const nlohmann::json& request);
         Models::CloudResponse resumeK8sCluster(const std::string& id);

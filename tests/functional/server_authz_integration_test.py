@@ -172,6 +172,11 @@ class MockBackend:
         self._lock = threading.Lock()
         self._httpd: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
+        self.home_assistant_status = 200
+        self.home_assistant_states = [
+            {"entity_id": "sensor.authz_device", "state": "online", "last_changed": "2026-10-07T10:00:00Z"},
+            {"entity_id": "person.operator", "state": "home"},
+        ]
 
         outer = self
 
@@ -233,6 +238,11 @@ class MockBackend:
                 if record.path == wanted_path and (wanted_method is None or record.method == wanted_method)
             )
 
+    def set_home_assistant_response(self, status: int, states: list[dict[str, object]]) -> None:
+        with self._lock:
+            self.home_assistant_status = status
+            self.home_assistant_states = states
+
     def _record(self, method: str, path: str, authorization: str, body: str) -> None:
         with self._lock:
             self._records.append(
@@ -277,14 +287,10 @@ class MockBackend:
             if authorization != "Bearer authz-home-assistant-token":
                 self._send_json(handler, 401, {"error": "unauthorized"})
                 return
-            self._send_json(
-                handler,
-                200,
-                [
-                    {"entity_id": "sensor.authz_device", "state": "online", "last_changed": "2026-10-07T10:00:00Z"},
-                    {"entity_id": "person.operator", "state": "home"},
-                ],
-            )
+            with self._lock:
+                status = self.home_assistant_status
+                states = list(self.home_assistant_states)
+            self._send_json(handler, status, states)
             return
 
         if path_only == "/dhcp/api/v1/dhcp/leases":
@@ -959,6 +965,25 @@ def test_continuum_route_authorisation(server: NmcServerProcess, backend: MockBa
     assert_true([item.get("entity_id") for item in entities] == ["sensor.authz_device"], "Home Assistant results must be limited to explicitly allowlisted device entities")
     assert_true(all(item.get("entity_id") != "person.operator" for item in entities), "unrelated Home Assistant personal entities must not be exposed")
 
+    status, payload = request_json(
+        server.base_url, "GET", "/devices/home-assistant/reconciliation", token="continuum-observe-token"
+    )
+    assert_status(status, 200, "read-only Home Assistant inventory reconciliation")
+    ha_reconciliation = payload.get("data", {})
+    assert_true(ha_reconciliation.get("inventory_revision") == "authz-device-inventory-v1",
+                "Home Assistant reconciliation must identify the inventory snapshot it used")
+    assert_true(ha_reconciliation.get("summary", {}).get("matched") == 1,
+                "the exact allowlisted entity mapping should reconcile to one device")
+    assert_true(ha_reconciliation.get("devices", [])[0].get("device_id") == "authz-device"
+                and ha_reconciliation.get("devices", [])[0].get("status") == "matched"
+                and ha_reconciliation.get("devices", [])[0].get("state") == "online",
+                "a matched HA state must be associated only by the configured exact entity id")
+    assert_true(not ha_reconciliation.get("unmapped_entities"),
+                "personal or otherwise unallowlisted Home Assistant entities must not enter reconciliation")
+
+    status, _ = request_json(server.base_url, "GET", "/devices/home-assistant/reconciliation")
+    assert_status(status, 401, "Home Assistant reconciliation must reject unauthenticated requests")
+
     status, payload = request_json(server.base_url, "GET", "/devices/dhcp", token="continuum-observe-token")
     assert_status(status, 200, "read-only DHCP lease and option observations")
     dhcp = payload.get("data", {})
@@ -1329,6 +1354,107 @@ def test_home_assistant_rejects_plain_http_hostnames(
         )
     finally:
         inventory_path.write_bytes(original_inventory)
+
+
+def test_home_assistant_reconciliation_reports_mapping_drift(
+    server: NmcServerProcess,
+    backend: MockBackend,
+) -> None:
+    assert_true(server.inventory_path is not None, "integration server should expose its active device inventory")
+    inventory_path = server.inventory_path
+    original_inventory = inventory_path.read_bytes()
+    original_status = backend.home_assistant_status
+    original_states = list(backend.home_assistant_states)
+    try:
+        unconfigured_inventory = json.loads(original_inventory)
+        unconfigured_inventory.pop("home_assistant", None)
+        inventory_path.write_text(json.dumps(unconfigured_inventory), encoding="utf-8")
+        inventory_path.chmod(0o600)
+        previous_ha_requests = backend.count_requests("/ha/api/states", "GET")
+        status, payload = request_json(
+            server.base_url, "GET", "/devices/home-assistant/reconciliation", token="continuum-observe-token"
+        )
+        assert_status(status, 200, "unconfigured Home Assistant reconciliation")
+        unconfigured_data = payload.get("data", {})
+        assert_true(unconfigured_data.get("configured") is False and unconfigured_data.get("available") is False,
+                    "missing HA credentials/configuration must be reported explicitly")
+        assert_true(unconfigured_data.get("devices", [])[0].get("status") == "not_configured",
+                    "registered HA mappings without a configured source must not appear matched")
+        assert_true(backend.count_requests("/ha/api/states", "GET") == previous_ha_requests,
+                    "unconfigured HA reconciliation must not make an outbound request")
+
+        inventory = json.loads(original_inventory)
+        source_device = inventory["devices"][0]
+        for device_id, entity_id in (
+            ("authz-device-duplicate-map", "sensor.authz_device"),
+            ("authz-device-missing-state", "sensor.missing_device"),
+            ("authz-device-not-allowlisted", "sensor.not_allowlisted"),
+        ):
+            device = {
+                "id": device_id,
+                "kind": "home_device",
+                "environment": "test",
+                "criticality": "low",
+                "addresses": [],
+                "mac_addresses": [],
+                "dhcp_client_ids": [],
+                "services": [],
+                "depends_on": [],
+                "affected_services": [],
+                "home_assistant_entity": entity_id,
+            }
+            inventory["devices"].append(device)
+        inventory["home_assistant"]["entities"].extend(
+            ["sensor.missing_device", "sensor.unmapped", "sensor.unmapped_duplicate"]
+        )
+        inventory_path.write_text(json.dumps(inventory), encoding="utf-8")
+        inventory_path.chmod(0o600)
+        backend.set_home_assistant_response(
+            200,
+            [
+                {"entity_id": "sensor.authz_device", "state": "online"},
+                {"entity_id": "sensor.orphan", "state": "private-data-must-not-leak"},
+                {"entity_id": "sensor.unmapped", "state": "private-data-must-not-leak"},
+                {"entity_id": "sensor.unmapped_duplicate", "state": "duplicate-private-data-must-not-leak"},
+                {"entity_id": "sensor.unmapped_duplicate", "state": "duplicate-private-data-must-not-leak"},
+                {"entity_id": "person.operator", "state": "home"},
+            ],
+        )
+
+        status, payload = request_json(
+            server.base_url, "GET", "/devices/home-assistant/reconciliation", token="continuum-observe-token"
+        )
+        assert_status(status, 200, "Home Assistant mapping-drift reconciliation")
+        data = payload.get("data", {})
+        statuses = {item.get("device_id"): item.get("status") for item in data.get("devices", [])}
+        assert_true(statuses.get("authz-device") == "ambiguous"
+                    and statuses.get("authz-device-duplicate-map") == "ambiguous",
+                    "duplicate inventory mappings must be reported as ambiguous")
+        assert_true(statuses.get("authz-device-missing-state") == "missing",
+                    "an allowlisted entity with no current HA state must be reported missing")
+        assert_true(statuses.get("authz-device-not-allowlisted") == "not_configured",
+                    "an inventory mapping outside the explicit HA allowlist must be reported not_configured")
+        assert_true(all("state" not in item for item in data.get("devices", [])
+                        if item.get("status") == "ambiguous"),
+                    "ambiguous mappings must not expose a state assigned to an uncertain device")
+        assert_true(data.get("unmapped_entities") == [{"entity_id": "sensor.unmapped", "status": "unmapped"}],
+                    "allowlisted but unregistered entities must be reported without their state")
+        assert_true(data.get("ambiguous_entities") == [{"entity_id": "sensor.unmapped_duplicate", "status": "ambiguous"}],
+                    "duplicated allowlisted but unregistered entities must be reported as ambiguous without state values")
+        assert_true("private-data-must-not-leak" not in json.dumps(data)
+                    and "duplicate-private-data-must-not-leak" not in json.dumps(data),
+                    "unmapped Home Assistant states must not expose state values")
+
+        backend.set_home_assistant_response(503, [])
+        status, payload = request_json(
+            server.base_url, "GET", "/devices/home-assistant/reconciliation", token="continuum-observe-token"
+        )
+        assert_status(status, 503, "unavailable Home Assistant reconciliation source")
+        assert_true(payload.get("error", {}).get("code") == "home_assistant_unavailable",
+                    "source outages must propagate as unavailable, never as an empty successful reconciliation")
+    finally:
+        inventory_path.write_bytes(original_inventory)
+        backend.set_home_assistant_response(original_status, original_states)
 
 
 def test_device_inventory_rejects_hard_and_symbolic_links(server: NmcServerProcess) -> None:
@@ -1797,6 +1923,7 @@ def main() -> int:
         test_controller_action_rejects_malformed_body_shapes(server)
         test_redfish_vendor_diagnostics(server, redfish)
         test_redfish_vendor_actions(backend.base_url, redfish)
+        test_home_assistant_reconciliation_reports_mapping_drift(server, backend)
         test_home_assistant_rejects_plain_http_hostnames(server, backend)
         test_device_inventory_rejects_hard_and_symbolic_links(server)
         test_tracey_route_authorisation(server, backend)
