@@ -18,6 +18,11 @@
     nmc_build_group: ""
     nmc_state_dir: "/var/lib/nmc"
     nmc_log_file_path: "{{ nmc_state_dir }}/logs/nmc_server.log"
+    # Keep the credential-free device registry alongside protected service state.
+    nmc_device_inventory_path: "{{ nmc_state_dir }}/device-inventory.json"
+    # Preserve an existing protected environment file during binary-only
+    # upgrades when its credentials are managed by a separate secrets workflow.
+    nmc_preserve_env_file: false
 
     nmc_port: 8080
     nmc_docs_enabled: true
@@ -152,6 +157,38 @@
       - libtool
 
   pre_tasks:
+    - name: Validate Continuum inventory path is a direct child of protected state
+      ansible.builtin.assert:
+        that:
+          - nmc_device_inventory_path is string
+          - nmc_device_inventory_path | dirname == nmc_state_dir
+        fail_msg: >-
+          nmc_device_inventory_path must be a direct child of nmc_state_dir so
+          the service account can read the registry without broadening access.
+
+    - name: Validate runtime environment preservation setting
+      ansible.builtin.assert:
+        that:
+          - nmc_preserve_env_file is boolean
+
+    - name: Inspect the protected runtime environment before preserving it
+      ansible.builtin.stat:
+        path: /etc/nmc/nmc.env
+      register: nmc_preserved_env_stat
+      when: nmc_preserve_env_file
+
+    - name: Require an existing root-only runtime environment when preservation is requested
+      ansible.builtin.assert:
+        that:
+          - nmc_preserved_env_stat.stat.exists
+          - nmc_preserved_env_stat.stat.isreg
+          - nmc_preserved_env_stat.stat.pw_name == 'root'
+          - nmc_preserved_env_stat.stat.mode == '0600'
+        fail_msg: >-
+          nmc_preserve_env_file requires an existing regular mode-0600
+          /etc/nmc/nmc.env owned by root.
+      when: nmc_preserve_env_file
+
     - name: Validate auth mode
       ansible.builtin.assert:
         that:
@@ -975,6 +1012,43 @@
           group: "{{ nmc_run_group }}"
           mode: "0755"
 
+    - name: Seed the versioned Continuum device registry when it is absent
+      ansible.builtin.copy:
+        dest: "{{ nmc_device_inventory_path }}"
+        owner: "{{ nmc_run_user }}"
+        group: "{{ nmc_run_group }}"
+        mode: "0600"
+        force: false
+        content: |
+          {
+            "schema_version": 1,
+            "revision": "bootstrap-empty-v1",
+            "dependency_graph_revision": "bootstrap-empty-v1",
+            "generated_at_unix_ms": {{ (ansible_date_time.epoch | int) * 1000 }},
+            "max_age_ms": 86400000,
+            "devices": [],
+            "controllers": [],
+            "dhcp_servers": [],
+            "home_assistant": {}
+          }
+
+    - name: Verify Continuum device registry ownership and permissions
+      ansible.builtin.stat:
+        path: "{{ nmc_device_inventory_path }}"
+      register: nmc_device_inventory_stat
+
+    - name: Require Continuum registry to be private and service-owned
+      ansible.builtin.assert:
+        that:
+          - nmc_device_inventory_stat.stat.exists
+          - nmc_device_inventory_stat.stat.isreg
+          - nmc_device_inventory_stat.stat.pw_name == nmc_run_user
+          - nmc_device_inventory_stat.stat.gr_name == nmc_run_group
+          - nmc_device_inventory_stat.stat.mode == '0600'
+        fail_msg: >-
+          Continuum's inventory must be a regular mode-0600 file owned by the
+          NMC service account. Check nmc_device_inventory_path and its permissions.
+
     - name: Ensure Tracey state root exists
       ansible.builtin.file:
         path: "{{ nmc_tracey_state_root }}"
@@ -1430,6 +1504,20 @@
           or (nmc_oidc_client_secret | default('', true) | length > 0)
           or (nmc_gail_api_token | default('', true) | length > 0)
         }}
+      when: not nmc_preserve_env_file
+
+    - name: Update only the device registry path in a preserved runtime environment
+      ansible.builtin.lineinfile:
+        path: /etc/nmc/nmc.env
+        regexp: '^NMC_DEVICE_INVENTORY_PATH='
+        line: "NMC_DEVICE_INVENTORY_PATH={{ nmc_device_inventory_path }}"
+        owner: root
+        group: root
+        mode: "0600"
+        create: false
+      when: nmc_preserve_env_file
+      notify:
+        - Restart nmc-server
 
     - name: Install nmc-server systemd unit
       ansible.builtin.template:
@@ -1448,6 +1536,24 @@
         daemon_reload: true
         enabled: true
         state: started
+
+    - name: Apply notified service restarts before checking health
+      ansible.builtin.meta: flush_handlers
+
+    - name: Wait for the Continuum HTTP health endpoint to return HTTP 200
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ nmc_port }}/health"
+        method: GET
+        status_code: 200
+        return_content: true
+        timeout: 10
+      register: nmc_health_probe
+      until:
+        - nmc_health_probe.status | default(0) == 200
+        - (nmc_health_probe.json | default({})).get('success', false)
+      retries: 30
+      delay: 2
+      changed_when: false
 
     - name: Check if repo is a git checkout
       ansible.builtin.stat:

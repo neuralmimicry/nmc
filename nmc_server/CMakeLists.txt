@@ -177,6 +177,8 @@ set(NMC_SERVER_SOURCES
         src/Core/APIRoutes_TraceyAdaptiveAssessment.cpp
         src/Core/APIRoutes_TraceyRuntime.cpp
         src/Core/K8sHandlers.cpp
+        src/Core/K8sHandlers_Recovery.cpp
+        src/Core/DeviceManagement.cpp
         src/Core/K8sHandlers_VCluster_Advanced.cpp
         src/Core/K8sHandlers_VCluster_Lifecycle.cpp
         src/Core/K8sHandlers_VCluster_Monitoring.cpp

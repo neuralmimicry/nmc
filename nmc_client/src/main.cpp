@@ -16,6 +16,7 @@
 #include "Commands/GailCommands.h"
 #include "Commands/RefinerCommands.h"
 #include "Commands/NodeCommands.h"
+#include "Commands/DeviceCommands.h"
 #include "Commands/OpenStackCommands.h"
 #include "Core/VersionCheck.h"
 #include <iostream>
@@ -60,6 +61,8 @@ int main(int argc, char* argv[]) {
     k8sCmd->addSubcommand(std::make_shared<NMC::Commands::K8sListCommand>(apiClient));
     k8sCmd->addSubcommand(std::make_shared<NMC::Commands::K8sListLocationsCommand>(apiClient));
     k8sCmd->addSubcommand(std::make_shared<NMC::Commands::K8sHealthCommand>(apiClient));
+    k8sCmd->addSubcommand(std::make_shared<NMC::Commands::K8sRecoveryStatusCommand>(apiClient));
+    k8sCmd->addSubcommand(std::make_shared<NMC::Commands::K8sRestartDeploymentCommand>(apiClient));
     k8sCmd->addSubcommand(std::make_shared<NMC::Commands::K8sResumeCommand>(apiClient));
     k8sCmd->addSubcommand(std::make_shared<NMC::Commands::K8sSuspendCommand>(apiClient));
     parser.registerCommand(k8sCmd);
@@ -168,6 +171,14 @@ int main(int argc, char* argv[]) {
     auto nodeCmd = std::make_shared<NMC::Commands::NodeCommand>(apiClient);
     nodeCmd->addSubcommand(std::make_shared<NMC::Commands::NodeRecruitCommand>(apiClient));
     parser.registerCommand(nodeCmd);
+
+    auto deviceCmd = std::make_shared<NMC::Commands::DeviceCommand>(apiClient);
+    deviceCmd->addSubcommand(std::make_shared<NMC::Commands::DeviceInventoryCommand>(apiClient));
+    deviceCmd->addSubcommand(std::make_shared<NMC::Commands::DeviceDhcpCommand>(apiClient));
+    deviceCmd->addSubcommand(std::make_shared<NMC::Commands::DeviceHomeAssistantCommand>(apiClient));
+    deviceCmd->addSubcommand(std::make_shared<NMC::Commands::DeviceDiagnosticsCommand>(apiClient));
+    deviceCmd->addSubcommand(std::make_shared<NMC::Commands::DeviceActionCommand>(apiClient));
+    parser.registerCommand(deviceCmd);
 
     auto refinerCmd = std::make_shared<NMC::Commands::RefinerCommand>(apiClient);
     refinerCmd->addSubcommand(std::make_shared<NMC::Commands::RefinerDeployCommand>(apiClient));

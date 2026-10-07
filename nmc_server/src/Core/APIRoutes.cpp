@@ -1,6 +1,7 @@
 // server/APIRoutes.cpp
 #include "APIRoutes.h"
 #include "K8sHandlers.h"
+#include "DeviceManagement.h"
 #include "VersionCheck.h"
 #include "Utils.h"
 #include <cstdlib>
@@ -38,6 +39,7 @@ namespace NMC::Server {
     }
 
     APIRoutes::APIRoutes(httplib::Server& svr) {
+        deviceManagement = std::make_unique<DeviceManagement>();
         auto envOr = [](const char* primary, const char* fallback) -> const char* {
             const char* val = std::getenv(primary);
             if (val && *val) {

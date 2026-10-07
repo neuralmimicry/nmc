@@ -221,6 +221,35 @@ class MockServer:
             )
             return
 
+        if handler.command == "GET" and path_only == "/k8s/deployment/recovery-status":
+            self._send_json(
+                handler,
+                200,
+                {
+                    "success": True,
+                    "message": "Deployment recovery preflight retrieved.",
+                    "data": {"eligible": True, "blockers": [], "cluster_id": "rk1"},
+                },
+            )
+            return
+
+        if handler.command == "POST" and path_only == "/k8s/deployment/restart":
+            try:
+                payload = json.loads(body) if body else {}
+            except json.JSONDecodeError:
+                self._send_json(handler, 400, {"message": "invalid json payload"})
+                return
+            self._send_json(
+                handler,
+                200,
+                {
+                    "success": True,
+                    "message": "Deployment rollout restart requested.",
+                    "data": {"request_id": payload.get("request_id"), "already_applied": False},
+                },
+            )
+            return
+
         if handler.command == "GET" and path_only == "/v1/status/orchestration":
             self._send_json(
                 handler,
@@ -631,6 +660,74 @@ def test_analytics_query_serialization(server: MockServer, home_dir: pathlib.Pat
         req.path == "/tracey/analytics?window_seconds=7200&bucket_seconds=120&log_limit=5",
         f"tracey analytics wrong path: {req.path}",
     )
+
+
+def test_k8s_recovery_status_serialization(server: MockServer, home_dir: pathlib.Path) -> None:
+    server.clear_records()
+    result = run_nmc(
+        [
+            "k8s", "recovery-status",
+            "--cluster-id", "rk1",
+            "--namespace", "gail",
+            "--deployment", "gail",
+        ],
+        home_dir,
+    )
+    assert_success(result, "k8s deployment recovery status")
+    records = server.records()
+    assert_true(len(records) == 1, f"recovery status expected one request, got {len(records)}")
+    assert_true(records[0].method == "GET", "recovery status must use a read-only GET")
+    assert_true(
+        records[0].path == "/k8s/deployment/recovery-status?cluster_id=rk1&namespace=gail&deployment=gail",
+        f"recovery status query was not serialised as expected: {records[0].path}",
+    )
+
+
+def test_k8s_restart_preflights_and_uses_idempotency_key(server: MockServer, home_dir: pathlib.Path) -> None:
+    server.clear_records()
+    result = run_nmc(
+        [
+            "k8s", "restart-deployment",
+            "--cluster-id", "rk1",
+            "--namespace", "gail",
+            "--deployment", "gail",
+            "--request-id", "incident-20261007-01",
+        ],
+        home_dir,
+    )
+    assert_success(result, "k8s Deployment restart")
+    records = server.records()
+    assert_true(len(records) == 2, f"restart must preflight once and submit once, got {len(records)} requests")
+    assert_true(records[0].method == "GET" and records[0].path.startswith("/k8s/deployment/recovery-status?"),
+                "restart must first retrieve live recovery eligibility")
+    assert_true(records[1].method == "POST" and records[1].path == "/k8s/deployment/restart",
+                "eligible restart must submit one guarded action")
+    payload = json.loads(records[1].body)
+    assert_true(
+        payload == {
+            "cluster_id": "rk1",
+            "namespace": "gail",
+            "deployment": "gail",
+            "request_id": "incident-20261007-01",
+        },
+        f"restart request should preserve the explicit idempotency scope: {payload}",
+    )
+
+
+def test_k8s_restart_rejects_invalid_id_before_network(server: MockServer, home_dir: pathlib.Path) -> None:
+    server.clear_records()
+    result = run_nmc(
+        [
+            "k8s", "restart-deployment",
+            "--cluster-id", "rk1",
+            "--namespace", "gail",
+            "--deployment", "gail",
+            "--request-id", "bad",
+        ],
+        home_dir,
+    )
+    assert_failure(result, "k8s Deployment restart with invalid id")
+    assert_true(len(server.records()) == 0, "invalid recovery request IDs must fail before network activity")
 
 
 def test_agent_analysis_query_serialization(server: MockServer, home_dir: pathlib.Path) -> None:
@@ -1436,6 +1533,9 @@ def main() -> int:
             write_connection_config(home_dir, server.base_url)
 
             test_analytics_query_serialization(server, home_dir)
+            test_k8s_recovery_status_serialization(server, home_dir)
+            test_k8s_restart_preflights_and_uses_idempotency_key(server, home_dir)
+            test_k8s_restart_rejects_invalid_id_before_network(server, home_dir)
             test_agent_analysis_query_serialization(server, home_dir)
             test_adaptive_query_serialization(server, home_dir)
             test_adaptive_policy_query_serialization(server, home_dir)

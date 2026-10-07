@@ -421,6 +421,109 @@ namespace NMC::Core {
         return processHttpResponse(res, "Refiner deployment scaling requested.");
     }
 
+    Models::CloudResponse CloudAPIClient::restartDeployment(
+            const std::string& clusterId,
+            const std::string& namespaceName,
+            const std::string& deploymentName,
+            const std::string& requestId
+    ) {
+        const auto safeLabel = [](const std::string& value) {
+            return !value.empty() && value.size() <= 63
+                    && value.front() != '-' && value.back() != '-'
+                    && std::all_of(value.begin(), value.end(), [](unsigned char ch) {
+                        return (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '-';
+                    });
+        };
+        const bool validRequestId = requestId.size() >= 8 && requestId.size() <= 128
+                && std::all_of(requestId.begin(), requestId.end(), [](unsigned char ch) {
+                    return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z')
+                           || (ch >= '0' && ch <= '9') || ch == '.' || ch == '_' || ch == '-';
+                });
+        if (!safeLabel(clusterId) || !safeLabel(namespaceName) || !safeLabel(deploymentName) || !validRequestId) {
+            Models::CloudResponse response;
+            response.success = false;
+            response.message = "cluster_id, namespace and deployment must be DNS labels; request_id must be 8-128 safe ASCII characters.";
+            response.statusCode = 400;
+            return response;
+        }
+        nlohmann::json requestBody = {
+                {"cluster_id", clusterId},
+                {"namespace", namespaceName},
+                {"deployment", deploymentName},
+                {"request_id", requestId}
+        };
+        auto res = cli->Post("/k8s/deployment/restart", requestBody.dump(), "application/json");
+        return processHttpResponse(res, "Deployment rollout restart requested.");
+    }
+
+    Models::CloudResponse CloudAPIClient::getDeploymentRecoveryStatus(
+            const std::string& clusterId,
+            const std::string& namespaceName,
+            const std::string& deploymentName
+    ) {
+        const auto safeLabel = [](const std::string& value) {
+            return !value.empty() && value.size() <= 63
+                    && value.front() != '-' && value.back() != '-'
+                    && std::all_of(value.begin(), value.end(), [](unsigned char ch) {
+                        return (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '-';
+                    });
+        };
+        if (!safeLabel(clusterId) || !safeLabel(namespaceName) || !safeLabel(deploymentName)) {
+            Models::CloudResponse response;
+            response.success = false;
+            response.message = "cluster_id, namespace and deployment must be valid Kubernetes DNS labels.";
+            response.statusCode = 400;
+            return response;
+        }
+        std::string path = "/k8s/deployment/recovery-status";
+        appendQueryString(path, "cluster_id", clusterId);
+        appendQueryString(path, "namespace", namespaceName);
+        appendQueryString(path, "deployment", deploymentName);
+        auto res = cli->Get(path);
+        return processHttpResponse(res, "Deployment recovery preflight retrieved.");
+    }
+
+    Models::CloudResponse CloudAPIClient::getDeviceInventory() {
+        auto res = cli->Get("/devices/inventory");
+        return processHttpResponse(res, "Device inventory retrieved.");
+    }
+
+    Models::CloudResponse CloudAPIClient::getDhcpObservations() {
+        auto res = cli->Get("/devices/dhcp");
+        return processHttpResponse(res, "Read-only DHCP lease and option observations retrieved.");
+    }
+
+    Models::CloudResponse CloudAPIClient::getHomeAssistantDevices() {
+        auto res = cli->Get("/devices/home-assistant");
+        return processHttpResponse(res, "Home Assistant device information retrieved.");
+    }
+
+    Models::CloudResponse CloudAPIClient::getControllerDiagnostics(const std::string& controllerId) {
+        const auto safeIdentifier = [](const std::string& value) {
+            return !value.empty() && value.size() <= 128
+                    && std::all_of(value.begin(), value.end(), [](unsigned char ch) {
+                        return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z')
+                               || (ch >= '0' && ch <= '9') || ch == '_' || ch == '.' || ch == ':' || ch == '-';
+                    });
+        };
+        if (!safeIdentifier(controllerId)) {
+            Models::CloudResponse response;
+            response.success = false;
+            response.message = "controller id must be a safe inventory identifier.";
+            response.statusCode = 400;
+            return response;
+        }
+        std::string path = "/devices/controllers/diagnostics";
+        appendQueryString(path, "controller_id", controllerId);
+        auto res = cli->Get(path);
+        return processHttpResponse(res, "Controller diagnostics retrieved.");
+    }
+
+    Models::CloudResponse CloudAPIClient::executeControllerAction(const nlohmann::json& request) {
+        auto res = cli->Post("/devices/controllers/actions", request.dump(), "application/json");
+        return processHttpResponse(res, "Controller action submitted.");
+    }
+
     Models::CloudResponse CloudAPIClient::resumeK8sCluster(const std::string& id) {
         auto res = cli->Post("/k8s/resume/" + id, "", "application/json"); // Empty body for POST
         return processHttpResponse(res, "K8s cluster '" + id + "' resumed.");

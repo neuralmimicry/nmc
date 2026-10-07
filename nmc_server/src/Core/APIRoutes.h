@@ -32,6 +32,7 @@
 
 namespace NMC::Server {
     class K8sHandlers; // Forward declaration
+    class DeviceManagement; // Forward declaration
 }
 
 
@@ -452,6 +453,7 @@ namespace NMC::Server {
 
         // Declare an instance of K8sHandlers
         std::unique_ptr<K8sHandlers> k8sHandlers;
+        std::unique_ptr<DeviceManagement> deviceManagement;
         std::unique_ptr<OpenStackClient> openStackClient;
         std::unique_ptr<OpenShiftClient> openShiftClient;
         std::unique_ptr<ProxmoxClient> proxmoxClient;
