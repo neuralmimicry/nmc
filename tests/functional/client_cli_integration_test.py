@@ -250,6 +250,19 @@ class MockServer:
             )
             return
 
+        if handler.command == "POST" and path_only == "/vcluster/create":
+            try:
+                payload = json.loads(body) if body else {}
+            except json.JSONDecodeError:
+                self._send_json(handler, 400, {"message": "invalid json payload"})
+                return
+            self._send_json(
+                handler,
+                200,
+                {"success": True, "message": "VCluster created.", "data": payload},
+            )
+            return
+
         if handler.command == "GET" and path_only == "/v1/status/orchestration":
             self._send_json(
                 handler,
@@ -728,6 +741,80 @@ def test_k8s_restart_rejects_invalid_id_before_network(server: MockServer, home_
     )
     assert_failure(result, "k8s Deployment restart with invalid id")
     assert_true(len(server.records()) == 0, "invalid recovery request IDs must fail before network activity")
+
+
+def test_vcluster_create_serializes_advanced_config_file(server: MockServer, home_dir: pathlib.Path) -> None:
+    server.clear_records()
+    advanced_config = {
+        "placement": {"nodeSelector": {"neuralmimicry.ai/env": "uat"}},
+        "ha": {"enabled": True, "replicas": 3},
+        "monitoring": {"enabled": True},
+    }
+    config_path = home_dir / "vcluster-config.json"
+    config_path.write_text(json.dumps(advanced_config), encoding="utf-8")
+
+    result = run_nmc(
+        [
+            "vcluster", "create", "evelyn-uat",
+            "--namespace", "vcluster-evelyn-uat",
+            "--config-file", str(config_path),
+        ],
+        home_dir,
+    )
+    assert_success(result, "vcluster create with advanced config")
+    records = server.records()
+    assert_true(len(records) == 1, f"vcluster create expected one request, got {len(records)}")
+    request = records[0]
+    assert_true(request.method == "POST" and request.path == "/vcluster/create",
+                "vcluster create must use the create route")
+    assert_true(request.content_type == "application/json", "vcluster create must send JSON")
+    assert_true(
+        json.loads(request.body)
+        == {
+            "name": "evelyn-uat",
+            "namespace": "vcluster-evelyn-uat",
+            "config": advanced_config,
+        },
+        f"vcluster advanced configuration was not preserved: {request.body}",
+    )
+
+
+def test_vcluster_create_rejects_invalid_config_before_network(server: MockServer, home_dir: pathlib.Path) -> None:
+    config_path = home_dir / "invalid-vcluster-config.json"
+    for content, expected_error in (
+        ('{"private_value":"DO_NOT_ECHO', "valid JSON"),
+        ("[]", "JSON object"),
+    ):
+        server.clear_records()
+        config_path.write_text(content, encoding="utf-8")
+        result = run_nmc(
+            ["vcluster", "create", "invalid-vcluster", "--config-file", str(config_path)],
+            home_dir,
+        )
+        assert_failure(result, "vcluster create with invalid config")
+        assert_true(expected_error in result.stderr, f"expected safe config error, got: {result.stderr}")
+        assert_true("DO_NOT_ECHO" not in result.stderr, "config parsing must not echo file contents")
+        assert_true(len(server.records()) == 0, "invalid vcluster config must fail before network activity")
+
+    server.clear_records()
+    missing_path = home_dir / "missing-vcluster-config.json"
+    result = run_nmc(
+        ["vcluster", "create", "missing-config-vcluster", "--config-file", str(missing_path)],
+        home_dir,
+    )
+    assert_failure(result, "vcluster create with missing config")
+    assert_true("readable regular file" in result.stderr, f"expected missing-file error, got: {result.stderr}")
+    assert_true(len(server.records()) == 0, "missing config must fail before network activity")
+
+    server.clear_records()
+    config_path.write_text(" " * (1024 * 1024 + 1), encoding="utf-8")
+    result = run_nmc(
+        ["vcluster", "create", "oversized-vcluster", "--config-file", str(config_path)],
+        home_dir,
+    )
+    assert_failure(result, "vcluster create with oversized config")
+    assert_true("must not exceed 1 MiB" in result.stderr, f"expected bounded-file error, got: {result.stderr}")
+    assert_true(len(server.records()) == 0, "oversized config must fail before network activity")
 
 
 def test_agent_analysis_query_serialization(server: MockServer, home_dir: pathlib.Path) -> None:
@@ -1536,6 +1623,8 @@ def main() -> int:
             test_k8s_recovery_status_serialization(server, home_dir)
             test_k8s_restart_preflights_and_uses_idempotency_key(server, home_dir)
             test_k8s_restart_rejects_invalid_id_before_network(server, home_dir)
+            test_vcluster_create_serializes_advanced_config_file(server, home_dir)
+            test_vcluster_create_rejects_invalid_config_before_network(server, home_dir)
             test_agent_analysis_query_serialization(server, home_dir)
             test_adaptive_query_serialization(server, home_dir)
             test_adaptive_policy_query_serialization(server, home_dir)

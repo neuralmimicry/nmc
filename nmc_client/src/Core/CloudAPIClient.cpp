@@ -535,11 +535,24 @@ namespace NMC::Core {
     }
 
 // --- VCluster Operations ---
-    Models::CloudResponse CloudAPIClient::createVCluster(const std::string& name, const std::string& vclusterNamespace) {
+    Models::CloudResponse CloudAPIClient::createVCluster(
+        const std::string& name,
+        const std::string& vclusterNamespace,
+        const nlohmann::json& advancedConfig) {
+        if (!advancedConfig.is_object()) {
+            Models::CloudResponse response{};
+            response.success = false;
+            response.message = "VCluster advanced configuration must be a JSON object.";
+            response.statusCode = 400;
+            return response;
+        }
         nlohmann::json request_body;
         request_body["name"] = name;
         if (!vclusterNamespace.empty()) {
             request_body["namespace"] = vclusterNamespace;
+        }
+        if (!advancedConfig.empty()) {
+            request_body["config"] = advancedConfig;
         }
         auto res = cli->Post("/vcluster/create", request_body.dump(), "application/json");
         return processHttpResponse(res, "VCluster '" + name + "' created.");
