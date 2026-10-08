@@ -177,6 +177,9 @@ class MockBackend:
             {"entity_id": "sensor.authz_device", "state": "online", "last_changed": "2026-10-07T10:00:00Z"},
             {"entity_id": "person.operator", "state": "home"},
         ]
+        self.provider_health_status: dict[str, int] = {}
+        self.provider_health_sequences: dict[str, list[int]] = {}
+        self.provider_policy_update_on_health: tuple[str, pathlib.Path, bytes] | None = None
 
         outer = self
 
@@ -227,6 +230,27 @@ class MockBackend:
     def clear_records(self) -> None:
         with self._lock:
             self._records.clear()
+
+    def set_provider_health_status(self, endpoint: str, status: int) -> None:
+        with self._lock:
+            self.provider_health_status[endpoint] = status
+
+    def set_provider_health_sequence(self, endpoint: str, statuses: list[int]) -> None:
+        with self._lock:
+            self.provider_health_sequences[endpoint] = list(statuses)
+
+    def set_provider_policy_update_on_health(
+        self,
+        endpoint: str,
+        policy_path: pathlib.Path,
+        contents: bytes,
+    ) -> None:
+        with self._lock:
+            self.provider_policy_update_on_health = (endpoint, policy_path, contents)
+
+    def clear_provider_policy_update_on_health(self) -> None:
+        with self._lock:
+            self.provider_policy_update_on_health = None
 
     def count_requests(self, path: str, method: str | None = None) -> int:
         wanted_path = path.strip()
@@ -291,6 +315,22 @@ class MockBackend:
                 status = self.home_assistant_status
                 states = list(self.home_assistant_states)
             self._send_json(handler, status, states)
+            return
+
+        if path_only.startswith("/provider-health/"):
+            policy_update: tuple[str, pathlib.Path, bytes] | None = None
+            with self._lock:
+                sequence = self.provider_health_sequences.get(path_only, [])
+                status = sequence.pop(0) if sequence else self.provider_health_status.get(path_only, 200)
+                update = self.provider_policy_update_on_health
+                if update is not None and update[0] == path_only:
+                    policy_update = update
+                    self.provider_policy_update_on_health = None
+            if policy_update is not None:
+                _, policy_path, contents = policy_update
+                policy_path.write_bytes(contents)
+                policy_path.chmod(0o600)
+            self._send_json(handler, status, {"healthy": status == 200})
             return
 
         if path_only == "/dhcp/api/v1/dhcp/leases":
@@ -668,6 +708,8 @@ class NmcServerProcess:
                 "AUTHZ_HA_TOKEN": "authz-home-assistant-token",
             }
         )
+        env.pop("NMC_PROVIDER_DEPENDENCY_POLICY_PATH", None)
+        env.pop("NMC_PROVIDER_HEALTH_TIMEOUT_SECONDS", None)
         env.update(self._provider_environment)
         env.pop("NMC_DEVICE_POWER_CONTROL_ENABLED", None)
         if self._device_power_control_enabled:
@@ -825,7 +867,11 @@ printf '%s\\n' "$*" >> "$HOME/aws-provider-calls.txt"
 if [ "$1" = "sts" ] && [ "$2" = "get-caller-identity" ]; then
   printf '%s\\n' '{"Account":"123456789012","Arn":"arn:aws:iam::123456789012:role/nmc-test"}'
 elif [ "$1" = "ec2" ] && [ "$2" = "describe-instances" ]; then
-  printf '%s\\n' '{"Reservations":[{"Instances":[{"InstanceId":"i-0123456789abcdef0","InstanceType":"t3.small","State":{"Name":"running"},"Placement":{"AvailabilityZone":"eu-west-2a"},"PrivateIpAddress":"10.10.0.7","Tags":[{"Key":"Name","Value":"authz-cloud-vm"}]}]}]}'
+  if [ -f "$HOME/aws-created-instance" ]; then
+    printf '%s\\n' '{"Reservations":[{"Instances":[{"InstanceId":"i-0123456789abcdef0","InstanceType":"t3.small","State":{"Name":"running"},"Placement":{"AvailabilityZone":"eu-west-2a"},"PrivateIpAddress":"10.10.0.7","Tags":[{"Key":"Name","Value":"authz-cloud-vm"}]},{"InstanceId":"i-0abcdef1234567890","InstanceType":"t3.small","State":{"Name":"running"},"Placement":{"AvailabilityZone":"eu-west-2a"},"PrivateIpAddress":"10.10.0.8","Tags":[{"Key":"Name","Value":"authz-created-vm"}]}]}]}'
+  else
+    printf '%s\\n' '{"Reservations":[{"Instances":[{"InstanceId":"i-0123456789abcdef0","InstanceType":"t3.small","State":{"Name":"running"},"Placement":{"AvailabilityZone":"eu-west-2a"},"PrivateIpAddress":"10.10.0.7","Tags":[{"Key":"Name","Value":"authz-cloud-vm"}]}]}]}'
+  fi
 elif [ "$1" = "ec2" ] && [ "$2" = "reboot-instances" ]; then
   if [ -f "$HOME/delay-provider-operations" ]; then
     printf '%s\\n' "$*" >> "$HOME/provider-cli-sleepers.txt"
@@ -833,6 +879,7 @@ elif [ "$1" = "ec2" ] && [ "$2" = "reboot-instances" ]; then
   fi
   printf '%s\\n' '{"RebootingInstances":[]}'
 elif [ "$1" = "ec2" ] && [ "$2" = "run-instances" ]; then
+  touch "$HOME/aws-created-instance"
   printf '%s\\n' '{"Instances":[{"InstanceId":"i-0abcdef1234567890","InstanceType":"t3.small","State":{"Name":"pending"},"Placement":{"AvailabilityZone":"eu-west-2a"},"Tags":[{"Key":"Name","Value":"authz-created-vm"}]}]}'
 else
   exit 64
@@ -1212,7 +1259,66 @@ def test_continuum_route_authorisation(server: NmcServerProcess, backend: MockBa
     assert_status(status, 409, "deployment restart rejects a mismatched cluster identity")
 
 
-def test_provider_compute_lifecycle(server: NmcServerProcess) -> None:
+def test_provider_mutations_require_dependency_policy(
+    backend: MockBackend,
+    provider_environment: dict[str, str],
+) -> None:
+    """Prove a missing policy blocks a privileged cloud command before queueing."""
+    environment = dict(provider_environment)
+    environment.pop("NMC_PROVIDER_DEPENDENCY_POLICY_PATH", None)
+    server = NmcServerProcess(backend.base_url, provider_environment=environment)
+    try:
+        server.start()
+        status, payload = request_json(server.base_url, "GET", "/providers/compute", token="continuum-observe-token")
+        assert_status(status, 200, "provider status exposes an absent dependency policy")
+        assert_true(all(not item.get("dependency_preflight_configured") for item in payload.get("data", [])),
+                    "provider status must show that dependency preflight is not configured")
+        request = {
+            "provider": "aws", "scope": "123456789012", "region": "eu-west-2",
+            "instance_id": "i-0123456789abcdef0", "action": "restart",
+            "request_id": "authz-provider-no-policy-01",
+        }
+        status, payload = request_json(
+            server.base_url, "POST", "/providers/compute/instances/action",
+            token="continuum-control-token", payload=request,
+        )
+        assert_status(status, 423, "provider mutation must fail closed without dependency policy")
+        assert_true(payload.get("error", {}).get("dependency_preflight") == "not-configured"
+                    or payload.get("message", "").find("not configured") >= 0,
+                    "missing provider dependency policy must be explicit to the operator")
+        calls = server._home_dir / "aws-provider-calls.txt"
+        assert_true(not calls.exists(), "a missing dependency policy must prevent any provider CLI invocation")
+    finally:
+        server.stop()
+
+    source_path = pathlib.Path(provider_environment["NMC_PROVIDER_DEPENDENCY_POLICY_PATH"])
+    insecure_path = source_path.with_name("provider-dependency-policy-insecure.json")
+    insecure_path.write_text(source_path.read_text(encoding="utf-8"), encoding="utf-8")
+    insecure_path.chmod(0o644)
+    insecure_environment = dict(provider_environment, NMC_PROVIDER_DEPENDENCY_POLICY_PATH=str(insecure_path))
+    insecure_server = NmcServerProcess(backend.base_url, provider_environment=insecure_environment)
+    try:
+        insecure_server.start()
+        status, payload = request_json(
+            insecure_server.base_url, "POST", "/providers/compute/instances/action",
+            token="continuum-control-token",
+            payload={
+                "provider": "aws", "scope": "123456789012", "region": "eu-west-2",
+                "instance_id": "i-0123456789abcdef0", "action": "restart",
+                "request_id": "authz-provider-insecure-policy-01",
+            },
+        )
+        assert_status(status, 503, "a group/world-readable dependency policy must be rejected")
+        assert_true("insecure" in payload.get("message", "").lower(),
+                    "policy file ownership and mode failures should be visible without disclosing its path")
+        assert_true(not (insecure_server._home_dir / "aws-provider-calls.txt").exists(),
+                    "an insecure policy file must not allow provider CLI execution")
+    finally:
+        insecure_server.stop()
+        insecure_path.unlink(missing_ok=True)
+
+
+def test_provider_compute_lifecycle(server: NmcServerProcess, backend: MockBackend) -> None:
     """Exercise the three scoped adapters against executable-only provider fixtures."""
     status, _ = request_json(server.base_url, "GET", "/providers/compute")
     assert_status(status, 401, "provider adapter status requires authentication")
@@ -1226,6 +1332,8 @@ def test_provider_compute_lifecycle(server: NmcServerProcess) -> None:
         {item.get("provider") for item in providers if item.get("cli_available")} == {"aws", "gcp", "azure"},
         "the configured AWS, GCP and Azure command fixtures should all be recognised",
     )
+    assert_true(all(item.get("dependency_preflight_configured") is True and item.get("mutation_ready") is True for item in providers),
+                "provider readiness must include the server-owned dependency policy")
 
     inventory_job = submit_provider_job(
         server,
@@ -1285,6 +1393,85 @@ def test_provider_compute_lifecycle(server: NmcServerProcess) -> None:
         "an unauthorised provider action must not launch a provider command",
     )
 
+    calls_before_unhealthy_preflight = sum("ec2 reboot-instances" in line for line in aws_call_log.read_text(encoding="utf-8").splitlines())
+    backend.set_provider_health_status("/provider-health/host-aws", 503)
+    unhealthy_restart = dict(restart_request, request_id="authz-provider-host-unhealthy-01")
+    unhealthy_job = submit_provider_job(
+        server, "POST", "/providers/compute/instances/action", token="continuum-control-token",
+        payload=unhealthy_restart, label="an unhealthy target host blocks AWS restart before provider mutation",
+    )
+    unhealthy_terminal = wait_for_provider_job(server, unhealthy_job["job_id"], token="continuum-control-token")
+    assert_true(unhealthy_terminal.get("status") == "failed", "an unhealthy host must fail its provider preflight")
+    unhealthy_data = unhealthy_terminal.get("result", {}).get("data", {})
+    assert_true(unhealthy_data.get("dependency_preflight") == "blocked" and unhealthy_data.get("host_health") == "failed",
+                "failed host health evidence must be explicit in the provider job result")
+    assert_true(sum("ec2 reboot-instances" in line for line in aws_call_log.read_text(encoding="utf-8").splitlines()) == calls_before_unhealthy_preflight,
+                "a failed host health gate must not launch the provider lifecycle command")
+    backend.set_provider_health_status("/provider-health/host-aws", 200)
+
+    policy_path = pathlib.Path(server._provider_environment["NMC_PROVIDER_DEPENDENCY_POLICY_PATH"])
+    original_policy = policy_path.read_bytes()
+    try:
+        changed_policy = json.loads(original_policy)
+        changed_policy["resources"][0]["host_health"]["id"] = "host-aws-changed-during-preflight"
+        backend.set_provider_policy_update_on_health(
+            "/provider-health/database", policy_path, json.dumps(changed_policy).encode("utf-8")
+        )
+        calls_before_policy_race = sum("ec2 reboot-instances" in line for line in aws_call_log.read_text(encoding="utf-8").splitlines())
+        policy_race_job = submit_provider_job(
+            server, "POST", "/providers/compute/instances/action", token="continuum-control-token",
+            payload=dict(restart_request, request_id="authz-provider-policy-race-01"),
+            label="a policy edit during live preflight invalidates the queued restart",
+        )
+        policy_race_terminal = wait_for_provider_job(server, policy_race_job["job_id"], token="continuum-control-token")
+        assert_true(policy_race_terminal.get("status") == "failed",
+                    "a policy edit during dependency probes must fail the provider job")
+        assert_true(policy_race_terminal.get("result", {}).get("data", {}).get("dependency_preflight") == "stale",
+                    "a policy edit during dependency probes must be reported as a stale binding")
+        assert_true(sum("ec2 reboot-instances" in line for line in aws_call_log.read_text(encoding="utf-8").splitlines()) == calls_before_policy_race,
+                    "a policy edit during dependency probes must prevent the provider restart")
+    finally:
+        backend.clear_provider_policy_update_on_health()
+        policy_path.write_bytes(original_policy)
+        policy_path.chmod(0o600)
+
+    try:
+        policy = json.loads(original_policy)
+        policy["resources"][0]["host_health"]["url"] = backend.base_url.replace("http://", "HTTPS://", 1) + "/provider-health/host-aws"
+        policy_path.write_text(json.dumps(policy), encoding="utf-8")
+        policy_path.chmod(0o600)
+        calls_before_uppercase_https = sum("ec2 reboot-instances" in line for line in aws_call_log.read_text(encoding="utf-8").splitlines())
+        uppercase_https_job = submit_provider_job(
+            server, "POST", "/providers/compute/instances/action", token="continuum-control-token",
+            payload=dict(restart_request, request_id="authz-provider-uppercase-https-01"),
+            label="uppercase HTTPS health probes must retain certificate validation",
+        )
+        uppercase_https_terminal = wait_for_provider_job(server, uppercase_https_job["job_id"], token="continuum-control-token")
+        assert_true(uppercase_https_terminal.get("status") == "failed",
+                    "uppercase HTTPS to a plaintext test endpoint must fail its TLS health check")
+        assert_true(sum("ec2 reboot-instances" in line for line in aws_call_log.read_text(encoding="utf-8").splitlines()) == calls_before_uppercase_https,
+                    "an uppercase HTTPS probe must not downgrade to plaintext and launch the restart")
+    finally:
+        policy_path.write_bytes(original_policy)
+        policy_path.chmod(0o600)
+
+    calls_before_unhealthy_service = sum("ec2 reboot-instances" in line for line in aws_call_log.read_text(encoding="utf-8").splitlines())
+    backend.set_provider_health_status("/provider-health/service-aws", 503)
+    unhealthy_service_restart = dict(restart_request, request_id="authz-provider-service-down-01")
+    unhealthy_service_job = submit_provider_job(
+        server, "POST", "/providers/compute/instances/action", token="continuum-control-token",
+        payload=unhealthy_service_restart, label="an unhealthy dependent service blocks AWS restart before provider mutation",
+    )
+    unhealthy_service_terminal = wait_for_provider_job(server, unhealthy_service_job["job_id"], token="continuum-control-token")
+    assert_true(unhealthy_service_terminal.get("status") == "failed", "an unhealthy dependent service must fail its preflight")
+    unhealthy_service_data = unhealthy_service_terminal.get("result", {}).get("data", {})
+    assert_true(unhealthy_service_data.get("dependency_preflight") == "blocked"
+                and unhealthy_service_data.get("dependent_service_health") == "failed",
+                "failed dependent-service health evidence must be explicit")
+    assert_true(sum("ec2 reboot-instances" in line for line in aws_call_log.read_text(encoding="utf-8").splitlines()) == calls_before_unhealthy_service,
+                "an unhealthy dependent service must prevent the provider command")
+    backend.set_provider_health_status("/provider-health/service-aws", 200)
+
     restart_job = submit_provider_job(
         server,
         "POST",
@@ -1298,10 +1485,39 @@ def test_provider_compute_lifecycle(server: NmcServerProcess) -> None:
     action_result = restart_terminal.get("result", {}).get("data", {})
     assert_true(action_result.get("provider_state_verified") is True,
                 "a successful provider action must report its provider-state verification")
-    assert_true(action_result.get("dependent_service_health") == "not-checked",
-                "provider-state verification must not be reported as dependent-service health")
+    assert_true(action_result.get("host_health") == "healthy"
+                and action_result.get("dependent_service_health") == "healthy"
+                and action_result.get("dependency_preflight") == "passed",
+                "a successful provider restart must include live dependency, host and dependent-service health")
     assert_true("ec2 reboot-instances" in aws_call_log.read_text(encoding="utf-8"),
                 "AWS restart must invoke the provider CLI operation")
+
+    calls_before_blocked_stop = sum("ec2 stop-instances" in line for line in aws_call_log.read_text(encoding="utf-8").splitlines())
+    status, payload = request_json(
+        server.base_url, "POST", "/providers/compute/instances/action", token="continuum-control-token",
+        payload=dict(restart_request, action="stop", request_id="authz-provider-stop-dependency-01"),
+    )
+    assert_status(status, 409, "stopping a host with registered dependent services requires an approved maintenance plan")
+    assert_true(sum("ec2 stop-instances" in line for line in aws_call_log.read_text(encoding="utf-8").splitlines()) == calls_before_blocked_stop,
+                "a blocked stop must not invoke the provider CLI")
+
+    backend.set_provider_health_status("/provider-health/service-aws", 503)
+    backend.set_provider_health_sequence("/provider-health/service-aws", [200])
+    service_recovery_job = submit_provider_job(
+        server, "POST", "/providers/compute/instances/action", token="continuum-control-token",
+        payload=dict(restart_request, request_id="authz-provider-post-service-failure-01"),
+        label="provider restart is not successful while a dependent service fails to recover",
+    )
+    service_recovery_terminal = wait_for_provider_job(server, service_recovery_job["job_id"], token="continuum-control-token")
+    assert_true(service_recovery_terminal.get("status") == "failed",
+                "a provider-state success with an unhealthy dependent service must remain a failed job")
+    service_recovery_data = service_recovery_terminal.get("result", {}).get("data", {})
+    assert_true(service_recovery_data.get("provider_state_verified") is True
+                and service_recovery_data.get("host_health") == "healthy"
+                and service_recovery_data.get("dependent_service_health") == "failed",
+                "the terminal result must distinguish verified provider state from failed service recovery")
+    backend.set_provider_health_status("/provider-health/service-aws", 200)
+    backend.set_provider_health_sequence("/provider-health/service-aws", [])
 
     aws_call_count_after_restart = len(aws_call_log.read_text(encoding="utf-8").splitlines())
     replay = submit_provider_job(
@@ -1329,6 +1545,28 @@ def test_provider_compute_lifecycle(server: NmcServerProcess) -> None:
                 "provider and action casing must not bypass mutation idempotency")
     assert_true(len(aws_call_log.read_text(encoding="utf-8").splitlines()) == aws_call_count_after_restart,
                 "case-normalised retries must not invoke AWS a second time")
+
+    original_policy = policy_path.read_bytes()
+    try:
+        policy = json.loads(original_policy)
+        policy["resources"][0]["host_health"]["id"] = "host-aws-revised-without-revision-bump"
+        policy_path.write_text(json.dumps(policy), encoding="utf-8")
+        policy_path.chmod(0o600)
+        status, unchanged_revision_replay = request_json(
+            server.base_url,
+            "POST",
+            "/providers/compute/instances/action",
+            token="continuum-control-token",
+            payload=restart_request,
+        )
+        assert_status(status, 409, "an unchanged revision label cannot conceal changed policy contents")
+        assert_true(unchanged_revision_replay.get("success") is not True,
+                    "changed policy contents must invalidate an idempotent replay even when the revision label is unchanged")
+        assert_true(len(aws_call_log.read_text(encoding="utf-8").splitlines()) == aws_call_count_after_restart,
+                    "a policy-content mismatch must not repeat the provider mutation")
+    finally:
+        policy_path.write_bytes(original_policy)
+        policy_path.chmod(0o600)
 
     conflicting_restart = dict(restart_request, instance_id="i-1123456789abcdef0")
     status, _ = request_json(
@@ -1445,6 +1683,7 @@ def test_provider_compute_lifecycle(server: NmcServerProcess) -> None:
     created_spec = {
         "name": "authz-created-vm",
         "region": "eu-west-2",
+        "health_profile": "authz-create-profile",
         "image_id": "ami-01234567",
         "instance_type": "t3.small",
         "subnet_id": "subnet-01234567",
@@ -1465,8 +1704,12 @@ def test_provider_compute_lifecycle(server: NmcServerProcess) -> None:
     )
     create_terminal = wait_for_provider_job(server, create_job["job_id"], token="continuum-control-token")
     assert_true(create_terminal.get("status") == "succeeded", f"AWS create job failed: {create_terminal!r}")
-    assert_true(create_terminal.get("result", {}).get("data", {}).get("service_health") == "not-checked",
-                "provider creation must not claim post-boot service health")
+    create_result = create_terminal.get("result", {}).get("data", {})
+    assert_true(create_result.get("provider_state_verified") is True
+                and create_result.get("host_health") == "healthy"
+                and create_result.get("dependent_service_health") == "healthy"
+                and create_result.get("dependency_preflight") == "passed",
+                "provider creation must finish only after provider state and configured health checks pass")
     assert_true("ec2 run-instances" in aws_call_log.read_text(encoding="utf-8"),
                 "AWS create must invoke the provider CLI operation")
 
@@ -2450,19 +2693,61 @@ else
 fi
 """,
     )
-    server = NmcServerProcess(
-        backend.base_url,
-        provider_environment={
-            "NMC_PROVIDER_AWS_CLI_PATH": str(aws_cli),
-            "NMC_PROVIDER_GCP_CLI_PATH": str(gcp_cli),
-            "NMC_PROVIDER_AZURE_CLI_PATH": str(azure_cli),
-            "NMC_AWS_ALLOWED_SCOPES": "123456789012",
-            "NMC_GCP_ALLOWED_SCOPES": "demo-project-123",
-            "NMC_AZURE_ALLOWED_SCOPES": "00000000-0000-0000-0000-000000000000",
-            "NMC_PROVIDER_MUTATIONS_ENABLED": "true",
-            "NMC_PROVIDER_ALLOW_DELETE": "false",
-        },
-    )
+    health_probe = lambda name: {
+        "id": name,
+        "url": f"{backend.base_url}/provider-health/{name}",
+        "expected_status": 200,
+    }
+    dependency_policy = {
+        "schema_version": 1,
+        "dependency_graph_revision": "authz-provider-graph-v1",
+        "resources": [
+            {
+                "provider": "aws", "scope": "123456789012", "instance_id": "i-0123456789abcdef0",
+                "location": "eu-west-2", "host_health": health_probe("host-aws"),
+                "dependencies": [health_probe("database")],
+                "dependent_services": [health_probe("service-aws")], "allowed_actions": ["restart", "stop"],
+            },
+            {
+                "provider": "gcp", "scope": "demo-project-123", "instance_id": "worker-01",
+                "location": "europe-west2-a", "host_health": health_probe("host-gcp"),
+                "dependencies": [health_probe("database")],
+                "dependent_services": [health_probe("service-gcp")], "allowed_actions": ["restart"],
+            },
+            {
+                "provider": "azure", "scope": "00000000-0000-0000-0000-000000000000",
+                "instance_id": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-test/providers/Microsoft.Compute/virtualMachines/worker-az",
+                "location": "uksouth", "host_health": health_probe("host-azure"),
+                "dependencies": [], "dependent_services": [health_probe("service-azure")],
+                "allowed_actions": ["restart"],
+            },
+        ],
+        "create_profiles": [
+            {
+                "provider": "aws", "scope": "123456789012", "profile_id": "authz-create-profile",
+                "location": "eu-west-2", "host_health": health_probe("host-created"),
+                "dependencies": [health_probe("database")],
+                "dependent_services": [health_probe("service-created")],
+            }
+        ],
+    }
+    policy_path = provider_home / "provider-dependency-policy.json"
+    policy_path.write_text(json.dumps(dependency_policy), encoding="utf-8")
+    policy_path.chmod(0o600)
+    provider_environment = {
+        "NMC_PROVIDER_AWS_CLI_PATH": str(aws_cli),
+        "NMC_PROVIDER_GCP_CLI_PATH": str(gcp_cli),
+        "NMC_PROVIDER_AZURE_CLI_PATH": str(azure_cli),
+        "NMC_AWS_ALLOWED_SCOPES": "123456789012",
+        "NMC_GCP_ALLOWED_SCOPES": "demo-project-123",
+        "NMC_AZURE_ALLOWED_SCOPES": "00000000-0000-0000-0000-000000000000",
+        "NMC_PROVIDER_MUTATIONS_ENABLED": "true",
+        "NMC_PROVIDER_ALLOW_DELETE": "false",
+        "NMC_PROVIDER_DEPENDENCY_POLICY_PATH": str(policy_path),
+        "NMC_PROVIDER_HEALTH_TIMEOUT_SECONDS": "2",
+    }
+    test_provider_mutations_require_dependency_policy(backend, provider_environment)
+    server = NmcServerProcess(backend.base_url, provider_environment=provider_environment)
     redfish_tmp_dir = tempfile.TemporaryDirectory(prefix="nmc-redfish-mock-")
     redfish = RedfishBmcMock(pathlib.Path(redfish_tmp_dir.name))
     redfish.start()
@@ -2472,7 +2757,7 @@ fi
         test_auth_session_preserves_service_account_groups(server)
         test_auth_session_supports_static_admin_token(server)
         test_continuum_route_authorisation(server, backend)
-        test_provider_compute_lifecycle(server)
+        test_provider_compute_lifecycle(server, backend)
         test_controller_action_rejects_malformed_body_shapes(server)
         test_redfish_vendor_diagnostics(server, redfish)
         test_redfish_vendor_actions(backend.base_url, redfish)

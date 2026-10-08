@@ -238,6 +238,18 @@ ProviderComputeJobManager::Submission ProviderComputeJobManager::submit(
     if (!preflight.success) {
         return {false, preflight.httpStatus, preflight.message, preflight.data};
     }
+    if (operation != "list") {
+        const std::string graphRevision = preflight.data.value("dependency_graph_revision", std::string{});
+        const std::string policyFingerprint = preflight.data.value("dependency_policy_fingerprint", std::string{});
+        if (graphRevision.empty() || policyFingerprint.empty()) {
+            return {false, 503, "Provider mutation preflight did not bind a dependency graph revision and policy fingerprint; no provider operation was queued.",
+                    {{"dependency_preflight", "blocked"}}};
+        }
+        // Pin both the operator revision and canonical policy content into the
+        // durable, idempotent job. The worker refuses any changed policy.
+        canonicalRequest["_continuum_dependency_graph_revision"] = graphRevision;
+        canonicalRequest["_continuum_dependency_policy_fingerprint"] = policyFingerprint;
+    }
 
     const std::string provider = canonicalRequest.value("provider", std::string{});
     const std::string scope = canonicalRequest.value("scope", std::string{});
