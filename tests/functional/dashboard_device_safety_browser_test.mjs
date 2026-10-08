@@ -225,7 +225,13 @@ try {
     await waitForWebDriver(driverUrl, driver);
     const sessionId = await createBrowserSession(driverUrl, browser);
     try {
-        for (const testCase of ["stale-inventory", "inventory-unavailable", "tracey-unavailable"]) {
+        for (const testCase of [
+            "stale-inventory",
+            "inventory-unavailable",
+            "tracey-unavailable",
+            "network-overview",
+            "network-overview-ambiguous"
+        ]) {
             await runBrowserCase(driverUrl, sessionId, dashboardUrl, testCase);
         }
     } finally {

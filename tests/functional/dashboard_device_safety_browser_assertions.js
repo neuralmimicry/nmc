@@ -80,11 +80,61 @@
         assertNoControllerMutations();
     }
 
+    async function runNetworkOverviewCase() {
+        await waitFor("exact Tracey inventory match", () => (
+            document.getElementById("networkInventorySummary")?.textContent.includes("1 hosts · 1 agents")
+        ));
+        assert(document.getElementById("networkInventoryCount").textContent.includes("2 of 2 entries"), "the combined overview duplicated Tracey as a separate device");
+        assert(document.getElementById("networkUnlinkedTraceyDetails").hidden, "an exact Tracey match was also listed as unlinked");
+
+        const traceyRow = document.querySelector('#networkInventoryRows button[data-network-agent-id="tracey-spirit"]');
+        assert(traceyRow, "the matched Tracey health signal was not included in the device table");
+        assert(traceyRow.parentElement.textContent.includes("healthy"), "the matched Tracey status was not shown beside its device");
+
+        const hostNode = document.querySelector('#networkInventoryGraph [data-network-entity="device:spirit"]');
+        assert(hostNode, "the verified host is missing from the graphical inventory");
+        assert(hostNode.getAttribute("aria-label").includes("Tracey agent: healthy"), "the graph node omitted its exact-match Tracey health overlay");
+        assert(document.querySelector("#networkInventoryGraph .network-edge-manages"), "the registered BMC-to-host relationship is missing from the graph");
+        hostNode.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        await waitFor("graph device drilldown", () => !document.getElementById("networkDeviceModal").hidden);
+
+        const body = document.getElementById("networkDeviceModalBody");
+        assert(body.textContent.includes("Tracey health on this host"), "the device drilldown omitted its linked Tracey evidence");
+        assert(body.querySelector('button[data-network-operation="dhcp"]'), "matching DHCP evidence is unavailable in the host drilldown");
+        assert(body.querySelector('button[data-network-operation="diagnostics"]'), "mapped BMC diagnostics are unavailable in the host drilldown");
+        assert(body.querySelector('button[data-network-agent-id="tracey-spirit"]'), "the device drilldown has no Tracey-specific details link");
+
+        body.querySelector('button[data-network-operation="dhcp"]').click();
+        await waitFor("device-specific DHCP evidence", () => body.textContent.includes("192.168.1.2"));
+        const dhcpRequest = state.requests.find((request) => request.path === "/devices/dhcp");
+        assert(dhcpRequest?.method === "GET", "device DHCP evidence did not use a read-only GET");
+
+        body.querySelector('button[data-network-operation="diagnostics"]').click();
+        await waitFor("mapped controller diagnostics", () => state.requests.some((request) => request.path === "/devices/controllers/diagnostics"));
+        const diagnosticsRequest = state.requests.find((request) => request.path === "/devices/controllers/diagnostics");
+        assert(diagnosticsRequest.method === "GET", "mapped controller diagnostics did not use a read-only GET");
+        assertNoControllerMutations();
+    }
+
+    async function runAmbiguousTraceyIdentityCase() {
+        await waitFor("ambiguous Tracey identity evidence", () => (
+            !document.getElementById("networkUnlinkedTraceyDetails").hidden
+            && document.getElementById("networkUnlinkedTraceyCount").textContent === "1"
+        ));
+        assert(document.getElementById("networkInventoryCount").textContent.includes("3 of 3 entries"), "an ambiguous Tracey agent created or removed a device entry");
+        assert(document.getElementById("networkInventorySummary").textContent.includes("0 hosts · 0 agents"), "an ambiguous agent was falsely attached to a host");
+        assert(document.getElementById("networkUnlinkedTraceyRows").textContent.includes("ambiguous exact identity"), "the ambiguity reason was not made visible to the operator");
+        assert(!document.querySelector('#networkInventoryRows button[data-network-agent-id="tracey-spirit"]'), "ambiguous Tracey evidence was duplicated into a device row");
+        assertNoControllerMutations();
+    }
+
     async function run() {
         assert(state, "the browser fixture bootstrap did not run");
         if (state.mode === "stale-inventory") await runStaleInventoryCase();
         else if (state.mode === "inventory-unavailable") await runInventoryUnavailableCase();
         else if (state.mode === "tracey-unavailable") await runTraceyUnavailableCase();
+        else if (state.mode === "network-overview") await runNetworkOverviewCase();
+        else if (state.mode === "network-overview-ambiguous") await runAmbiguousTraceyIdentityCase();
         else throw new Error(`unknown browser fixture: ${state.mode}`);
         assert(state.errors.length === 0, `uncaught dashboard browser errors: ${state.errors.join("; ")}`);
         return `${prefix}PASS:${state.mode}`;
