@@ -301,7 +301,9 @@ ProviderComputeJobManager::Submission ProviderComputeJobManager::submit(
         }
         job = jobs_.at(job.id);
     }
-    condition_.notify_one();
+    // Wake every idle worker: two closely spaced submissions must not both
+    // signal the same thread while another worker remains asleep.
+    condition_.notify_all();
     audit(job, "queued");
     return {true, 202, "Provider operation accepted as an asynchronous job.", publicJob(job)};
 }
