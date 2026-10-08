@@ -118,6 +118,20 @@ run cmake --build "$SERVER_BUILD_DIR" --config Release --parallel
 log "running functional server authorisation integration test"
 run env NMC_SERVER_BIN="$SERVER_BIN" python3 tests/functional/server_authz_integration_test.py
 
+if command -v node >/dev/null 2>&1; then
+  log "checking dashboard browser test syntax"
+  run node --check tests/functional/dashboard_device_safety_browser_test.mjs
+fi
+
+if command -v node >/dev/null 2>&1 \
+  && { command -v geckodriver >/dev/null 2>&1 || [[ -x /snap/firefox/current/usr/lib/firefox/geckodriver ]]; } \
+  && { command -v firefox >/dev/null 2>&1 || [[ -x /snap/firefox/current/usr/lib/firefox/firefox ]]; }; then
+  log "running Continuum dashboard browser safety tests"
+  run node tests/functional/dashboard_device_safety_browser_test.mjs
+else
+  log "skipping dashboard browser tests (Firefox, geckodriver and Node.js are required)"
+fi
+
 if (( CI_MODE )); then
   log "ci preflight completed"
 else
