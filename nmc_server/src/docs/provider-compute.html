@@ -25,16 +25,45 @@
     <pre><code>NMC_AWS_ALLOWED_SCOPES=123456789012
 NMC_GCP_ALLOWED_SCOPES=example-project-123
 NMC_AZURE_ALLOWED_SCOPES=00000000-0000-0000-0000-000000000000</code></pre>
-    <p>Provider credentials are not accepted in API request bodies. Child processes receive only the documented provider credential variables and standard configuration paths; NMC authentication secrets are not forwarded. Provider mutations are disabled by default. Enable them only after configuring scoped credentials, least-privilege provider roles, dependency checks and operational approval:</p>
+    <p>Provider credentials are not accepted in API request bodies. Child processes receive only the documented provider credential variables and standard configuration paths; NMC authentication secrets are not forwarded. Provider mutations are disabled by default. Enable them only after configuring scoped credentials, least-privilege provider roles, the dependency policy below and operational approval:</p>
     <pre><code>NMC_PROVIDER_MUTATIONS_ENABLED=true
 NMC_PROVIDER_ALLOW_DELETE=true</code></pre>
-    <p>Deletion requires both switches. Do not enable it for routine deployment environments. Production mutation support remains incomplete until service dependencies, durable resource inventory and host/service health verification are configured.</p>
+    <p>Deletion requires both switches and an exact resource policy with no registered dependent services. Do not enable it for routine deployment environments. Missing or invalid dependency policy blocks mutations before provider commands are launched.</p>
+
+    <h2>Dependency and health policy</h2>
+    <p>Set <code>NMC_PROVIDER_DEPENDENCY_POLICY_PATH</code> to a private JSON file owned by the NMC service account, mode <code>0600</code>, with one hard link and at most 1 MiB. It is server configuration, never request data. The top-level document has <code>schema_version: 1</code>, a change-sensitive <code>dependency_graph_revision</code>, a <code>resources</code> array keyed by exact provider, scope, canonical instance ID and location, and a <code>create_profiles</code> array keyed by provider, scope, profile ID and location. A location is the AWS/Azure region or the GCP zone. Every binding declares one <code>host_health</code> probe, explicit <code>dependencies</code> and <code>dependent_services</code> arrays (empty only when verified to be empty); resource bindings also declare allowed lifecycle actions. The combined health-check count is capped at 16 per binding. Continuum pins both the revision and a SHA-256 fingerprint of the complete policy in each queued mutation, so changing policy contents without changing the revision still invalidates queued work and idempotent retries.</p>
+    <pre><code>{
+  "schema_version": 1,
+  "dependency_graph_revision": "platform-graph-2026-10-08-01",
+  "resources": [{
+    "provider": "aws",
+    "scope": "123456789012",
+    "instance_id": "i-0123456789abcdef0",
+    "location": "eu-west-2",
+    "host_health": {"id": "worker-host", "url": "https://worker.internal/health", "expected_status": 200},
+    "dependencies": [{"id": "postgres", "url": "https://postgres.internal/health", "expected_status": 200}],
+    "dependent_services": [{"id": "gail-worker", "url": "https://gail.internal/health", "expected_status": 200}],
+    "allowed_actions": ["restart"]
+  }],
+  "create_profiles": [{
+    "provider": "aws",
+    "scope": "123456789012",
+    "profile_id": "gail-worker",
+    "location": "eu-west-2",
+    "host_health": {"id": "gail-host", "url": "https://gail.internal/host-health", "expected_status": 200},
+    "dependencies": [{"id": "postgres", "url": "https://postgres.internal/health", "expected_status": 200}],
+    "dependent_services": [{"id": "gail-api", "url": "https://gail.internal/health", "expected_status": 200}]
+  }]
+}</code></pre>
+    <p>Probe URLs allow HTTPS with normal certificate and hostname verification. Plain HTTP is accepted only for the literal loopback addresses used by local tests. Redirects, credentials, query strings, fragments, metadata endpoints, non-200 responses, oversized replies and timeouts fail closed. The server probes configured endpoints itself in parallel; clients cannot claim that dependencies or services are healthy. Queued jobs pin the graph revision and are rejected if it changes before execution.</p>
+    <p>Before a restart, Continuum verifies the target host, its prerequisites and its registered dependent services; a start verifies prerequisites first. After start or restart, the provider state, host and dependent services must recover before the job is marked successful. A create request must include <code>spec.health_profile</code>; Continuum waits for the named instance to appear in running provider inventory, then verifies its host and services. If post-action health fails, the job fails with the provider-state and health evidence so an operator can reconcile the already-applied provider change. Stop and delete are blocked while dependent services are registered; an approved maintenance or teardown workflow is still required for those cases.</p>
+    <p><code>GET /providers/compute</code> reports whether the dependency policy is valid, how many exact resource bindings and create profiles exist for each provider, and whether mutation gates are open. A valid but empty policy is not provider-ready. The production NMC deployment has no cloud identities or policy configured, and provider mutations remain disabled.</p>
 
     <h2>Routes</h2>
     <table>
         <thead><tr><th>Method and path</th><th>Purpose</th></tr></thead>
         <tbody>
-        <tr><td><code>GET /providers/compute</code></td><td>Show installed provider CLIs, allow-list configuration and mutation gates. This does not disclose scope identifiers or credentials.</td></tr>
+        <tr><td><code>GET /providers/compute</code></td><td>Show installed provider CLIs, allow-list configuration, dependency-policy readiness and mutation gates. This does not disclose scope identifiers or credentials.</td></tr>
         <tr><td><code>GET /providers/compute/instances?provider=aws&amp;scope=123456789012&amp;region=eu-west-2</code></td><td>Queue identity verification and live, normalised inventory for the exact allow-listed scope. GCP accepts an optional region filter. Returns HTTP 202 with a job resource.</td></tr>
         <tr><td><code>POST /providers/compute/instances/create</code></td><td>Queue one instance create from an explicit provider-specific network, image and size specification. Every provider requires a stable idempotency key. Returns HTTP 202.</td></tr>
         <tr><td><code>POST /providers/compute/instances/action</code></td><td>Queue restart, start, stop or delete for one exact canonical instance identifier. The active account/project/subscription, scope, region and current instance state are checked before mutation. Returns HTTP 202.</td></tr>
@@ -44,8 +73,8 @@ NMC_PROVIDER_ALLOW_DELETE=true</code></pre>
 
     <h2>Lifecycle requests</h2>
     <p>Each accepted operation returns <code>202 Accepted</code>, a <code>job_id</code>, and a <code>Location</code> header. Provider create/action bodies are limited to 256 KiB. Poll the job URL until it is terminal. A bounded queue accepts at most 32 waiting operations and uses two provider workers. Job state is written atomically with owner-only permissions under the NMC state directory. Operations still queued at restart are marked <code>cancelled</code> because no provider command was launched; operations interrupted while running are marked <code>outcome_unknown</code> and are never replayed. Reconcile provider state before submitting a new mutation key after an uncertain result. Mutation idempotency records are retained for seven days.</p>
-    <p>For create, send <code>provider</code>, <code>scope</code>, a provider-specific <code>spec</code> object and an <code>idempotency_key</code>. AWS requires the AMI, instance type, subnet and one or more security groups; public IP association is disabled. GCP requires project, zone, machine type, image project, image, subnet and a service account; public IP assignment is disabled. Azure requires subscription, resource group, location, image, size, administrator SSH key, virtual network, subnet and network security group; public IP assignment is disabled.</p>
-    <p>For actions, send <code>provider</code>, <code>scope</code>, canonical <code>instance_id</code>, <code>action</code>, stable <code>request_id</code>, and the required provider location (<code>region</code> for AWS/Azure or <code>zone</code> for GCP). NMC verifies provider state after the command. Host reachability, dependent service health, service-specific preflight and complete rollback are not inferred from that provider-state check.</p>
+    <p>For create, send <code>provider</code>, <code>scope</code>, a provider-specific <code>spec</code> object with a server-configured <code>health_profile</code>, and an <code>idempotency_key</code>. AWS requires the AMI, instance type, subnet and one or more security groups; public IP association is disabled. GCP requires project, zone, machine type, image project, image, subnet and a service account; public IP assignment is disabled. Azure requires subscription, resource group, location, image, size, administrator SSH key, virtual network, subnet and network security group; public IP assignment is disabled.</p>
+    <p>For actions, send <code>provider</code>, <code>scope</code>, canonical <code>instance_id</code>, <code>action</code>, stable <code>request_id</code>, and the required provider location (<code>region</code> for AWS/Azure or <code>zone</code> for GCP). NMC verifies the provider state and configured health checks. A provider CLI acknowledgement alone never marks create, start or restart successful.</p>
 
     <h2>CLI</h2>
     <pre><code>nmc provider compute status

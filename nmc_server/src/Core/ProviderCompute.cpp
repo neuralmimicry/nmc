@@ -1,5 +1,6 @@
 // Provider-aware compute lifecycle operations using the AWS, Google and Azure CLIs.
 #include "ProviderCompute.h"
+#include "ProviderDependencyPreflight.h"
 
 #include <algorithm>
 #include <array>
@@ -50,8 +51,8 @@ struct ProcessResult {
     std::string output;
 };
 
-ProviderComputeResult failure(int status, const std::string& message) {
-    return {false, status, message, Json::object()};
+ProviderComputeResult failure(int status, const std::string& message, Json data = Json::object()) {
+    return {false, status, message, std::move(data)};
 }
 
 ProviderComputeResult success(const std::string& message, Json data) {
@@ -548,8 +549,12 @@ ProviderComputeResult verifyExpectedState(const std::string& provider,
 }
 
 ProviderComputeResult validateMutation(const std::string& action) {
+    const Json dependencyStatus = ProviderDependencyPreflight::status();
+    const std::string preflightState = dependencyStatus.value("dependency_preflight_configured", false)
+        ? "configured" : "not-configured";
     if (!enabled("NMC_PROVIDER_MUTATIONS_ENABLED")) {
-        return failure(423, "Provider mutations are disabled; set NMC_PROVIDER_MUTATIONS_ENABLED=true after configuring scoped credentials and dependency checks.");
+        return failure(423, "Provider mutations are disabled; set NMC_PROVIDER_MUTATIONS_ENABLED=true after configuring scoped credentials and dependency checks.",
+                       {{"dependency_preflight", preflightState}, {"mutation", "disabled"}});
     }
     if (action == "delete" && !enabled("NMC_PROVIDER_ALLOW_DELETE")) {
         return failure(423, "Provider deletion is disabled; set NMC_PROVIDER_ALLOW_DELETE=true only for an approved teardown scope.");
@@ -581,15 +586,27 @@ bool expectedAzureResourceId(const std::string& id, const std::string& scope) {
 
 ProviderComputeResult ProviderCompute::status() {
     Json providers = Json::array();
+    const Json dependencyStatus = ProviderDependencyPreflight::status();
+    const bool dependencyPolicyConfigured = dependencyStatus.value("dependency_preflight_configured", false);
     for (const std::string& provider : {"aws", "gcp", "azure"}) {
         const std::string variable = allowedScopesVariable(provider);
         const char* scopes = std::getenv(variable.c_str());
+        const bool scopesConfigured = scopes != nullptr && *scopes != '\0';
+        const bool cliAvailable = !executableFor(provider).empty();
+        const std::size_t resourceBindings = dependencyStatus.value("resource_bindings", Json::object()).value(provider, 0U);
+        const std::size_t createProfiles = dependencyStatus.value("create_profiles", Json::object()).value(provider, 0U);
+        const bool providerPolicyConfigured = dependencyPolicyConfigured && (resourceBindings > 0 || createProfiles > 0);
         providers.push_back({
             {"provider", provider},
-            {"cli_available", !executableFor(provider).empty()},
-            {"scope_allowlist_configured", scopes != nullptr && *scopes != '\0'},
+            {"cli_available", cliAvailable},
+            {"scope_allowlist_configured", scopesConfigured},
             {"mutations_enabled", enabled("NMC_PROVIDER_MUTATIONS_ENABLED")},
-            {"delete_enabled", enabled("NMC_PROVIDER_MUTATIONS_ENABLED") && enabled("NMC_PROVIDER_ALLOW_DELETE")}
+            {"delete_enabled", enabled("NMC_PROVIDER_MUTATIONS_ENABLED") && enabled("NMC_PROVIDER_ALLOW_DELETE")},
+            {"dependency_preflight_configured", dependencyPolicyConfigured},
+            {"dependency_policy_error", dependencyStatus.value("dependency_policy_error", std::string{})},
+            {"resource_policy_bindings", resourceBindings},
+            {"create_health_profiles", createProfiles},
+            {"mutation_ready", cliAvailable && scopesConfigured && providerPolicyConfigured && enabled("NMC_PROVIDER_MUTATIONS_ENABLED")}
         });
     }
     return success("Provider compute adapter readiness.", std::move(providers));
@@ -637,7 +654,12 @@ ProviderComputeResult ProviderCompute::preflight(const std::string& operation,
         }
         ProviderComputeResult policy = validateMutation("create");
         if (!policy.success) return policy;
-        return requireContext(provider, scope);
+        ProviderComputeResult context = requireContext(provider, scope);
+        if (!context.success) return context;
+        Json binding;
+        ProviderComputeResult dependency = ProviderDependencyPreflight::resolveCreate(provider, scope, *specification, binding);
+        if (!dependency.success) return dependency;
+        return dependency;
     }
 
     if (operation == "action") {
@@ -669,7 +691,13 @@ ProviderComputeResult ProviderCompute::preflight(const std::string& operation,
         }
         ProviderComputeResult policy = validateMutation(actionName);
         if (!policy.success) return policy;
-        return requireContext(provider, scope);
+        ProviderComputeResult context = requireContext(provider, scope);
+        if (!context.success) return context;
+        Json binding;
+        const std::string location = provider == "gcp" ? request.value("zone", std::string{}) : request.value("region", std::string{});
+        ProviderComputeResult dependency = ProviderDependencyPreflight::resolveAction(provider, scope, id, location, actionName, binding);
+        if (!dependency.success) return dependency;
+        return dependency;
     }
 
     return failure(400, "operation must be one of: list, create, action.");
@@ -699,6 +727,14 @@ ProviderComputeResult ProviderCompute::create(const Json& request) {
     if (!context.success) return context;
     ProviderComputeResult identity = verifyIdentity(provider, scope);
     if (!identity.success) return identity;
+    Json dependencyBinding;
+    ProviderComputeResult dependency = ProviderDependencyPreflight::resolveCreate(provider, scope, specification, dependencyBinding);
+    if (!dependency.success) return dependency;
+    const std::string queuedGraphRevision = request.value("_continuum_dependency_graph_revision", std::string{});
+    const std::string queuedPolicyFingerprint = request.value("_continuum_dependency_policy_fingerprint", std::string{});
+    ProviderComputeResult graphRevision = ProviderDependencyPreflight::verifyRevision(
+        dependencyBinding, queuedGraphRevision, queuedPolicyFingerprint);
+    if (!graphRevision.success) return graphRevision;
 
     std::vector<std::string> args;
     std::string name;
@@ -813,13 +849,56 @@ ProviderComputeResult ProviderCompute::create(const Json& request) {
     });
     if (duplicate) return failure(409, "An instance with this name already exists in the requested provider scope and region.");
 
+    // Recheck prerequisites after identity and inventory reads, immediately
+    // before the cloud write, using only the server-owned policy endpoints.
+    ProviderComputeResult before = ProviderDependencyPreflight::checkBeforeMutation(dependencyBinding, false, false);
+    if (!before.success) return before;
+    ProviderComputeResult currentPolicy = ProviderDependencyPreflight::verifyCurrentPolicy(dependencyBinding);
+    if (!currentPolicy.success) return currentPolicy;
+
     ProcessResult process = runProviderCli(provider, args, 60000);
     Json providerResponse;
     if (!parseOutput(provider, process, providerResponse)) return runFailure(provider, process);
-    return success("Provider accepted instance creation. Provider state and post-boot host/service health require verification.",
-                   {{"provider", provider}, {"scope", scope}, {"region", region}, {"name", name},
-                    {"provider_response", providerResponse}, {"service_health", "not-checked"},
-                    {"dependency_preflight", "not-configured"}});
+
+    // A successful create CLI response is only an operation acknowledgement.
+    // Wait for the named resource to appear in verified live inventory before
+    // checking that its host and dependent services are ready.
+    Json createdInstance = nullptr;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(120);
+    while (std::chrono::steady_clock::now() < deadline) {
+        Json currentInstances;
+        ProviderComputeResult current = listUnchecked(provider, scope, region, currentInstances);
+        if (!current.success) {
+            return failure(502, "Provider creation was accepted but its resulting state could not be read; reconcile the named resource before retrying.",
+                           {{"provider_state_verified", false}, {"provider_response", providerResponse}, {"dependency_preflight", "passed"}});
+        }
+        const auto found = std::find_if(currentInstances.begin(), currentInstances.end(), [&](const Json& item) {
+            return item.value("name", std::string{}) == name;
+        });
+        if (found != currentInstances.end() && normalizedState(provider, *found) == "RUNNING") {
+            createdInstance = *found;
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(400));
+    }
+    if (createdInstance.is_null()) {
+        return failure(504, "Provider creation was accepted but a running instance was not verified within two minutes; reconcile the resource before retrying.",
+                       {{"provider_state_verified", false}, {"provider_response", providerResponse}, {"dependency_preflight", "passed"}});
+    }
+
+    ProviderComputeResult after = ProviderDependencyPreflight::checkAfterMutation(dependencyBinding, true, true);
+    Json completion = after.data;
+    completion["provider"] = provider;
+    completion["scope"] = scope;
+    completion["region"] = region;
+    completion["name"] = name;
+    completion["instance"] = createdInstance;
+    completion["provider_response"] = providerResponse;
+    completion["provider_state_verified"] = true;
+    completion["preflight_checks"] = before.data.value("checks", Json::object());
+    if (!after.success) return {false, after.httpStatus, after.message, std::move(completion)};
+    return success("Provider instance creation, provider state, host health and dependent service health were verified.",
+                   std::move(completion));
 }
 
 ProviderComputeResult ProviderCompute::action(const Json& request) {
@@ -870,6 +949,22 @@ ProviderComputeResult ProviderCompute::action(const Json& request) {
         return failure(409, "Stop is only valid for an instance currently reported as running.");
     }
 
+    Json dependencyBinding;
+    const std::string location = provider == "gcp" ? request.value("zone", std::string{}) : region;
+    ProviderComputeResult dependency = ProviderDependencyPreflight::resolveAction(provider, scope, id, location, actionName, dependencyBinding);
+    if (!dependency.success) return dependency;
+    const std::string queuedGraphRevision = request.value("_continuum_dependency_graph_revision", std::string{});
+    const std::string queuedPolicyFingerprint = request.value("_continuum_dependency_policy_fingerprint", std::string{});
+    ProviderComputeResult graphRevision = ProviderDependencyPreflight::verifyRevision(
+        dependencyBinding, queuedGraphRevision, queuedPolicyFingerprint);
+    if (!graphRevision.success) return graphRevision;
+
+    const bool restart = actionName == "restart";
+    ProviderComputeResult before = ProviderDependencyPreflight::checkBeforeMutation(dependencyBinding, restart, restart);
+    if (!before.success) return before;
+    ProviderComputeResult currentPolicy = ProviderDependencyPreflight::verifyCurrentPolicy(dependencyBinding);
+    if (!currentPolicy.success) return currentPolicy;
+
     const std::vector<std::string> args = actionArguments(provider, scope, request, actionName, id, region);
     ProcessResult process = runProviderCli(provider, args, 60000);
     if (process.exitCode != 0 || process.timedOut || process.outputTooLarge) return runFailure(provider, process);
@@ -877,10 +972,31 @@ ProviderComputeResult ProviderCompute::action(const Json& request) {
     Json verification = nullptr;
     ProviderComputeResult verified = verifyExpectedState(provider, scope, region, request, id, actionName, verification);
     if (!verified.success) return verified;
-    return success("Provider action completed and provider state was verified; dependent service health remains a separate gate.",
-                   {{"provider", provider}, {"scope", scope}, {"instance", std::move(verification)},
-                    {"action", actionName}, {"provider_state_verified", true}, {"host_health", "not-checked"},
-                    {"dependent_service_health", "not-checked"}, {"dependency_preflight", "not-configured"}});
+
+    if (actionName == "start" || actionName == "restart") {
+        ProviderComputeResult after = ProviderDependencyPreflight::checkAfterMutation(dependencyBinding, true, true);
+        Json completion = after.data;
+        completion["provider"] = provider;
+        completion["scope"] = scope;
+        completion["instance"] = std::move(verification);
+        completion["action"] = actionName;
+        completion["provider_state_verified"] = true;
+        completion["preflight_checks"] = before.data.value("checks", Json::object());
+        if (!after.success) return {false, after.httpStatus, after.message, std::move(completion)};
+        return success("Provider state, host health and dependent service health were verified after the action.",
+                       std::move(completion));
+    }
+
+    Json completion = before.data;
+    completion["provider"] = provider;
+    completion["scope"] = scope;
+    completion["instance"] = std::move(verification);
+    completion["action"] = actionName;
+    completion["provider_state_verified"] = true;
+    completion["host_health"] = "not-applicable";
+    completion["dependent_service_health"] = "not-applicable";
+    return success("Provider state was verified; the policy confirms no registered dependent services require health checks for this stop or delete.",
+                   std::move(completion));
 }
 
 } // namespace NMC::Server

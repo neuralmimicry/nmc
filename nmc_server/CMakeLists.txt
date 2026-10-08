@@ -187,6 +187,7 @@ set(NMC_SERVER_SOURCES
         src/Core/OpenStackClient.cpp
         src/Core/OpenShiftClient.cpp
         src/Core/ProxmoxClient.cpp
+        src/Core/ProviderDependencyPreflight.cpp
         src/Core/ProviderCompute.cpp
         src/Core/ProviderComputeJobManager.cpp
         src/Core/ServerStateStore.cpp
