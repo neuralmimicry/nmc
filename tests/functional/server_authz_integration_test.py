@@ -179,6 +179,7 @@ class MockBackend:
         ]
         self.provider_health_status: dict[str, int] = {}
         self.provider_health_sequences: dict[str, list[int]] = {}
+        self.provider_policy_update_on_health: tuple[str, pathlib.Path, bytes] | None = None
 
         outer = self
 
@@ -237,6 +238,19 @@ class MockBackend:
     def set_provider_health_sequence(self, endpoint: str, statuses: list[int]) -> None:
         with self._lock:
             self.provider_health_sequences[endpoint] = list(statuses)
+
+    def set_provider_policy_update_on_health(
+        self,
+        endpoint: str,
+        policy_path: pathlib.Path,
+        contents: bytes,
+    ) -> None:
+        with self._lock:
+            self.provider_policy_update_on_health = (endpoint, policy_path, contents)
+
+    def clear_provider_policy_update_on_health(self) -> None:
+        with self._lock:
+            self.provider_policy_update_on_health = None
 
     def count_requests(self, path: str, method: str | None = None) -> int:
         wanted_path = path.strip()
@@ -304,9 +318,18 @@ class MockBackend:
             return
 
         if path_only.startswith("/provider-health/"):
+            policy_update: tuple[str, pathlib.Path, bytes] | None = None
             with self._lock:
                 sequence = self.provider_health_sequences.get(path_only, [])
                 status = sequence.pop(0) if sequence else self.provider_health_status.get(path_only, 200)
+                update = self.provider_policy_update_on_health
+                if update is not None and update[0] == path_only:
+                    policy_update = update
+                    self.provider_policy_update_on_health = None
+            if policy_update is not None:
+                _, policy_path, contents = policy_update
+                policy_path.write_bytes(contents)
+                policy_path.chmod(0o600)
             self._send_json(handler, status, {"healthy": status == 200})
             return
 
@@ -1388,6 +1411,30 @@ def test_provider_compute_lifecycle(server: NmcServerProcess, backend: MockBacke
 
     policy_path = pathlib.Path(server._provider_environment["NMC_PROVIDER_DEPENDENCY_POLICY_PATH"])
     original_policy = policy_path.read_bytes()
+    try:
+        changed_policy = json.loads(original_policy)
+        changed_policy["resources"][0]["host_health"]["id"] = "host-aws-changed-during-preflight"
+        backend.set_provider_policy_update_on_health(
+            "/provider-health/database", policy_path, json.dumps(changed_policy).encode("utf-8")
+        )
+        calls_before_policy_race = sum("ec2 reboot-instances" in line for line in aws_call_log.read_text(encoding="utf-8").splitlines())
+        policy_race_job = submit_provider_job(
+            server, "POST", "/providers/compute/instances/action", token="continuum-control-token",
+            payload=dict(restart_request, request_id="authz-provider-policy-race-01"),
+            label="a policy edit during live preflight invalidates the queued restart",
+        )
+        policy_race_terminal = wait_for_provider_job(server, policy_race_job["job_id"], token="continuum-control-token")
+        assert_true(policy_race_terminal.get("status") == "failed",
+                    "a policy edit during dependency probes must fail the provider job")
+        assert_true(policy_race_terminal.get("result", {}).get("data", {}).get("dependency_preflight") == "stale",
+                    "a policy edit during dependency probes must be reported as a stale binding")
+        assert_true(sum("ec2 reboot-instances" in line for line in aws_call_log.read_text(encoding="utf-8").splitlines()) == calls_before_policy_race,
+                    "a policy edit during dependency probes must prevent the provider restart")
+    finally:
+        backend.clear_provider_policy_update_on_health()
+        policy_path.write_bytes(original_policy)
+        policy_path.chmod(0o600)
+
     try:
         policy = json.loads(original_policy)
         policy["resources"][0]["host_health"]["url"] = backend.base_url.replace("http://", "HTTPS://", 1) + "/provider-health/host-aws"
