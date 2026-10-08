@@ -503,7 +503,7 @@ class RedfishBmcMock:
             [
                 "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1",
                 "-keyout", str(self._key_path), "-out", str(self._cert_path),
-                "-subj", "/CN=Turing-Pi",
+                "-subj", "/CN=127.0.0.1", "-addext", "subjectAltName=IP:127.0.0.1",
             ],
             check=True,
             capture_output=True,
@@ -536,24 +536,6 @@ class RedfishBmcMock:
     @property
     def ca_file(self) -> pathlib.Path:
         return self._cert_path
-
-    @property
-    def spki_sha256(self) -> str:
-        """Return the certificate public-key pin used by the HTTPS client."""
-        public_key = subprocess.run(
-            ["openssl", "x509", "-in", str(self._cert_path), "-pubkey", "-noout"],
-            check=True,
-            capture_output=True,
-            timeout=10,
-        ).stdout
-        der_key = subprocess.run(
-            ["openssl", "pkey", "-pubin", "-outform", "DER"],
-            input=public_key,
-            check=True,
-            capture_output=True,
-            timeout=10,
-        ).stdout
-        return hashlib.sha256(der_key).hexdigest()
 
     def start(self) -> None:
         self._httpd = ThreadingHTTPServer(("127.0.0.1", 0), self._handler_cls)
@@ -684,7 +666,7 @@ class TuringPiBmcMock:
             [
                 "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1",
                 "-keyout", str(self._key_path), "-out", str(self._cert_path),
-                "-subj", "/CN=127.0.0.1", "-addext", "subjectAltName=IP:127.0.0.1",
+                "-subj", "/CN=Turing-Pi",
             ],
             check=True,
             capture_output=True,
@@ -717,6 +699,24 @@ class TuringPiBmcMock:
     @property
     def ca_file(self) -> pathlib.Path:
         return self._cert_path
+
+    @property
+    def spki_sha256(self) -> str:
+        """Return the certificate public-key pin used by the HTTPS client."""
+        public_key = subprocess.run(
+            ["openssl", "x509", "-in", str(self._cert_path), "-pubkey", "-noout"],
+            check=True,
+            capture_output=True,
+            timeout=10,
+        ).stdout
+        der_key = subprocess.run(
+            ["openssl", "pkey", "-pubin", "-outform", "DER"],
+            input=public_key,
+            check=True,
+            capture_output=True,
+            timeout=10,
+        ).stdout
+        return hashlib.sha256(der_key).hexdigest()
 
     def start(self) -> None:
         self._httpd = ThreadingHTTPServer(("127.0.0.1", 0), self._handler_cls)
