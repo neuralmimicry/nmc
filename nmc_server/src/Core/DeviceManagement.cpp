@@ -19,6 +19,10 @@
 #include <utility>
 #include <vector>
 
+#include <openssl/crypto.h>
+#include <openssl/evp.h>
+#include <openssl/x509.h>
+
 #ifndef _WIN32
 #include <arpa/inet.h>
 #include <cerrno>
@@ -119,6 +123,7 @@ struct Endpoint {
     int port{0};
     std::string basePath;
     std::string caFile;
+    std::string spkiSha256;
 };
 
 bool parseEndpoint(const std::string& value, bool allowHttp, Endpoint& parsed, std::string& error) {
@@ -193,6 +198,49 @@ auto withHttpClient(const Endpoint& endpoint, F&& call) -> decltype(call(std::de
             if (caCertificate.empty() || caCertificate.size() > 1024 * 1024) return {};
             client.load_ca_cert_store(caCertificate.data(), caCertificate.size());
         }
+        if (!endpoint.spkiSha256.empty()) {
+            // A pinned key is an explicit trust anchor for fixed BMCs whose
+            // factory certificate cannot pass normal CA, date or name checks.
+            // The callback accepts only the configured key and rejects every
+            // other certificate during the TLS handshake.
+            const std::string expectedPin = endpoint.spkiSha256;
+            client.set_server_certificate_verifier([expectedPin](SSL* ssl) {
+                X509* certificate = ssl ? SSL_get1_peer_certificate(ssl) : nullptr;
+                if (!certificate) return httplib::SSLVerifierResponse::CertificateRejected;
+                EVP_PKEY* publicKey = X509_get_pubkey(certificate);
+                X509_free(certificate);
+                if (!publicKey) return httplib::SSLVerifierResponse::CertificateRejected;
+
+                const int derSize = i2d_PUBKEY(publicKey, nullptr);
+                if (derSize <= 0 || derSize > 64 * 1024) {
+                    EVP_PKEY_free(publicKey);
+                    return httplib::SSLVerifierResponse::CertificateRejected;
+                }
+                std::vector<unsigned char> der(static_cast<size_t>(derSize));
+                unsigned char* derCursor = der.data();
+                const int encodedSize = i2d_PUBKEY(publicKey, &derCursor);
+                EVP_PKEY_free(publicKey);
+                if (encodedSize != derSize) return httplib::SSLVerifierResponse::CertificateRejected;
+
+                std::array<unsigned char, EVP_MAX_MD_SIZE> digest{};
+                unsigned int digestSize = 0;
+                if (EVP_Digest(der.data(), der.size(), digest.data(), &digestSize, EVP_sha256(), nullptr) != 1
+                    || digestSize != 32) {
+                    return httplib::SSLVerifierResponse::CertificateRejected;
+                }
+                static constexpr char hex[] = "0123456789abcdef";
+                std::string actualPin;
+                actualPin.reserve(digestSize * 2);
+                for (unsigned int index = 0; index < digestSize; ++index) {
+                    actualPin.push_back(hex[digest[index] >> 4]);
+                    actualPin.push_back(hex[digest[index] & 0x0f]);
+                }
+                const bool pinMatches = actualPin.size() == expectedPin.size()
+                                         && CRYPTO_memcmp(actualPin.data(), expectedPin.data(), expectedPin.size()) == 0;
+                return pinMatches ? httplib::SSLVerifierResponse::CertificateAccepted
+                                  : httplib::SSLVerifierResponse::CertificateRejected;
+            });
+        }
         if (!client.is_valid()) return {};
         client.set_connection_timeout(3, 0);
         client.set_read_timeout(6, 0);
@@ -210,6 +258,19 @@ auto withHttpClient(const Endpoint& endpoint, F&& call) -> decltype(call(std::de
 
 bool parseControllerEndpoint(const Json& controller, Endpoint& endpoint, std::string& error) {
     if (!parseEndpoint(controller.value("endpoint", std::string{}), false, endpoint, error)) return false;
+    if (controller.contains("tls_spki_sha256")) {
+        if (!controller["tls_spki_sha256"].is_string()) {
+            error = "tls_spki_sha256 must be a SHA-256 hex digest of the BMC public key";
+            return false;
+        }
+        std::string pin = lower(controller["tls_spki_sha256"].get<std::string>());
+        static const std::regex pinPattern("^[0-9a-f]{64}$");
+        if (!std::regex_match(pin, pinPattern)) {
+            error = "tls_spki_sha256 must be a 64-character SHA-256 hex digest of the BMC public key";
+            return false;
+        }
+        endpoint.spkiSha256 = std::move(pin);
+    }
     if (controller.contains("tls_ca_file")) {
         if (!controller["tls_ca_file"].is_string()) {
             error = "tls_ca_file must be an absolute CA bundle path";
