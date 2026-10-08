@@ -58,7 +58,9 @@
                 revision: stale ? "stale-browser-fixture" : "fresh-browser-fixture",
                 generated_at_unix_ms: stale ? Date.now() - 60 * 60 * 1000 : Date.now(),
                 stale,
-                devices: [device],
+                devices: mode === "network-overview-ambiguous"
+                    ? [device, { ...device, id: "spirit-shadow", name: "spirit-shadow" }]
+                    : [device],
                 controllers: [controller]
             }
         };
@@ -84,10 +86,27 @@
         }
         if (path === "/tracey/agents") {
             if (mode === "tracey-unavailable") return reply({ message: "fixture Tracey unavailable" }, 503);
-            return reply({ data: { agents: [], summary: {} } });
+            const agents = ["network-overview", "network-overview-ambiguous"].includes(mode) ? [{
+                agent_id: "tracey-spirit",
+                host: "spirit",
+                announce_addr: "192.168.1.2",
+                status_addr: "http://192.168.1.2:9782",
+                status: "healthy",
+                stale: false,
+                version: "browser-fixture",
+                last_seen_seconds_ago: 4,
+                last_seen_epoch_ms: Date.now()
+            }] : [];
+            return reply({ data: { agents, summary: { healthy: agents.length, total: agents.length } } });
         }
         if (path === "/devices/controllers/diagnostics") {
             return reply({ data: { controller_id: "spirit-bmc", capabilities: ["GracefulRestart"], status: "diagnostics-only" } });
+        }
+        if (path === "/devices/dhcp") {
+            return reply({ data: { inventory_revision: "fresh-browser-fixture", inventory_stale: false, servers: [{
+                server_id: "vega-dhcp",
+                leases: [{ mac_address: device.mac_addresses[0], ip_address: device.addresses[0], hostname: device.name }]
+            }] } });
         }
         if (emptyLists.has(path)) return reply({ data: [] });
         if (path === "/tracey/ai-lab") return reply({ data: { summary: {}, reports: [] } });

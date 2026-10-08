@@ -84,7 +84,7 @@ This harness starts a real `nmc_server` process, points it at local mock HTTP de
 
 Location: `tests/functional/`
 
-Run `node tests/functional/dashboard_device_safety_browser_test.mjs` to exercise the monitoring dashboard in headless Firefox through geckodriver. The local fixture server supplies authenticated inventory and Tracey responses, then covers stale inventory, inventory HTTP 503, and Tracey HTTP 503. The tests check visible warning/empty states, device drilldown, read-only diagnostics, and that no controller mutation request is sent without server-issued preflight.
+Run `node tests/functional/dashboard_device_safety_browser_test.mjs` to exercise the monitoring dashboard in headless Firefox through geckodriver. The local fixture server supplies authenticated inventory and Tracey responses, then covers stale inventory, inventory HTTP 503, Tracey HTTP 503, the combined network graph/table with an exact Tracey match, and ambiguous Tracey identity handling. The tests check visible warning/empty states, graph and table drilldown, device-specific DHCP evidence, mapped controller diagnostics, and that no controller mutation request is sent without server-issued preflight.
 
 The canonical preflight runs these browser tests when Node.js, Firefox and geckodriver are available; other build hosts report a clear skip. Set `FIREFOX_BIN` or `WEBDRIVER_BIN` to override executable discovery. Set `NMC_BROWSER_PROFILE_ROOT` when a confined browser such as Firefox Snap requires profiles to live in a specific writable directory. These tests use mock API responses and do not validate production credentials or live inventory contents.
 
@@ -158,5 +158,5 @@ Minimum CI gate for this repository:
 - No property/fuzz testing for CLI parsing.
 - No automated coverage today for the local `kubectl` Refiner workflows or the SSH/SCP recruitment execution path.
 - No executable end-to-end test today for the full Tracey assessment plan/report cycle against a live multi-agent deployment; the current server harness covers route authorisation and guarded forwarding only.
-- Dashboard browser safety behaviour is exercised against local mock APIs; no automated browser test currently authenticates to production or exercises live device management.
+- Dashboard browser behaviour is exercised against local mock APIs, including its combined inventory/Tracey overview; no automated browser test currently authenticates to production or exercises live device management.
 - No persistence-focused tests for server restart behaviour because several server-side stores are intentionally in-memory.
