@@ -13,6 +13,7 @@ Coverage goals:
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 import pathlib
@@ -665,7 +666,7 @@ class TuringPiBmcMock:
             [
                 "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1",
                 "-keyout", str(self._key_path), "-out", str(self._cert_path),
-                "-subj", "/CN=127.0.0.1", "-addext", "subjectAltName=IP:127.0.0.1",
+                "-subj", "/CN=Turing-Pi",
             ],
             check=True,
             capture_output=True,
@@ -698,6 +699,24 @@ class TuringPiBmcMock:
     @property
     def ca_file(self) -> pathlib.Path:
         return self._cert_path
+
+    @property
+    def spki_sha256(self) -> str:
+        """Return the certificate public-key pin used by the HTTPS client."""
+        public_key = subprocess.run(
+            ["openssl", "x509", "-in", str(self._cert_path), "-pubkey", "-noout"],
+            check=True,
+            capture_output=True,
+            timeout=10,
+        ).stdout
+        der_key = subprocess.run(
+            ["openssl", "pkey", "-pubin", "-outform", "DER"],
+            input=public_key,
+            check=True,
+            capture_output=True,
+            timeout=10,
+        ).stdout
+        return hashlib.sha256(der_key).hexdigest()
 
     def start(self) -> None:
         self._httpd = ThreadingHTTPServer(("127.0.0.1", 0), self._handler_cls)
@@ -2494,7 +2513,7 @@ def test_turingpi_diagnostics_and_actions(backend_base_url: str) -> None:
             {
                 "protocol": "turingpi",
                 "endpoint": mock.base_url,
-                "tls_ca_file": str(mock.ca_file),
+                "tls_spki_sha256": mock.spki_sha256,
                 "power_actions_enabled": True,
                 "cold_restart_mode": "bmc_reset",
             }
@@ -2580,6 +2599,37 @@ def test_turingpi_diagnostics_and_actions(backend_base_url: str) -> None:
         assert_status(failed_status, 502, "Turing Pi HTTP success without application acknowledgement")
         assert_true(failed_payload.get("error", {}).get("code") == "controller_action_failed",
                     "an unacknowledged Turing Pi operation must not be reported as successful")
+
+        records_before_bad_pin = mock.records()
+        inventory["controllers"][0]["tls_spki_sha256"] = "0" * 64
+        inventory_path.write_text(json.dumps(inventory), encoding="utf-8")
+        inventory_path.chmod(0o600)
+        bad_pin_status, bad_pin_payload = request_json(
+            server.base_url,
+            "GET",
+            "/devices/controllers/diagnostics?controller_id=authz-bmc",
+            token="continuum-observe-token",
+        )
+        assert_status(bad_pin_status, 502, "Turing Pi must reject an unrecognised public-key pin")
+        assert_true(bad_pin_payload.get("error", {}).get("code") == "turingpi_authentication_failed",
+                    "a TLS pin mismatch must fail before Turing Pi authentication")
+        assert_true(mock.records() == records_before_bad_pin,
+                    "a TLS pin mismatch must not send credentials or an API request to the controller")
+
+        inventory["controllers"][0]["tls_spki_sha256"] = "not-a-sha256-pin"
+        inventory_path.write_text(json.dumps(inventory), encoding="utf-8")
+        inventory_path.chmod(0o600)
+        malformed_pin_status, malformed_pin_payload = request_json(
+            server.base_url,
+            "GET",
+            "/devices/controllers/diagnostics?controller_id=authz-bmc",
+            token="continuum-observe-token",
+        )
+        assert_status(malformed_pin_status, 503, "Turing Pi must reject malformed public-key pins")
+        assert_true(malformed_pin_payload.get("error", {}).get("code") == "device_inventory_unavailable",
+                    "a malformed TLS pin must invalidate the controller inventory")
+        assert_true(mock.records() == records_before_bad_pin,
+                    "a malformed TLS pin must not send credentials or an API request to the controller")
     finally:
         server.stop()
         mock.stop()
