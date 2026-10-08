@@ -1554,7 +1554,10 @@ def test_provider_compute_lifecycle(server: NmcServerProcess) -> None:
             )
         )
 
-    sleep_deadline = time.monotonic() + 5
+    # Each worker must verify provider identity and inventory before reaching
+    # the held lifecycle command; allow the slower self-hosted CI runner time
+    # to start both process trees before concluding that execution is serial.
+    sleep_deadline = time.monotonic() + 20
     while time.monotonic() < sleep_deadline:
         if sleepers_path.exists() and len(sleepers_path.read_text(encoding="utf-8").splitlines()) >= 2:
             break
