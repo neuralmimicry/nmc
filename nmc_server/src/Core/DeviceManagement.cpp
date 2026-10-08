@@ -486,6 +486,46 @@ struct CommandResult {
     std::string output;
 };
 
+#ifndef _WIN32
+bool trustedIpmitoolOverride(const std::string& configuredExecutable) {
+    const std::filesystem::path candidate(configuredExecutable);
+    if (!candidate.is_absolute()) return false;
+    for (const auto& component : candidate) {
+        if (component == "..") return false;
+    }
+
+    std::filesystem::path current = candidate.root_path();
+    struct stat metadata {};
+    if (current.empty() || ::lstat(current.c_str(), &metadata) != 0
+        || !S_ISDIR(metadata.st_mode) || (metadata.st_uid != 0 && metadata.st_uid != ::geteuid())) {
+        return false;
+    }
+
+    auto component = candidate.begin();
+    if (component != candidate.end()) ++component; // The root directory was checked above.
+    for (; component != candidate.end(); ++component) {
+        current /= *component;
+        if (::lstat(current.c_str(), &metadata) != 0) return false;
+        const bool isExecutable = std::next(component) == candidate.end();
+        if (isExecutable) {
+            return S_ISREG(metadata.st_mode)
+                   && (metadata.st_mode & (S_IWGRP | S_IWOTH)) == 0
+                   && (metadata.st_mode & (S_ISUID | S_ISGID)) == 0
+                   && (metadata.st_mode & (S_IXUSR | S_IXGRP | S_IXOTH)) != 0
+                   && (metadata.st_uid == 0 || metadata.st_uid == ::geteuid());
+        }
+
+        const bool trustedOwner = metadata.st_uid == 0 || metadata.st_uid == ::geteuid();
+        const bool writableDirectory = (metadata.st_mode & (S_IWGRP | S_IWOTH)) != 0;
+        const bool protectedSharedDirectory = metadata.st_uid == 0 && (metadata.st_mode & S_ISVTX) != 0;
+        if (!S_ISDIR(metadata.st_mode) || !trustedOwner || (writableDirectory && !protectedSharedDirectory)) {
+            return false;
+        }
+    }
+    return false;
+}
+#endif
+
 CommandResult runIpmitool(const Json& controller, const std::vector<std::string>& command) {
     CommandResult result;
 #ifdef _WIN32
@@ -500,10 +540,20 @@ CommandResult runIpmitool(const Json& controller, const std::vector<std::string>
         return result;
     }
     std::string executable;
-    for (const char* candidate : {"/usr/sbin/ipmitool", "/usr/bin/ipmitool"}) {
-        if (::access(candidate, X_OK) == 0) {
-            executable = candidate;
-            break;
+    const std::string configuredExecutable = envValue("NMC_IPMITOOL_PATH");
+    if (!configuredExecutable.empty()) {
+        if (!trustedIpmitoolOverride(configuredExecutable)) {
+            result.exitCode = 127;
+            result.output = "NMC_IPMITOOL_PATH must name an executable in trusted, non-writable directories without symlinks";
+            return result;
+        }
+        executable = configuredExecutable;
+    } else {
+        for (const char* candidate : {"/usr/sbin/ipmitool", "/usr/bin/ipmitool"}) {
+            if (::access(candidate, X_OK) == 0) {
+                executable = candidate;
+                break;
+            }
         }
     }
     if (executable.empty()) {
