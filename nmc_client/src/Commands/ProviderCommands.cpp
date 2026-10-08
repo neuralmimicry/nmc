@@ -92,6 +92,24 @@ int ProviderComputeStatusCommand::execute(const std::map<std::string, std::strin
     return response.success ? 0 : 1;
 }
 
+ProviderComputeJobCommand::ProviderComputeJobCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client)
+    : BaseCommand("job", "Inspect an asynchronous provider operation", std::move(client)) {
+    usage = "nmc provider compute job --job-id <32-character-job-id>";
+    examples = "nmc provider compute job --job-id 6f3c7e... --output json";
+    addFlag(CLI::Flag("i", "job-id", "Asynchronous provider job identifier", CLI::FlagType::String, true));
+}
+
+int ProviderComputeJobCommand::execute(const std::map<std::string, std::string>& parsedFlags,
+                                       const std::vector<std::string>& parsedArgs,
+                                       const CLI::GlobalFlags& globalFlags) {
+    if (!validateArguments(parsedArgs) || !validateFlags(parsedFlags)) return 1;
+    const auto response = apiClient->getProviderComputeJob(parsedFlags.at("job-id"));
+    printOutput(response, globalFlags);
+    if (!response.success || !response.data.is_object()) return 1;
+    const std::string status = response.data.value("status", std::string{});
+    return status == "queued" || status == "running" || status == "succeeded" ? 0 : 1;
+}
+
 ProviderComputeInstancesCommand::ProviderComputeInstancesCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client)
     : BaseCommand("instances", "List provider instances within an allowlisted scope", std::move(client)) {
     usage = "nmc provider compute instances --provider aws --scope 123456789012 --region eu-west-2";
@@ -145,14 +163,15 @@ int ProviderComputeCreateCommand::execute(const std::map<std::string, std::strin
 
 ProviderComputeActionCommand::ProviderComputeActionCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client)
     : BaseCommand("action", "Restart, start, stop or delete one exact provider instance", std::move(client)) {
-    usage = "nmc provider compute action --provider aws --scope 123456789012 --region eu-west-2 --instance-id i-0123456789abcdef0 --action restart";
-    examples = "nmc provider compute action --provider gcp --scope project-id --zone europe-west2-a --instance-id worker-01 --action stop";
+    usage = "nmc provider compute action --provider aws --scope 123456789012 --region eu-west-2 --instance-id i-0123456789abcdef0 --action restart --request-id operation-identifier-0001";
+    examples = "nmc provider compute action --provider gcp --scope project-id --zone europe-west2-a --instance-id worker-01 --action stop --request-id operation-identifier-0002";
     addFlag(CLI::Flag("p", "provider", "Provider: aws, gcp or azure", CLI::FlagType::String, true));
     addFlag(CLI::Flag("s", "scope", "Allowlisted provider account, project or subscription", CLI::FlagType::String, true));
     addFlag(CLI::Flag("r", "region", "Provider region (required for AWS and Azure)", CLI::FlagType::String, false));
     addFlag(CLI::Flag("z", "zone", "GCP zone (required for GCP)", CLI::FlagType::String, false));
     addFlag(CLI::Flag("i", "instance-id", "Exact provider instance ID; Azure requires the canonical resource ID", CLI::FlagType::String, true));
     addFlag(CLI::Flag("a", "action", "Action: restart, start, stop or delete", CLI::FlagType::String, true));
+    addFlag(CLI::Flag("q", "request-id", "Stable idempotency key used to poll or safely retry this action", CLI::FlagType::String, true));
 }
 
 int ProviderComputeActionCommand::execute(const std::map<std::string, std::string>& parsedFlags,
@@ -163,7 +182,8 @@ int ProviderComputeActionCommand::execute(const std::map<std::string, std::strin
         {"provider", parsedFlags.at("provider")},
         {"scope", parsedFlags.at("scope")},
         {"instance_id", parsedFlags.at("instance-id")},
-        {"action", parsedFlags.at("action")}
+        {"action", parsedFlags.at("action")},
+        {"request_id", parsedFlags.at("request-id")}
     };
     if (parsedFlags.count("region")) request["region"] = parsedFlags.at("region");
     if (parsedFlags.count("zone")) request["zone"] = parsedFlags.at("zone");

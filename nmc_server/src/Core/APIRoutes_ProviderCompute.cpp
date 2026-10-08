@@ -1,20 +1,18 @@
 // HTTP handlers for the scoped AWS, GCP and Azure compute adapter.
 #include "APIRoutes.h"
 #include "ProviderCompute.h"
-#include <chrono>
+
+#include <cstddef>
 
 namespace NMC::Server {
 namespace {
 
-int64_t providerAuditTimestampMs() {
-    return std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::system_clock::now().time_since_epoch()).count();
-}
+constexpr std::size_t MaximumProviderRequestBytes = 256 * 1024;
 
 } // namespace
 
 void APIRoutes::handleProviderComputeStatus(const httplib::Request&, httplib::Response& res) {
-    const ProviderComputeResult result = ProviderCompute::status();
+    ProviderComputeResult result = ProviderCompute::status();
     Models::CloudResponse body;
     body.success = result.success;
     body.message = result.message;
@@ -27,17 +25,15 @@ void APIRoutes::handleProviderComputeList(const httplib::Request& req, httplib::
         return sendErrorResponse(res, 400, "provider and scope query parameters are required.");
     }
     const std::string region = req.has_param("region") ? req.get_param_value("region") : "";
-    const ProviderComputeResult result = ProviderCompute::list(
-            req.get_param_value("provider"), req.get_param_value("scope"), region);
-    if (!result.success) return sendErrorResponse(res, result.httpStatus, result.message);
-    Models::CloudResponse body;
-    body.success = true;
-    body.message = result.message;
-    body.data = result.data;
-    sendJsonResponse(res, body);
+    submitProviderComputeJob("list", {{"provider", req.get_param_value("provider")},
+                                       {"scope", req.get_param_value("scope")},
+                                       {"region", region}}, req, res);
 }
 
 void APIRoutes::handleProviderComputeCreate(const httplib::Request& req, httplib::Response& res) {
+    if (req.body.size() > MaximumProviderRequestBytes) {
+        return sendErrorResponse(res, 413, "Provider operation request exceeds the 256 KiB limit.");
+    }
     nlohmann::json request;
     try {
         request = nlohmann::json::parse(req.body);
@@ -46,30 +42,13 @@ void APIRoutes::handleProviderComputeCreate(const httplib::Request& req, httplib
     }
     if (!request.is_object()) return sendErrorResponse(res, 400, "Request body must be a JSON object.");
 
-    const std::string provider = request.value("provider", std::string{});
-    const std::string scope = request.value("scope", std::string{});
-    const std::string providerRequestId = request.value("idempotency_key", std::string{});
-    std::string name;
-    if (request.contains("spec") && request["spec"].is_object()) {
-        name = request["spec"].value("name", std::string{});
-    }
-    ProviderComputeResult result = ProviderCompute::create(request);
-    const int64_t timestamp = providerAuditTimestampMs();
-    recordServerStateEvent("provider_compute", provider + ":" + scope + ":" + name,
-                           result.success ? "created" : "create_failed", timestamp,
-                           {{"provider", provider}, {"scope", scope}, {"name", name},
-                            {"success", result.success}, {"http_status", result.httpStatus},
-                            {"message", result.message}, {"provider_request_id", providerRequestId},
-                            {"request_id", req.get_header_value("X-Request-ID")}});
-    if (!result.success) return sendErrorResponse(res, result.httpStatus, result.message);
-    Models::CloudResponse body;
-    body.success = true;
-    body.message = result.message;
-    body.data = result.data;
-    sendJsonResponse(res, body);
+    submitProviderComputeJob("create", request, req, res);
 }
 
 void APIRoutes::handleProviderComputeAction(const httplib::Request& req, httplib::Response& res) {
+    if (req.body.size() > MaximumProviderRequestBytes) {
+        return sendErrorResponse(res, 413, "Provider operation request exceeds the 256 KiB limit.");
+    }
     nlohmann::json request;
     try {
         request = nlohmann::json::parse(req.body);
@@ -78,25 +57,38 @@ void APIRoutes::handleProviderComputeAction(const httplib::Request& req, httplib
     }
     if (!request.is_object()) return sendErrorResponse(res, 400, "Request body must be a JSON object.");
 
-    const std::string provider = request.value("provider", std::string{});
-    const std::string scope = request.value("scope", std::string{});
-    const std::string instanceId = request.value("instance_id", std::string{});
-    const std::string action = request.value("action", std::string{});
-    const std::string providerRequestId = request.value("request_id", std::string{});
-    ProviderComputeResult result = ProviderCompute::action(request);
-    const int64_t timestamp = providerAuditTimestampMs();
-    recordServerStateEvent("provider_compute", provider + ":" + scope + ":" + instanceId,
-                           result.success ? action : action + "_failed", timestamp,
-                           {{"provider", provider}, {"scope", scope}, {"instance_id", instanceId},
-                            {"action", action}, {"success", result.success},
-                            {"http_status", result.httpStatus}, {"message", result.message},
-                            {"provider_request_id", providerRequestId},
-                            {"request_id", req.get_header_value("X-Request-ID")}});
-    if (!result.success) return sendErrorResponse(res, result.httpStatus, result.message);
+    submitProviderComputeJob("action", request, req, res);
+}
+
+void APIRoutes::submitProviderComputeJob(const std::string& operation,
+                                         const nlohmann::json& request,
+                                         const httplib::Request&,
+                                         httplib::Response& res) {
+    if (!providerComputeJobs || !providerComputeJobs->available()) {
+        return sendErrorResponse(res, 503, "Provider job execution is unavailable; no provider operation was launched.");
+    }
+    const auto submission = providerComputeJobs->submit(operation, request);
+    if (!submission.accepted) return sendErrorResponse(res, submission.httpStatus, submission.message);
+
     Models::CloudResponse body;
     body.success = true;
-    body.message = result.message;
-    body.data = result.data;
+    body.message = submission.message;
+    body.data = submission.job;
+    sendJsonResponse(res, body);
+    res.status = 202;
+    res.set_header("Location", "/providers/compute/jobs/" + submission.job.value("job_id", std::string{}));
+}
+
+void APIRoutes::handleProviderComputeJob(const httplib::Request& req, httplib::Response& res) {
+    if (!providerComputeJobs || req.matches.size() < 2) {
+        return sendErrorResponse(res, 503, "Provider job lookup is unavailable.");
+    }
+    const auto job = providerComputeJobs->get(req.matches[1]);
+    if (!job) return sendErrorResponse(res, 404, "Provider job was not found or has expired.");
+    Models::CloudResponse body;
+    body.success = true;
+    body.message = "Provider job status retrieved.";
+    body.data = *job;
     sendJsonResponse(res, body);
 }
 

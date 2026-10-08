@@ -188,6 +188,7 @@ set(NMC_SERVER_SOURCES
         src/Core/OpenShiftClient.cpp
         src/Core/ProxmoxClient.cpp
         src/Core/ProviderCompute.cpp
+        src/Core/ProviderComputeJobManager.cpp
         src/Core/ServerStateStore.cpp
         src/Core/TraceyCVEIntel.cpp
         src/Core/TraceyStateStore.cpp

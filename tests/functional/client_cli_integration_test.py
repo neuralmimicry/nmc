@@ -265,6 +265,50 @@ class MockServer:
             )
             return
 
+        if handler.command == "POST" and path_only == "/providers/compute/instances/action":
+            self._send_json(
+                handler,
+                202,
+                {
+                    "success": True,
+                    "message": "Provider operation accepted.",
+                    "data": {
+                        "job_id": "a" * 32,
+                        "status": "queued",
+                        "status_url": "/providers/compute/jobs/" + "a" * 32,
+                    },
+                },
+            )
+            return
+
+        provider_job_match = re.match(r"^/providers/compute/jobs/([0-9a-f]{32})$", path_only)
+        if handler.command == "GET" and provider_job_match:
+            job_id = provider_job_match.group(1)
+            poll_number = sum(
+                1
+                for record in self.records()
+                if record.method == "GET" and record.path == f"/providers/compute/jobs/{job_id}"
+            )
+            if poll_number == 1:
+                job = {"job_id": job_id, "status": "queued"}
+            else:
+                job = {
+                    "job_id": job_id,
+                    "status": "succeeded",
+                    "result": {
+                        "success": True,
+                        "http_status": 200,
+                        "message": "Provider operation completed.",
+                        "data": {"provider_state_verified": True},
+                    },
+                }
+            self._send_json(
+                handler,
+                200,
+                {"success": True, "message": "Provider job status retrieved.", "data": job},
+            )
+            return
+
         if handler.command == "POST" and path_only == "/vcluster/create":
             try:
                 payload = json.loads(body) if body else {}
@@ -1262,6 +1306,51 @@ def test_proxmox_invalid_provider_fails_before_network(server: MockServer, home_
     assert_true(len(server.records()) == 0, "invalid proxmox provider should not perform network calls")
 
 
+def test_provider_action_waits_for_job_and_job_command(server: MockServer, home_dir: pathlib.Path) -> None:
+    server.clear_records()
+    request_id = "client-provider-restart-0001"
+    job_id = "a" * 32
+    result = run_nmc(
+        [
+            "provider",
+            "compute",
+            "action",
+            "--provider",
+            "aws",
+            "--scope",
+            "123456789012",
+            "--region",
+            "eu-west-2",
+            "--instance-id",
+            "i-0123456789abcdef0",
+            "--action",
+            "restart",
+            "--request-id",
+            request_id,
+        ],
+        home_dir,
+    )
+    assert_success(result, "provider action waits for its asynchronous job")
+    records = server.records()
+    assert_true(len(records) == 3, f"provider action should submit once and poll twice, got {len(records)} requests")
+    submission = records[0]
+    assert_true(submission.method == "POST" and submission.path == "/providers/compute/instances/action",
+                "provider action should use the asynchronous server route")
+    request_payload = json.loads(submission.body or "{}")
+    assert_true(request_payload.get("request_id") == request_id,
+                "provider action must transmit the stable idempotency key")
+    assert_true(all(record.path == f"/providers/compute/jobs/{job_id}" for record in records[1:]),
+                "provider action should poll the job returned by the server")
+
+    server.clear_records()
+    result = run_nmc(["provider", "compute", "job", "--job-id", job_id], home_dir)
+    assert_success(result, "provider job command")
+    records = server.records()
+    assert_true(len(records) == 1 and records[0].method == "GET"
+                and records[0].path == f"/providers/compute/jobs/{job_id}",
+                "provider job command should retrieve the supplied job identifier")
+
+
 def test_aarnn_endpoints_serialization(server: MockServer, home_dir: pathlib.Path) -> None:
     server.clear_records()
     result = run_nmc(["aarnn", "endpoints"], home_dir)
@@ -1708,6 +1797,7 @@ def main() -> int:
             test_proxmox_request_serialization(server, home_dir)
             test_proxmox_status_serialization(server, home_dir)
             test_proxmox_invalid_provider_fails_before_network(server, home_dir)
+            test_provider_action_waits_for_job_and_job_command(server, home_dir)
             test_aarnn_endpoints_serialization(server, home_dir)
             test_aarnn_inventory_serialization(server, home_dir)
             test_aarnn_network_status_inventory_serialization(server, home_dir)

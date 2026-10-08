@@ -121,6 +121,7 @@ int main(int argc, char* argv[]) {
     auto providerCmd = std::make_shared<NMC::Commands::ProviderCommand>(apiClient);
     auto providerComputeCmd = std::make_shared<NMC::Commands::ProviderComputeCommand>(apiClient);
     providerComputeCmd->addSubcommand(std::make_shared<NMC::Commands::ProviderComputeStatusCommand>(apiClient));
+    providerComputeCmd->addSubcommand(std::make_shared<NMC::Commands::ProviderComputeJobCommand>(apiClient));
     providerComputeCmd->addSubcommand(std::make_shared<NMC::Commands::ProviderComputeInstancesCommand>(apiClient));
     providerComputeCmd->addSubcommand(std::make_shared<NMC::Commands::ProviderComputeCreateCommand>(apiClient));
     providerComputeCmd->addSubcommand(std::make_shared<NMC::Commands::ProviderComputeActionCommand>(apiClient));

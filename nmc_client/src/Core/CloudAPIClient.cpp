@@ -3,12 +3,14 @@
 #include <iostream>
 #include <nlohmann/json.hpp> // For JSON parsing and creation
 #include <algorithm> // For std::find_if, std::remove_if
+#include <chrono>
 #include <fstream>   // For file operations (std::ifstream, std::ofstream)
 #include <filesystem> // For creating directories (C++17)
 #include <array>
 #include <cstdlib>
 #include <iomanip>
 #include <sstream>
+#include <thread>
 
 namespace {
     // Read environment variables without throwing or returning nullptrs.
@@ -798,17 +800,156 @@ namespace NMC::Core {
                            "&scope=" + encodeQueryValue(scope);
         if (!region.empty()) path += "&region=" + encodeQueryValue(region);
         auto res = cli->Get(path);
-        return processHttpResponse(res, "Live provider compute inventory retrieved.");
+        return waitForProviderComputeJob(res, "Live provider compute inventory retrieved.");
     }
 
     Models::CloudResponse CloudAPIClient::createProviderInstance(const nlohmann::json& request) {
         auto res = cli->Post("/providers/compute/instances/create", request.dump(), "application/json");
-        return processHttpResponse(res, "Provider instance creation submitted.");
+        return waitForProviderComputeJob(res, "Provider instance creation completed.");
     }
 
     Models::CloudResponse CloudAPIClient::actOnProviderInstance(const nlohmann::json& request) {
         auto res = cli->Post("/providers/compute/instances/action", request.dump(), "application/json");
-        return processHttpResponse(res, "Provider instance action submitted.");
+        return waitForProviderComputeJob(res, "Provider instance action completed.");
+    }
+
+    Models::CloudResponse CloudAPIClient::getProviderComputeJob(const std::string& jobId) {
+        if (jobId.size() != 32 || !std::all_of(jobId.begin(), jobId.end(), [](unsigned char ch) {
+                return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f');
+            })) {
+            Models::CloudResponse response;
+            response.success = false;
+            response.message = "Provider job ID must be a 32-character lowercase hexadecimal identifier.";
+            response.data = nlohmann::json::object();
+            response.statusCode = 400;
+            return response;
+        }
+        auto res = cli->Get("/providers/compute/jobs/" + jobId);
+        Models::CloudResponse response = processHttpResponse(res, "Provider job status retrieved.");
+        if (!response.success) return response;
+        if (!response.data.is_object()) {
+            response.success = false;
+            response.message = "Provider job status returned an invalid response envelope.";
+            response.statusCode = 502;
+            return response;
+        }
+        const auto job = response.data.find("data");
+        if (job == response.data.end() || !job->is_object()) {
+            response.success = false;
+            response.message = "Provider job status did not contain a job object.";
+            response.statusCode = 502;
+            return response;
+        }
+        response.data = *job;
+        return response;
+    }
+
+    Models::CloudResponse CloudAPIClient::waitForProviderComputeJob(httplib::Result& submission,
+                                                                    const std::string& successMessage) const {
+        if (!submission || submission->status != 202) {
+            return processHttpResponse(submission, successMessage);
+        }
+
+        const auto stringField = [](const nlohmann::json& object, const char* name,
+                                    const std::string& fallback = std::string{}) {
+            if (!object.is_object()) return fallback;
+            const auto found = object.find(name);
+            return found != object.end() && found->is_string() ? found->get<std::string>() : fallback;
+        };
+
+        nlohmann::json accepted;
+        try {
+            accepted = nlohmann::json::parse(submission->body);
+        } catch (const nlohmann::json::exception&) {
+            Models::CloudResponse response;
+            response.success = false;
+            response.message = "The provider job submission returned malformed JSON.";
+            response.data = submission->body;
+            response.statusCode = 502;
+            return response;
+        }
+        const nlohmann::json acceptedData = accepted.is_object()
+                ? accepted.value("data", nlohmann::json::object()) : nlohmann::json::object();
+        const std::string jobId = stringField(acceptedData, "job_id");
+        if (jobId.size() != 32 || !std::all_of(jobId.begin(), jobId.end(), [](unsigned char ch) {
+                return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f');
+            })) {
+            Models::CloudResponse response;
+            response.success = false;
+            response.message = "The provider job submission did not return a valid job ID.";
+            response.data = accepted;
+            response.statusCode = 502;
+            return response;
+        }
+
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::minutes(15);
+        auto pollDelay = std::chrono::milliseconds(250);
+        while (std::chrono::steady_clock::now() < deadline) {
+            auto poll = cli->Get("/providers/compute/jobs/" + jobId);
+            if (!poll) {
+                Models::CloudResponse response;
+                response.success = false;
+                response.message = "Provider job polling failed; the operation was not resubmitted. Re-run with the same idempotency key or inspect job " + jobId + ".";
+                response.data = {{"job_id", jobId}};
+                response.statusCode = 503;
+                return response;
+            }
+            if (poll->status != 200) {
+                Models::CloudResponse response = processHttpResponse(poll, "Provider job status retrieved.");
+                if (!response.data.is_object()) response.data = nlohmann::json::object();
+                response.data["job_id"] = jobId;
+                return response;
+            }
+
+            nlohmann::json payload;
+            try {
+                payload = nlohmann::json::parse(poll->body);
+            } catch (const nlohmann::json::exception&) {
+                Models::CloudResponse response;
+                response.success = false;
+                response.message = "Provider job status returned malformed JSON; inspect job " + jobId + ".";
+                response.data = {{"job_id", jobId}};
+                response.statusCode = 502;
+                return response;
+            }
+            const nlohmann::json job = payload.is_object()
+                    ? payload.value("data", nlohmann::json::object()) : nlohmann::json::object();
+            const std::string state = stringField(job, "status");
+            if (state == "succeeded" || state == "failed" || state == "outcome_unknown" || state == "cancelled") {
+                const nlohmann::json result = job.is_object()
+                        ? job.value("result", nlohmann::json::object()) : nlohmann::json::object();
+                Models::CloudResponse response;
+                const auto success = result.is_object() ? result.find("success") : result.end();
+                response.success = success != result.end() && success->is_boolean() && success->get<bool>() && state == "succeeded";
+                response.message = response.success ? successMessage : stringField(result, "message", "Provider job did not succeed.");
+                response.data = result.is_object() ? result.value("data", nlohmann::json::object()) : nlohmann::json::object();
+                const auto status = result.is_object() ? result.find("http_status") : result.end();
+                response.statusCode = response.success ? 200
+                        : status != result.end() && status->is_number_integer() ? status->get<int>() : 500;
+                if (!response.success && response.data.is_object()) {
+                    response.data["job_id"] = jobId;
+                    response.data["job_status"] = state;
+                }
+                return response;
+            }
+            if (state != "queued" && state != "running") {
+                Models::CloudResponse response;
+                response.success = false;
+                response.message = "Provider job returned an unsupported state; inspect job " + jobId + ".";
+                response.data = job;
+                response.statusCode = 502;
+                return response;
+            }
+            std::this_thread::sleep_for(pollDelay);
+            pollDelay = std::min(pollDelay * 2, std::chrono::milliseconds(2000));
+        }
+
+        Models::CloudResponse response;
+        response.success = false;
+        response.message = "Provider job is still running after the client wait limit; it was not resubmitted. Inspect job " + jobId + " or retry with the same idempotency key.";
+        response.data = {{"job_id", jobId}, {"status", "running"}};
+        response.statusCode = 504;
+        return response;
     }
 
 // --- OpenShift / OpenStack / Proxmox Continuum Operations ---
