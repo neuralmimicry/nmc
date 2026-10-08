@@ -74,6 +74,8 @@ Covered behaviours:
 - `/auth/session` central-session identity normalisation
 - static admin-token fallback for protected server routes
 - Continuum observe/control route authorisation
+- real-server IPMI diagnostics and controller actions against a fake `ipmitool` executable, including password/argv separation, exact target and command selection, preflight state mismatch, symlink rejection, and writable-directory rejection
+- real-server Turing Pi diagnostics and controller actions against a local HTTPS BMC mock, including certificate verification, slot scoping, unsupported warm-restart rejection, explicit action acknowledgement, and post-action power-state verification
 - Tracey observe/use/control route authorisation
 - AARNN observe/use/control route authorisation
 - denied Tracey and AARNN control/runtime requests do not reach guarded upstream targets

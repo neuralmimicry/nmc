@@ -16,6 +16,7 @@ import base64
 import json
 import os
 import pathlib
+import shlex
 import socket
 import ssl
 import subprocess
@@ -25,6 +26,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from urllib.parse import parse_qs, urlsplit
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
@@ -647,6 +649,147 @@ class RedfishBmcMock:
             self._send_json(handler, 404, {"error": "not_found", "path": path})
 
 
+class TuringPiBmcMock:
+    """HTTPS mock for the Turing Pi BMC authentication, power and reset API."""
+
+    def __init__(self, parent_dir: pathlib.Path) -> None:
+        self._cert_path = parent_dir / "turingpi-test-cert.pem"
+        self._key_path = parent_dir / "turingpi-test-key.pem"
+        self._states = {1: True, 2: False, 3: True, 4: False}
+        self._action_acknowledged = True
+        self._records: list[tuple[str, str, dict[str, str]]] = []
+        self._lock = threading.Lock()
+        self._httpd: ThreadingHTTPServer | None = None
+        self._thread: threading.Thread | None = None
+        subprocess.run(
+            [
+                "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1",
+                "-keyout", str(self._key_path), "-out", str(self._cert_path),
+                "-subj", "/CN=127.0.0.1", "-addext", "subjectAltName=IP:127.0.0.1",
+            ],
+            check=True,
+            capture_output=True,
+            timeout=20,
+        )
+
+        outer = self
+
+        class Handler(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def log_message(self, fmt: str, *args: object) -> None:
+                return
+
+            def do_GET(self) -> None:
+                outer._handle(self)
+
+            def do_POST(self) -> None:
+                outer._handle(self)
+
+        self._handler_cls = Handler
+
+    @property
+    def base_url(self) -> str:
+        if not self._httpd:
+            raise RuntimeError("mock Turing Pi BMC is not started")
+        host, port = self._httpd.server_address
+        return f"https://{host}:{port}"
+
+    @property
+    def ca_file(self) -> pathlib.Path:
+        return self._cert_path
+
+    def start(self) -> None:
+        self._httpd = ThreadingHTTPServer(("127.0.0.1", 0), self._handler_cls)
+        tls_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        tls_context.load_cert_chain(str(self._cert_path), str(self._key_path))
+        self._httpd.socket = tls_context.wrap_socket(self._httpd.socket, server_side=True)
+        self._thread = threading.Thread(target=self._httpd.serve_forever, daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        if self._httpd:
+            self._httpd.shutdown()
+            self._httpd.server_close()
+            self._httpd = None
+        if self._thread:
+            self._thread.join(timeout=5)
+            self._thread = None
+
+    def set_action_acknowledged(self, acknowledged: bool) -> None:
+        with self._lock:
+            self._action_acknowledged = acknowledged
+
+    def records(self) -> list[tuple[str, str, dict[str, str]]]:
+        with self._lock:
+            return [(method, path, dict(params)) for method, path, params in self._records]
+
+    def _send_json(self, handler: BaseHTTPRequestHandler, status: int, payload: object) -> None:
+        data = json.dumps(payload).encode("utf-8")
+        handler.send_response(status)
+        handler.send_header("Content-Type", "application/json")
+        handler.send_header("Content-Length", str(len(data)))
+        handler.end_headers()
+        handler.wfile.write(data)
+
+    def _handle(self, handler: BaseHTTPRequestHandler) -> None:
+        parsed = urlsplit(handler.path)
+        params = {key: values[-1] for key, values in parse_qs(parsed.query).items() if values}
+        with self._lock:
+            self._records.append((handler.command, parsed.path, params))
+
+        if handler.command == "POST" and parsed.path == "/api/bmc/authenticate":
+            body_length = int(handler.headers.get("Content-Length", "0"))
+            request_body = json.loads(handler.rfile.read(body_length) or b"{}")
+            if request_body != {"username": "test-bmc-user", "password": "test-bmc-password"}:
+                self._send_json(handler, 401, {"error": "unauthorized"})
+                return
+            self._send_json(handler, 200, {"id": "turingpi-test-token"})
+            return
+
+        if (
+            handler.command != "GET"
+            or parsed.path != "/api/bmc"
+            or handler.headers.get("Authorization") != "Bearer turingpi-test-token"
+        ):
+            self._send_json(handler, 401, {"error": "unauthorized"})
+            return
+
+        if params.get("opt") == "get" and params.get("type") == "power":
+            with self._lock:
+                state = {f"node{slot}": "1" if powered else "0" for slot, powered in self._states.items()}
+            self._send_json(handler, 200, {"response": state})
+            return
+
+        if params.get("opt") != "set":
+            self._send_json(handler, 400, {"error": "invalid_operation"})
+            return
+
+        if params.get("type") == "power":
+            slot_name = next((key for key in params if key in {"node1", "node2", "node3", "node4"}), "")
+            if not slot_name or params[slot_name] not in {"0", "1"}:
+                self._send_json(handler, 400, {"error": "invalid_power_request"})
+                return
+            slot = int(slot_name[-1])
+            with self._lock:
+                self._states[slot] = params[slot_name] == "1"
+                acknowledged = self._action_acknowledged
+            self._send_json(handler, 200, {"success": acknowledged})
+            return
+
+        if params.get("type") == "reset" and params.get("node", "").isdigit():
+            slot = int(params["node"]) + 1
+            if slot not in self._states:
+                self._send_json(handler, 400, {"error": "invalid_slot"})
+                return
+            with self._lock:
+                acknowledged = self._action_acknowledged
+            self._send_json(handler, 200, {"success": acknowledged})
+            return
+
+        self._send_json(handler, 400, {"error": "invalid_operation"})
+
+
 class NmcServerProcess:
     def __init__(
         self,
@@ -656,6 +799,7 @@ class NmcServerProcess:
         device_power_control_enabled: bool = False,
         recovery_enabled: bool | str | None = None,
         provider_environment: dict[str, str] | None = None,
+        device_management_environment: dict[str, str] | None = None,
     ) -> None:
         self._backend_base_url = backend_base_url
         self._cluster_id = cluster_id
@@ -663,6 +807,7 @@ class NmcServerProcess:
         self._device_power_control_enabled = device_power_control_enabled
         self._recovery_enabled = recovery_enabled
         self._provider_environment = dict(provider_environment or {})
+        self._device_management_environment = dict(device_management_environment or {})
         self._tmp_dir = tempfile.TemporaryDirectory(prefix="nmc-server-authz-")
         self._home_dir = pathlib.Path(self._tmp_dir.name)
         self._log_path = self._home_dir / "nmc_server.log"
@@ -711,6 +856,7 @@ class NmcServerProcess:
         env.pop("NMC_PROVIDER_DEPENDENCY_POLICY_PATH", None)
         env.pop("NMC_PROVIDER_HEALTH_TIMEOUT_SECONDS", None)
         env.update(self._provider_environment)
+        env.update(self._device_management_environment)
         env.pop("NMC_DEVICE_POWER_CONTROL_ENABLED", None)
         if self._device_power_control_enabled:
             env["NMC_DEVICE_POWER_CONTROL_ENABLED"] = "true"
@@ -852,6 +998,58 @@ def write_device_inventory(home_dir: pathlib.Path, backend_base_url: str) -> pat
     # Match Ansible's protected runtime file rather than the process umask.
     inventory_path.chmod(0o600)
     return inventory_path
+
+
+def write_mock_ipmitool(home_dir: pathlib.Path) -> tuple[pathlib.Path, pathlib.Path, pathlib.Path]:
+    """Create an isolated executable that models only the IPMI commands under test."""
+    executable = home_dir / "mock-ipmitool"
+    state_path = home_dir / "ipmi-power-state"
+    calls_path = home_dir / "ipmi-command-log"
+    state_path.write_text("on\n", encoding="utf-8")
+    state_path.chmod(0o600)
+    executable.write_text(
+        f"""#!/bin/sh
+set -eu
+if [ "${{IPMI_PASSWORD:-}}" != "test-bmc-password" ]; then
+  exit 90
+fi
+printf 'PASSWORD_PRESENT=1 %s\\n' "$*" >> {shlex.quote(str(calls_path))}
+state_file={shlex.quote(str(state_path))}
+current_state=$(cat "$state_file")
+case "$*" in
+  *"chassis power status")
+    printf 'Chassis Power is %s\\n' "$current_state"
+    ;;
+  *"chassis status")
+    printf 'System Power : %s\\n' "$current_state"
+    ;;
+  *"chassis power on")
+    printf 'on\\n' > "$state_file"
+    printf 'Chassis Power Control: Up/On\\n'
+    ;;
+  *"chassis power off")
+    printf 'off\\n' > "$state_file"
+    printf 'Chassis Power Control: Down/Off\\n'
+    ;;
+  *"chassis power reset"|*"chassis power cycle")
+    printf 'on\\n' > "$state_file"
+    printf 'Chassis Power Control: Reset\\n'
+    ;;
+  *"sensor list")
+    printf 'CPU Temp | 40 degrees C | ok\\n'
+    ;;
+  *"sel list last 20")
+    printf 'No entries\\n'
+    ;;
+  *)
+    exit 64
+    ;;
+esac
+""",
+        encoding="utf-8",
+    )
+    executable.chmod(0o700)
+    return executable, state_path, calls_path
 
 
 def write_mock_aws_cli(home_dir: pathlib.Path) -> pathlib.Path:
@@ -2069,6 +2267,325 @@ def test_redfish_vendor_actions(backend_base_url: str, redfish: RedfishBmcMock) 
         server.stop()
 
 
+def build_controller_action_payload(
+    action: str,
+    *,
+    request_id: str,
+    change_id: str,
+    expected_power_state: str,
+) -> dict[str, Any]:
+    return {
+        "controller_id": "authz-bmc",
+        "device_id": "authz-device",
+        "action": action,
+        "request_id": request_id,
+        "change_id": change_id,
+        "reason": "Exercise the isolated controller protocol mock.",
+        "expected_inventory_revision": "authz-device-inventory-v1",
+        "preflight": {
+            "observed_at_unix_ms": int(time.time() * 1000),
+            "inventory_revision": "authz-device-inventory-v1",
+            "dependency_graph_revision": "authz-dependency-graph-v1",
+            "expected_power_state": expected_power_state,
+            "target_identity_verified": True,
+            "dependencies_healthy": True,
+            "dependents_known": True,
+            "affected_services_healthy": True,
+            "monitoring_healthy": True,
+            "affected_services": ["authz-test-service"],
+            "dependency_ids": [],
+        },
+    }
+
+
+def test_ipmi_diagnostics_and_actions(backend_base_url: str) -> None:
+    mock_dir = tempfile.TemporaryDirectory(prefix="nmc-ipmi-mock-")
+    mock_home = pathlib.Path(mock_dir.name)
+    executable, state_path, calls_path = write_mock_ipmitool(mock_home)
+    server = NmcServerProcess(
+        backend_base_url,
+        device_power_control_enabled=True,
+        device_management_environment={"NMC_IPMITOOL_PATH": str(executable)},
+    )
+    try:
+        server.start()
+        assert_true(server.inventory_path is not None, "IPMI integration server should expose its inventory")
+        inventory_path = server.inventory_path
+        original_inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
+        inventory = json.loads(json.dumps(original_inventory))
+        inventory["controllers"][0].update(
+            {"protocol": "ipmi", "endpoint": "127.0.0.1", "power_actions_enabled": True}
+        )
+        inventory_path.write_text(json.dumps(inventory), encoding="utf-8")
+        inventory_path.chmod(0o600)
+
+        status, payload = request_json(
+            server.base_url,
+            "GET",
+            "/devices/controllers/diagnostics?controller_id=authz-bmc",
+            token="continuum-observe-token",
+        )
+        assert_true(status == 200,
+                    f"IPMI mock diagnostics expected HTTP 200, got {status}: {payload.get('error')}")
+        diagnostics = payload.get("data", {})
+        assert_true("System Power : on" in diagnostics.get("chassis_status", ""),
+                    "IPMI chassis state should be collected")
+        assert_true(diagnostics.get("sensors", {}).get("available") is True,
+                    "IPMI sensor diagnostics should be available")
+        assert_true(diagnostics.get("system_event_log", {}).get("available") is True,
+                    "IPMI SEL diagnostics should be available")
+
+        actions = [
+            ("warm_restart", "On", "ipmi-warm-restart-0001"),
+            ("power_off", "On", "ipmi-power-off-0001"),
+        ]
+        for action, expected_state, request_id in actions:
+            action_status, action_payload = request_json(
+                server.base_url,
+                "POST",
+                "/devices/controllers/actions",
+                token="continuum-control-token",
+                payload=build_controller_action_payload(
+                    action,
+                    request_id=request_id,
+                    change_id=f"IPMI-{request_id}",
+                    expected_power_state=expected_state,
+                ),
+            )
+            assert_status(action_status, 200, f"IPMI {action}")
+            assert_true(action_payload.get("data", {}).get("verified") is True,
+                        f"IPMI {action} must verify the resulting chassis state")
+
+        state_after_power_off = state_path.read_text(encoding="utf-8").strip()
+        assert_true(state_after_power_off == "off", "IPMI power-off should change only the mock chassis state")
+        calls_before_mismatch = calls_path.read_text(encoding="utf-8").splitlines()
+        mismatch_status, mismatch_payload = request_json(
+            server.base_url,
+            "POST",
+            "/devices/controllers/actions",
+            token="continuum-control-token",
+            payload=build_controller_action_payload(
+                "warm_restart",
+                request_id="ipmi-state-mismatch-0001",
+                change_id="IPMI-STATE-MISMATCH",
+                expected_power_state="On",
+            ),
+        )
+        assert_status(mismatch_status, 502, "IPMI actual state must match preflight evidence")
+        assert_true(mismatch_payload.get("error", {}).get("code") == "controller_action_failed",
+                    "a mismatched IPMI state must fail the action")
+        calls_after_mismatch = calls_path.read_text(encoding="utf-8").splitlines()
+        assert_true(len(calls_after_mismatch) == len(calls_before_mismatch) + 1,
+                    "state mismatch should perform one status query and no IPMI mutation")
+
+        for action, expected_state, request_id in [
+            ("power_on", "Off", "ipmi-power-on-0001"),
+            ("cold_restart", "On", "ipmi-cold-restart-0001"),
+        ]:
+            action_status, action_payload = request_json(
+                server.base_url,
+                "POST",
+                "/devices/controllers/actions",
+                token="continuum-control-token",
+                payload=build_controller_action_payload(
+                    action,
+                    request_id=request_id,
+                    change_id=f"IPMI-{request_id}",
+                    expected_power_state=expected_state,
+                ),
+            )
+            assert_status(action_status, 200, f"IPMI {action}")
+            assert_true(action_payload.get("data", {}).get("verified") is True,
+                        f"IPMI {action} must verify the resulting chassis state")
+
+        recorded_calls = calls_path.read_text(encoding="utf-8").splitlines()
+        assert_true(recorded_calls and all("PASSWORD_PRESENT=1" in line for line in recorded_calls),
+                    "IPMI password must reach the child only through its environment")
+        assert_true(all("-I lanplus -H 127.0.0.1 -U test-bmc-user -E" in line for line in recorded_calls),
+                    "IPMI must use the fixed LANplus argument vector and exact registered target")
+        assert_true("test-bmc-password" not in "\n".join(recorded_calls),
+                    "IPMI password must never appear in child argv or diagnostic logs")
+        assert_true(sum("chassis power reset" in line for line in recorded_calls) == 1,
+                    "only the requested warm restart may issue an IPMI reset")
+        assert_true(sum("chassis power off" in line for line in recorded_calls) == 1
+                    and sum("chassis power on" in line for line in recorded_calls) == 1
+                    and sum("chassis power cycle" in line for line in recorded_calls) == 1,
+                    "IPMI power-on, power-off and cold-restart commands must map to fixed argv")
+    finally:
+        server.stop()
+        mock_dir.cleanup()
+
+    rejected_dir = tempfile.TemporaryDirectory(prefix="nmc-ipmi-symlink-")
+    rejected_home = pathlib.Path(rejected_dir.name)
+    trusted_executable, _, trusted_calls_path = write_mock_ipmitool(rejected_home)
+    symlink_path = rejected_home / "untrusted-ipmitool"
+    symlink_path.symlink_to(trusted_executable)
+    rejected_server = NmcServerProcess(
+        backend_base_url,
+        device_management_environment={"NMC_IPMITOOL_PATH": str(symlink_path)},
+    )
+    try:
+        rejected_server.start()
+        assert_true(rejected_server.inventory_path is not None, "IPMI path-policy server should expose its inventory")
+        inventory = json.loads(rejected_server.inventory_path.read_text(encoding="utf-8"))
+        inventory["controllers"][0].update({"protocol": "ipmi", "endpoint": "127.0.0.1"})
+        rejected_server.inventory_path.write_text(json.dumps(inventory), encoding="utf-8")
+        rejected_server.inventory_path.chmod(0o600)
+        status, payload = request_json(
+            rejected_server.base_url,
+            "GET",
+            "/devices/controllers/diagnostics?controller_id=authz-bmc",
+            token="continuum-observe-token",
+        )
+        assert_status(status, 503, "IPMI executable symlink must fail closed")
+        assert_true(payload.get("error", {}).get("code") == "ipmitool_unavailable",
+                    "an unsafe configured IPMI executable should be reported unavailable")
+        assert_true(not trusted_calls_path.exists() or not trusted_calls_path.read_text(encoding="utf-8").strip(),
+                    "Continuum must not follow an NMC_IPMITOOL_PATH symlink")
+    finally:
+        rejected_server.stop()
+
+    unsafe_parent = rejected_home / "world-writable-parent"
+    unsafe_parent.mkdir(mode=0o700)
+    unsafe_parent.chmod(0o777)
+    unsafe_executable, _, unsafe_calls_path = write_mock_ipmitool(unsafe_parent)
+    unsafe_server = NmcServerProcess(
+        backend_base_url,
+        device_management_environment={"NMC_IPMITOOL_PATH": str(unsafe_executable)},
+    )
+    try:
+        unsafe_server.start()
+        assert_true(unsafe_server.inventory_path is not None,
+                    "IPMI directory-policy server should expose its inventory")
+        inventory = json.loads(unsafe_server.inventory_path.read_text(encoding="utf-8"))
+        inventory["controllers"][0].update({"protocol": "ipmi", "endpoint": "127.0.0.1"})
+        unsafe_server.inventory_path.write_text(json.dumps(inventory), encoding="utf-8")
+        unsafe_server.inventory_path.chmod(0o600)
+        status, payload = request_json(
+            unsafe_server.base_url,
+            "GET",
+            "/devices/controllers/diagnostics?controller_id=authz-bmc",
+            token="continuum-observe-token",
+        )
+        assert_status(status, 503, "IPMI executable under a writable directory must fail closed")
+        assert_true(payload.get("error", {}).get("code") == "ipmitool_unavailable",
+                    "an IPMI executable under an unsafe parent should be reported unavailable")
+        assert_true(not unsafe_calls_path.exists() or not unsafe_calls_path.read_text(encoding="utf-8").strip(),
+                    "Continuum must reject an IPMI executable under a writable directory")
+    finally:
+        unsafe_server.stop()
+        unsafe_parent.chmod(0o700)
+        rejected_dir.cleanup()
+
+
+def test_turingpi_diagnostics_and_actions(backend_base_url: str) -> None:
+    mock_dir = tempfile.TemporaryDirectory(prefix="nmc-turingpi-mock-")
+    mock = TuringPiBmcMock(pathlib.Path(mock_dir.name))
+    mock.start()
+    server = NmcServerProcess(backend_base_url, device_power_control_enabled=True)
+    try:
+        server.start()
+        assert_true(server.inventory_path is not None, "Turing Pi integration server should expose its inventory")
+        inventory_path = server.inventory_path
+        original_inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
+        inventory = json.loads(json.dumps(original_inventory))
+        inventory["devices"][0]["turingpi_slot"] = 3
+        inventory["controllers"][0].update(
+            {
+                "protocol": "turingpi",
+                "endpoint": mock.base_url,
+                "tls_ca_file": str(mock.ca_file),
+                "power_actions_enabled": True,
+                "cold_restart_mode": "bmc_reset",
+            }
+        )
+        inventory_path.write_text(json.dumps(inventory), encoding="utf-8")
+        inventory_path.chmod(0o600)
+
+        status, payload = request_json(
+            server.base_url,
+            "GET",
+            "/devices/controllers/diagnostics?controller_id=authz-bmc",
+            token="continuum-observe-token",
+        )
+        assert_status(status, 200, "Turing Pi HTTPS diagnostics")
+        nodes = payload.get("data", {}).get("nodes", {})
+        assert_true(nodes == {"slot1": "On", "slot2": "Off", "slot3": "On", "slot4": "Off"},
+                    "Turing Pi diagnostics should expose all four authenticated slot states")
+        records_before_unsupported = mock.records()
+
+        unsupported_status, unsupported_payload = request_json(
+            server.base_url,
+            "POST",
+            "/devices/controllers/actions",
+            token="continuum-control-token",
+            payload=build_controller_action_payload(
+                "warm_restart",
+                request_id="turingpi-warm-restart-0001",
+                change_id="TURINGPI-WARM-RESTART",
+                expected_power_state="On",
+            ),
+        )
+        assert_status(unsupported_status, 502, "Turing Pi must not invent warm-restart semantics")
+        assert_true(unsupported_payload.get("error", {}).get("code") == "controller_action_failed",
+                    "unsupported Turing Pi warm restart must fail explicitly")
+        assert_true(mock.records() == records_before_unsupported,
+                    "unsupported Turing Pi warm restart must not contact the controller")
+
+        for action, expected_state, request_id in [
+            ("power_off", "On", "turingpi-power-off-0001"),
+            ("power_on", "Off", "turingpi-power-on-0001"),
+            ("cold_restart", "On", "turingpi-cold-restart-0001"),
+        ]:
+            action_status, action_payload = request_json(
+                server.base_url,
+                "POST",
+                "/devices/controllers/actions",
+                token="continuum-control-token",
+                payload=build_controller_action_payload(
+                    action,
+                    request_id=request_id,
+                    change_id=f"TURINGPI-{request_id}",
+                    expected_power_state=expected_state,
+                ),
+            )
+            assert_status(action_status, 200, f"Turing Pi {action}")
+            assert_true(action_payload.get("data", {}).get("verified") is True,
+                        f"Turing Pi {action} must verify the targeted slot state")
+
+        writes = [params for method, path, params in mock.records()
+                  if method == "GET" and path == "/api/bmc" and params.get("opt") == "set"]
+        assert_true(
+            {tuple(sorted(params.items())) for params in writes} == {
+                tuple(sorted({"opt": "set", "type": "power", "node3": "0"}.items())),
+                tuple(sorted({"opt": "set", "type": "power", "node3": "1"}.items())),
+                tuple(sorted({"opt": "set", "type": "reset", "node": "2"}.items())),
+            },
+            "Turing Pi actions must target only slot 3 with the exact supported API semantics",
+        )
+
+        mock.set_action_acknowledged(False)
+        failed_status, failed_payload = request_json(
+            server.base_url,
+            "POST",
+            "/devices/controllers/actions",
+            token="continuum-control-token",
+            payload=build_controller_action_payload(
+                "power_off",
+                request_id="turingpi-no-ack-0001",
+                change_id="TURINGPI-NO-ACK",
+                expected_power_state="On",
+            ),
+        )
+        assert_status(failed_status, 502, "Turing Pi HTTP success without application acknowledgement")
+        assert_true(failed_payload.get("error", {}).get("code") == "controller_action_failed",
+                    "an unacknowledged Turing Pi operation must not be reported as successful")
+    finally:
+        server.stop()
+        mock.stop()
+        mock_dir.cleanup()
+
+
 def test_home_assistant_rejects_plain_http_hostnames(
     server: NmcServerProcess,
     backend: MockBackend,
@@ -2761,6 +3278,8 @@ fi
         test_controller_action_rejects_malformed_body_shapes(server)
         test_redfish_vendor_diagnostics(server, redfish)
         test_redfish_vendor_actions(backend.base_url, redfish)
+        test_ipmi_diagnostics_and_actions(backend.base_url)
+        test_turingpi_diagnostics_and_actions(backend.base_url)
         test_home_assistant_reconciliation_reports_mapping_drift(server, backend)
         test_home_assistant_rejects_plain_http_hostnames(server, backend)
         test_device_inventory_rejects_hard_and_symbolic_links(server)
@@ -2785,7 +3304,7 @@ fi
         backend.stop()
 
     print(
-        "[server-authz-test] OK: validated end-to-end Continuum device inventory, DHCP and HP iLO/Dell iDRAC/MegaRAC Redfish diagnostics, "
+        "[server-authz-test] OK: validated end-to-end Continuum device inventory, DHCP, HP iLO/Dell iDRAC/MegaRAC Redfish, IPMI and Turing Pi diagnostics/actions, "
         "plus Tracey, Gail Trading and AARNN route authorisation against the real nmc_server process."
     )
     return 0
