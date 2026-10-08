@@ -24,6 +24,25 @@ namespace {
 
 using Json = nlohmann::json;
 
+int createCloseOnExecPipe(int pipeFds[2]) {
+#if defined(__linux__)
+    return ::pipe2(pipeFds, O_CLOEXEC);
+#else
+    if (::pipe(pipeFds) != 0) return -1;
+    for (int index = 0; index < 2; ++index) {
+        const int flags = ::fcntl(pipeFds[index], F_GETFD, 0);
+        if (flags < 0 || ::fcntl(pipeFds[index], F_SETFD, flags | FD_CLOEXEC) < 0) {
+            const int savedError = errno;
+            ::close(pipeFds[0]);
+            ::close(pipeFds[1]);
+            errno = savedError;
+            return -1;
+        }
+    }
+    return 0;
+#endif
+}
+
 struct ProcessResult {
     int exitCode{1};
     bool timedOut{false};
@@ -153,7 +172,7 @@ ProcessResult runProviderCli(const std::string& provider,
     if (executable.empty() || arguments.empty()) return result;
 
     int pipeFds[2];
-    if (::pipe(pipeFds) != 0) return result;
+    if (createCloseOnExecPipe(pipeFds) != 0) return result;
     std::vector<std::string> argumentStorage{executable};
     argumentStorage.insert(argumentStorage.end(), arguments.begin(), arguments.end());
     std::vector<char*> argv;
@@ -574,6 +593,86 @@ ProviderComputeResult ProviderCompute::status() {
         });
     }
     return success("Provider compute adapter readiness.", std::move(providers));
+}
+
+ProviderComputeResult ProviderCompute::preflight(const std::string& operation,
+                                                 const Json& request) {
+    if (!request.is_object()) return failure(400, "Provider job request must be a JSON object.");
+    auto field = [&](const char* name, std::string& value, bool required = true) {
+        const auto found = request.find(name);
+        if (found == request.end()) return !required;
+        if (!found->is_string()) return false;
+        value = found->get<std::string>();
+        return !required || !value.empty();
+    };
+
+    std::string provider;
+    std::string scope;
+    if (!field("provider", provider) || !field("scope", scope)) {
+        return failure(400, "provider and scope must be non-empty strings.");
+    }
+    provider = lower(provider);
+
+    if (operation == "list") {
+        ProviderComputeResult context = requireContext(provider, scope);
+        if (!context.success) return context;
+        std::string region;
+        if (!field("region", region, false)) return failure(400, "region must be a string when supplied.");
+        if ((provider == "aws" || provider == "azure") && !validRegion(region)) {
+            return failure(400, "region is required and must be a valid provider region.");
+        }
+        if (!region.empty() && !validRegion(region)) return failure(400, "region is not valid.");
+        return success("Provider inventory request passed local scope preflight.", Json::object());
+    }
+
+    if (operation == "create") {
+        const auto specification = request.find("spec");
+        if (specification == request.end() || !specification->is_object()) {
+            return failure(400, "spec must be a JSON object.");
+        }
+        std::string idempotencyKey;
+        if (!field("idempotency_key", idempotencyKey) ||
+            !matches(idempotencyKey, "[A-Za-z0-9][A-Za-z0-9-]{14,62}[A-Za-z0-9]")) {
+            return failure(400, "idempotency_key must contain 16 to 64 letters, digits or hyphens and start and end with a letter or digit.");
+        }
+        ProviderComputeResult policy = validateMutation("create");
+        if (!policy.success) return policy;
+        return requireContext(provider, scope);
+    }
+
+    if (operation == "action") {
+        std::string actionName;
+        std::string id;
+        std::string requestId;
+        if (!field("action", actionName) || !field("instance_id", id) || !field("request_id", requestId)) {
+            return failure(400, "action, instance_id and request_id must be non-empty strings.");
+        }
+        actionName = lower(actionName);
+        if (!matches(requestId, "[A-Za-z0-9][A-Za-z0-9-]{14,62}[A-Za-z0-9]")) {
+            return failure(400, "request_id must contain 16 to 64 letters, digits or hyphens and start and end with a letter or digit.");
+        }
+        if (actionName != "restart" && actionName != "start" && actionName != "stop" && actionName != "delete") {
+            return failure(400, "action must be one of: restart, start, stop, delete.");
+        }
+        if (!safeResourceId(provider, id)) return failure(400, "instance_id is not a valid canonical resource identifier for the provider.");
+        if (provider == "azure" && !expectedAzureResourceId(id, scope)) {
+            return failure(403, "Azure instance ID does not belong to the requested subscription scope.");
+        }
+        if (provider == "gcp") {
+            std::string zone;
+            if (!field("zone", zone) || !safeName(zone)) return failure(400, "GCP actions require a valid zone.");
+        } else {
+            std::string region;
+            if (!field("region", region) || !validRegion(region)) {
+                return failure(400, "region is required and must be a valid provider region.");
+            }
+        }
+        ProviderComputeResult policy = validateMutation(actionName);
+        if (!policy.success) return policy;
+        return requireContext(provider, scope);
+    }
+
+    return failure(400, "operation must be one of: list, create, action.");
 }
 
 ProviderComputeResult ProviderCompute::list(const std::string& providerInput,

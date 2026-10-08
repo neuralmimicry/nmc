@@ -29,6 +29,14 @@ public:
                 const CLI::GlobalFlags& globalFlags) override;
 };
 
+class ProviderComputeJobCommand final : public BaseCommand {
+public:
+    explicit ProviderComputeJobCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client);
+    int execute(const std::map<std::string, std::string>& flags,
+                const std::vector<std::string>& args,
+                const CLI::GlobalFlags& globalFlags) override;
+};
+
 class ProviderComputeInstancesCommand final : public BaseCommand {
 public:
     explicit ProviderComputeInstancesCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client);

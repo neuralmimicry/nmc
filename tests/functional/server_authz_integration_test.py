@@ -827,6 +827,10 @@ if [ "$1" = "sts" ] && [ "$2" = "get-caller-identity" ]; then
 elif [ "$1" = "ec2" ] && [ "$2" = "describe-instances" ]; then
   printf '%s\\n' '{"Reservations":[{"Instances":[{"InstanceId":"i-0123456789abcdef0","InstanceType":"t3.small","State":{"Name":"running"},"Placement":{"AvailabilityZone":"eu-west-2a"},"PrivateIpAddress":"10.10.0.7","Tags":[{"Key":"Name","Value":"authz-cloud-vm"}]}]}]}'
 elif [ "$1" = "ec2" ] && [ "$2" = "reboot-instances" ]; then
+  if [ -f "$HOME/delay-provider-operations" ]; then
+    printf '%s\\n' "$*" >> "$HOME/provider-cli-sleepers.txt"
+    while [ -f "$HOME/delay-provider-operations" ]; do sleep 0.05; done
+  fi
   printf '%s\\n' '{"RebootingInstances":[]}'
 elif [ "$1" = "ec2" ] && [ "$2" = "run-instances" ]; then
   printf '%s\\n' '{"Instances":[{"InstanceId":"i-0abcdef1234567890","InstanceType":"t3.small","State":{"Name":"pending"},"Placement":{"AvailabilityZone":"eu-west-2a"},"Tags":[{"Key":"Name","Value":"authz-created-vm"}]}]}'
@@ -924,6 +928,44 @@ def assert_true(condition: bool, message: str) -> None:
 
 def assert_status(status: int, expected: int, label: str) -> None:
     assert_true(status == expected, f"{label} expected HTTP {expected}, got {status}")
+
+
+def wait_for_provider_job(server: NmcServerProcess, job_id: str, *, token: str) -> dict[str, Any]:
+    deadline = time.monotonic() + 20
+    latest: dict[str, Any] = {}
+    while time.monotonic() < deadline:
+        status, payload = request_json(
+            server.base_url,
+            "GET",
+            f"/providers/compute/jobs/{job_id}",
+            token=token,
+        )
+        assert_status(status, 200, f"provider job {job_id} status")
+        latest = payload.get("data", {})
+        if latest.get("status") in {"succeeded", "failed", "cancelled", "outcome_unknown"}:
+            return latest
+        time.sleep(0.05)
+    raise AssertionError(f"provider job {job_id} did not reach a terminal state: {latest!r}")
+
+
+def submit_provider_job(
+    server: NmcServerProcess,
+    method: str,
+    path: str,
+    *,
+    token: str,
+    payload: Any | None = None,
+    label: str,
+) -> dict[str, Any]:
+    status, response = request_json(server.base_url, method, path, token=token, payload=payload)
+    assert_status(status, 202, label)
+    job = response.get("data", {})
+    job_id = job.get("job_id")
+    assert_true(
+        isinstance(job_id, str) and len(job_id) == 32 and job.get("status_url") == f"/providers/compute/jobs/{job_id}",
+        f"{label} should return a pollable job resource; response was {response!r}",
+    )
+    return job
 
 
 def test_auth_session_reflects_central_identity(server: NmcServerProcess) -> None:
@@ -1185,14 +1227,16 @@ def test_provider_compute_lifecycle(server: NmcServerProcess) -> None:
         "the configured AWS, GCP and Azure command fixtures should all be recognised",
     )
 
-    status, payload = request_json(
-        server.base_url,
+    inventory_job = submit_provider_job(
+        server,
         "GET",
         "/providers/compute/instances?provider=aws&scope=123456789012&region=eu-west-2",
         token="continuum-observe-token",
+        label="AWS live inventory is accepted as a background job",
     )
-    assert_status(status, 200, "AWS live inventory uses the scoped provider identity")
-    aws_instances = payload.get("data", {}).get("instances", [])
+    inventory_result = wait_for_provider_job(server, inventory_job["job_id"], token="continuum-observe-token")
+    assert_true(inventory_result.get("status") == "succeeded", f"AWS inventory job failed: {inventory_result!r}")
+    aws_instances = inventory_result.get("result", {}).get("data", {}).get("instances", [])
     assert_true(
         isinstance(aws_instances, list) and len(aws_instances) == 1,
         f"AWS inventory should contain the exact fixture instance; response was {payload!r}",
@@ -1241,21 +1285,146 @@ def test_provider_compute_lifecycle(server: NmcServerProcess) -> None:
         "an unauthorised provider action must not launch a provider command",
     )
 
-    status, payload = request_json(
-        server.base_url,
+    restart_job = submit_provider_job(
+        server,
         "POST",
         "/providers/compute/instances/action",
         token="continuum-control-token",
         payload=restart_request,
+        label="approved AWS restart is accepted as a background job",
     )
-    assert_status(status, 200, "approved AWS restart reaches the provider adapter")
-    action_result = payload.get("data", {})
+    restart_terminal = wait_for_provider_job(server, restart_job["job_id"], token="continuum-control-token")
+    assert_true(restart_terminal.get("status") == "succeeded", f"AWS restart job failed: {restart_terminal!r}")
+    action_result = restart_terminal.get("result", {}).get("data", {})
     assert_true(action_result.get("provider_state_verified") is True,
                 "a successful provider action must report its provider-state verification")
     assert_true(action_result.get("dependent_service_health") == "not-checked",
                 "provider-state verification must not be reported as dependent-service health")
     assert_true("ec2 reboot-instances" in aws_call_log.read_text(encoding="utf-8"),
                 "AWS restart must invoke the provider CLI operation")
+
+    aws_call_count_after_restart = len(aws_call_log.read_text(encoding="utf-8").splitlines())
+    replay = submit_provider_job(
+        server,
+        "POST",
+        "/providers/compute/instances/action",
+        token="continuum-control-token",
+        payload=restart_request,
+        label="replaying an AWS request returns its existing job",
+    )
+    assert_true(replay.get("job_id") == restart_job.get("job_id"),
+                "an idempotent retry must return the original provider job")
+    assert_true(len(aws_call_log.read_text(encoding="utf-8").splitlines()) == aws_call_count_after_restart,
+                "an idempotent retry must not invoke AWS a second time")
+
+    case_normalised_replay = submit_provider_job(
+        server,
+        "POST",
+        "/providers/compute/instances/action",
+        token="continuum-control-token",
+        payload=dict(restart_request, provider="AWS", action="RESTART"),
+        label="case-normalised AWS retry returns its existing job",
+    )
+    assert_true(case_normalised_replay.get("job_id") == restart_job.get("job_id"),
+                "provider and action casing must not bypass mutation idempotency")
+    assert_true(len(aws_call_log.read_text(encoding="utf-8").splitlines()) == aws_call_count_after_restart,
+                "case-normalised retries must not invoke AWS a second time")
+
+    conflicting_restart = dict(restart_request, instance_id="i-1123456789abcdef0")
+    status, _ = request_json(
+        server.base_url,
+        "POST",
+        "/providers/compute/instances/action",
+        token="continuum-control-token",
+        payload=conflicting_restart,
+    )
+    assert_status(status, 409, "reusing an AWS idempotency key for different work is rejected")
+    malformed_idempotency = dict(restart_request, request_id=123)
+    status, _ = request_json(
+        server.base_url,
+        "POST",
+        "/providers/compute/instances/action",
+        token="continuum-control-token",
+        payload=malformed_idempotency,
+    )
+    assert_status(status, 400, "non-string provider idempotency fields are rejected")
+    calls_before_oversized_request = len(aws_call_log.read_text(encoding="utf-8").splitlines())
+    status, _ = request_json(
+        server.base_url,
+        "POST",
+        "/providers/compute/instances/action",
+        token="continuum-control-token",
+        payload=dict(restart_request, note="x" * (256 * 1024)),
+    )
+    assert_status(status, 413, "provider operation payloads above 256 KiB are rejected")
+    assert_true(len(aws_call_log.read_text(encoding="utf-8").splitlines()) == calls_before_oversized_request,
+                "an oversized provider operation must not launch a provider command")
+
+    state_path = server.inventory_path.parent / "provider-compute-jobs.json"
+    assert_true(state_path.exists(), "provider job state should be persisted beside the device inventory")
+    assert_true(state_path.stat().st_mode & 0o777 == 0o600,
+                "provider job history should be owner-readable only")
+    durable_state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert_true(any(item.get("job_id") == restart_job["job_id"] for item in durable_state.get("jobs", [])),
+                "completed provider jobs should survive process restarts")
+
+    reload_environment = dict(server._provider_environment)
+    reload_environment["NMC_PROVIDER_JOB_STATE_PATH"] = str(state_path)
+    restarted_server = NmcServerProcess(server._backend_base_url, provider_environment=reload_environment)
+    try:
+        restarted_server.start()
+        reloaded_job = wait_for_provider_job(
+            restarted_server,
+            restart_job["job_id"],
+            token="continuum-observe-token",
+        )
+        assert_true(reloaded_job.get("status") == "succeeded",
+                    "a completed provider job should remain inspectable after a server restart")
+    finally:
+        restarted_server.stop()
+
+    interrupted_job_id = "c" * 32
+    interrupted_state_path = server.inventory_path.parent / "provider-compute-interrupted.json"
+    interrupted_state_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "updated_at_ms": int(time.time() * 1000),
+                "jobs": [
+                    {
+                        "job_id": interrupted_job_id,
+                        "operation": "action",
+                        "provider": "aws",
+                        "scope": "123456789012",
+                        "idempotency_key": "authz-provider-interrupted-01",
+                        "request_fingerprint": "0" * 64,
+                        "status": "running",
+                        "created_at_ms": int(time.time() * 1000),
+                        "started_at_ms": int(time.time() * 1000),
+                        "completed_at_ms": 0,
+                        "result": {},
+                    }
+                ],
+                "idempotency": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    interrupted_state_path.chmod(0o600)
+    recovery_environment = dict(server._provider_environment)
+    recovery_environment["NMC_PROVIDER_JOB_STATE_PATH"] = str(interrupted_state_path)
+    recovery_server = NmcServerProcess(server._backend_base_url, provider_environment=recovery_environment)
+    try:
+        recovery_server.start()
+        recovered = wait_for_provider_job(
+            recovery_server,
+            interrupted_job_id,
+            token="continuum-observe-token",
+        )
+        assert_true(recovered.get("status") == "outcome_unknown",
+                    "a provider operation interrupted while running must be marked outcome-unknown, never replayed")
+    finally:
+        recovery_server.stop()
 
     call_count_before_delete_gate = len(aws_call_log.read_text(encoding="utf-8").splitlines())
     delete_request = dict(restart_request, action="delete", request_id="authz-provider-delete-0001")
@@ -1281,8 +1450,8 @@ def test_provider_compute_lifecycle(server: NmcServerProcess) -> None:
         "subnet_id": "subnet-01234567",
         "security_group_ids": ["sg-01234567"],
     }
-    status, payload = request_json(
-        server.base_url,
+    create_job = submit_provider_job(
+        server,
         "POST",
         "/providers/compute/instances/create",
         token="continuum-control-token",
@@ -1292,27 +1461,31 @@ def test_provider_compute_lifecycle(server: NmcServerProcess) -> None:
             "spec": created_spec,
             "idempotency_key": "authz-provider-create-0001",
         },
+        label="AWS create is accepted as a background job",
     )
-    assert_status(status, 200, "AWS create sends a validated provider request")
-    assert_true(payload.get("data", {}).get("service_health") == "not-checked",
+    create_terminal = wait_for_provider_job(server, create_job["job_id"], token="continuum-control-token")
+    assert_true(create_terminal.get("status") == "succeeded", f"AWS create job failed: {create_terminal!r}")
+    assert_true(create_terminal.get("result", {}).get("data", {}).get("service_health") == "not-checked",
                 "provider creation must not claim post-boot service health")
     assert_true("ec2 run-instances" in aws_call_log.read_text(encoding="utf-8"),
                 "AWS create must invoke the provider CLI operation")
 
     gcp_scope = "demo-project-123"
-    status, payload = request_json(
-        server.base_url,
+    gcp_inventory_job = submit_provider_job(
+        server,
         "GET",
         f"/providers/compute/instances?provider=gcp&scope={gcp_scope}&region=europe-west2",
         token="continuum-observe-token",
+        label="GCP inventory is accepted as a background job",
     )
-    assert_status(status, 200, "GCP inventory verifies its project before listing instances")
-    gcp_instances = payload.get("data", {}).get("instances", [])
+    gcp_inventory = wait_for_provider_job(server, gcp_inventory_job["job_id"], token="continuum-observe-token")
+    assert_true(gcp_inventory.get("status") == "succeeded", f"GCP inventory job failed: {gcp_inventory!r}")
+    gcp_instances = gcp_inventory.get("result", {}).get("data", {}).get("instances", [])
     assert_true(len(gcp_instances) == 1 and gcp_instances[0].get("id") == "worker-01"
                 and gcp_instances[0].get("zone") == "europe-west2-a",
                 "GCP inventory should map project instances and zones")
-    status, payload = request_json(
-        server.base_url,
+    gcp_action_job = submit_provider_job(
+        server,
         "POST",
         "/providers/compute/instances/action",
         token="continuum-control-token",
@@ -1324,25 +1497,29 @@ def test_provider_compute_lifecycle(server: NmcServerProcess) -> None:
             "action": "restart",
             "request_id": "authz-provider-gcp-restart-01",
         },
+        label="GCP restart is accepted as a background job",
     )
-    assert_status(status, 200, "GCP restart is verified against the exact project and zone")
-    assert_true(payload.get("data", {}).get("provider_state_verified") is True,
+    gcp_action = wait_for_provider_job(server, gcp_action_job["job_id"], token="continuum-control-token")
+    assert_true(gcp_action.get("status") == "succeeded", f"GCP action job failed: {gcp_action!r}")
+    assert_true(gcp_action.get("result", {}).get("data", {}).get("provider_state_verified") is True,
                 "GCP lifecycle completion must include a provider-state check")
 
     azure_scope = "00000000-0000-0000-0000-000000000000"
     azure_id = f"/subscriptions/{azure_scope}/resourceGroups/rg-test/providers/Microsoft.Compute/virtualMachines/worker-az"
-    status, payload = request_json(
-        server.base_url,
+    azure_inventory_job = submit_provider_job(
+        server,
         "GET",
         f"/providers/compute/instances?provider=azure&scope={azure_scope}&region=uksouth",
         token="continuum-observe-token",
+        label="Azure inventory is accepted as a background job",
     )
-    assert_status(status, 200, "Azure inventory verifies its subscription before listing instances")
-    azure_instances = payload.get("data", {}).get("instances", [])
+    azure_inventory = wait_for_provider_job(server, azure_inventory_job["job_id"], token="continuum-observe-token")
+    assert_true(azure_inventory.get("status") == "succeeded", f"Azure inventory job failed: {azure_inventory!r}")
+    azure_instances = azure_inventory.get("result", {}).get("data", {}).get("instances", [])
     assert_true(len(azure_instances) == 1 and azure_instances[0].get("id") == azure_id,
                 "Azure inventory should preserve the canonical resource identifier")
-    status, payload = request_json(
-        server.base_url,
+    azure_action_job = submit_provider_job(
+        server,
         "POST",
         "/providers/compute/instances/action",
         token="continuum-control-token",
@@ -1354,10 +1531,87 @@ def test_provider_compute_lifecycle(server: NmcServerProcess) -> None:
             "action": "restart",
             "request_id": "authz-provider-azure-restart-01",
         },
+        label="Azure restart is accepted as a background job",
     )
-    assert_status(status, 200, "Azure restart is verified against the canonical subscription resource")
-    assert_true(payload.get("data", {}).get("provider_state_verified") is True,
+    azure_action = wait_for_provider_job(server, azure_action_job["job_id"], token="continuum-control-token")
+    assert_true(azure_action.get("status") == "succeeded", f"Azure action job failed: {azure_action!r}")
+    assert_true(azure_action.get("result", {}).get("data", {}).get("provider_state_verified") is True,
                 "Azure lifecycle completion must include a provider-state check")
+
+    delay_flag = server._home_dir / "delay-provider-operations"
+    sleepers_path = server._home_dir / "provider-cli-sleepers.txt"
+    delay_flag.write_text("hold provider workers while checking queue bounds\n", encoding="utf-8")
+    active_jobs: list[dict[str, Any]] = []
+    for index in range(2):
+        active_jobs.append(
+            submit_provider_job(
+                server,
+                "POST",
+                "/providers/compute/instances/action",
+                token="continuum-control-token",
+                payload=dict(restart_request, request_id=f"authz-provider-active-{index:04d}"),
+                label=f"slow AWS worker {index} is accepted promptly",
+            )
+        )
+
+    # Each worker must verify provider identity and inventory before reaching
+    # the held lifecycle command; allow the slower self-hosted CI runner time
+    # to start both process trees before concluding that execution is serial.
+    sleep_deadline = time.monotonic() + 20
+    while time.monotonic() < sleep_deadline:
+        if sleepers_path.exists() and len(sleepers_path.read_text(encoding="utf-8").splitlines()) >= 2:
+            break
+        time.sleep(0.02)
+    sleeper_count = len(sleepers_path.read_text(encoding="utf-8").splitlines()) if sleepers_path.exists() else 0
+    assert_true(
+        sleeper_count >= 2,
+        "both provider workers should be occupied by the slow fixture; "
+        f"delay_flag={delay_flag.exists()}, sleepers={sleeper_count}, "
+        f"provider_calls={aws_call_log.read_text(encoding='utf-8').splitlines()[-12:]!r}",
+    )
+    for job in active_jobs:
+        active_http_status, active_payload = request_json(
+            server.base_url,
+            "GET",
+            f"/providers/compute/jobs/{job['job_id']}",
+            token="continuum-control-token",
+        )
+        assert_status(active_http_status, 200, "active provider operation remains inspectable")
+        active_status = active_payload.get("data", {})
+        assert_true(active_status.get("status") == "running",
+                    f"accepted provider worker entered an unexpected state: {active_status!r}")
+
+    health_status, health_payload = request_json(server.base_url, "GET", "/health")
+    assert_status(health_status, 200, "health stays responsive while provider workers are occupied")
+    assert_true(health_payload.get("success") is True, "health response remains valid during provider work")
+
+    queued_jobs: list[dict[str, Any]] = []
+    for index in range(32):
+        queued_jobs.append(
+            submit_provider_job(
+                server,
+                "POST",
+                "/providers/compute/instances/action",
+                token="continuum-control-token",
+                payload=dict(restart_request, request_id=f"authz-provider-queued-{index:04d}"),
+                label=f"bounded provider queue item {index}",
+            )
+        )
+    overflow = dict(restart_request, request_id="authz-provider-overflow-0001")
+    overflow_status, _ = request_json(
+        server.base_url,
+        "POST",
+        "/providers/compute/instances/action",
+        token="continuum-control-token",
+        payload=overflow,
+    )
+    assert_status(overflow_status, 429, "provider queue rejects work beyond its configured bound")
+
+    delay_flag.unlink()
+    for job in active_jobs + queued_jobs:
+        terminal = wait_for_provider_job(server, job["job_id"], token="continuum-control-token")
+        assert_true(terminal.get("status") == "succeeded",
+                    f"accepted bounded-queue operation should finish successfully: {terminal!r}")
 
     status, _ = request_json(
         server.base_url,

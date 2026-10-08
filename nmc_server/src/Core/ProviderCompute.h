@@ -23,6 +23,8 @@ namespace NMC::Server {
     class ProviderCompute final {
     public:
         static ProviderComputeResult status();
+        static ProviderComputeResult preflight(const std::string& operation,
+                                               const nlohmann::json& request);
         static ProviderComputeResult list(const std::string& provider,
                                           const std::string& scope,
                                           const std::string& region);

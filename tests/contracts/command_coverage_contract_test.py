@@ -288,7 +288,12 @@ def endpoint_samples(path: str) -> Sequence[str]:
 def route_matches_endpoint(route: Route, endpoint: str) -> bool:
     if route.is_regex:
         try:
-            return re.fullmatch(route.path, endpoint) is not None
+            candidates = [endpoint]
+            if "contract-id" in endpoint:
+                # Provider job IDs are validated as 32 lowercase hexadecimal
+                # characters, so exercise that supported dynamic path shape.
+                candidates.append(endpoint.replace("contract-id", "a" * 32))
+            return any(re.fullmatch(route.path, candidate) is not None for candidate in candidates)
         except re.error as exc:
             print(f"[command-coverage] invalid server regex route '{route.path}': {exc}", file=sys.stderr)
             sys.exit(1)

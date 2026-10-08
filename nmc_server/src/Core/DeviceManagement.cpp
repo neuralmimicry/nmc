@@ -38,6 +38,27 @@ namespace {
 
 using Json = nlohmann::json;
 
+#ifndef _WIN32
+int createCloseOnExecPipe(int pipeFds[2]) {
+#if defined(__linux__)
+    return ::pipe2(pipeFds, O_CLOEXEC);
+#else
+    if (::pipe(pipeFds) != 0) return -1;
+    for (int index = 0; index < 2; ++index) {
+        const int flags = ::fcntl(pipeFds[index], F_GETFD, 0);
+        if (flags < 0 || ::fcntl(pipeFds[index], F_SETFD, flags | FD_CLOEXEC) < 0) {
+            const int savedError = errno;
+            ::close(pipeFds[0]);
+            ::close(pipeFds[1]);
+            errno = savedError;
+            return -1;
+        }
+    }
+    return 0;
+#endif
+}
+#endif
+
 std::string lower(std::string value);
 
 int64_t nowEpochMs() {
@@ -491,7 +512,7 @@ CommandResult runIpmitool(const Json& controller, const std::vector<std::string>
         return result;
     }
     int pipeFds[2];
-    if (::pipe(pipeFds) != 0) {
+    if (createCloseOnExecPipe(pipeFds) != 0) {
         result.output = "unable to create IPMI output pipe";
         return result;
     }

@@ -23,6 +23,10 @@ namespace NMC::Server {
             if (!guard(req, res)) return;
             handleProviderComputeAction(req, res);
         });
+        svr.Get(R"(/providers/compute/jobs/([0-9a-f]{32}))", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            handleProviderComputeJob(req, res);
+        });
 
         svr.Get("/k8s/refiner/status", [this, guard](const httplib::Request& req, httplib::Response& res) {
             if (!guard(req, res)) return;

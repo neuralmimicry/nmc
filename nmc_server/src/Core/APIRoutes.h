@@ -24,6 +24,7 @@
 #include "OpenShiftClient.h"
 #include "ProxmoxClient.h"
 #include "OIDCValidator.h"
+#include "ProviderComputeJobManager.h"
 #include "ServerStateStore.h"
 #include "TraceyCVEIntel.h"
 #include "TraceyStateStore.h"
@@ -236,6 +237,7 @@ namespace NMC::Server {
         std::atomic<bool> stopTraceyDiscovery;
         TraceyCVEIntel traceyCveIntel;
         std::unique_ptr<ServerStateStore> serverStateStore;
+        std::unique_ptr<ProviderComputeJobManager> providerComputeJobs;
         std::unique_ptr<TraceyStateStore> traceyStateStore;
         bool aarnnDiscoveryEnabled;
         bool aarnnAllowPublicAddr;
@@ -337,6 +339,11 @@ namespace NMC::Server {
         void handleProviderComputeList(const httplib::Request& req, httplib::Response& res);
         void handleProviderComputeCreate(const httplib::Request& req, httplib::Response& res);
         void handleProviderComputeAction(const httplib::Request& req, httplib::Response& res);
+        void handleProviderComputeJob(const httplib::Request& req, httplib::Response& res);
+        void submitProviderComputeJob(const std::string& operation,
+                                      const nlohmann::json& request,
+                                      const httplib::Request& req,
+                                      httplib::Response& res);
         void handleDeleteVM(const httplib::Request& req, httplib::Response& res);
         void handleGetVM(const httplib::Request& req, httplib::Response& res);
         void handleListVMs(const httplib::Request& req, httplib::Response& res);

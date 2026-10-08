@@ -386,6 +386,14 @@ namespace NMC::Server {
             serverStateStore->start();
             scheduleServerStateSnapshot(nowEpochMs());
         }
+        providerComputeJobs = std::make_unique<ProviderComputeJobManager>(
+                [this](const std::string& jobId, const std::string& action, int64_t timestamp, nlohmann::json payload) {
+                    recordServerStateEvent("provider_compute_job", jobId, action, timestamp, std::move(payload));
+                }
+        );
+        if (!providerComputeJobs->start()) {
+            std::cerr << "[WARN] Provider compute job queue is unavailable; provider operations will fail closed." << std::endl;
+        }
         if (traceyStateStore) {
             traceyStateStore->start();
         }
@@ -547,6 +555,9 @@ namespace NMC::Server {
     APIRoutes::~APIRoutes() {
         stopTraceyDiscovery.store(true);
         stopAarnnDiscovery.store(true);
+        if (providerComputeJobs) {
+            providerComputeJobs->stop();
+        }
         traceyCveIntel.stop();
         if (traceyDiscoveryThread.joinable()) {
             traceyDiscoveryThread.join();

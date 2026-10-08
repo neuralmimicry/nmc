@@ -147,6 +147,7 @@ namespace NMC::Core {
                                                     const std::string& region = "");
         Models::CloudResponse createProviderInstance(const nlohmann::json& request);
         Models::CloudResponse actOnProviderInstance(const nlohmann::json& request);
+        Models::CloudResponse getProviderComputeJob(const std::string& jobId);
 
         // OpenShift / OpenStack / Proxmox Continuum Operations (via provider portal APIs)
         Models::CloudResponse getServerHealth();
@@ -267,6 +268,8 @@ namespace NMC::Core {
         // Normalize transport results and server payloads into CLI-facing responses.
         Models::CloudResponse processHttpResponse(httplib::Result& res, const std::string& successMessage) const;
         Models::CloudResponse processHttpResponse(httplib::Result& res, const std::string& successMessage, const nlohmann::json& dataPayload) const;
+        Models::CloudResponse waitForProviderComputeJob(httplib::Result& submission,
+                                                        const std::string& successMessage) const;
 
         std::vector<Models::Connection> connections;
         std::string currentConnectionName;
