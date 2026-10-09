@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <fstream>
 #include <future>
+#include <iomanip>
 #include <iostream>
 #include <iterator>
 #include <memory>
@@ -21,6 +22,7 @@
 
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
+#include <openssl/sha.h>
 #include <openssl/x509.h>
 
 #ifndef _WIN32
@@ -817,6 +819,16 @@ Json findAuditRequest(const std::string& auditPath, const std::string& requestId
     }
     if (input.bad()) return Json{{"audit_scan_error", true}};
     return last;
+}
+
+std::string controllerActionIntentDigest(const std::string& controllerId, const Json& request) {
+    const std::string canonicalRequest = controllerId + "\n" + request.dump();
+    std::array<unsigned char, SHA256_DIGEST_LENGTH> digest{};
+    SHA256(reinterpret_cast<const unsigned char*>(canonicalRequest.data()), canonicalRequest.size(), digest.data());
+    std::ostringstream output;
+    output << std::hex << std::setfill('0');
+    for (const unsigned char byte : digest) output << std::setw(2) << static_cast<unsigned int>(byte);
+    return output.str();
 }
 
 std::vector<std::string> stringArray(const Json& value) {
@@ -1885,6 +1897,55 @@ Json DeviceManagement::performControllerAction(const Inventory& inventory,
                                                const std::string& controllerId,
                                                const Json& request,
                                                int& statusCode) {
+    if (!request.is_object()) {
+        statusCode = 400;
+        return errorBody("controller_action_invalid", "request body must be a JSON object");
+    }
+    const std::string requestId = stringField(request, "request_id");
+    if (!safeIdentifier(requestId)) {
+        statusCode = 400;
+        return errorBody("controller_action_invalid", "request_id must be a safe inventory identifier");
+    }
+
+    const std::string auditPath = envValue("NMC_DEVICE_ACTION_AUDIT_PATH");
+    if (auditPath.empty()) {
+        statusCode = 503;
+        return errorBody("controller_audit_unavailable", "NMC_DEVICE_ACTION_AUDIT_PATH is required before controller actions can run");
+    }
+    AuditLock auditLock;
+    std::string auditError;
+    if (!auditLock.acquire(auditPath, auditError)) {
+        statusCode = 503;
+        return errorBody("controller_audit_unavailable", auditError);
+    }
+    const Json prior = findAuditRequest(auditPath, requestId);
+    if (prior.value("audit_scan_error", false)) {
+        statusCode = 503;
+        return errorBody("controller_audit_unavailable", "controller action audit history could not be read completely; action is blocked until the audit file is repaired");
+    }
+    if (!prior.is_null() && !prior.empty()) {
+        const std::string priorDigest = prior.value("intent_sha256", std::string{});
+        const std::string requestedDigest = controllerActionIntentDigest(controllerId, request);
+        if (!priorDigest.empty() && priorDigest != requestedDigest) {
+            statusCode = 409;
+            return errorBody("controller_action_idempotency_conflict", "request_id was already used for a different controller action intent");
+        }
+        if (prior.value("phase", std::string{}) == "complete") {
+            if (priorDigest.empty()) {
+                statusCode = 409;
+                return errorBody("controller_action_idempotency_conflict", "completed audit record has no request digest; use a new request_id after verifying controller state");
+            }
+            statusCode = prior.value("http_status", 200);
+            return prior.value("response", Json::object());
+        }
+        statusCode = 409;
+        return errorBody("controller_action_outcome_unknown", "request_id already has a durable intent without a recorded outcome; inspect the controller before submitting a new request_id");
+    }
+
+    if (!inventory.valid) {
+        statusCode = 503;
+        return errorBody("device_inventory_unavailable", inventory.error);
+    }
     if (inventory.stale) {
         statusCode = 409;
         return errorBody("device_inventory_stale", "controller actions require a fresh device inventory");
@@ -1894,13 +1955,8 @@ Json DeviceManagement::performControllerAction(const Inventory& inventory,
         statusCode = 423;
         return errorBody("controller_actions_disabled", "NMC_DEVICE_POWER_CONTROL_ENABLED is not true");
     }
-    if (!request.is_object()) {
-        statusCode = 400;
-        return errorBody("controller_action_invalid", "request body must be a JSON object");
-    }
     const std::string deviceId = stringField(request, "device_id");
     const std::string action = lower(stringField(request, "action"));
-    const std::string requestId = stringField(request, "request_id");
     const std::string changeId = stringField(request, "change_id");
     const std::string reason = stringField(request, "reason");
     const std::string expectedRevision = stringField(request, "expected_inventory_revision");
@@ -1963,34 +2019,10 @@ Json DeviceManagement::performControllerAction(const Inventory& inventory,
         statusCode = 409;
         return errorBody("controller_preflight_blocked", "fresh identity, dependency, affected-service and monitoring evidence must match the active inventory");
     }
-    const std::string auditPath = envValue("NMC_DEVICE_ACTION_AUDIT_PATH");
-    if (auditPath.empty()) {
-        statusCode = 503;
-        return errorBody("controller_audit_unavailable", "NMC_DEVICE_ACTION_AUDIT_PATH is required before controller actions can run");
-    }
-    AuditLock auditLock;
-    std::string auditError;
-    if (!auditLock.acquire(auditPath, auditError)) {
-        statusCode = 503;
-        return errorBody("controller_audit_unavailable", auditError);
-    }
-    const Json prior = findAuditRequest(auditPath, requestId);
-    if (prior.value("audit_scan_error", false)) {
-        statusCode = 503;
-        return errorBody("controller_audit_unavailable", "controller action audit history could not be read completely; action is blocked until the audit file is repaired");
-    }
-    if (!prior.is_null() && !prior.empty()) {
-        if (prior.value("phase", std::string{}) == "complete") {
-            statusCode = prior.value("http_status", 200);
-            return prior.value("response", Json::object());
-        }
-        statusCode = 409;
-        return errorBody("controller_action_outcome_unknown", "request_id already has a durable intent without a recorded outcome; inspect the controller before submitting a new request_id");
-    }
-
+    const std::string intentDigest = controllerActionIntentDigest(controllerId, request);
     Json auditBase{{"request_id", requestId}, {"controller_id", controllerId}, {"device_id", deviceId},
                    {"action", action}, {"change_id", changeId}, {"inventory_revision", inventory.revision},
-                   {"reason", reason}, {"started_at_unix_ms", nowEpochMs()}};
+                   {"reason", reason}, {"intent_sha256", intentDigest}, {"started_at_unix_ms", nowEpochMs()}};
     Json intent = auditBase;
     intent["phase"] = "intent";
     if (!appendAuditRecord(auditPath, intent, auditError)) {
@@ -2257,16 +2289,8 @@ void DeviceManagement::handleControllerAction(const httplib::Request& req, httpl
         return;
     }
     const std::string controllerId = stringField(request, "controller_id");
-    if (!safeIdentifier(controllerId)) {
-        sendJson(res, 400, errorBody("controller_id_invalid", "controller_id must be a safe inventory identifier"));
-        return;
-    }
     std::lock_guard<std::mutex> lock(actionMutex_);
     const Inventory inventory = loadInventory();
-    if (!inventory.valid) {
-        sendJson(res, 503, errorBody("device_inventory_unavailable", inventory.error));
-        return;
-    }
     int statusCode = 500;
     try {
         const Json response = performControllerAction(inventory, controllerId, request, statusCode);

@@ -2358,22 +2358,52 @@ def test_ipmi_diagnostics_and_actions(backend_base_url: str) -> None:
             ("warm_restart", "On", "ipmi-warm-restart-0001"),
             ("power_off", "On", "ipmi-power-off-0001"),
         ]
-        for action, expected_state, request_id in actions:
+        for action_index, (action, expected_state, request_id) in enumerate(actions):
+            action_request = build_controller_action_payload(
+                action,
+                request_id=request_id,
+                change_id=f"IPMI-{request_id}",
+                expected_power_state=expected_state,
+            )
             action_status, action_payload = request_json(
                 server.base_url,
                 "POST",
                 "/devices/controllers/actions",
                 token="continuum-control-token",
-                payload=build_controller_action_payload(
-                    action,
-                    request_id=request_id,
-                    change_id=f"IPMI-{request_id}",
-                    expected_power_state=expected_state,
-                ),
+                payload=action_request,
             )
             assert_status(action_status, 200, f"IPMI {action}")
             assert_true(action_payload.get("data", {}).get("verified") is True,
                         f"IPMI {action} must verify the resulting chassis state")
+            if action_index == 0:
+                calls_after_action = calls_path.read_text(encoding="utf-8").splitlines()
+                replay_status, replay_payload = request_json(
+                    server.base_url,
+                    "POST",
+                    "/devices/controllers/actions",
+                    token="continuum-control-token",
+                    payload=action_request,
+                )
+                assert_status(replay_status, 200, "IPMI exact idempotent replay")
+                assert_true(replay_payload == action_payload,
+                            "an exact controller-action retry should return the original response")
+                assert_true(calls_path.read_text(encoding="utf-8").splitlines() == calls_after_action,
+                            "an exact controller-action retry must not contact the BMC again")
+
+                changed_intent = dict(action_request)
+                changed_intent["action"] = "power_off"
+                changed_status, changed_payload = request_json(
+                    server.base_url,
+                    "POST",
+                    "/devices/controllers/actions",
+                    token="continuum-control-token",
+                    payload=changed_intent,
+                )
+                assert_status(changed_status, 409, "IPMI request id reused for changed intent")
+                assert_true(changed_payload.get("error", {}).get("code") == "controller_action_idempotency_conflict",
+                            "changed controller-action intent must return a clear idempotency conflict")
+                assert_true(calls_path.read_text(encoding="utf-8").splitlines() == calls_after_action,
+                            "changed intent with an existing request id must be rejected before contacting the BMC")
 
         state_after_power_off = state_path.read_text(encoding="utf-8").strip()
         assert_true(state_after_power_off == "off", "IPMI power-off should change only the mock chassis state")
