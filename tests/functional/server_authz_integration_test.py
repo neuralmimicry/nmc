@@ -815,7 +815,7 @@ class NmcServerProcess:
         backend_base_url: str,
         cluster_id: str | None = "authz-test-cluster",
         load_kubeconfig: bool = True,
-        device_power_control_enabled: bool = False,
+        device_power_control_enabled: bool | None = None,
         recovery_enabled: bool | str | None = None,
         provider_environment: dict[str, str] | None = None,
         device_management_environment: dict[str, str] | None = None,
@@ -877,8 +877,8 @@ class NmcServerProcess:
         env.update(self._provider_environment)
         env.update(self._device_management_environment)
         env.pop("NMC_DEVICE_POWER_CONTROL_ENABLED", None)
-        if self._device_power_control_enabled:
-            env["NMC_DEVICE_POWER_CONTROL_ENABLED"] = "true"
+        if self._device_power_control_enabled is not None:
+            env["NMC_DEVICE_POWER_CONTROL_ENABLED"] = str(self._device_power_control_enabled).lower()
         env.pop("NMC_K8S_CLUSTER_ID", None)
         if self._cluster_id is not None:
             env["NMC_K8S_CLUSTER_ID"] = self._cluster_id
@@ -992,7 +992,6 @@ def write_device_inventory(home_dir: pathlib.Path, backend_base_url: str) -> pat
                         "username_env": "AUTHZ_BMC_USERNAME",
                         "password_env": "AUTHZ_BMC_PASSWORD",
                         "manages": ["authz-device"],
-                        "power_actions_enabled": False,
                     }
                 ],
                 "home_assistant": {
@@ -1302,6 +1301,10 @@ def test_continuum_route_authorisation(server: NmcServerProcess, backend: MockBa
         inventory["controllers"][0].get("mac_address") == "aa:bb:cc:dd:ee:00",
         "inventory should expose the registered controller MAC",
     )
+    assert_true(
+        inventory["controllers"][0].get("power_actions_enabled") is True,
+        "an omitted controller flag should expose the enabled default",
+    )
     assert_true("AUTHZ_BMC_PASSWORD" not in json.dumps(inventory), "inventory must not reveal credential references")
 
     status, payload = request_json(server.base_url, "GET", "/devices/home-assistant", token="continuum-observe-token")
@@ -1365,7 +1368,7 @@ def test_continuum_route_authorisation(server: NmcServerProcess, backend: MockBa
         "action": "warm_restart",
         "request_id": "authz-controller-action-0001",
         "change_id": "AUTHZ-CHANGE-1",
-        "reason": "Exercise default-disabled controller action safety.",
+        "reason": "Exercise explicit per-controller action opt-out safety.",
         "expected_inventory_revision": "authz-device-inventory-v1",
         "preflight": {
             "observed_at_unix_ms": int(time.time() * 1000),
@@ -1381,6 +1384,11 @@ def test_continuum_route_authorisation(server: NmcServerProcess, backend: MockBa
             "dependency_ids": [],
         },
     }
+    assert_true(server.inventory_path is not None, "controller action test should retain its inventory path")
+    inventory_document = json.loads(server.inventory_path.read_text(encoding="utf-8"))
+    inventory_document["controllers"][0]["power_actions_enabled"] = False
+    server.inventory_path.write_text(json.dumps(inventory_document), encoding="utf-8")
+    server.inventory_path.chmod(0o600)
     status, _ = request_json(
         server.base_url,
         "POST",
@@ -1396,10 +1404,10 @@ def test_continuum_route_authorisation(server: NmcServerProcess, backend: MockBa
         token="continuum-control-token",
         payload=controller_action,
     )
-    assert_status(status, 423, "controller power actions are disabled by default")
+    assert_status(status, 423, "an explicitly disabled controller rejects power actions")
     assert_true(
         payload.get("error", {}).get("code") == "controller_actions_disabled",
-        "default-disabled action must fail closed before contacting a controller",
+        "an explicitly disabled controller must fail closed before contacting hardware",
     )
 
     status, payload = request_json(server.base_url, "GET", "/connections", token=STATIC_ADMIN_TOKEN)
@@ -2173,7 +2181,8 @@ def test_redfish_vendor_diagnostics(server: NmcServerProcess, redfish: RedfishBm
 
 
 def test_redfish_vendor_actions(backend_base_url: str, redfish: RedfishBmcMock) -> None:
-    server = NmcServerProcess(backend_base_url, device_power_control_enabled=True)
+    # Neither gate is set: all Redfish profiles must inherit the enabled default.
+    server = NmcServerProcess(backend_base_url)
     server.start()
     try:
         assert_true(server.inventory_path is not None, "action integration server should expose its device inventory")
@@ -2190,7 +2199,6 @@ def test_redfish_vendor_actions(backend_base_url: str, redfish: RedfishBmcMock) 
                         "endpoint": redfish.base_url,
                         "tls_ca_file": str(redfish.ca_file),
                         "vendor_profile": profile_name,
-                        "power_actions_enabled": True,
                     }
                 )
                 inventory_path.write_text(json.dumps(inventory), encoding="utf-8")
@@ -2242,7 +2250,6 @@ def test_redfish_vendor_actions(backend_base_url: str, redfish: RedfishBmcMock) 
                     "endpoint": redfish.base_url,
                     "tls_ca_file": str(redfish.ca_file),
                     "vendor_profile": "dell_idrac",
-                    "power_actions_enabled": True,
                 }
             )
             inventory_path.write_text(json.dumps(inventory), encoding="utf-8")
@@ -2317,13 +2324,37 @@ def build_controller_action_payload(
     }
 
 
+def test_global_controller_power_gate_can_be_explicitly_disabled(backend_base_url: str) -> None:
+    server = NmcServerProcess(backend_base_url, device_power_control_enabled=False)
+    server.start()
+    try:
+        status, payload = request_json(
+            server.base_url,
+            "POST",
+            "/devices/controllers/actions",
+            token="continuum-control-token",
+            payload=build_controller_action_payload(
+                "warm_restart",
+                request_id="global-power-gate-disabled-0001",
+                change_id="GLOBAL-POWER-GATE-TEST",
+                expected_power_state="On",
+            ),
+        )
+        assert_status(status, 423, "explicit global power-control opt-out")
+        assert_true(
+            payload.get("error", {}).get("code") == "controller_actions_disabled",
+            "an explicit global false must reject controller actions before hardware contact",
+        )
+    finally:
+        server.stop()
+
+
 def test_ipmi_diagnostics_and_actions(backend_base_url: str) -> None:
     mock_dir = tempfile.TemporaryDirectory(prefix="nmc-ipmi-mock-")
     mock_home = pathlib.Path(mock_dir.name)
     executable, state_path, calls_path = write_mock_ipmitool(mock_home)
     server = NmcServerProcess(
         backend_base_url,
-        device_power_control_enabled=True,
         device_management_environment={"NMC_IPMITOOL_PATH": str(executable)},
     )
     try:
@@ -2333,7 +2364,7 @@ def test_ipmi_diagnostics_and_actions(backend_base_url: str) -> None:
         original_inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
         inventory = json.loads(json.dumps(original_inventory))
         inventory["controllers"][0].update(
-            {"protocol": "ipmi", "endpoint": "127.0.0.1", "power_actions_enabled": True}
+            {"protocol": "ipmi", "endpoint": "127.0.0.1"}
         )
         inventory_path.write_text(json.dumps(inventory), encoding="utf-8")
         inventory_path.chmod(0o600)
@@ -2531,7 +2562,8 @@ def test_turingpi_diagnostics_and_actions(backend_base_url: str) -> None:
     mock_dir = tempfile.TemporaryDirectory(prefix="nmc-turingpi-mock-")
     mock = TuringPiBmcMock(pathlib.Path(mock_dir.name))
     mock.start()
-    server = NmcServerProcess(backend_base_url, device_power_control_enabled=True)
+    # Turing Pi must inherit the same default as IPMI and Redfish.
+    server = NmcServerProcess(backend_base_url)
     try:
         server.start()
         assert_true(server.inventory_path is not None, "Turing Pi integration server should expose its inventory")
@@ -2544,7 +2576,6 @@ def test_turingpi_diagnostics_and_actions(backend_base_url: str) -> None:
                 "protocol": "turingpi",
                 "endpoint": mock.base_url,
                 "tls_spki_sha256": mock.spki_sha256,
-                "power_actions_enabled": True,
                 "cold_restart_mode": "bmc_reset",
             }
         )
@@ -3356,6 +3387,7 @@ fi
         test_continuum_route_authorisation(server, backend)
         test_provider_compute_lifecycle(server, backend)
         test_controller_action_rejects_malformed_body_shapes(server)
+        test_global_controller_power_gate_can_be_explicitly_disabled(backend.base_url)
         test_redfish_vendor_diagnostics(server, redfish)
         test_redfish_vendor_actions(backend.base_url, redfish)
         test_ipmi_diagnostics_and_actions(backend.base_url)

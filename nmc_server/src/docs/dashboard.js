@@ -8233,7 +8233,7 @@
         networkInventoryState.selectedEntity = entity;
         nodes.networkDeviceModalTitle.textContent = entity.name || entity.id || "Device details";
         nodes.networkDeviceModalSubtitle.textContent = entity.entity_type === "controller"
-            ? `${entity.protocol || "Controller"} · ${entity.endpoint || "endpoint not configured"} · ${entity.power_actions_enabled ? "action flag enabled; governed preflight still required" : "power actions disabled by inventory policy"}`
+            ? `${entity.protocol || "Controller"} · ${entity.endpoint || "endpoint not configured"} · ${entity.power_actions_enabled !== false ? "action flag enabled; governed preflight still required" : "power actions disabled by inventory policy"}`
             : `${networkEntityStatus(entity)} · ${networkEntityKind(entity)} · inventory revision ${networkInventoryState.inventory?.revision || "unknown"}`;
         const controllers = networkEntityControllers(entity);
         const traceyAgents = entity.tracey_agents || [];
@@ -8245,7 +8245,7 @@
             }).join("")}</section>`
             : `<section class="network-operation-card"><h4>Tracey</h4><p>${networkInventoryState.traceyAvailable ? "No Tracey agent matched this device by exact registered identity." : "Tracey data is unavailable or hidden by service access; identity matching was not evaluated."}</p></section>`;
         const controllerDetails = controllers.length
-            ? `<section class="network-operation-card"><h4>Controller management</h4>${controllers.map((controller) => `<p><strong>${escapeHtml(controller.id)}</strong> · ${escapeHtml(controller.protocol || "controller")} · ${escapeHtml(controller.endpoint || "endpoint unavailable")} · ${escapeHtml(controller.mac_address || "MAC unavailable")}</p><p>${controller.power_actions_enabled ? "Inventory policy permits actions. This dashboard currently provides diagnostics only; it does not synthesise or submit controller preflight." : "Power actions are disabled by inventory policy."}</p><button class="panel-action-btn" type="button" data-network-operation="diagnostics" data-controller-id="${escapeHtml(controller.id)}">Run read-only controller diagnostics</button>`).join("")}</section>`
+            ? `<section class="network-operation-card"><h4>Controller management</h4>${controllers.map((controller) => `<p><strong>${escapeHtml(controller.id)}</strong> · ${escapeHtml(controller.protocol || "controller")} · ${escapeHtml(controller.endpoint || "endpoint unavailable")} · ${escapeHtml(controller.mac_address || "MAC unavailable")}</p><p>${controller.power_actions_enabled !== false ? "Inventory policy permits actions. This dashboard currently provides diagnostics only; it does not synthesise or submit controller preflight." : "Power actions are disabled by inventory policy."}</p><button class="panel-action-btn" type="button" data-network-operation="diagnostics" data-controller-id="${escapeHtml(controller.id)}">Run read-only controller diagnostics</button>`).join("")}</section>`
             : '<section class="network-operation-card"><h4>Controller management</h4><p>No verified controller is mapped to this device, so controller operations are unavailable.</p></section>';
         const canReadDhcp = (entity.mac_addresses || []).length > 0 || (entity.dhcp_client_ids || []).length > 0;
         const dhcpButton = canReadDhcp ? '<button class="panel-action-btn" type="button" data-network-operation="dhcp">Read matching DHCP lease evidence</button>' : "";

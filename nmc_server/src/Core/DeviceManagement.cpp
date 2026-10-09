@@ -529,6 +529,9 @@ Json publicController(const Json& source) {
                             "manages", "power_actions_enabled", "source"}) {
         if (source.contains(key)) result[key] = source[key];
     }
+    // An omitted per-controller setting inherits the enabled default. Keep the
+    // effective value visible in the read-only inventory API and dashboard.
+    result["power_actions_enabled"] = source.value("power_actions_enabled", true);
     return result;
 }
 
@@ -1951,9 +1954,9 @@ Json DeviceManagement::performControllerAction(const Inventory& inventory,
         return errorBody("device_inventory_stale", "controller actions require a fresh device inventory");
     }
     const char* enabled = std::getenv("NMC_DEVICE_POWER_CONTROL_ENABLED");
-    if (!enabled || lower(enabled) != "true") {
+    if (enabled && lower(enabled) != "true") {
         statusCode = 423;
-        return errorBody("controller_actions_disabled", "NMC_DEVICE_POWER_CONTROL_ENABLED is not true");
+        return errorBody("controller_actions_disabled", "NMC_DEVICE_POWER_CONTROL_ENABLED is explicitly not true");
     }
     const std::string deviceId = stringField(request, "device_id");
     const std::string action = lower(stringField(request, "action"));
@@ -1984,9 +1987,9 @@ Json DeviceManagement::performControllerAction(const Inventory& inventory,
         statusCode = 409;
         return errorBody("controller_target_relationship_mismatch", "controller-to-device relationship is missing or ambiguous");
     }
-    if (!controller->value("power_actions_enabled", false)) {
+    if (!controller->value("power_actions_enabled", true)) {
         statusCode = 423;
-        return errorBody("controller_actions_disabled", "power_actions_enabled is not true for this inventory controller");
+        return errorBody("controller_actions_disabled", "power_actions_enabled is explicitly false for this inventory controller");
     }
     const Json preflight = request.value("preflight", Json::object());
     if (!preflight.is_object()) {
