@@ -77,13 +77,29 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Assert Ubuntu self-hosted runner
+      - name: Assert Ubuntu runner architecture
+        env:
+          EXPECTED_ARCH: ${{ matrix.arch }}
         shell: bash
         run: |
           set -euo pipefail
           source /etc/os-release
           if [[ "${ID:-}" != "ubuntu" ]]; then
-            echo "::error::Expected an Ubuntu self-hosted runner, found ${PRETTY_NAME:-unknown}"
+            echo "::error::Expected an Ubuntu runner, found ${PRETTY_NAME:-unknown}"
+            exit 1
+          fi
+          case "$(uname -m)" in
+            x86_64) actual_arch=amd64 ;;
+            aarch64) actual_arch=arm64 ;;
+            *)
+              runner_arch="$(uname -m)"
+              echo "::error::Unsupported runner architecture: $runner_arch"
+              exit 1
+              ;;
+          esac
+          if [[ "$actual_arch" != "$EXPECTED_ARCH" ]]; then
+            printf '::error::Expected %s, found %s\n' \
+              "$EXPECTED_ARCH" "$actual_arch"
             exit 1
           fi
 
@@ -152,7 +168,7 @@ jobs:
           - component: client
             os: linux
             arch: arm64
-            runs_on: '["self-hosted","Linux","ARM64"]'
+            runs_on: '["ubuntu-24.04-arm"]'
             platform: linux-arm64
             source_dir: nmc_client
             build_dir: nmc_client/build
@@ -174,7 +190,7 @@ jobs:
           - component: server
             os: linux
             arch: arm64
-            runs_on: '["self-hosted","Linux","ARM64"]'
+            runs_on: '["ubuntu-24.04-arm"]'
             platform: linux-arm64
             source_dir: nmc_server
             build_dir: nmc_server/build
@@ -188,14 +204,30 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Assert Ubuntu self-hosted runner
+      - name: Assert Ubuntu runner architecture
         if: ${{ matrix.os == 'linux' }}
+        env:
+          EXPECTED_ARCH: ${{ matrix.arch }}
         shell: bash
         run: |
           set -euo pipefail
           source /etc/os-release
           if [[ "${ID:-}" != "ubuntu" ]]; then
-            echo "::error::Expected an Ubuntu self-hosted runner, found ${PRETTY_NAME:-unknown}"
+            echo "::error::Expected an Ubuntu runner, found ${PRETTY_NAME:-unknown}"
+            exit 1
+          fi
+          case "$(uname -m)" in
+            x86_64) actual_arch=amd64 ;;
+            aarch64) actual_arch=arm64 ;;
+            *)
+              runner_arch="$(uname -m)"
+              echo "::error::Unsupported runner architecture: $runner_arch"
+              exit 1
+              ;;
+          esac
+          if [[ "$actual_arch" != "$EXPECTED_ARCH" ]]; then
+            printf '::error::Expected %s, found %s\n' \
+              "$EXPECTED_ARCH" "$actual_arch"
             exit 1
           fi
 
