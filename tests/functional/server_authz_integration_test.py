@@ -3483,6 +3483,8 @@ def test_octobot_configuration_is_allowlisted_conditional_and_idempotent(
     backend_base_url: str,
     backend: MockBackend,
 ) -> None:
+    patch_path = "/apis/apps/v1/namespaces/octobot/deployments/octobot"
+    patches_before = backend.count_requests(patch_path, "PATCH")
     request = {
         "cluster_id": "rk1",
         "namespace": "octobot",
@@ -3531,8 +3533,7 @@ def test_octobot_configuration_is_allowlisted_conditional_and_idempotent(
             assert_true(values["OCTOBOT_SERVICE_INTEGRATIONS_ENABLED"] == "false",
                         "Continuum must update the optional-service policy in both containers")
 
-        patch_path = "/apis/apps/v1/namespaces/octobot/deployments/octobot"
-        assert_true(backend.count_requests(patch_path, "PATCH") == 1,
+        assert_true(backend.count_requests(patch_path, "PATCH") - patches_before == 1,
                     "one configuration intent must issue one conditional Kubernetes patch")
         status, payload = request_json(
             server.base_url,
@@ -3544,7 +3545,7 @@ def test_octobot_configuration_is_allowlisted_conditional_and_idempotent(
         assert_status(status, 200, "duplicate OctoBot configuration intent")
         assert_true(payload.get("data", {}).get("already_applied") is True,
                     "replaying the same configuration intent must be deduplicated")
-        assert_true(backend.count_requests(patch_path, "PATCH") == 1,
+        assert_true(backend.count_requests(patch_path, "PATCH") - patches_before == 1,
                     "a duplicate configuration request must not issue another patch")
 
         conflicting = dict(request, service_integrations_enabled=True)
@@ -3588,7 +3589,7 @@ def test_octobot_configuration_is_allowlisted_conditional_and_idempotent(
             payload=newer,
         )
         assert_status(status, 200, "newer OctoBot policy request")
-        assert_true(backend.count_requests(patch_path, "PATCH") == 2,
+        assert_true(backend.count_requests(patch_path, "PATCH") - patches_before == 2,
                     "a compare-and-swap policy change must issue one additional patch")
 
         status, _ = request_json(
@@ -3599,7 +3600,7 @@ def test_octobot_configuration_is_allowlisted_conditional_and_idempotent(
             payload=request,
         )
         assert_status(status, 409, "stale OctoBot request replay")
-        assert_true(backend.count_requests(patch_path, "PATCH") == 2,
+        assert_true(backend.count_requests(patch_path, "PATCH") - patches_before == 2,
                     "stale request replay must not issue another Kubernetes patch")
         with backend._lock:
             stored = json.loads(json.dumps(backend.k8s_deployments["octobot/octobot"]))
@@ -3622,7 +3623,7 @@ def test_octobot_configuration_is_allowlisted_conditional_and_idempotent(
             payload=reused_id,
         )
         assert_status(status, 200, "historical request ID with current compare-and-swap marker")
-        assert_true(backend.count_requests(patch_path, "PATCH") == 3,
+        assert_true(backend.count_requests(patch_path, "PATCH") - patches_before == 3,
                     "a new request with the current expected marker must be applied")
 
         status, _ = request_json(
@@ -3633,7 +3634,7 @@ def test_octobot_configuration_is_allowlisted_conditional_and_idempotent(
             payload=request,
         )
         assert_status(status, 409, "replay of the old body after its request ID was reused")
-        assert_true(backend.count_requests(patch_path, "PATCH") == 3,
+        assert_true(backend.count_requests(patch_path, "PATCH") - patches_before == 3,
                     "replaying an old expected marker must not patch Kubernetes")
     finally:
         server.stop()
