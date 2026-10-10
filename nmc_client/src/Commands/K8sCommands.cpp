@@ -166,14 +166,14 @@ int K8sLogsCommand::execute(const std::map<std::string, std::string>& parsedFlag
     int sinceSeconds = 0;
     int tailLines = 0;
     try {
-        sinceSeconds = std::stoi(optionalFlag(parsedFlags, "since-seconds", "300"));
-        tailLines = std::stoi(optionalFlag(parsedFlags, "tail-lines", "500"));
+        sinceSeconds = std::stoi(parsedFlags.count("since-seconds") ? parsedFlags.at("since-seconds") : "300");
+        tailLines = std::stoi(parsedFlags.count("tail-lines") ? parsedFlags.at("tail-lines") : "500");
     } catch (const std::exception&) {
         std::cerr << "Error: since-seconds and tail-lines must be integers." << std::endl;
         return 1;
     }
-    const std::string namespaceName = requiredFlag(parsedFlags, "namespace");
-    const std::string deploymentName = requiredFlag(parsedFlags, "deployment");
+    const std::string namespaceName = parsedFlags.at("namespace");
+    const std::string deploymentName = parsedFlags.at("deployment");
     const bool previous = parsedFlags.count("previous") > 0 && parsedFlags.at("previous") == "1";
     if (sinceSeconds < 1 || sinceSeconds > 86400 || tailLines < 1 || tailLines > 2000) {
         std::cerr << "Error: since-seconds must be 1-86400 and tail-lines must be 1-2000." << std::endl;
