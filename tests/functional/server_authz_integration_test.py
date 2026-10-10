@@ -1184,6 +1184,34 @@ def request_json(
         return exc.code, parsed
 
 
+def test_docs_routes_are_uncached_and_base_path_aware(server: NmcServerProcess) -> None:
+    prefix = "/services/health/monitoring"
+    for path in (f"{prefix}/", f"{prefix}/login", f"{prefix}/dashboard.js"):
+        request = urllib.request.Request(f"{server.base_url}{path}", method="GET")
+        with urllib.request.urlopen(request, timeout=10) as response:
+            assert_status(response.status, 200, f"Continuum docs route {path}")
+            cache_control = response.headers.get("Cache-Control", "").lower()
+            assert_true("no-store" in cache_control, f"docs route {path} must not be cached")
+            body = response.read().decode("utf-8", errors="replace")
+            if path.endswith("/"):
+                assert_true(f'href="{prefix}/login"' in body, "dashboard sign-in must use the monitoring base path")
+                assert_true(f'{prefix}/dashboard.js?v=20261010-auth-redirect' in body,
+                            "dashboard JavaScript must carry the authentication fix cache version")
+
+    class NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            return None
+
+    opener = urllib.request.build_opener(NoRedirectHandler)
+    try:
+        opener.open(f"{server.base_url}/logout", timeout=10)
+        raise AssertionError("/logout should return a redirect response")
+    except urllib.error.HTTPError as exc:
+        assert_status(exc.code, 302, "Continuum logout route")
+        assert_true(exc.headers.get("Location") == f"{prefix}/login",
+                    "logout must return to the monitoring-base-path login page")
+
+
 def assert_true(condition: bool, message: str) -> None:
     if not condition:
         raise AssertionError(message)
@@ -3384,6 +3412,7 @@ fi
         test_auth_session_reflects_central_identity(server)
         test_auth_session_preserves_service_account_groups(server)
         test_auth_session_supports_static_admin_token(server)
+        test_docs_routes_are_uncached_and_base_path_aware(server)
         test_continuum_route_authorisation(server, backend)
         test_provider_compute_lifecycle(server, backend)
         test_controller_action_rejects_malformed_body_shapes(server)

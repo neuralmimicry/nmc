@@ -1135,7 +1135,9 @@
                 return;
             }
             if (nodes.gailTradingModalSubtitle) {
-                nodes.gailTradingModalSubtitle.textContent = "Gail Trading Overview (stale)";
+                nodes.gailTradingModalSubtitle.textContent = gailTradingModalLastSuccessfulResponse
+                    ? "Gail Trading Overview (stale)"
+                    : "Gail Trading Overview unavailable";
             }
             if (forceErrorRender || !gailTradingModalLastSuccessfulResponse) {
                 renderGailTradingModal(overviewRes);
@@ -1221,6 +1223,36 @@
         return headers;
     }
 
+    function loginRedirectUrl(response) {
+        if (!response || !response.redirected) {
+            return null;
+        }
+        try {
+            const responseUrl = new URL(response.url, window.location.href);
+            if (responseUrl.origin !== window.location.origin
+                || !/(?:^|\/)(?:login|external-login|signin|sign-in)\/?$/i.test(responseUrl.pathname)) {
+                return null;
+            }
+            return responseUrl.href;
+        } catch (_error) {
+            return null;
+        }
+    }
+
+    function followLoginRedirect(response) {
+        const loginUrl = loginRedirectUrl(response);
+        if (!loginUrl) {
+            return false;
+        }
+        if (!authRedirectStarted) {
+            authRedirectStarted = true;
+            window.setTimeout(() => {
+                window.location.href = loginUrl;
+            }, 0);
+        }
+        return true;
+    }
+
     async function fetchJson(path, options = {}) {
         try {
             const headers = {
@@ -1233,8 +1265,34 @@
                 cache: "no-store",
                 body: options.body
             });
+            if (followLoginRedirect(response)) {
+                return {
+                    ok: false,
+                    status: 401,
+                    payload: null,
+                    error: "The request was redirected to a sign-in page. Refresh the dashboard or sign in again."
+                };
+            }
+
             const text = await response.text();
-            const payload = text ? JSON.parse(text) : {};
+            let payload = {};
+            if (text) {
+                try {
+                    payload = JSON.parse(text);
+                } catch (_error) {
+                    const contentType = response.headers.get("content-type") || "";
+                    const isHtml = /text\/html/i.test(contentType)
+                        || /^\s*(?:<!doctype\s+html|<html\b)/i.test(text);
+                    return {
+                        ok: false,
+                        status: response.status,
+                        payload: null,
+                        error: isHtml
+                            ? `The dashboard API returned an HTML page instead of JSON (HTTP ${response.status}). Refresh or sign in again, then retry.`
+                            : `The dashboard API returned invalid JSON (HTTP ${response.status}).`
+                    };
+                }
+            }
             return { ok: response.ok, status: response.status, payload };
         } catch (error) {
             return { ok: false, status: 0, payload: null, error: String(error) };
@@ -7852,7 +7910,8 @@
             query.set("next", next);
         }
         const suffix = query.toString();
-        window.location.href = suffix ? `/login?${suffix}` : "/login";
+        const loginPath = withBase("/login");
+        window.location.href = suffix ? `${loginPath}?${suffix}` : loginPath;
     }
 
     function updateAuthPill(lastResults) {
@@ -7865,6 +7924,9 @@
                     headers: authHeaders(),
                     cache: "no-store"
                 }).then((response) => {
+                    if (followLoginRedirect(response)) {
+                        return;
+                    }
                     if (response.status === 401 && !authRedirectStarted) {
                         authRedirectStarted = true;
                         window.setTimeout(() => redirectToLogin("unauthorized"), 400);
