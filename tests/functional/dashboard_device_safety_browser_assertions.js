@@ -3,6 +3,7 @@
 
     const state = window.__nmcDashboardBrowserTest;
     const prefix = "NMC-DASHBOARD-BROWSER-RESULT:";
+    const monitoringPath = "/services/health/monitoring";
 
     function assert(condition, message) {
         if (!condition) throw new Error(message);
@@ -128,6 +129,16 @@
         assertNoControllerMutations();
     }
 
+    async function runCrossOriginLoginRedirectCase() {
+        await waitFor("API request with an external sign-in redirect", () => (
+            state.requests.some((request) => request.path === "/k8s/list")
+        ));
+        await new Promise((resolve) => window.setTimeout(resolve, 500));
+        assert(window.location.pathname === monitoringPath
+            || window.location.pathname === `${monitoringPath}/`,
+        `the dashboard followed a cross-origin sign-in redirect to ${window.location.href}`);
+    }
+
     async function run() {
         assert(state, "the browser fixture bootstrap did not run");
         if (state.mode === "stale-inventory") await runStaleInventoryCase();
@@ -135,6 +146,7 @@
         else if (state.mode === "tracey-unavailable") await runTraceyUnavailableCase();
         else if (state.mode === "network-overview") await runNetworkOverviewCase();
         else if (state.mode === "network-overview-ambiguous") await runAmbiguousTraceyIdentityCase();
+        else if (state.mode === "cross-origin-login-redirect") await runCrossOriginLoginRedirectCase();
         else throw new Error(`unknown browser fixture: ${state.mode}`);
         assert(state.errors.length === 0, `uncaught dashboard browser errors: ${state.errors.join("; ")}`);
         return `${prefix}PASS:${state.mode}`;

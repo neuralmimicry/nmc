@@ -80,6 +80,19 @@
         const method = String(init.method || (typeof input === "object" ? input.method : "GET") || "GET").toUpperCase();
         requests.push({ path, search: requestUrl.search, method });
 
+        if (["login-redirect", "cross-origin-login-redirect"].includes(mode) && path === "/k8s/list") {
+            return {
+                redirected: true,
+                url: mode === "login-redirect"
+                    ? `${window.location.origin}${prefix}/login?reason=expired`
+                    : "https://login.example.invalid/login",
+                ok: true,
+                status: 200,
+                headers: new Headers({ "Content-Type": "text/html; charset=utf-8" }),
+                text: async () => "<!doctype html><html><body>Sign in</body></html>"
+            };
+        }
+
         if (path === "/devices/inventory") {
             if (mode === "inventory-unavailable") return reply({ message: "fixture inventory unavailable" }, 503);
             return reply(inventory(mode === "stale-inventory"));

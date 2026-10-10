@@ -27,6 +27,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import parse_qs, urlsplit
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -158,6 +159,18 @@ TOKEN_IDENTITIES: dict[str, dict[str, Any]] = {
             "continuum": build_service_access_entry("continuum", "use", "observe"),
         },
     ),
+    "central-auth-concurrency-token": build_identity(
+        "auth-concurrency-user",
+        service_access={
+            "continuum": build_service_access_entry("continuum", "observe", "observe"),
+        },
+    ),
+    "central-auth-outage-token": build_identity(
+        "auth-outage-user",
+        service_access={
+            "continuum": build_service_access_entry("continuum", "observe", "observe"),
+        },
+    ),
 }
 
 
@@ -183,6 +196,9 @@ class MockBackend:
         self.provider_health_status: dict[str, int] = {}
         self.provider_health_sequences: dict[str, list[int]] = {}
         self.provider_policy_update_on_health: tuple[str, pathlib.Path, bytes] | None = None
+        self.central_auth_status = 200
+        self.central_auth_delay_seconds = 0.0
+        self.central_auth_payload: object | None = None
 
         outer = self
 
@@ -265,6 +281,18 @@ class MockBackend:
                 if record.path == wanted_path and (wanted_method is None or record.method == wanted_method)
             )
 
+    def set_central_auth_response(
+        self,
+        *,
+        status: int,
+        delay_seconds: float = 0.0,
+        payload: object | None = None,
+    ) -> None:
+        with self._lock:
+            self.central_auth_status = status
+            self.central_auth_delay_seconds = max(0.0, delay_seconds)
+            self.central_auth_payload = payload
+
     def set_home_assistant_response(self, status: int, states: list[dict[str, object]]) -> None:
         with self._lock:
             self.home_assistant_status = status
@@ -302,6 +330,18 @@ class MockBackend:
         self._record(handler.command, path_only, authorization, body)
 
         if path_only == "/api/session":
+            with self._lock:
+                central_auth_status = self.central_auth_status
+                central_auth_delay_seconds = self.central_auth_delay_seconds
+                central_auth_payload = self.central_auth_payload
+            if central_auth_delay_seconds:
+                time.sleep(central_auth_delay_seconds)
+            if central_auth_status != 200:
+                self._send_json(handler, central_auth_status, {"error": "central_auth_unavailable"})
+                return
+            if central_auth_payload is not None:
+                self._send_json(handler, central_auth_status, central_auth_payload)
+                return
             token = extract_bearer_token(authorization)
             payload = TOKEN_IDENTITIES.get(token or "")
             if not payload:
@@ -857,6 +897,7 @@ class NmcServerProcess:
                 "NMC_CENTRAL_AUTH_TIMEOUT_MS": "1000",
                 "NMC_CENTRAL_AUTH_CACHE_TTL_MS": "1000",
                 "NMC_DOCS_ENABLED": "1",
+                "NMC_DOCS_DIR": str(REPO_ROOT / "nmc_server" / "build" / "docs"),
                 "NMC_TRACEY_DISCOVERY_ENABLED": "0",
                 "NMC_TRACEY_CVE_ENABLED": "0",
                 "NMC_AARNN_DISCOVERY_ENABLED": "0",
@@ -1184,6 +1225,34 @@ def request_json(
         return exc.code, parsed
 
 
+def test_docs_routes_are_uncached_and_base_path_aware(server: NmcServerProcess) -> None:
+    prefix = "/services/health/monitoring"
+    for path in (f"{prefix}/", f"{prefix}/login", f"{prefix}/dashboard.js"):
+        request = urllib.request.Request(f"{server.base_url}{path}", method="GET")
+        with urllib.request.urlopen(request, timeout=10) as response:
+            assert_status(response.status, 200, f"Continuum docs route {path}")
+            cache_control = response.headers.get("Cache-Control", "").lower()
+            assert_true("no-store" in cache_control, f"docs route {path} must not be cached")
+            body = response.read().decode("utf-8", errors="replace")
+            if path.endswith("/"):
+                assert_true(f'href="{prefix}/login"' in body, "dashboard sign-in must use the monitoring base path")
+                assert_true(f'{prefix}/dashboard.js?v=20261010-auth-redirect' in body,
+                            "dashboard JavaScript must carry the authentication fix cache version")
+
+    class NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            return None
+
+    opener = urllib.request.build_opener(NoRedirectHandler)
+    try:
+        opener.open(f"{server.base_url}/logout", timeout=10)
+        raise AssertionError("/logout should return a redirect response")
+    except urllib.error.HTTPError as exc:
+        assert_status(exc.code, 302, "Continuum logout route")
+        assert_true(exc.headers.get("Location") == f"{prefix}/login",
+                    "logout must return to the monitoring-base-path login page")
+
+
 def assert_true(condition: bool, message: str) -> None:
     if not condition:
         raise AssertionError(message)
@@ -1260,6 +1329,63 @@ def test_auth_session_supports_static_admin_token(server: NmcServerProcess) -> N
     assert_true("admin" in (payload.get("groups") or []), "static admin token should resolve admin group membership")
     continuum = ((payload.get("service_access") or {}).get("continuum") or {})
     assert_true(continuum.get("can_control") is True, "static admin token should resolve continuum control access")
+
+
+def test_central_auth_parallel_requests_share_one_validation(
+    server: NmcServerProcess,
+    backend: MockBackend,
+) -> None:
+    token = "central-auth-concurrency-token"
+    before = backend.count_requests("/api/session")
+    backend.set_central_auth_response(status=200, delay_seconds=0.2)
+    try:
+        with ThreadPoolExecutor(max_workers=16) as executor:
+            results = list(executor.map(
+                lambda _index: request_json(server.base_url, "GET", "/auth/session", token=token),
+                range(16),
+            ))
+    finally:
+        backend.set_central_auth_response(status=200)
+
+    assert_true(all(status == 200 for status, _payload in results), "parallel session refreshes should all retain access")
+    assert_true(
+        backend.count_requests("/api/session") - before == 1,
+        "parallel refreshes with one bearer token should produce one central-auth lookup",
+    )
+
+
+def test_central_auth_outage_returns_503_and_invalid_token_stays_401(
+    server: NmcServerProcess,
+    backend: MockBackend,
+) -> None:
+    token = "central-auth-outage-token"
+    before = backend.count_requests("/api/session")
+    backend.set_central_auth_response(status=503)
+    try:
+        status, _payload = request_json(server.base_url, "GET", "/server/version", token=token)
+        assert_status(status, 503, "temporary central-auth outage")
+        status, _payload = request_json(server.base_url, "GET", "/auth/session", token=token)
+        assert_status(status, 503, "dashboard session check during central-auth outage")
+    finally:
+        backend.set_central_auth_response(status=200)
+
+    assert_true(
+        backend.count_requests("/api/session") - before == 1,
+        "short-lived unavailable cache should prevent repeated validation during one refresh burst",
+    )
+    status, _payload = request_json(server.base_url, "GET", "/auth/session", token="invalid-central-auth-token")
+    assert_status(status, 401, "rejected central-auth token")
+
+    try:
+        for token, payload in (
+            ("central-auth-malformed-response-token", {"error": "malformed_session_response"}),
+            ("central-auth-malformed-state-token", {"authenticated": "maybe", "user": "invalid-state"}),
+        ):
+            backend.set_central_auth_response(status=200, payload=payload)
+            status, _payload = request_json(server.base_url, "GET", "/auth/session", token=token)
+            assert_status(status, 503, "malformed central-auth session response")
+    finally:
+        backend.set_central_auth_response(status=200)
 
 
 def test_controller_action_rejects_malformed_body_shapes(server: NmcServerProcess) -> None:
@@ -3384,6 +3510,9 @@ fi
         test_auth_session_reflects_central_identity(server)
         test_auth_session_preserves_service_account_groups(server)
         test_auth_session_supports_static_admin_token(server)
+        test_docs_routes_are_uncached_and_base_path_aware(server)
+        test_central_auth_parallel_requests_share_one_validation(server, backend)
+        test_central_auth_outage_returns_503_and_invalid_token_stays_401(server, backend)
         test_continuum_route_authorisation(server, backend)
         test_provider_compute_lifecycle(server, backend)
         test_controller_action_rejects_malformed_body_shapes(server)

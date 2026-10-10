@@ -611,88 +611,143 @@ namespace NMC::Server {
         };
     }
 
-    bool APIRoutes::validateCentralAuthToken(const std::string& token, nlohmann::json* claimsOut) const {
+    APIRoutes::CentralAuthValidationStatus APIRoutes::validateCentralAuthToken(
+            const std::string& token,
+            nlohmann::json* claimsOut) const {
         const std::string trimmedToken = trim(token);
-        if (trimmedToken.empty() || centralAuthSessionUrl.empty()) {
-            return false;
+        if (trimmedToken.empty()) {
+            return CentralAuthValidationStatus::unauthenticated;
+        }
+        if (centralAuthSessionUrl.empty()) {
+            return CentralAuthValidationStatus::unavailable;
         }
 
-        const int64_t nowMs = nowEpochMs();
-        {
-            std::lock_guard<std::mutex> lock(centralAuthCacheMutex);
-            auto it = centralAuthTokenCache.find(trimmedToken);
-            if (it != centralAuthTokenCache.end()) {
-                if (it->second.expiresAtMs > nowMs) {
-                    if (it->second.authenticated && !it->second.user.empty() && claimsOut) {
-                        *claimsOut = centralAuthClaimsJson(it->second);
+        std::unique_lock<std::mutex> cacheLock(centralAuthCacheMutex);
+        while (true) {
+            const int64_t nowMs = nowEpochMs();
+            auto cached = centralAuthTokenCache.find(trimmedToken);
+            if (cached != centralAuthTokenCache.end()) {
+                if (cached->second.expiresAtMs > nowMs) {
+                    if (cached->second.status == CentralAuthValidationStatus::authenticated && claimsOut) {
+                        *claimsOut = centralAuthClaimsJson(cached->second);
                     }
-                    return it->second.authenticated && !it->second.user.empty();
+                    return cached->second.status;
                 }
-                centralAuthTokenCache.erase(it);
+                centralAuthTokenCache.erase(cached);
             }
-        }
 
-        TraceyEndpoint endpoint;
-        if (!parseTraceyEndpoint(centralAuthSessionUrl, endpoint)) {
-            return false;
-        }
-        const std::string sessionPath = endpoint.basePath.empty() ? "/api/session" : endpoint.basePath;
-        const int timeoutSec = static_cast<int>(std::max<int64_t>(1, (centralAuthTimeoutMs + 999) / 1000));
-        httplib::Headers headers{
-                {"Accept", "application/json"},
-                {"Authorization", "Bearer " + trimmedToken}
-        };
+            if (centralAuthTokensInFlight.find(trimmedToken) == centralAuthTokensInFlight.end()) {
+                centralAuthTokensInFlight.insert(trimmedToken);
+                break;
+            }
 
-        httplib::Result result;
-        if (endpoint.https) {
+            // Dashboard refreshes fan out several requests with the same token.
+            // Share one central-auth lookup instead of stampeding the auth service.
+            centralAuthCacheChanged.wait(cacheLock, [&]() {
+                return centralAuthTokensInFlight.find(trimmedToken) == centralAuthTokensInFlight.end();
+            });
+        }
+        cacheLock.unlock();
+
+        CentralAuthValidationStatus validation = CentralAuthValidationStatus::unavailable;
+        nlohmann::json normalizedClaims = nlohmann::json::object();
+        try {
+            TraceyEndpoint endpoint;
+            if (parseTraceyEndpoint(centralAuthSessionUrl, endpoint)) {
+                const std::string sessionPath = endpoint.basePath.empty() ? "/api/session" : endpoint.basePath;
+                const int timeoutSec = static_cast<int>(std::max<int64_t>(1, (centralAuthTimeoutMs + 999) / 1000));
+                httplib::Headers headers{
+                        {"Accept", "application/json"},
+                        {"Authorization", "Bearer " + trimmedToken}
+                };
+
+                httplib::Result result;
+                if (endpoint.https) {
 #ifdef CPPHTTPLIB_OPENSSL_SUPPORT
-            httplib::SSLClient client(endpoint.host, endpoint.port);
-            client.enable_server_certificate_verification(centralAuthTlsVerify);
-            client.set_connection_timeout(timeoutSec);
-            client.set_read_timeout(timeoutSec);
-            client.set_write_timeout(timeoutSec);
-            result = client.Get(sessionPath.c_str(), headers);
+                    httplib::SSLClient client(endpoint.host, endpoint.port);
+                    client.enable_server_certificate_verification(centralAuthTlsVerify);
+                    client.set_connection_timeout(timeoutSec);
+                    client.set_read_timeout(timeoutSec);
+                    client.set_write_timeout(timeoutSec);
+                    result = client.Get(sessionPath.c_str(), headers);
 #else
-            return false;
+                    // Without TLS support, fail closed while preserving the
+                    // distinction between unavailable auth and an invalid token.
 #endif
-        } else {
-            httplib::Client client(endpoint.host, endpoint.port);
-            client.set_connection_timeout(timeoutSec);
-            client.set_read_timeout(timeoutSec);
-            client.set_write_timeout(timeoutSec);
-            result = client.Get(sessionPath.c_str(), headers);
-        }
+                } else {
+                    httplib::Client client(endpoint.host, endpoint.port);
+                    client.set_connection_timeout(timeoutSec);
+                    client.set_read_timeout(timeoutSec);
+                    client.set_write_timeout(timeoutSec);
+                    result = client.Get(sessionPath.c_str(), headers);
+                }
 
-        nlohmann::json payload = nlohmann::json::object();
-        if (result && result->status < 500 && !result->body.empty()) {
-            const auto parsed = nlohmann::json::parse(result->body, nullptr, false);
-            if (!parsed.is_discarded() && parsed.is_object()) {
-                payload = parsed;
+                if (result && (result->status == 401 || result->status == 403)) {
+                    validation = CentralAuthValidationStatus::unauthenticated;
+                } else if (result && result->status == 200 && !result->body.empty()) {
+                    const auto payload = nlohmann::json::parse(result->body, nullptr, false);
+                    if (!payload.is_discarded() && payload.is_object()) {
+                        const char* authenticatedKey = payload.contains("authenticated")
+                                ? "authenticated"
+                                : payload.contains("active") ? "active" : nullptr;
+                        bool validAuthState = false;
+                        bool authenticated = false;
+                        if (authenticatedKey) {
+                            const auto& authState = payload[authenticatedKey];
+                            validAuthState = authState.is_boolean()
+                                    || authState.is_number_integer()
+                                    || authState.is_number_unsigned();
+                            if (authState.is_string()) {
+                                const std::string value = toLower(trim(authState.get<std::string>()));
+                                validAuthState = value == "true" || value == "yes" || value == "1" || value == "on"
+                                        || value == "false" || value == "no" || value == "0" || value == "off";
+                            }
+                            if (validAuthState) {
+                                authenticated = jsonBoolValue(authState, false);
+                            }
+                        }
+                        if (validAuthState) {
+                            normalizedClaims = normalizeIdentityClaims(payload, false);
+                            const std::string user = trim(normalizedClaims.value("user", ""));
+                            if (!authenticated) {
+                                validation = CentralAuthValidationStatus::unauthenticated;
+                            } else if (!user.empty()) {
+                                validation = CentralAuthValidationStatus::authenticated;
+                            }
+                        }
+                    }
+                }
             }
+        } catch (const std::exception&) {
+            // A failed auth lookup is an availability error, never proof that a
+            // previously valid user token has expired.
         }
 
-        const nlohmann::json normalizedClaims = normalizeIdentityClaims(payload, false);
-        const bool authenticated = normalizedClaims.value("authenticated", false);
-        const std::string user = trim(normalizedClaims.value("user", ""));
         CentralAuthCacheEntry cacheEntry;
-        cacheEntry.authenticated = authenticated && !user.empty();
-        cacheEntry.user = user;
+        cacheEntry.status = validation;
+        cacheEntry.authenticated = validation == CentralAuthValidationStatus::authenticated;
+        cacheEntry.user = cacheEntry.authenticated ? trim(normalizedClaims.value("user", "")) : "";
         cacheEntry.claims = normalizedClaims;
-        cacheEntry.expiresAtMs = nowMs + (cacheEntry.authenticated
-                                          ? centralAuthCacheTtlMs
-                                          : std::min<int64_t>(centralAuthCacheTtlMs, 2000));
+        const int64_t cacheTtlMs = cacheEntry.authenticated
+                ? centralAuthCacheTtlMs
+                : validation == CentralAuthValidationStatus::unauthenticated
+                        ? std::min<int64_t>(centralAuthCacheTtlMs, 2000)
+                        : std::min<int64_t>(centralAuthCacheTtlMs, 1000);
+        cacheEntry.expiresAtMs = nowEpochMs() + cacheTtlMs;
         {
             std::lock_guard<std::mutex> lock(centralAuthCacheMutex);
             if (centralAuthTokenCache.size() > 1024) {
                 centralAuthTokenCache.clear();
             }
             centralAuthTokenCache[trimmedToken] = cacheEntry;
+            centralAuthTokensInFlight.erase(trimmedToken);
         }
+        centralAuthCacheChanged.notify_all();
 
         if (cacheEntry.authenticated && claimsOut) {
             *claimsOut = centralAuthClaimsJson(cacheEntry);
         }
-        return cacheEntry.authenticated;
+        return validation;
     }
 
     void APIRoutes::handleAuthLogin(const httplib::Request& req, httplib::Response& res) {
@@ -763,8 +818,10 @@ namespace NMC::Server {
         ensureRequestId(req, res);
         const std::string token = extractAuthToken(req);
         nlohmann::json claims;
+        CentralAuthValidationStatus tokenValidation = CentralAuthValidationStatus::unauthenticated;
         if (authMode == "token") {
-            if (validateCentralAuthToken(token, &claims)) {
+            tokenValidation = validateCentralAuthToken(token, &claims);
+            if (tokenValidation == CentralAuthValidationStatus::authenticated) {
                 res.status = 200;
                 res.set_content(claims.dump(), "application/json");
                 return;
@@ -792,6 +849,12 @@ namespace NMC::Server {
             res.set_content(serviceTokenClaims().dump(), "application/json");
             return;
         }
+        if (authMode == "token" && !token.empty()
+            && tokenValidation == CentralAuthValidationStatus::unavailable) {
+            res.set_header("Retry-After", "1");
+            sendErrorResponse(res, 503, "Central authentication is temporarily unavailable.");
+            return;
+        }
         res.set_header("WWW-Authenticate", "Bearer");
         sendErrorResponse(res, 401, "Unauthorized.");
     }
@@ -803,7 +866,8 @@ namespace NMC::Server {
         if (authMode == "token") {
             const std::string token = extractAuthToken(req);
             nlohmann::json claims;
-            if (validateCentralAuthToken(token, &claims)) {
+            const auto validation = validateCentralAuthToken(token, &claims);
+            if (validation == CentralAuthValidationStatus::authenticated) {
                 if (!claimsAllowRoute(claims, req)) {
                     sendErrorResponse(res, 403, "Forbidden.");
                     return false;
@@ -816,6 +880,11 @@ namespace NMC::Server {
                     return false;
                 }
                 return true;
+            }
+            if (validation == CentralAuthValidationStatus::unavailable) {
+                res.set_header("Retry-After", "1");
+                sendErrorResponse(res, 503, "Central authentication is temporarily unavailable.");
+                return false;
             }
             res.set_header("WWW-Authenticate", "Bearer");
             sendErrorResponse(res, 401, "Unauthorized.");

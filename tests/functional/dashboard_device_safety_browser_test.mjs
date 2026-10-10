@@ -59,16 +59,22 @@ const server = createServer(async (request, response) => {
     const requestUrl = new URL(request.url || "/", `http://${request.headers.host || "127.0.0.1"}`);
     if (requestUrl.pathname === monitoringPrefix || requestUrl.pathname === `${monitoringPrefix}/`) {
         let html = readFileSync(path.join(docsRoot, "index.html"), "utf8");
-        const dashboardScript = `<script src="${monitoringPrefix}/dashboard.js"></script>`;
+        const dashboardScriptPattern = new RegExp(`<script src="${monitoringPrefix}/dashboard\\.js(?:\\?[^\"]*)?"></script>`);
         const testScripts = [
             `<script src="${monitoringPrefix}/__test/dashboard_device_safety_browser_bootstrap.js"></script>`,
-            dashboardScript,
+            `<script src="${monitoringPrefix}/dashboard.js"></script>`,
             `<script src="${monitoringPrefix}/__test/dashboard_device_safety_browser_assertions.js"></script>`
         ].join("\n");
-        assert(html.includes(dashboardScript), "the built-in dashboard script tag has changed; update the browser harness injection point");
+        const dashboardScript = html.match(dashboardScriptPattern)?.[0];
+        assert(dashboardScript, "the built-in dashboard script tag has changed; update the browser harness injection point");
         html = html.replace(dashboardScript, testScripts);
         response.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
         response.end(html);
+        return;
+    }
+
+    if (requestUrl.pathname === `${monitoringPrefix}/login` || requestUrl.pathname === `${monitoringPrefix}/login/`) {
+        await serveFile(response, path.join(docsRoot, "login.html"));
         return;
     }
 
@@ -158,6 +164,20 @@ async function createBrowserSession(driverUrl, browser) {
 async function runBrowserCase(driverUrl, sessionId, baseUrl, testCase) {
     const sessionPrefix = `/session/${sessionId}`;
     await webdriverRequest(driverUrl, `${sessionPrefix}/url`, "POST", { url: `${baseUrl}?browser-test=${testCase}` });
+    if (testCase === "login-redirect") {
+        const expectedUrl = `${baseUrl}/login?reason=expired`;
+        const deadline = Date.now() + 10000;
+        while (Date.now() < deadline) {
+            const current = await webdriverRequest(driverUrl, `${sessionPrefix}/url`, "GET");
+            if (current?.value === expectedUrl) {
+                process.stdout.write(`[dashboard-browser] PASS ${testCase}\n`);
+                return;
+            }
+            await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+        const current = await webdriverRequest(driverUrl, `${sessionPrefix}/url`, "GET");
+        throw new Error(`${testCase}: expected same-origin login redirect to ${expectedUrl}, got ${current?.value || "unknown URL"}`);
+    }
     const deadline = Date.now() + 20000;
     let title = "";
     while (Date.now() < deadline) {
@@ -230,7 +250,9 @@ try {
             "inventory-unavailable",
             "tracey-unavailable",
             "network-overview",
-            "network-overview-ambiguous"
+            "network-overview-ambiguous",
+            "login-redirect",
+            "cross-origin-login-redirect"
         ]) {
             await runBrowserCase(driverUrl, sessionId, dashboardUrl, testCase);
         }

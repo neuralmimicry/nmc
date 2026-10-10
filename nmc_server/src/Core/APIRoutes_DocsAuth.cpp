@@ -68,9 +68,21 @@ namespace NMC::Server {
                    && relativePath.front() != '/';
         }
 
+        void setDocsNoCacheHeaders(httplib::Response& res) {
+            res.set_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
+            res.set_header("Pragma", "no-cache");
+            res.set_header("Expires", "0");
+        }
+
+        void serveDocsPage(const std::string& pagePath, httplib::Response& res) {
+            setDocsNoCacheHeaders(res);
+            res.set_content(Utils::readFile(pagePath), "text/html");
+        }
+
         void serveDocsAsset(const std::string& docsDir,
                             const std::string& relativePath,
                             httplib::Response& res) {
+            setDocsNoCacheHeaders(res);
             if (!docsAssetPathAllowed(relativePath)) {
                 res.status = 404;
                 res.set_content("Not found", "text/plain");
@@ -101,16 +113,16 @@ namespace NMC::Server {
         svr.set_base_dir(docsDir);
 
         svr.Get("/", [docsIndexPath](const httplib::Request& req, httplib::Response& res) {
-            res.set_content(Utils::readFile(docsIndexPath), "text/html");
+            serveDocsPage(docsIndexPath, res);
         });
         svr.Get("/index.html", [docsIndexPath](const httplib::Request& req, httplib::Response& res) {
-            res.set_content(Utils::readFile(docsIndexPath), "text/html");
+            serveDocsPage(docsIndexPath, res);
         });
         svr.Get("/docs", [docsIndexPath](const httplib::Request& req, httplib::Response& res) {
-            res.set_content(Utils::readFile(docsIndexPath), "text/html");
+            serveDocsPage(docsIndexPath, res);
         });
         svr.Get("/login", [docsLoginPath](const httplib::Request& req, httplib::Response& res) {
-            res.set_content(Utils::readFile(docsLoginPath), "text/html");
+            serveDocsPage(docsLoginPath, res);
         });
         svr.Post("/auth/login", [this](const httplib::Request& req, httplib::Response& res) {
             handleAuthLogin(req, res);
@@ -122,13 +134,13 @@ namespace NMC::Server {
 
         // Legacy launch path used by neuralmimicry.ai control-panel links.
         svr.Get(R"(^/services/health/monitoring/?$)", [docsIndexPath](const httplib::Request& req, httplib::Response& res) {
-            res.set_content(Utils::readFile(docsIndexPath), "text/html");
+            serveDocsPage(docsIndexPath, res);
         });
         svr.Get(R"(^/services/health/monitoring/index\.html$)", [docsIndexPath](const httplib::Request& req, httplib::Response& res) {
-            res.set_content(Utils::readFile(docsIndexPath), "text/html");
+            serveDocsPage(docsIndexPath, res);
         });
         svr.Get(R"(^/services/health/monitoring/login/?$)", [docsLoginPath](const httplib::Request& req, httplib::Response& res) {
-            res.set_content(Utils::readFile(docsLoginPath), "text/html");
+            serveDocsPage(docsLoginPath, res);
         });
         svr.Get(R"(^/services/health/monitoring/(dashboard\.css|dashboard\.js|service-access\.js|auth\.js|style\.css)$)", [docsDir](const httplib::Request& req, httplib::Response& res) {
             const std::string relativePath = req.matches.size() > 1 ? req.matches[1].str() : "";
@@ -146,7 +158,7 @@ namespace NMC::Server {
             handleAuthSession(req, res);
         });
         svr.Get("/logout", [](const httplib::Request& req, httplib::Response& res) {
-            res.set_redirect("/login");
+            res.set_redirect("/services/health/monitoring/login");
         });
     }
 

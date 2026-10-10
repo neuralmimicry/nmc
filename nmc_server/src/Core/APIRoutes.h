@@ -4,9 +4,11 @@
 #include <httplib.h>
 #include <vector>
 #include <mutex>
+#include <condition_variable>
 #include <nlohmann/json.hpp>
 #include <memory> // Required for std::unique_ptr
 #include <unordered_map>
+#include <unordered_set>
 #include <cstdint>
 #include <thread>
 #include <atomic>
@@ -259,7 +261,13 @@ namespace NMC::Server {
         bool docsEnabled;
         std::string authMode;
         std::unique_ptr<OIDCValidator> oidcValidator;
+        enum class CentralAuthValidationStatus {
+            authenticated,
+            unauthenticated,
+            unavailable
+        };
         struct CentralAuthCacheEntry {
+            CentralAuthValidationStatus status{CentralAuthValidationStatus::unauthenticated};
             bool authenticated{false};
             std::string user;
             nlohmann::json claims = nlohmann::json::object();
@@ -271,7 +279,9 @@ namespace NMC::Server {
         int64_t centralAuthTimeoutMs{3000};
         bool centralAuthTlsVerify{true};
         mutable std::unordered_map<std::string, CentralAuthCacheEntry> centralAuthTokenCache;
+        mutable std::unordered_set<std::string> centralAuthTokensInFlight;
         mutable std::mutex centralAuthCacheMutex;
+        mutable std::condition_variable centralAuthCacheChanged;
 
         // Utility methods for common server operations
         void logRequest(const httplib::Request& req, const httplib::Response& res) const;
@@ -305,7 +315,7 @@ namespace NMC::Server {
         std::string redactBody(const std::string& body) const;
         std::string extractAuthToken(const httplib::Request& req) const;
         nlohmann::json centralAuthClaimsJson(const CentralAuthCacheEntry& entry) const;
-        bool validateCentralAuthToken(const std::string& token, nlohmann::json* claimsOut = nullptr) const;
+        CentralAuthValidationStatus validateCentralAuthToken(const std::string& token, nlohmann::json* claimsOut = nullptr) const;
         void registerDocsAndAuthRoutes(httplib::Server& svr, const RouteGuard& guard);
         void registerControlMetadataRoutes(httplib::Server& svr, const RouteGuard& guard);
         void registerDomainCrudRoutes(httplib::Server& svr, const RouteGuard& guard);
