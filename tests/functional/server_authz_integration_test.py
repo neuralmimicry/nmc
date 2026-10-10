@@ -17,6 +17,7 @@ import hashlib
 import json
 import os
 import pathlib
+import re
 import shlex
 import socket
 import ssl
