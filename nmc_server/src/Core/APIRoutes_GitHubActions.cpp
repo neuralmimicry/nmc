@@ -185,7 +185,10 @@ namespace NMC::Server {
             if (std::filesystem::file_size(path) > 8 * 1024 * 1024)
                 throw std::runtime_error("GitHub Actions task state exceeds its bounded size.");
             Json value = Json::parse(input, nullptr, false);
-            if (value.is_discarded() || !value.is_object() || !value.value("tasks", Json::object()).is_object()) {
+            if (value.is_discarded() || !value.is_object()
+                || !value.contains("version") || !value["version"].is_number_integer()
+                || value["version"].get<int>() != 1
+                || !value.contains("tasks") || !value["tasks"].is_object()) {
                 throw std::runtime_error("GitHub Actions task state is invalid; failing closed.");
             }
             return value;
