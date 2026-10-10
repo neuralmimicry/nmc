@@ -86,6 +86,18 @@ TOKEN_IDENTITIES: dict[str, dict[str, Any]] = {
             "continuum": build_service_access_entry("continuum", "control", "observe"),
         },
     ),
+    "github-actions-observe-token": build_identity(
+        "workflow-observer",
+        service_access={
+            "github_actions": build_service_access_entry("github_actions", "observe", "none"),
+        },
+    ),
+    "github-actions-control-token": build_identity(
+        "workflow-controller",
+        service_access={
+            "github_actions": build_service_access_entry("github_actions", "control", "none"),
+        },
+    ),
     "tracey-observe-token": build_identity(
         "tracey-observer",
         service_access={
@@ -1070,6 +1082,7 @@ class NmcServerProcess:
                 "NMC_AARNN_CONTROL_URL": f"{self._backend_base_url}/control",
                 "NMC_GAIL_BASE_URL": self._backend_base_url,
                 "NMC_GAIL_API_TOKEN": "gail-backend-token",
+                "NMC_GITHUB_ACTIONS_STATE_ROOT": str(self._home_dir / "github-actions-state"),
                 "NMC_DEVICE_INVENTORY_PATH": str(inventory_path),
                 "NMC_DEVICE_ACTION_AUDIT_PATH": str(self._home_dir / ".nmc" / "device-actions.jsonl"),
                 "AUTHZ_DHCP_TOKEN": "authz-dhcp-token",
@@ -1080,6 +1093,7 @@ class NmcServerProcess:
         )
         env.pop("NMC_PROVIDER_DEPENDENCY_POLICY_PATH", None)
         env.pop("NMC_PROVIDER_HEALTH_TIMEOUT_SECONDS", None)
+        env.pop("NMC_GITHUB_ACTIONS_TOKEN", None)
         env.update(self._provider_environment)
         env.update(self._device_management_environment)
         env.pop("NMC_DEVICE_POWER_CONTROL_ENABLED", None)
@@ -4023,6 +4037,37 @@ def test_k8s_workload_logs_require_control_and_enforce_bounds(server: NmcServerP
     assert_status(status, 400, "workload log target must be a Kubernetes DNS label")
 
 
+def test_github_actions_routes_require_dedicated_scope_and_backend_credential(server: NmcServerProcess) -> None:
+    path = "/github/actions/workflow"
+    status, _ = request_json(server.base_url, "GET", path)
+    assert_status(status, 401, "GitHub workflow inspection requires authentication")
+
+    status, _ = request_json(
+        server.base_url,
+        "GET",
+        path,
+        token="continuum-control-token",
+    )
+    assert_status(status, 403, "general Continuum control does not imply GitHub Actions access")
+
+    status, _ = request_json(
+        server.base_url,
+        "GET",
+        path,
+        token="github-actions-observe-token",
+    )
+    assert_status(status, 503, "GitHub operations remain unavailable without a protected backend credential")
+
+    status, _ = request_json(
+        server.base_url,
+        "POST",
+        "/github/actions/dispatch",
+        token="github-actions-observe-token",
+        payload={},
+    )
+    assert_status(status, 403, "GitHub workflow dispatch requires the dedicated control level")
+
+
 def test_refiner_status_serializes_shared_kubernetes_client(backend: MockBackend) -> None:
     server = NmcServerProcess(backend.base_url, k8s_server_url=backend.base_url)
     with backend._lock:
@@ -4180,6 +4225,7 @@ fi
         test_central_auth_outage_returns_503_and_invalid_token_stays_401(server, backend)
         test_continuum_route_authorisation(server, backend)
         test_k8s_workload_logs_require_control_and_enforce_bounds(server)
+        test_github_actions_routes_require_dedicated_scope_and_backend_credential(server)
         test_refiner_status_serializes_shared_kubernetes_client(backend)
         test_provider_compute_lifecycle(server, backend)
         test_controller_action_rejects_malformed_body_shapes(server)

@@ -81,6 +81,21 @@
     nmc_gail_base_url: ""
     nmc_gail_api_token: ""
 
+    # The workflow control token is separate from package-delivery and
+    # workspace checkpoint credentials. Restrict it to this repository's
+    # Actions API and provide it through the controller environment or a
+    # protected file; never fall back to the laptop's general GITHUB_TOKEN.
+    nmc_github_actions_repository: "neuralmimicry/swarmhpc"
+    nmc_github_actions_workflow: "nmide-remote-task.yml"
+    nmc_github_actions_trusted_ref: "main"
+    nmc_github_actions_state_root: "{{ nmc_state_dir }}/github-actions"
+    nmc_github_actions_token_file: >-
+      {{ lookup('env', 'NMC_GITHUB_ACTIONS_TOKEN_FILE') | default('/dev/null', true) }}
+    nmc_github_actions_token: >-
+      {{ lookup('env', 'NMC_GITHUB_ACTIONS_TOKEN')
+         | default(lookup('file', nmc_github_actions_token_file, errors='ignore') | default('', true) | trim, true)
+         | default('', true) }}
+
     # Kubernetes
     nmc_k8s_auto_install: true
     nmc_k8s_version_series: ""
@@ -1040,6 +1055,10 @@
           owner: "{{ nmc_run_user }}"
           group: "{{ nmc_run_group }}"
           mode: "0755"
+        - path: "{{ nmc_github_actions_state_root }}"
+          owner: "{{ nmc_run_user }}"
+          group: "{{ nmc_run_group }}"
+          mode: "0700"
 
     - name: Seed the versioned Continuum device registry when it is absent
       ansible.builtin.copy:
@@ -1536,6 +1555,7 @@
           (nmc_auth_token | default('', true) | length > 0)
           or (nmc_oidc_client_secret | default('', true) | length > 0)
           or (nmc_gail_api_token | default('', true) | length > 0)
+          or (nmc_github_actions_token | default('', true) | length > 0)
         }}
       when: not nmc_preserve_env_file
 

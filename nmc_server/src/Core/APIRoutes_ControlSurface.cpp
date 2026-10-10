@@ -200,12 +200,13 @@ namespace NMC::Server {
             nlohmann::json resolved = nlohmann::json::object();
             const bool isAdmin = role == "admin"
                                  || std::find(groups.begin(), groups.end(), "admin") != groups.end();
-            static constexpr std::array<const char*, 5> defaultServices = {
+            static constexpr std::array<const char*, 6> defaultServices = {
                     "continuum",
                     "tracey",
                     "gail",
                     "gail_trading",
-                    "aarnn"
+                    "aarnn",
+                    "github_actions"
             };
             for (const char* serviceKey : defaultServices) {
                 std::string accessLevel = SERVICE_ACCESS_NONE;
@@ -517,6 +518,9 @@ namespace NMC::Server {
                     return {"aarnn", SERVICE_ACCESS_OBSERVE};
                 }
                 return {"aarnn", SERVICE_ACCESS_CONTROL};
+            }
+            if (path.rfind("/github/actions/", 0) == 0) {
+                return {"github_actions", method == "GET" ? SERVICE_ACCESS_OBSERVE : SERVICE_ACCESS_CONTROL};
             }
             if (path.rfind("/connections", 0) == 0
                 || path == "/node/recruit"
@@ -954,6 +958,7 @@ namespace NMC::Server {
                 "/proxmox/clusters/request",
                 "/node/recruit",
                 "/devices/controllers/actions",
+                "/github/actions/dispatch",
                 "/services/health/monitoring/auth/login"
         };
         for (const auto& prefix : redactedPrefixes) {

@@ -171,6 +171,7 @@ set(NMC_SERVER_SOURCES
         src/Core/APIRoutes_DomainCrud.cpp
         src/Core/APIRoutes_DomainProxy.cpp
         src/Core/APIRoutes_ReleaseOperate.cpp
+        src/Core/APIRoutes_GitHubActions.cpp
         src/Core/APIRoutes_ReleaseOperateExecution.cpp
         src/Core/APIRoutes_ProviderCompute.cpp
         src/Core/APIRoutes_AiLab.cpp

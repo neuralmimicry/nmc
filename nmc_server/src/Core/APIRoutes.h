@@ -322,6 +322,14 @@ namespace NMC::Server {
         void registerReleaseOperateRoutes(httplib::Server& svr, const RouteGuard& guard);
         void registerDomainProxyRoutes(httplib::Server& svr, const RouteGuard& guard);
         void registerTraceyRoutes(httplib::Server& svr, const RouteGuard& guard);
+        void registerGitHubActionsRoutes(httplib::Server& svr, const RouteGuard& guard);
+        void handleGitHubActionsWorkflow(const httplib::Request& req, httplib::Response& res);
+        void handleGitHubActionsDispatch(const httplib::Request& req, httplib::Response& res);
+        void handleGitHubActionsTask(const httplib::Request& req, httplib::Response& res);
+        void handleGitHubActionsRun(const httplib::Request& req, httplib::Response& res);
+        void handleGitHubActionsCancel(const httplib::Request& req, httplib::Response& res);
+        void handleGitHubActionsResult(const httplib::Request& req, httplib::Response& res);
+        std::string githubActionsActor(const httplib::Request& req) const;
         void handleAuthLogin(const httplib::Request& req, httplib::Response& res);
         void handleAuthSession(const httplib::Request& req, httplib::Response& res);
 
