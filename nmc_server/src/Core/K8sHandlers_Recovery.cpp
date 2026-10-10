@@ -55,9 +55,10 @@ bool printableValue(const std::string& value, size_t maximum) {
 bool containsExactKeySet(const nlohmann::json& object,
                          const std::set<std::string>& requiredKeys) {
     if (!object.is_object() || object.size() != requiredKeys.size()) return false;
-    return std::all_of(object.begin(), object.end(), [&](const auto& item) {
-        return requiredKeys.count(item.key()) != 0;
-    });
+    for (auto item = object.cbegin(); item != object.cend(); ++item) {
+        if (requiredKeys.count(item.key()) == 0) return false;
+    }
+    return true;
 }
 
 nlohmann::json deploymentStatusData(const nlohmann::json& deployment) {
