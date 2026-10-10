@@ -250,6 +250,22 @@ class MockServer:
             )
             return
 
+        if handler.command == "GET" and path_only == "/aarnn/runtime/resources":
+            self._send_json(
+                handler,
+                200,
+                {
+                    "success": True,
+                    "message": "AARNN runtime resource counters retrieved.",
+                    "data": {
+                        "process_rss_bytes": 4096,
+                        "memory_current_bytes": 8192,
+                        "memory_limit_bytes": 16384,
+                    },
+                },
+            )
+            return
+
         if handler.command == "GET" and path_only == "/k8s/deployment/status":
             self._send_json(
                 handler,
