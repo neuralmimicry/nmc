@@ -232,6 +232,17 @@ When `--auto-configure` is enabled:
 
 These routes are intentionally operational. They belong in Continuum because they manipulate deployed runtime state rather than deciding what code change should be made.
 
+### 8.3 Continuum workload log reads
+
+`nmc k8s logs --namespace <namespace> --deployment <name>` requests recent logs
+from the configured cluster through `/k8s/workload/logs`. The server resolves
+the Deployment, applies its `matchLabels` selector, and returns bounded logs
+from matching pods and containers. It reads one pod-list page and reports
+`truncated` if Kubernetes has more matching pods. Use `--previous` for the last
+terminated container instance. The route requires `continuum:control`, and it
+rejects queries outside the documented time, line, pod, container, content and
+serialised-response limits.
+
 ## 9. Version Check Workflow
 
 - `nmc version` reports the local client version and, unless `--no-check` is used, checks the latest GitHub release.

@@ -405,6 +405,36 @@ namespace NMC::Core {
         return processHttpResponse(res, "K8s health status retrieved.");
     }
 
+    Models::CloudResponse CloudAPIClient::getK8sWorkloadLogs(
+            const std::string& namespaceName,
+            const std::string& deploymentName,
+            int sinceSeconds,
+            int tailLines,
+            bool previous
+    ) {
+        const auto isDnsLabel = [](const std::string& value) {
+            return !value.empty() && value.size() <= 63 && value.front() != '-' && value.back() != '-'
+                    && std::all_of(value.begin(), value.end(), [](unsigned char ch) {
+                        return (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '-';
+                    });
+        };
+        if (!isDnsLabel(namespaceName) || !isDnsLabel(deploymentName)
+            || sinceSeconds < 1 || sinceSeconds > 86400 || tailLines < 1 || tailLines > 2000) {
+            Models::CloudResponse response;
+            response.success = false;
+            response.message = "namespace/deployment must be Kubernetes DNS labels; since-seconds must be 1-86400 and tail-lines 1-2000.";
+            response.statusCode = 400;
+            return response;
+        }
+        std::string path = "/k8s/workload/logs?namespace=" + encodeQueryValue(namespaceName)
+                + "&deployment=" + encodeQueryValue(deploymentName)
+                + "&since_seconds=" + std::to_string(sinceSeconds)
+                + "&tail_lines=" + std::to_string(tailLines)
+                + "&previous=" + (previous ? "true" : "false");
+        auto res = cli->Get(path);
+        return processHttpResponse(res, "Bounded Kubernetes workload logs retrieved.");
+    }
+
     Models::CloudResponse CloudAPIClient::getRefinerDeploymentStatus(
             const std::string& namespaceName,
             const std::string& deploymentName

@@ -479,9 +479,41 @@ namespace NMC {
                 recoveryClientReady = kubeconfigLoaded;
                 std::cout << "Kubernetes API client initialized successfully for server: " << (basePath ? basePath : "unknown") << std::endl;
             }
+            if (kubeconfigLoaded) {
+                const int logsConfigResult = load_kube_config(
+                        &workloadLogsBasePath,
+                        &workloadLogsSslConfig,
+                        &workloadLogsApiKeys,
+                        nullptr);
+                if (logsConfigResult == 0) {
+                    workloadLogsApiClient = apiClient_create_with_base_path(
+                            workloadLogsBasePath,
+                            workloadLogsSslConfig,
+                            workloadLogsApiKeys);
+                }
+                if (!workloadLogsApiClient) {
+                    if (workloadLogsBasePath || workloadLogsSslConfig || workloadLogsApiKeys) {
+                        free_client_config(workloadLogsBasePath, workloadLogsSslConfig, workloadLogsApiKeys);
+                        workloadLogsBasePath = nullptr;
+                        workloadLogsSslConfig = nullptr;
+                        workloadLogsApiKeys = nullptr;
+                    }
+                    std::cerr << "Warning: Cannot initialize the isolated Kubernetes client for workload logs." << std::endl;
+                }
+            }
         }
 
         K8sHandlers::~K8sHandlers() {
+            if (workloadLogsApiClient) {
+                apiClient_free(workloadLogsApiClient);
+                workloadLogsApiClient = nullptr;
+            }
+            if (workloadLogsBasePath || workloadLogsSslConfig || workloadLogsApiKeys) {
+                free_client_config(workloadLogsBasePath, workloadLogsSslConfig, workloadLogsApiKeys);
+                workloadLogsBasePath = nullptr;
+                workloadLogsSslConfig = nullptr;
+                workloadLogsApiKeys = nullptr;
+            }
             if (apiClient) {
                 apiClient_free(apiClient);
                 apiClient = nullptr;
@@ -1720,6 +1752,298 @@ users:
                 sendJsonResponse(res, apiResponse);
             } catch (const std::exception& e) {
                 sendErrorResponse(res, 500, "Server error: " + std::string(e.what()));
+            }
+        }
+
+        void K8sHandlers::handleGetWorkloadLogs(const httplib::Request& req, httplib::Response& res) {
+            try {
+                if (!req.has_param("namespace") || !req.has_param("deployment")) {
+                    return sendErrorResponse(res, 400, "namespace and deployment are required.");
+                }
+                const std::string namespaceName = trimCopy(req.get_param_value("namespace"));
+                const std::string deploymentName = trimCopy(req.get_param_value("deployment"));
+                const auto isDnsLabel = [](const std::string& value) {
+                    return !value.empty() && value.size() <= 63 && value.front() != '-' && value.back() != '-'
+                            && std::all_of(value.begin(), value.end(), [](unsigned char ch) {
+                                return (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '-';
+                            });
+                };
+                if (!isDnsLabel(namespaceName) || !isDnsLabel(deploymentName)) {
+                    return sendErrorResponse(res, 400, "namespace and deployment must be Kubernetes DNS labels.");
+                }
+
+                const auto parseBoundedInt = [&req](const char* key, int fallback, int minimum, int maximum,
+                                                     int& value) {
+                    value = fallback;
+                    if (!req.has_param(key)) return true;
+                    const std::string raw = trimCopy(req.get_param_value(key));
+                    if (raw.empty()) return false;
+                    try {
+                        size_t consumed = 0;
+                        value = std::stoi(raw, &consumed);
+                        return consumed == raw.size() && value >= minimum && value <= maximum;
+                    } catch (const std::exception&) {
+                        return false;
+                    }
+                };
+                int sinceSeconds = 0;
+                int tailLines = 0;
+                if (!parseBoundedInt("since_seconds", 300, 1, 86400, sinceSeconds)
+                    || !parseBoundedInt("tail_lines", 500, 1, 2000, tailLines)) {
+                    return sendErrorResponse(res, 400, "since_seconds must be 1-86400 and tail_lines must be 1-2000.");
+                }
+                bool previous = false;
+                if (req.has_param("previous")) {
+                    const std::string rawPrevious = toLowerCopy(trimCopy(req.get_param_value("previous")));
+                    if (rawPrevious != "true" && rawPrevious != "false") {
+                        return sendErrorResponse(res, 400, "previous must be true or false.");
+                    }
+                    previous = rawPrevious == "true";
+                }
+                if (!workloadLogsApiClient) {
+                    return sendErrorResponse(res, 503, "Kubernetes API client is unavailable.");
+                }
+
+                std::lock_guard<std::mutex> logsClientLock(workloadLogsClientMutex);
+                const std::string appsGroup = "apps";
+                const std::string apiVersion = "v1";
+                const std::string deploymentsResource = "deployments";
+                genericClient_t* deploymentClient = genericClient_create(
+                        workloadLogsApiClient,
+                        const_cast<char*>(appsGroup.c_str()),
+                        const_cast<char*>(apiVersion.c_str()),
+                        const_cast<char*>(deploymentsResource.c_str()));
+                if (!deploymentClient) {
+                    return sendErrorResponse(res, 503, "Kubernetes API client could not create a Deployment reader.");
+                }
+                char* deploymentRaw = Generic_readNamespacedResource(
+                        deploymentClient,
+                        const_cast<char*>(namespaceName.c_str()),
+                        const_cast<char*>(deploymentName.c_str()));
+                const int deploymentStatus = workloadLogsApiClient->response_code;
+                genericClient_free(deploymentClient);
+                if (!deploymentRaw || deploymentStatus < 200 || deploymentStatus >= 300) {
+                    const int statusCode = deploymentStatus >= 400 && deploymentStatus <= 599 ? deploymentStatus : 502;
+                    if (deploymentRaw) free(deploymentRaw);
+                    return sendErrorResponse(res, statusCode, "Kubernetes API could not retrieve the requested Deployment.");
+                }
+                nlohmann::json deployment;
+                try {
+                    deployment = nlohmann::json::parse(deploymentRaw);
+                } catch (const std::exception&) {
+                    free(deploymentRaw);
+                    return sendErrorResponse(res, 502, "Kubernetes API returned an invalid Deployment.");
+                }
+                free(deploymentRaw);
+                if (!deployment.is_object()) {
+                    return sendErrorResponse(res, 502, "Kubernetes API returned an invalid Deployment.");
+                }
+                const auto specIt = deployment.find("spec");
+                if (specIt == deployment.end() || !specIt->is_object()) {
+                    return sendErrorResponse(res, 422, "Deployment has no readable selector.");
+                }
+                const auto selectorIt = specIt->find("selector");
+                if (selectorIt == specIt->end() || !selectorIt->is_object()) {
+                    return sendErrorResponse(res, 422, "Deployment has no readable selector.");
+                }
+                const auto expressionsIt = selectorIt->find("matchExpressions");
+                if (expressionsIt != selectorIt->end() && expressionsIt->is_array() && !expressionsIt->empty()) {
+                    return sendErrorResponse(res, 422, "Deployment selector expressions are not supported by this bounded log query.");
+                }
+                const auto labelsIt = selectorIt->find("matchLabels");
+                if (labelsIt == selectorIt->end() || !labelsIt->is_object() || labelsIt->empty()) {
+                    return sendErrorResponse(res, 422, "Deployment selector must contain at least one match label.");
+                }
+                std::string labelSelector;
+                for (auto it = labelsIt->begin(); it != labelsIt->end(); ++it) {
+                    const std::string key = it.key();
+                    if (!it.value().is_string() || key.empty() || key.size() > 317
+                        || key.find_first_not_of("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._/") != std::string::npos) {
+                        return sendErrorResponse(res, 422, "Deployment selector contains an unsupported label.");
+                    }
+                    const std::string value = it.value().get<std::string>();
+                    if (value.size() > 63 || value.find_first_not_of("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._") != std::string::npos) {
+                        return sendErrorResponse(res, 422, "Deployment selector contains an unsupported label value.");
+                    }
+                    if (!labelSelector.empty()) labelSelector += ",";
+                    labelSelector += key + "=" + value;
+                }
+
+                constexpr int maxPods = 20;
+                constexpr int maxContainers = 40;
+                constexpr size_t maxResponseLogBytes = 1024 * 1024;
+                constexpr size_t maxSerializedResponseBytes = 8 * 1024 * 1024;
+                constexpr int perContainerLogBytes = 128 * 1024;
+                int podLimit = maxPods;
+                v1_pod_list_t* podListModel = CoreV1API_listNamespacedPod(
+                        workloadLogsApiClient,
+                        const_cast<char*>(namespaceName.c_str()),
+                        nullptr, nullptr, nullptr, nullptr,
+                        const_cast<char*>(labelSelector.c_str()),
+                        &podLimit,
+                        nullptr, nullptr, nullptr, nullptr, nullptr);
+                const int podListStatus = workloadLogsApiClient->response_code;
+                if (!podListModel) {
+                    const int statusCode = podListStatus;
+                    return sendErrorResponse(res, statusCode >= 400 && statusCode <= 599 ? statusCode : 502,
+                                             "Kubernetes API could not list matching pods.");
+                }
+                if (podListStatus < 200 || podListStatus >= 300) {
+                    v1_pod_list_free(podListModel);
+                    const int statusCode = podListStatus >= 400 && podListStatus <= 599 ? podListStatus : 502;
+                    return sendErrorResponse(res, statusCode, "Kubernetes API returned an invalid pod list.");
+                }
+                cJSON* podListObject = v1_pod_list_convertToJSON(podListModel);
+                v1_pod_list_free(podListModel);
+                if (!podListObject) {
+                    return sendErrorResponse(res, 502, "Kubernetes API returned an invalid pod list.");
+                }
+                char* podListRaw = cJSON_PrintUnformatted(podListObject);
+                cJSON_Delete(podListObject);
+                if (!podListRaw) {
+                    return sendErrorResponse(res, 502, "Kubernetes API could not serialise the pod list.");
+                }
+
+                nlohmann::json podList;
+                try {
+                    podList = nlohmann::json::parse(podListRaw);
+                } catch (const std::exception&) {
+                    cJSON_free(podListRaw);
+                    return sendErrorResponse(res, 502, "Kubernetes API returned an invalid pod list.");
+                }
+                cJSON_free(podListRaw);
+                if (!podList.is_object() || !podList.contains("items") || !podList["items"].is_array()) {
+                    const int statusCode = podListStatus;
+                    return sendErrorResponse(res, statusCode >= 400 && statusCode <= 599 ? statusCode : 502,
+                                             "Kubernetes API returned an invalid pod list.");
+                }
+
+                nlohmann::json logItems = nlohmann::json::array();
+                size_t totalLogBytes = 0;
+                bool truncated = false;
+                int podCount = 0;
+                int containerCount = 0;
+                int errorCount = 0;
+                if (podList.contains("metadata") && podList["metadata"].is_object()) {
+                    const auto continueIt = podList["metadata"].find("continue");
+                    if (continueIt != podList["metadata"].end()
+                        && continueIt->is_string()
+                        && !continueIt->get<std::string>().empty()) {
+                        truncated = true;
+                    }
+                }
+                for (const auto& pod : podList["items"]) {
+                    if (!pod.is_object()) continue;
+                    if (podCount >= maxPods) {
+                        truncated = true;
+                        break;
+                    }
+                    const std::string podName = pod.value("metadata", nlohmann::json::object()).value("name", "");
+                    if (!isDnsLabel(podName)) continue;
+                    const std::string phase = pod.value("status", nlohmann::json::object()).value("phase", "Unknown");
+                    const auto containers = pod.value("spec", nlohmann::json::object()).value("containers", nlohmann::json::array());
+                    if (!containers.is_array()) continue;
+                    ++podCount;
+                    for (const auto& containerInfo : containers) {
+                        if (!containerInfo.is_object()) continue;
+                        if (containerCount >= maxContainers) {
+                            truncated = true;
+                            break;
+                        }
+                        const std::string containerName = containerInfo.value("name", "");
+                        if (!isDnsLabel(containerName)) continue;
+                        ++containerCount;
+                        const size_t remainingBytes = maxResponseLogBytes - totalLogBytes;
+                        if (remainingBytes == 0) {
+                            truncated = true;
+                            break;
+                        }
+                        int follow = 0;
+                        int limitBytes = static_cast<int>(std::min(remainingBytes, static_cast<size_t>(perContainerLogBytes)));
+                        int previousFlag = previous ? 1 : 0;
+                        int since = sinceSeconds;
+                        int lines = tailLines;
+                        int timestamps = 1;
+                        char* rawLog = CoreV1API_readNamespacedPodLog(
+                                workloadLogsApiClient,
+                                const_cast<char*>(podName.c_str()),
+                                const_cast<char*>(namespaceName.c_str()),
+                                const_cast<char*>(containerName.c_str()),
+                                &follow,
+                                nullptr,
+                                &limitBytes,
+                                nullptr,
+                                &previousFlag,
+                                &since,
+                                nullptr,
+                                &lines,
+                                &timestamps);
+                        nlohmann::json logItem = {
+                                {"pod", podName}, {"container", containerName}, {"phase", phase},
+                                {"previous", previous}, {"truncated", false}
+                        };
+                        const int logStatus = workloadLogsApiClient->response_code;
+                        if (rawLog && logStatus >= 200 && logStatus < 300) {
+                            std::string content(rawLog);
+                            const size_t allowedBytes = std::min(remainingBytes, static_cast<size_t>(perContainerLogBytes));
+                            if (content.size() > allowedBytes) {
+                                content.resize(allowedBytes);
+                                logItem["truncated"] = true;
+                                truncated = true;
+                            }
+                            totalLogBytes += content.size();
+                            logItem["logs"] = std::move(content);
+                        } else {
+                            ++errorCount;
+                            logItem["error"] = "Kubernetes API could not retrieve this container log.";
+                            logItem["status_code"] = logStatus;
+                        }
+                        if (rawLog) free(rawLog);
+                        logItems.push_back(std::move(logItem));
+                        if (totalLogBytes >= maxResponseLogBytes) {
+                            truncated = true;
+                            break;
+                        }
+                    }
+                    if (truncated && (totalLogBytes >= maxResponseLogBytes || containerCount >= maxContainers)) break;
+                }
+
+                Models::CloudResponse apiResponse;
+                apiResponse.success = true;
+                apiResponse.message = logItems.empty() ? "No pods matched the Deployment selector." : "Bounded workload logs retrieved.";
+                apiResponse.data = {
+                        {"namespace", namespaceName},
+                        {"deployment", deploymentName},
+                        {"since_seconds", sinceSeconds},
+                        {"tail_lines", tailLines},
+                        {"previous", previous},
+                        {"pods_considered", podCount},
+                        {"containers_considered", containerCount},
+                        {"error_count", errorCount},
+                        {"truncated", truncated},
+                        {"items", std::move(logItems)}
+                };
+                while (apiResponse.toJsonString().dump(4).size() > maxSerializedResponseBytes) {
+                    bool removedLogContent = false;
+                    for (auto item = apiResponse.data["items"].rbegin();
+                         item != apiResponse.data["items"].rend();
+                         ++item) {
+                        if (item->is_object() && item->contains("logs") && item->at("logs").is_string()
+                            && !item->at("logs").get_ref<const std::string&>().empty()) {
+                            (*item)["logs"] = "";
+                            (*item)["truncated"] = true;
+                            removedLogContent = true;
+                            break;
+                        }
+                    }
+                    if (!removedLogContent) {
+                        return sendErrorResponse(res, 502, "Bounded Kubernetes log response exceeded its size limit.");
+                    }
+                    apiResponse.data["truncated"] = true;
+                }
+                sendJsonResponse(res, apiResponse);
+            } catch (const std::exception& e) {
+                sendErrorResponse(res, 500, "Unable to retrieve bounded workload logs: " + std::string(e.what()));
             }
         }
 

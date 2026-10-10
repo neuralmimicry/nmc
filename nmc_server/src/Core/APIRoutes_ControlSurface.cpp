@@ -516,6 +516,7 @@ namespace NMC::Server {
             if (path.rfind("/connections", 0) == 0
                 || path == "/node/recruit"
                 || path == "/k8s/refiner/scale"
+                || path == "/k8s/workload/logs"
                 || path == "/k8s/deployment/restart"
                 || path == "/devices/controllers/actions"
                 || path == "/providers/compute/instances/create"

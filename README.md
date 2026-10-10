@@ -32,7 +32,7 @@ Within the wider NeuralMimicry estate, Continuum is the `release` and `operate` 
 |---|---|---|
 | Connectivity | `connection`, `server`, `version` | Local connection profiles live in `~/.nmc/config.json`; selected commands also support a server-side connection registry via `--server`. |
 | Core resources | `bucket`, `ssh`, `vm`, `model` | CRUD-style resource endpoints exposed through the CLI and HTTP API. Several of these server-side resources are currently in-memory and non-persistent. |
-| Kubernetes | `k8s` | Cluster create/get/get-config/list/list-locations/health/resume/suspend over the server API and Kubernetes client integration. |
+| Kubernetes | `k8s` | Cluster create/get/get-config/list/list-locations/health/resume/suspend plus bounded Deployment-selected workload logs through the authenticated server API. |
 | Virtual clusters | `vcluster` | Create/delete/get/get-config/list plus pause/resume/backup/restore/upgrade/config-get/config-update/metrics/health/resources. Advanced create configuration exists on the server API via a `config` JSON payload; the CLI create command currently exposes `name` and optional `namespace`. |
 | Provider portals | `openshift`, `openstack`, `proxmox` | Capacity listing, cluster listing, cluster request, and polling status workflows against external portal APIs. |
 | Tracey | `tracey` | Heartbeat ingestion, fleet inventory, analytics, the adaptive plan/ramp/optimise/repeat loop, operator-selectable placement policies, CVE status, compromise assessment, per-agent assessment plan/report flows, rack views, agent telemetry, control, deep-dive diagnostics, debounced snapshot persistence, and optional PostgreSQL history storage. |
@@ -181,7 +181,15 @@ Global output formats currently implemented are:
 ./nmc_client/build/nmc refiner deploy --manifest ./refiner-k8s.yaml --namespace refiner
 ./nmc_client/build/nmc refiner status --namespace refiner
 ./nmc_client/build/nmc refiner scale --replicas 3 --namespace refiner
+./nmc_client/build/nmc k8s logs --namespace octobot --deployment octobot --since-seconds 1200 --tail-lines 1000
 ```
+
+`k8s logs` calls Continuum's read-only workload-log API; it does not invoke
+local `kubectl`. The route requires `continuum:control` because application
+logs can contain sensitive data. It selects pods from the named Deployment's
+own labels and caps age, lines, pods, containers, total log content and the
+serialised response. It reads one bounded pod-list page and sets `truncated`
+when more matching pods remain.
 
 ### Server
 

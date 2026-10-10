@@ -62,6 +62,7 @@ int main(int argc, char* argv[]) {
     k8sCmd->addSubcommand(std::make_shared<NMC::Commands::K8sListCommand>(apiClient));
     k8sCmd->addSubcommand(std::make_shared<NMC::Commands::K8sListLocationsCommand>(apiClient));
     k8sCmd->addSubcommand(std::make_shared<NMC::Commands::K8sHealthCommand>(apiClient));
+    k8sCmd->addSubcommand(std::make_shared<NMC::Commands::K8sLogsCommand>(apiClient));
     k8sCmd->addSubcommand(std::make_shared<NMC::Commands::K8sRecoveryStatusCommand>(apiClient));
     k8sCmd->addSubcommand(std::make_shared<NMC::Commands::K8sRestartDeploymentCommand>(apiClient));
     k8sCmd->addSubcommand(std::make_shared<NMC::Commands::K8sResumeCommand>(apiClient));

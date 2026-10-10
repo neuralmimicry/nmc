@@ -80,6 +80,17 @@ Server-side:
 - namespace/context strings
 - rollout timeout and tail values
 
+`k8s logs` validates DNS-label namespace/Deployment names and bounds the query
+to at most 24 hours, 2,000 lines per container, 20 matching pods, 40 containers,
+128 KiB per container, 1 MiB total log content and an 8 MiB serialised response.
+It reads one bounded pod-list page and marks the result truncated when
+Kubernetes reports another page. The server derives its label selector from
+the named Deployment and rejects selector expressions it cannot apply exactly.
+The route requires `continuum:control`; logs are sensitive and are returned to
+the caller without being stored by NMC. Workload logs use an isolated,
+serialised Kubernetes client so concurrent routes cannot overwrite its response
+status while a log query is in progress.
+
 ### 2.6 Tracey network safety
 
 The server applies extra controls around Tracey status and control-plane communication:
