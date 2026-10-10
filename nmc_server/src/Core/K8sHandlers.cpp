@@ -1875,30 +1875,45 @@ users:
                 constexpr size_t maxSerializedResponseBytes = 8 * 1024 * 1024;
                 constexpr int perContainerLogBytes = 128 * 1024;
                 int podLimit = maxPods;
-                char* podListRaw = CoreV1API_listNamespacedPod(
+                v1_pod_list_t* podListModel = CoreV1API_listNamespacedPod(
                         workloadLogsApiClient,
                         const_cast<char*>(namespaceName.c_str()),
                         nullptr, nullptr, nullptr, nullptr,
                         const_cast<char*>(labelSelector.c_str()),
                         &podLimit,
                         nullptr, nullptr, nullptr, nullptr, nullptr);
-                if (!podListRaw) {
-                    const int statusCode = workloadLogsApiClient->response_code;
+                const int podListStatus = workloadLogsApiClient->response_code;
+                if (!podListModel) {
+                    const int statusCode = podListStatus;
                     return sendErrorResponse(res, statusCode >= 400 && statusCode <= 599 ? statusCode : 502,
                                              "Kubernetes API could not list matching pods.");
+                }
+                if (podListStatus < 200 || podListStatus >= 300) {
+                    v1_pod_list_free(podListModel);
+                    const int statusCode = podListStatus >= 400 && podListStatus <= 599 ? podListStatus : 502;
+                    return sendErrorResponse(res, statusCode, "Kubernetes API returned an invalid pod list.");
+                }
+                cJSON* podListObject = v1_pod_list_convertToJSON(podListModel);
+                v1_pod_list_free(podListModel);
+                if (!podListObject) {
+                    return sendErrorResponse(res, 502, "Kubernetes API returned an invalid pod list.");
+                }
+                char* podListRaw = cJSON_PrintUnformatted(podListObject);
+                cJSON_Delete(podListObject);
+                if (!podListRaw) {
+                    return sendErrorResponse(res, 502, "Kubernetes API could not serialise the pod list.");
                 }
 
                 nlohmann::json podList;
                 try {
                     podList = nlohmann::json::parse(podListRaw);
                 } catch (const std::exception&) {
-                    free(podListRaw);
+                    cJSON_free(podListRaw);
                     return sendErrorResponse(res, 502, "Kubernetes API returned an invalid pod list.");
                 }
-                free(podListRaw);
-                if (workloadLogsApiClient->response_code < 200 || workloadLogsApiClient->response_code >= 300
-                    || !podList.is_object() || !podList.contains("items") || !podList["items"].is_array()) {
-                    const int statusCode = workloadLogsApiClient->response_code;
+                cJSON_free(podListRaw);
+                if (!podList.is_object() || !podList.contains("items") || !podList["items"].is_array()) {
+                    const int statusCode = podListStatus;
                     return sendErrorResponse(res, statusCode >= 400 && statusCode <= 599 ? statusCode : 502,
                                              "Kubernetes API returned an invalid pod list.");
                 }

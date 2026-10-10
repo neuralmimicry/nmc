@@ -27,6 +27,7 @@ extern "C" {
 #include <kubernetes/model/v1_object_meta.h>
 #include <kubernetes/model/v1_node.h>
 #include <kubernetes/model/v1_node_list.h>
+#include <kubernetes/model/v1_pod_list.h>
 #include <kubernetes/model/v1_label_selector.h> // Potentially needed for labels
 #ifdef __cplusplus
 } // End of extern "C" block
