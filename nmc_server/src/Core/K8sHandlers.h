@@ -73,6 +73,8 @@ namespace NMC {
             void handleListK8sClusters(const httplib::Request& req, httplib::Response& res);
             void handleListK8sLocations(const httplib::Request& req, httplib::Response& res);
             void handleK8sHealthCheck(const httplib::Request& req, httplib::Response& res);
+            /** Read one node's capacity, allocatable resources and bounded Metrics API usage. */
+            void handleGetNodeResources(const httplib::Request& req, httplib::Response& res);
             void handleGetDeploymentRecoveryStatus(const httplib::Request& req, httplib::Response& res);
             void handleRestartDeployment(const httplib::Request& req, httplib::Response& res);
             void handleGetDeploymentStatus(const httplib::Request& req, httplib::Response& res);

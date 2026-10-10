@@ -69,6 +69,8 @@ namespace NMC::Core {
         Models::CloudResponse listK8sClusters(const std::string& filterName = "");
         Models::CloudResponse listK8sLocations(const std::string& filterSku = "");
         Models::CloudResponse getK8sHealth();
+        /** Read one node's capacity and live Metrics API usage through Continuum. */
+        Models::CloudResponse getK8sNodeResources(const std::string& nodeName);
         /** Read bounded logs from pods selected by an existing Deployment in the configured cluster. */
         Models::CloudResponse getK8sWorkloadLogs(const std::string& namespaceName,
                                                  const std::string& deploymentName,

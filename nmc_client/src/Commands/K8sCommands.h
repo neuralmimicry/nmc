@@ -53,6 +53,15 @@ public:
     int execute(const std::map<std::string, std::string>& parsedFlags, const std::vector<std::string>& parsedArgs, const CLI::GlobalFlags& globalFlags) override;
 };
 
+/** Read bounded capacity, allocatable resources and live metrics for one node through Continuum. */
+class K8sNodeResourcesCommand : public BaseCommand {
+public:
+    explicit K8sNodeResourcesCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client);
+    int execute(const std::map<std::string, std::string>& parsedFlags,
+                const std::vector<std::string>& parsedArgs,
+                const CLI::GlobalFlags& globalFlags) override;
+};
+
 /** Read bounded logs from pods matching a named Deployment through nmc_server. */
 class K8sLogsCommand : public BaseCommand {
 public:

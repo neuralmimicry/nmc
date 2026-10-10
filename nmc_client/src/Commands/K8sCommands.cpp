@@ -196,6 +196,25 @@ int K8sHealthCommand::execute(const std::map<std::string, std::string>& parsedFl
     return response.success ? 0 : 1;
 }
 
+K8sNodeResourcesCommand::K8sNodeResourcesCommand(
+        std::shared_ptr<NMC::Core::CloudAPIClient> client
+) : BaseCommand("node-resources", "Read one Kubernetes node's capacity and live usage through Continuum", std::move(client)) {
+    usage = "nmc k8s node-resources NODE_NAME";
+    examples = "nmc k8s node-resources qc05";
+    addArgument(CLI::Argument("NODE_NAME", "Kubernetes node name to inspect", true, 0));
+}
+
+int K8sNodeResourcesCommand::execute(
+        const std::map<std::string, std::string>& parsedFlags,
+        const std::vector<std::string>& parsedArgs,
+        const CLI::GlobalFlags& globalFlags
+) {
+    if (!validateArguments(parsedArgs) || !validateFlags(parsedFlags) || parsedArgs.size() != 1) return 1;
+    const auto response = apiClient->getK8sNodeResources(parsedArgs.front());
+    printOutput(response, globalFlags);
+    return response.success ? 0 : 1;
+}
+
 // --- K8sRecoveryStatusCommand ---
 K8sRecoveryStatusCommand::K8sRecoveryStatusCommand(
         std::shared_ptr<NMC::Core::CloudAPIClient> client

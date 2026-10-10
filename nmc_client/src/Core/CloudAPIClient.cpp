@@ -408,6 +408,19 @@ namespace NMC::Core {
         return processHttpResponse(res, "K8s health status retrieved.");
     }
 
+    Models::CloudResponse CloudAPIClient::getK8sNodeResources(const std::string& nodeName) {
+        if (nodeName.empty() || nodeName.size() > 253) {
+            Models::CloudResponse response;
+            response.success = false;
+            response.message = "A valid Kubernetes node name is required.";
+            response.statusCode = 400;
+            return response;
+        }
+        const std::string path = "/k8s/node-resources?node=" + encodeQueryValue(nodeName);
+        auto res = cli->Get(path);
+        return processHttpResponse(res, "Kubernetes node resources retrieved.");
+    }
+
     Models::CloudResponse CloudAPIClient::getK8sWorkloadLogs(
             const std::string& namespaceName,
             const std::string& deploymentName,

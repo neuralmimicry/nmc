@@ -123,6 +123,7 @@ Global output formats currently implemented are:
 ```bash
 ./nmc_client/build/nmc k8s list
 ./nmc_client/build/nmc k8s health
+./nmc_client/build/nmc k8s node-resources qc05
 ./nmc_client/build/nmc --output json k8s deployment-status --cluster-id rk1 --namespace octobot --deployment octobot
 ./nmc_client/build/nmc vcluster create demo --namespace vcluster-demo
 ./nmc_client/build/nmc vcluster create demo-uat --config-file ./vcluster-config.json
@@ -132,6 +133,13 @@ Global output formats currently implemented are:
 ```
 
 `vcluster-config.json` is a JSON object containing the advanced server-side vcluster configuration, such as placement, HA, ingress, security/RBAC, sync, monitoring, or Tracey metadata. The CLI validates the file locally, limits it to 1 MiB, and sends it as the nested `config` field without printing its contents.
+
+`k8s node-resources NODE_NAME` is a read-only Continuum observation for one
+named node. It reports Kubernetes capacity and allocatable quantities plus the
+Metrics API usage sample, its timestamp, age and freshness. Missing Metrics API
+data is returned as explicitly unavailable rather than zero. The response
+does not sum scheduled Pod requests, so it does not claim scheduler request
+headroom; use it as a capacity observation, not placement approval.
 
 OctoBot policy changes must use `nmc k8s configure-octobot` with a new
 request ID, the current `octobot_config_request_id` from Deployment status as

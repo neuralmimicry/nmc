@@ -533,6 +533,9 @@ namespace NMC::Server {
             if (path == "/k8s/deployment/recovery-status") {
                 return {"continuum", SERVICE_ACCESS_OBSERVE};
             }
+            if (path == "/k8s/node-resources" && method == "GET") {
+                return {"continuum", SERVICE_ACCESS_OBSERVE};
+            }
             if (method == "GET") {
                 return {"continuum", SERVICE_ACCESS_OBSERVE};
             }
