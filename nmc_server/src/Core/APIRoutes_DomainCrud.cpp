@@ -186,6 +186,10 @@ namespace NMC::Server {
             if (!guard(req, res)) return;
             k8sHandlers->handleK8sHealthCheck(req, res);
         });
+        svr.Get("/k8s/node-resources", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            k8sHandlers->handleGetNodeResources(req, res);
+        });
         svr.Get("/k8s/deployment/recovery-status", [this, guard](const httplib::Request& req, httplib::Response& res) {
             if (!guard(req, res)) return;
             k8sHandlers->handleGetDeploymentRecoveryStatus(req, res);

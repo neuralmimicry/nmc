@@ -240,6 +240,40 @@
     </section>
 
     <section>
+        <h2>Read Node Resources</h2>
+        <p><strong>Endpoint:</strong> <code>GET /k8s/node-resources?node={nodeName}</code></p>
+        <p>Requires <code>continuum:observe</code>. Returns one node's Kubernetes capacity and allocatable quantities with a Metrics API usage sample when available. Metrics include their source timestamp, observation age and freshness; unavailable metrics are marked unavailable rather than zero.</p>
+        <p>This observation does not sum scheduled Pod requests and therefore does not establish scheduler request headroom.</p>
+        <h3>Successful Response (HTTP 200 OK):</h3>
+        <pre><code class="language-json">
+{
+    "success": true,
+    "message": "Kubernetes node resources retrieved.",
+    "data": {
+        "node": "qc05",
+        "observed_at_unix_ms": 1791664263718,
+        "ready": true,
+        "capacity": {"cpu": "32", "memory": "134217728Ki"},
+        "allocatable": {"cpu": "30", "memory": "125829120Ki"},
+        "metrics": {
+            "available": true,
+            "status_code": 200,
+            "timestamp": "2026-10-10T20:30:00Z",
+            "window": "30s",
+            "age_seconds": 63.7,
+            "freshness": "fresh",
+            "freshness_threshold_seconds": 120,
+            "usage": {"cpu": "1500m", "memory": "12Gi"}
+        },
+        "scheduler_request_headroom": null,
+        "scheduler_request_headroom_proven": false
+    }
+}
+        </code></pre>
+        <p>If the Metrics API is missing or cannot be read, <code>metrics.available</code> is <code>false</code>, <code>metrics.usage</code> is <code>null</code>, and the response includes an unavailable reason and upstream status code when available.</p>
+    </section>
+
+    <section>
         <h2>Resume K8s Cluster</h2>
         <p><strong>Endpoint:</strong> <code>POST /k8s/resume/{id}</code></p>
         <p>Resumes a suspended Kubernetes cluster.</p>

@@ -3,10 +3,12 @@
 #include "Utils.h" // For Utils::generateUniqueId
 #include <algorithm> // Not as much needed now, but keeping for general utility
 #include <cctype>
+#include <cstdint>
 #include <cstdlib>
 #include <ctime>
 #include <cstring>
 #include <iostream>
+#include <memory>
 #include <stdexcept>
 #include <string> // Required for std::to_string
 #include <utility>
@@ -52,6 +54,102 @@ namespace {
         return labels.contains(key)
                && labels[key].is_string()
                && labels[key].get<std::string>() == expected;
+    }
+
+    bool isKubernetesNodeName(const std::string& name) {
+        if (name.empty() || name.size() > 253 || name.front() == '.' || name.back() == '.') return false;
+        size_t labelLength = 0;
+        char previous = '\0';
+        for (const unsigned char ch : name) {
+            if (ch == '.') {
+                if (labelLength == 0 || labelLength > 63 || previous == '-') return false;
+                labelLength = 0;
+                previous = '.';
+                continue;
+            }
+            const bool valid = (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '-';
+            if (!valid || (labelLength == 0 && ch == '-')) return false;
+            ++labelLength;
+            previous = static_cast<char>(ch);
+        }
+        return labelLength > 0 && labelLength <= 63 && previous != '-';
+    }
+
+    std::optional<int64_t> parseRfc3339EpochMilliseconds(const std::string& value) {
+        if (value.size() < 20 || value[4] != '-' || value[7] != '-' || value[10] != 'T'
+            || value[13] != ':' || value[16] != ':') return std::nullopt;
+        const auto parseDigits = [&value](size_t offset, size_t count) -> std::optional<int> {
+            if (offset + count > value.size()) return std::nullopt;
+            int result = 0;
+            for (size_t index = offset; index < offset + count; ++index) {
+                const unsigned char ch = static_cast<unsigned char>(value[index]);
+                if (ch < '0' || ch > '9') return std::nullopt;
+                result = result * 10 + static_cast<int>(ch - '0');
+            }
+            return result;
+        };
+        const auto year = parseDigits(0, 4);
+        const auto month = parseDigits(5, 2);
+        const auto day = parseDigits(8, 2);
+        const auto hour = parseDigits(11, 2);
+        const auto minute = parseDigits(14, 2);
+        const auto second = parseDigits(17, 2);
+        if (!year || !month || !day || !hour || !minute || !second || *month < 1 || *month > 12
+            || *day < 1 || *day > 31 || *hour > 23 || *minute > 59 || *second > 60) return std::nullopt;
+
+        size_t position = 19;
+        int milliseconds = 0;
+        if (position < value.size() && value[position] == '.') {
+            ++position;
+            int decimalPlaces = 0;
+            while (position < value.size() && value[position] >= '0' && value[position] <= '9') {
+                if (decimalPlaces < 3) {
+                    milliseconds = milliseconds * 10 + (value[position] - '0');
+                    ++decimalPlaces;
+                }
+                ++position;
+            }
+            if (decimalPlaces == 0) return std::nullopt;
+            while (decimalPlaces < 3) {
+                milliseconds *= 10;
+                ++decimalPlaces;
+            }
+        }
+
+        int timezoneOffsetSeconds = 0;
+        if (position < value.size() && value[position] == 'Z' && position + 1 == value.size()) {
+        } else if (position + 6 == value.size()
+                   && (value[position] == '+' || value[position] == '-') && value[position + 3] == ':') {
+            const auto offsetHours = parseDigits(position + 1, 2);
+            const auto offsetMinutes = parseDigits(position + 4, 2);
+            if (!offsetHours || !offsetMinutes || *offsetHours > 23 || *offsetMinutes > 59) return std::nullopt;
+            timezoneOffsetSeconds = (*offsetHours * 60 + *offsetMinutes) * 60;
+            if (value[position] == '-') timezoneOffsetSeconds = -timezoneOffsetSeconds;
+        } else {
+            return std::nullopt;
+        }
+
+        int adjustedYear = *year - (*month <= 2 ? 1 : 0);
+        const int era = (adjustedYear >= 0 ? adjustedYear : adjustedYear - 399) / 400;
+        const unsigned yearOfEra = static_cast<unsigned>(adjustedYear - era * 400);
+        const int monthPrime = *month + (*month > 2 ? -3 : 9);
+        const unsigned dayOfYear = static_cast<unsigned>((153 * monthPrime + 2) / 5 + *day - 1);
+        const unsigned dayOfEra = yearOfEra * 365 + yearOfEra / 4 - yearOfEra / 100 + dayOfYear;
+        const int64_t daysSinceEpoch = static_cast<int64_t>(era) * 146097 + dayOfEra - 719468;
+        const int64_t secondsSinceEpoch = daysSinceEpoch * 86400 + *hour * 3600 + *minute * 60 + *second
+                                          - timezoneOffsetSeconds;
+        return secondsSinceEpoch * 1000 + milliseconds;
+    }
+
+    nlohmann::json resourceQuantityMap(const list_t* values) {
+        nlohmann::json result = nlohmann::json::object();
+        listEntry_t* entry = nullptr;
+        list_ForEach(entry, const_cast<list_t*>(values)) {
+            const auto* pair = static_cast<const keyValuePair_t*>(entry->data);
+            if (!pair || !pair->key || !pair->value) continue;
+            result[static_cast<const char*>(pair->key)] = static_cast<const char*>(pair->value);
+        }
+        return result;
     }
 
     std::optional<nlohmann::json> findRefinerDeploymentFromList(const nlohmann::json& deploymentList) {
@@ -1758,6 +1856,119 @@ users:
                 sendJsonResponse(res, apiResponse);
             } catch (const std::exception& e) {
                 sendErrorResponse(res, 500, "Server error: " + std::string(e.what()));
+            }
+        }
+
+        void K8sHandlers::handleGetNodeResources(const httplib::Request& req, httplib::Response& res) {
+            std::lock_guard<std::recursive_mutex> apiClientLock(apiClientMutex);
+            try {
+                const std::string nodeName = req.has_param("node") ? trimCopy(req.get_param_value("node")) : "";
+                if (!isKubernetesNodeName(nodeName)) {
+                    return sendErrorResponse(res, 400, "A valid Kubernetes node name is required in the node query parameter.");
+                }
+                if (!apiClient) {
+                    return sendErrorResponse(res, 503, "Kubernetes API client is unavailable.");
+                }
+
+                std::unique_ptr<v1_node_t, decltype(&v1_node_free)> node(
+                        CoreV1API_readNode(apiClient, const_cast<char*>(nodeName.c_str()), nullptr),
+                        &v1_node_free);
+                if (!node) {
+                    const int statusCode = apiClient->response_code;
+                    return sendErrorResponse(
+                            res,
+                            statusCode >= 400 && statusCode <= 599 ? statusCode : 502,
+                            "Kubernetes API could not retrieve the requested node.");
+                }
+
+                nlohmann::json ready = nullptr;
+                if (node->status && node->status->conditions) {
+                    listEntry_t* conditionEntry = nullptr;
+                    list_ForEach(conditionEntry, node->status->conditions) {
+                        const auto* condition = static_cast<const v1_node_condition_t*>(conditionEntry->data);
+                        if (!condition || !condition->type || std::strcmp(condition->type, "Ready") != 0
+                            || !condition->status) continue;
+                        ready = std::strcmp(condition->status, "True") == 0;
+                        break;
+                    }
+                }
+
+                const int64_t observedAtUnixMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::system_clock::now().time_since_epoch()).count();
+                nlohmann::json metrics = {
+                        {"available", false},
+                        {"reason", "metrics_api_unavailable"},
+                        {"status_code", nullptr},
+                        {"timestamp", nullptr},
+                        {"window", nullptr},
+                        {"age_seconds", nullptr},
+                        {"freshness", "unavailable"},
+                        {"freshness_threshold_seconds", 120},
+                        {"usage", nullptr}
+                };
+
+                std::unique_ptr<genericClient_t, decltype(&genericClient_free)> metricsClient(
+                        genericClient_create(apiClient, "metrics.k8s.io", "v1beta1", "nodes"),
+                        &genericClient_free);
+                if (metricsClient) {
+                    std::unique_ptr<char, decltype(&std::free)> metricsRaw(
+                            Generic_readResource(metricsClient.get(), nodeName.c_str()), &std::free);
+                    const int metricsStatusCode = apiClient->response_code;
+                    if (metricsStatusCode > 0) metrics["status_code"] = metricsStatusCode;
+                    if (metricsRaw) {
+                        try {
+                            const nlohmann::json payload = nlohmann::json::parse(metricsRaw.get());
+                            if (payload.is_object() && payload.contains("usage") && payload["usage"].is_object()) {
+                                metrics["available"] = true;
+                                metrics["reason"] = nullptr;
+                                metrics["timestamp"] = payload.value("timestamp", nlohmann::json(nullptr));
+                                metrics["window"] = payload.value("window", nlohmann::json(nullptr));
+                                metrics["usage"] = payload["usage"];
+                                const auto timestamp = payload.find("timestamp");
+                                if (timestamp != payload.end() && timestamp->is_string()) {
+                                    const auto timestampMs = parseRfc3339EpochMilliseconds(timestamp->get<std::string>());
+                                    if (timestampMs) {
+                                        const double ageSeconds = static_cast<double>(observedAtUnixMs - *timestampMs) / 1000.0;
+                                        metrics["age_seconds"] = ageSeconds;
+                                        metrics["freshness"] = ageSeconds < 0.0
+                                                ? "future"
+                                                : (ageSeconds <= 120.0 ? "fresh" : "stale");
+                                    } else {
+                                        metrics["freshness"] = "unknown";
+                                    }
+                                } else {
+                                    metrics["freshness"] = "unknown";
+                                }
+                            } else {
+                                metrics["reason"] = "invalid_metrics_response";
+                                metrics["freshness"] = "unknown";
+                            }
+                        } catch (const nlohmann::json::exception&) {
+                            metrics["reason"] = "invalid_metrics_response";
+                            metrics["freshness"] = "unknown";
+                        }
+                    }
+                } else {
+                    metrics["reason"] = "metrics_client_unavailable";
+                }
+
+                Models::CloudResponse response;
+                response.success = true;
+                response.message = "Kubernetes node resources retrieved.";
+                response.data = {
+                        {"node", nodeName},
+                        {"observed_at_unix_ms", observedAtUnixMs},
+                        {"ready", ready},
+                        {"capacity", resourceQuantityMap(node->status ? node->status->capacity : nullptr)},
+                        {"allocatable", resourceQuantityMap(node->status ? node->status->allocatable : nullptr)},
+                        {"metrics", std::move(metrics)},
+                        {"scheduler_request_headroom", nullptr},
+                        {"scheduler_request_headroom_proven", false},
+                        {"scheduler_request_headroom_note", "This bounded observation does not sum scheduled Pod requests."}
+                };
+                sendJsonResponse(res, response);
+            } catch (const std::exception& e) {
+                sendErrorResponse(res, 500, "Unable to retrieve Kubernetes node resources: " + std::string(e.what()));
             }
         }
 
