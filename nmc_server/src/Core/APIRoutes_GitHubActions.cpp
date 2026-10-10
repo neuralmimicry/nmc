@@ -464,20 +464,26 @@ namespace NMC::Server {
             catch (const std::exception&) { return sendGithubError(res, 503, "GitHub Actions task state could not be persisted; dispatch was not attempted."); }
         }
 
-        Json dispatchBody = {{"ref", config.trustedRef}, {"inputs", {
+        Json dispatchBody = {{"ref", config.trustedRef}, {"return_run_details", true}, {"inputs", {
                 {"task_id", taskId}, {"workspace_id", workspaceId}, {"source_sha", sourceSha},
                 {"source_tree", sourceTree}, {"task_kind", taskKind}}}};
-        const GithubResponse response = githubRequest(config, "POST", workflowPath(config) + "/dispatches?return_run_details=true", dispatchBody.dump());
+        const GithubResponse response = githubRequest(config, "POST", workflowPath(config) + "/dispatches", dispatchBody.dump());
         Json updated = record;
         updated["state"] = "dispatch_unknown";
         if (response.status >= 200 && response.status < 300) {
             const Json result = parseJson(response);
-            Json run = result.contains("workflow_run") && result["workflow_run"].is_object()
-                    ? safeRun(result["workflow_run"]) : safeRun(result);
-            if (run.contains("id")) {
-                updated["run_id"] = run["id"];
-                updated["run"] = run;
+            if (result.contains("workflow_run_id") && result["workflow_run_id"].is_number_integer()
+                && result["workflow_run_id"].get<int64_t>() > 0) {
+                updated["run_id"] = result["workflow_run_id"];
                 updated["state"] = "queued";
+            } else {
+                Json run = result.contains("workflow_run") && result["workflow_run"].is_object()
+                        ? safeRun(result["workflow_run"]) : safeRun(result);
+                if (run.contains("id")) {
+                    updated["run_id"] = run["id"];
+                    updated["run"] = run;
+                    updated["state"] = "queued";
+                }
             }
         } else if (response.status >= 400 && response.status < 500) {
             updated["state"] = "rejected";
