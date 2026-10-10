@@ -82,6 +82,7 @@ namespace NMC {
             void handleGetRefinerStatus(const httplib::Request& req, httplib::Response& res);
             void handleGetWorkloadLogs(const httplib::Request& req, httplib::Response& res);
             void handleScaleRefiner(const httplib::Request& req, httplib::Response& res);
+            void handleConfigureOctoBot(const httplib::Request& req, httplib::Response& res);
 
             // Vcluster management handlers
             void handleCreateVCluster(const httplib::Request& req, httplib::Response& res);
@@ -138,6 +139,8 @@ namespace NMC {
             bool recoveryEnabled{false};
             // Image changes use a separate explicit policy gate and allowlisted workload label.
             bool imageRolloutEnabled{false};
+            // OctoBot runtime policy changes have their own opt-in gate and workload label.
+            bool octobotConfigurationEnabled{false};
             // The legacy direct-URL fallback intentionally lacks kubeconfig
             // credentials and must never be used for recovery writes.
             bool recoveryClientReady{false};

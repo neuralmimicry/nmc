@@ -99,6 +99,8 @@
     nmc_recovery_enabled: false
     # Digest-pinned Deployment image changes have an independent explicit gate.
     nmc_k8s_image_rollout_enabled: false
+    # OctoBot runtime policy changes have a separate, typed Continuum gate.
+    nmc_k8s_octobot_configuration_enabled: false
 
     # GPU
     nmc_gpu_auto: true

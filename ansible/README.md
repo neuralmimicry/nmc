@@ -96,6 +96,7 @@ ansible-playbook -i "localhost," -c local ansible/deploy.yml -K \
 - `nmc_k8s_cluster_id` (the stable identity for this server's active kubeconfig context; leave empty to keep recovery preflight/action blocked)
 - `nmc_recovery_enabled` (defaults to `false`; required to enable guarded workload restart requests)
 - `nmc_k8s_image_rollout_enabled` (defaults to `false`; independently gates immutable GHCR image changes through Continuum)
+- `nmc_k8s_octobot_configuration_enabled` (defaults to `false`; independently gates the typed OctoBot live-execution and optional-service policy operation)
 
 ### GPU
 
