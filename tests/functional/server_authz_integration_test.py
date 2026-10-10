@@ -857,6 +857,7 @@ class NmcServerProcess:
                 "NMC_CENTRAL_AUTH_TIMEOUT_MS": "1000",
                 "NMC_CENTRAL_AUTH_CACHE_TTL_MS": "1000",
                 "NMC_DOCS_ENABLED": "1",
+                "NMC_DOCS_DIR": str(REPO_ROOT / "nmc_server" / "build" / "docs"),
                 "NMC_TRACEY_DISCOVERY_ENABLED": "0",
                 "NMC_TRACEY_CVE_ENABLED": "0",
                 "NMC_AARNN_DISCOVERY_ENABLED": "0",
