@@ -1425,18 +1425,24 @@ def test_invalid_json_fails_before_network(server: MockServer, home_dir: pathlib
 
 
 def test_invalid_flag_fails_before_network(server: MockServer, home_dir: pathlib.Path) -> None:
-    server.clear_records()
-    result = run_nmc(
-        ["tracey", "analytics", "--window-seconds", "not-a-number"],
-        home_dir,
+    invalid_flags = (
+        ("long option", ["--window-seconds", "not-a-number"]),
+        ("inline long option", ["--window-seconds=not-a-number"]),
+        ("short option", ["-w", "not-a-number"]),
+        ("trailing characters", ["--window-seconds", "7200seconds"]),
     )
-    assert_failure(result, "tracey analytics invalid-window")
-    assert_true(
-        ("--window-seconds must be an integer." in result.stderr)
-        or ("--window-seconds must be greater than zero." in result.stderr),
-        f"expected window-seconds validation error, got stderr:\n{result.stderr}",
-    )
-    assert_true(len(server.records()) == 0, "invalid window flag should not perform network calls")
+    for label, flag_args in invalid_flags:
+        server.clear_records()
+        result = run_nmc(["tracey", "analytics", *flag_args], home_dir)
+        assert_failure(result, f"tracey analytics invalid-window ({label})")
+        assert_true(
+            "--window-seconds must be an integer." in result.stderr,
+            f"expected window-seconds validation error, got stderr:\n{result.stderr}",
+        )
+        assert_true(
+            len(server.records()) == 0,
+            f"invalid window flag ({label}) should not perform network calls",
+        )
 
 
 def test_invalid_adaptive_policy_fails_before_network(server: MockServer, home_dir: pathlib.Path) -> None:

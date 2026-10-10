@@ -146,7 +146,10 @@ bool CLIParser::parseFlags(std::vector<std::string>& args,
             }
 
             if (flagDef->type == FlagType::Bool) {
-                flagDef->setValue("true"); // Presence of the flag means true
+                // Presence of the flag means true.
+                if (!flagDef->setValue("true")) {
+                    return false;
+                }
             } else {
                 if (flagValue.empty()) { // Value not provided with '='
                     if (i + 1 < args.size() && args[i+1].rfind('-', 0) != 0) { // Next arg is not a flag
@@ -156,7 +159,9 @@ bool CLIParser::parseFlags(std::vector<std::string>& args,
                         return false;
                     }
                 }
-                flagDef->setValue(flagValue);
+                if (!flagDef->setValue(flagValue)) {
+                    return false;
+                }
             }
             // Canonicalize all flag names to the long form so commands can
             // consistently look up "location" even if the user passed "-r".
@@ -180,10 +185,15 @@ bool CLIParser::parseFlags(std::vector<std::string>& args,
             }
 
             if (flagDef->type == FlagType::Bool) {
-                flagDef->setValue("true"); // Presence of the flag means true
+                // Presence of the flag means true.
+                if (!flagDef->setValue("true")) {
+                    return false;
+                }
             } else {
                 if (i + 1 < args.size() && args[i+1].rfind('-', 0) != 0) {
-                    flagDef->setValue(args[++i]);
+                    if (!flagDef->setValue(args[++i])) {
+                        return false;
+                    }
                 } else {
                     std::cerr << "Error: Flag -" << flagName << " requires a value." << std::endl;
                     return false;
