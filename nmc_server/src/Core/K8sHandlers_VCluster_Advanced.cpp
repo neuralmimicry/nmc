@@ -408,6 +408,7 @@ namespace NMC {
         // ============================================================================
 
         void K8sHandlers::handleCreateVCluster(const httplib::Request& req, httplib::Response& res) {
+            std::lock_guard<std::recursive_mutex> apiClientLock(apiClientMutex);
             try {
                 auto json_body = nlohmann::json::parse(req.body);
 

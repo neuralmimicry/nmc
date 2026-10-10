@@ -1617,7 +1617,7 @@ namespace NMC::Core {
     }
 
     Models::CloudResponse CloudAPIClient::aarnnRuntimeResources() {
-        const auto res = cli->Get("/aarnn/runtime/resources");
+        auto res = cli->Get("/aarnn/runtime/resources");
         return processHttpResponse(res, "AARNN runtime resources retrieved.");
     }
 

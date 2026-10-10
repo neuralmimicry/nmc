@@ -15,6 +15,7 @@ namespace NMC {
         // ============================================================================
 
         void K8sHandlers::handleGetVClusterMetrics(const httplib::Request& req, httplib::Response& res) {
+            std::lock_guard<std::recursive_mutex> apiClientLock(apiClientMutex);
             try {
                 std::string id = extractClusterIdentifierFromRequest(req);
                 if (id.empty()) {
@@ -183,6 +184,7 @@ namespace NMC {
         // ============================================================================
 
         void K8sHandlers::handleGetVClusterHealth(const httplib::Request& req, httplib::Response& res) {
+            std::lock_guard<std::recursive_mutex> apiClientLock(apiClientMutex);
             try {
                 std::string id = extractClusterIdentifierFromRequest(req);
                 if (id.empty()) {
@@ -315,6 +317,7 @@ namespace NMC {
         // ============================================================================
 
         void K8sHandlers::handleGetVClusterResources(const httplib::Request& req, httplib::Response& res) {
+            std::lock_guard<std::recursive_mutex> apiClientLock(apiClientMutex);
             try {
                 std::string id = extractClusterIdentifierFromRequest(req);
                 if (id.empty()) {
@@ -461,6 +464,7 @@ namespace NMC {
         // ============================================================================
 
         void K8sHandlers::handleGetVClusterConfig(const httplib::Request& req, httplib::Response& res) {
+            std::lock_guard<std::recursive_mutex> apiClientLock(apiClientMutex);
             try {
                 std::string id = extractClusterIdentifierFromRequest(req);
                 if (id.empty()) {
@@ -509,6 +513,7 @@ namespace NMC {
         // ============================================================================
 
         void K8sHandlers::handleUpdateVClusterConfig(const httplib::Request& req, httplib::Response& res) {
+            std::lock_guard<std::recursive_mutex> apiClientLock(apiClientMutex);
             try {
                 std::string id = extractClusterIdentifierFromRequest(req);
                 if (id.empty()) {
