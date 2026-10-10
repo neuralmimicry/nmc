@@ -993,6 +993,21 @@ int AarnnRuntimeStatusCommand::execute(const std::map<std::string, std::string>&
     return printAndReturn(response, globalFlags);
 }
 
+AarnnRuntimeResourcesCommand::AarnnRuntimeResourcesCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client)
+    : BaseCommand("resources", "Fetch AARNN runtime memory and process resource counters", std::move(client)) {
+    usage = "nmc aarnn runtime resources";
+}
+
+int AarnnRuntimeResourcesCommand::execute(const std::map<std::string, std::string>& parsedFlags,
+                                          const std::vector<std::string>& parsedArgs,
+                                          const CLI::GlobalFlags& globalFlags) {
+    if (!validateArguments(parsedArgs) || !validateFlags(parsedFlags)) {
+        return 1;
+    }
+    const Models::CloudResponse response = apiClient->aarnnRuntimeResources();
+    return printAndReturn(response, globalFlags);
+}
+
 AarnnRuntimeListCommand::AarnnRuntimeListCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client)
     : BaseCommand("list", "List AARNN runtime workspaces", std::move(client)) {
     usage = "nmc aarnn runtime list [--plane runtime|control]";

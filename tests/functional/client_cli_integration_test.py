@@ -250,6 +250,22 @@ class MockServer:
             )
             return
 
+        if handler.command == "GET" and path_only == "/aarnn/runtime/resources":
+            self._send_json(
+                handler,
+                200,
+                {
+                    "success": True,
+                    "message": "AARNN runtime resource counters retrieved.",
+                    "data": {
+                        "process_rss_bytes": 4096,
+                        "memory_current_bytes": 8192,
+                        "memory_limit_bytes": 16384,
+                    },
+                },
+            )
+            return
+
         if handler.command == "GET" and path_only == "/k8s/deployment/status":
             self._send_json(
                 handler,
@@ -1730,6 +1746,18 @@ def test_aarnn_runtime_create_control_plane_serialization(server: MockServer, ho
     assert_true(isinstance(upstream_json.get("config_json"), str), "aarnn runtime create config_json should be string")
 
 
+def test_aarnn_runtime_resources_uses_continuum_proxy(server: MockServer, home_dir: pathlib.Path) -> None:
+    server.clear_records()
+    result = run_nmc(["aarnn", "runtime", "resources"], home_dir)
+    assert_success(result, "aarnn runtime resources")
+
+    records = server.records()
+    assert_true(len(records) == 1, f"aarnn runtime resources expected 1 request, got {len(records)}")
+    req = records[0]
+    assert_true(req.method == "GET", f"aarnn runtime resources expected GET, got {req.method}")
+    assert_true(req.path == "/aarnn/runtime/resources", f"aarnn runtime resources wrong Continuum route: {req.path}")
+
+
 def test_aarnn_runtime_invalid_plane_fails_before_network(server: MockServer, home_dir: pathlib.Path) -> None:
     server.clear_records()
     result = run_nmc(["aarnn", "runtime", "status", "--plane", "bogus"], home_dir)
@@ -2065,6 +2093,7 @@ def main() -> int:
             test_aarnn_network_control_proxy_serialization(server, home_dir)
             test_aarnn_network_targeted_proxy_serialization(server, home_dir)
             test_aarnn_runtime_create_control_plane_serialization(server, home_dir)
+            test_aarnn_runtime_resources_uses_continuum_proxy(server, home_dir)
             test_aarnn_runtime_invalid_plane_fails_before_network(server, home_dir)
             test_gail_health_serialization(server, home_dir)
             test_gail_status_serialization(server, home_dir)

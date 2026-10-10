@@ -243,6 +243,7 @@ int main(int argc, char* argv[]) {
 
     auto aarnnRuntimeCmd = std::make_shared<NMC::Commands::AarnnRuntimeCommand>(apiClient);
     aarnnRuntimeCmd->addSubcommand(std::make_shared<NMC::Commands::AarnnRuntimeStatusCommand>(apiClient));
+    aarnnRuntimeCmd->addSubcommand(std::make_shared<NMC::Commands::AarnnRuntimeResourcesCommand>(apiClient));
     aarnnRuntimeCmd->addSubcommand(std::make_shared<NMC::Commands::AarnnRuntimeListCommand>(apiClient));
     aarnnRuntimeCmd->addSubcommand(std::make_shared<NMC::Commands::AarnnRuntimeCreateCommand>(apiClient));
     aarnnRuntimeCmd->addSubcommand(std::make_shared<NMC::Commands::AarnnRuntimeGetCommand>(apiClient));

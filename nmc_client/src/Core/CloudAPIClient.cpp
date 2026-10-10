@@ -1616,6 +1616,11 @@ namespace NMC::Core {
         return apiResponse;
     }
 
+    Models::CloudResponse CloudAPIClient::aarnnRuntimeResources() {
+        const auto res = cli->Get("/aarnn/runtime/resources");
+        return processHttpResponse(res, "AARNN runtime resources retrieved.");
+    }
+
 // --- Server-side Connection Management ---
     Models::CloudResponse CloudAPIClient::getServerConnectionStatus() {
         auto res = cli->Get("/connections/status");

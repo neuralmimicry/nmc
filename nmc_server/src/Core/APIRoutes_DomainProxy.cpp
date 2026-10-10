@@ -417,6 +417,10 @@ namespace NMC::Server {
             if (!guard(req, res)) return;
             handleAarnnInventory(req, res);
         });
+        svr.Get("/aarnn/runtime/resources", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            handleAarnnRuntimeResources(req, res);
+        });
         svr.Post(R"(^/aarnn/proxy/([^/]+)$)", [this, guard](const httplib::Request& req, httplib::Response& res) {
             if (!guard(req, res)) return;
             const std::string plane = req.matches.size() > 1 ? req.matches[1].str() : "";
@@ -1076,8 +1080,21 @@ namespace NMC::Server {
         }
     }
 
-    void APIRoutes::handleAarnnProxy(const httplib::Request& req, httplib::Response& res, const std::string& plane) {
-        const nlohmann::json payload = nlohmann::json::parse(req.body, nullptr, false);
+    void APIRoutes::handleAarnnRuntimeResources(const httplib::Request& req, httplib::Response& res) {
+        const nlohmann::json fixedPayload = {
+                {"method", "GET"},
+                {"path", "/api/runtime/resources"}
+        };
+        handleAarnnProxy(req, res, "runtime", &fixedPayload);
+    }
+
+    void APIRoutes::handleAarnnProxy(const httplib::Request& req,
+                                     httplib::Response& res,
+                                     const std::string& plane,
+                                     const nlohmann::json* fixedPayload) {
+        const nlohmann::json payload = fixedPayload != nullptr
+                                               ? *fixedPayload
+                                               : nlohmann::json::parse(req.body, nullptr, false);
         if (payload.is_discarded() || !payload.is_object()) {
             sendErrorResponse(res, 400, "Invalid JSON payload.");
             return;

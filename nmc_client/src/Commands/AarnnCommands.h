@@ -117,6 +117,14 @@ public:
                 const CLI::GlobalFlags& globalFlags) override;
 };
 
+class AarnnRuntimeResourcesCommand : public BaseCommand {
+public:
+    explicit AarnnRuntimeResourcesCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client);
+    int execute(const std::map<std::string, std::string>& parsedFlags,
+                const std::vector<std::string>& parsedArgs,
+                const CLI::GlobalFlags& globalFlags) override;
+};
+
 class AarnnRuntimeListCommand : public BaseCommand {
 public:
     explicit AarnnRuntimeListCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client);

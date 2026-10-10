@@ -399,7 +399,11 @@ namespace NMC::Server {
         void handleTraceyAgentDeepDive(const httplib::Request& req, httplib::Response& res);
         void handleAarnnEndpoints(const httplib::Request& req, httplib::Response& res);
         void handleAarnnInventory(const httplib::Request& req, httplib::Response& res);
-        void handleAarnnProxy(const httplib::Request& req, httplib::Response& res, const std::string& plane);
+        void handleAarnnRuntimeResources(const httplib::Request& req, httplib::Response& res);
+        void handleAarnnProxy(const httplib::Request& req,
+                              httplib::Response& res,
+                              const std::string& plane,
+                              const nlohmann::json* fixedPayload = nullptr);
         nlohmann::json buildAarnnEndpointsPayload(std::string& errorOut);
         nlohmann::json buildAarnnInventoryPayload(const std::string& clusterId,
                                                  const std::string& orchestratorId,
