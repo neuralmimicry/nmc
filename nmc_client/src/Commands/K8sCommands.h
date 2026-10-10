@@ -80,6 +80,24 @@ public:
                 const CLI::GlobalFlags& globalFlags) override;
 };
 
+/** Read bounded Deployment readiness and container image status through Continuum. */
+class K8sDeploymentStatusCommand : public BaseCommand {
+public:
+    explicit K8sDeploymentStatusCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client);
+    int execute(const std::map<std::string, std::string>& parsedFlags,
+                const std::vector<std::string>& parsedArgs,
+                const CLI::GlobalFlags& globalFlags) override;
+};
+
+/** Request a compare-and-swap rollout to an immutable NeuralMimicry GHCR digest. */
+class K8sRolloutImageCommand : public BaseCommand {
+public:
+    explicit K8sRolloutImageCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client);
+    int execute(const std::map<std::string, std::string>& parsedFlags,
+                const std::vector<std::string>& parsedArgs,
+                const CLI::GlobalFlags& globalFlags) override;
+};
+
 class K8sResumeCommand : public BaseCommand {
 public:
     K8sResumeCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client);

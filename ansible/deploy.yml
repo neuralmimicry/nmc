@@ -97,6 +97,8 @@
     # Workload recovery requires a separate explicit opt-in after the active
     # kubeconfig and cluster identity have been reviewed.
     nmc_recovery_enabled: false
+    # Digest-pinned Deployment image changes have an independent explicit gate.
+    nmc_k8s_image_rollout_enabled: false
 
     # GPU
     nmc_gpu_auto: true

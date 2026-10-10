@@ -89,6 +89,19 @@ namespace NMC::Core {
         Models::CloudResponse getDeploymentRecoveryStatus(const std::string& clusterId,
                                                           const std::string& namespaceName,
                                                           const std::string& deploymentName);
+        /** Read bounded Deployment generation, replica readiness and container image status. */
+        Models::CloudResponse getK8sDeploymentStatus(const std::string& clusterId,
+                                                     const std::string& namespaceName,
+                                                     const std::string& deploymentName);
+        /** Request one compare-and-swap rollout to an immutable NeuralMimicry GHCR image digest. */
+        Models::CloudResponse rolloutK8sDeploymentImage(const std::string& clusterId,
+                                                        const std::string& namespaceName,
+                                                        const std::string& deploymentName,
+                                                        const std::string& containerName,
+                                                        const std::string& image,
+                                                        const std::string& expectedImage,
+                                                        const std::string& requestId,
+                                                        const std::string& changeId);
         Models::CloudResponse getDeviceInventory();
         Models::CloudResponse getDhcpObservations();
         Models::CloudResponse getHomeAssistantDevices();

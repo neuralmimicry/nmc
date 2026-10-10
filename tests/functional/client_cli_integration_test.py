@@ -250,6 +250,18 @@ class MockServer:
             )
             return
 
+        if handler.command == "GET" and path_only == "/k8s/deployment/status":
+            self._send_json(
+                handler,
+                200,
+                {
+                    "success": True,
+                    "message": "Continuum Deployment status retrieved.",
+                    "data": {"cluster_id": "rk1", "namespace": "octobot", "name": "octobot", "rollout_complete": True},
+                },
+            )
+            return
+
         if handler.command == "GET" and path_only == "/devices/home-assistant/reconciliation":
             self._send_json(
                 handler,
@@ -278,6 +290,23 @@ class MockServer:
                     "success": True,
                     "message": "Deployment rollout restart requested.",
                     "data": {"request_id": payload.get("request_id"), "already_applied": False},
+                },
+            )
+            return
+
+        if handler.command == "POST" and path_only == "/k8s/deployment/image-rollout":
+            try:
+                payload = json.loads(body) if body else {}
+            except json.JSONDecodeError:
+                self._send_json(handler, 400, {"message": "invalid json payload"})
+                return
+            self._send_json(
+                handler,
+                200,
+                {
+                    "success": True,
+                    "message": "Deployment image rollout accepted; poll Continuum status for readiness.",
+                    "data": {"request_id": payload.get("request_id"), "image": payload.get("image"), "changed": True},
                 },
             )
             return
@@ -845,6 +874,84 @@ def test_k8s_workload_logs_rejects_out_of_bounds_before_network(server: MockServ
     )
     assert_failure(result, "out-of-bounds k8s workload logs")
     assert_true(len(server.records()) == 0, "out-of-bounds k8s logs must fail before network access")
+
+
+def test_k8s_deployment_status_uses_continuum_read_route(server: MockServer, home_dir: pathlib.Path) -> None:
+    server.clear_records()
+    result = run_nmc(
+        [
+            "--output", "json",
+            "k8s", "deployment-status",
+            "--cluster-id", "rk1",
+            "--namespace", "octobot",
+            "--deployment", "octobot",
+        ],
+        home_dir,
+    )
+    assert_success(result, "k8s Deployment status")
+    output = json.loads(result.stdout)
+    assert_true(output.get("success") is True, "Deployment status must emit a successful JSON envelope")
+    records = server.records()
+    assert_true(len(records) == 1 and records[0].method == "GET", "Deployment status must use one read-only request")
+    assert_true(
+        records[0].path == "/k8s/deployment/status?cluster_id=rk1&namespace=octobot&deployment=octobot",
+        f"Deployment status query was not serialised as expected: {records[0].path}",
+    )
+
+
+def test_k8s_image_rollout_uses_exact_digest_and_compare_and_swap_request(server: MockServer, home_dir: pathlib.Path) -> None:
+    server.clear_records()
+    image = "ghcr.io/neuralmimicry/octobot@sha256:" + "a" * 64
+    result = run_nmc(
+        [
+            "--output", "json",
+            "k8s", "rollout-image",
+            "--cluster-id", "rk1",
+            "--namespace", "octobot",
+            "--deployment", "octobot",
+            "--container", "octobot",
+            "--image", image,
+            "--expected-image", "ghcr.io/neuralmimicry/octobot:previous",
+            "--request-id", "octobot-image-rollout-0001",
+            "--change-id", "OCTOBOT-ROLLOUT-0001",
+        ],
+        home_dir,
+    )
+    assert_success(result, "k8s image rollout")
+    output = json.loads(result.stdout)
+    assert_true(output.get("success") is True, "image rollout must emit a successful JSON envelope")
+    records = server.records()
+    assert_true(len(records) == 1, f"image rollout expected one request, got {len(records)}")
+    assert_true(records[0].method == "POST" and records[0].path == "/k8s/deployment/image-rollout",
+                "image rollout must submit one Continuum control request")
+    assert_true(
+        json.loads(records[0].body) == {
+            "cluster_id": "rk1", "namespace": "octobot", "deployment": "octobot", "container": "octobot",
+            "image": image, "expected_image": "ghcr.io/neuralmimicry/octobot:previous",
+            "request_id": "octobot-image-rollout-0001", "change_id": "OCTOBOT-ROLLOUT-0001",
+        },
+        "image rollout must preserve the complete, scoped compare-and-swap intent",
+    )
+
+
+def test_k8s_image_rollout_rejects_mutable_tag_before_network(server: MockServer, home_dir: pathlib.Path) -> None:
+    server.clear_records()
+    result = run_nmc(
+        [
+            "k8s", "rollout-image",
+            "--cluster-id", "rk1",
+            "--namespace", "octobot",
+            "--deployment", "octobot",
+            "--container", "octobot",
+            "--image", "ghcr.io/neuralmimicry/octobot:latest",
+            "--expected-image", "ghcr.io/neuralmimicry/octobot:previous",
+            "--request-id", "octobot-image-rollout-0001",
+            "--change-id", "OCTOBOT-ROLLOUT-0001",
+        ],
+        home_dir,
+    )
+    assert_failure(result, "mutable-tag image rollout")
+    assert_true(len(server.records()) == 0, "mutable image tags must fail before contacting Continuum")
 
 
 def test_home_assistant_reconciliation_command_is_read_only(server: MockServer, home_dir: pathlib.Path) -> None:
@@ -1838,6 +1945,9 @@ def main() -> int:
             test_k8s_recovery_status_json_output(server, home_dir)
             test_k8s_workload_logs_serialization(server, home_dir)
             test_k8s_workload_logs_rejects_out_of_bounds_before_network(server, home_dir)
+            test_k8s_deployment_status_uses_continuum_read_route(server, home_dir)
+            test_k8s_image_rollout_uses_exact_digest_and_compare_and_swap_request(server, home_dir)
+            test_k8s_image_rollout_rejects_mutable_tag_before_network(server, home_dir)
             test_home_assistant_reconciliation_command_is_read_only(server, home_dir)
             test_k8s_restart_preflights_and_uses_idempotency_key(server, home_dir)
             test_k8s_restart_rejects_invalid_id_before_network(server, home_dir)

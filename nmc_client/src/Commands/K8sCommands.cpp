@@ -272,6 +272,62 @@ int K8sRestartDeploymentCommand::execute(
     return response.success ? 0 : 1;
 }
 
+K8sDeploymentStatusCommand::K8sDeploymentStatusCommand(
+        std::shared_ptr<NMC::Core::CloudAPIClient> client
+) : BaseCommand("deployment-status", "Read bounded Kubernetes Deployment status through Continuum", std::move(client)) {
+    usage = "nmc k8s deployment-status --cluster-id ID --namespace NAME --deployment NAME";
+    examples = "nmc k8s deployment-status --cluster-id rk1 --namespace octobot --deployment octobot";
+    addFlag(CLI::Flag("c", "cluster-id", "Stable identity of the Continuum Kubernetes context", CLI::FlagType::String, true));
+    addFlag(CLI::Flag("n", "namespace", "Workload namespace", CLI::FlagType::String, true));
+    addFlag(CLI::Flag("d", "deployment", "Deployment name", CLI::FlagType::String, true));
+}
+
+int K8sDeploymentStatusCommand::execute(
+        const std::map<std::string, std::string>& parsedFlags,
+        const std::vector<std::string>& parsedArgs,
+        const CLI::GlobalFlags& globalFlags
+) {
+    if (!validateArguments(parsedArgs) || !validateFlags(parsedFlags)) return 1;
+    const auto response = apiClient->getK8sDeploymentStatus(
+            parsedFlags.at("cluster-id"), parsedFlags.at("namespace"), parsedFlags.at("deployment"));
+    printOutput(response, globalFlags);
+    return response.success ? 0 : 1;
+}
+
+K8sRolloutImageCommand::K8sRolloutImageCommand(
+        std::shared_ptr<NMC::Core::CloudAPIClient> client
+) : BaseCommand("rollout-image", "Request a digest-pinned Deployment image rollout through Continuum", std::move(client)) {
+    usage = "nmc k8s rollout-image --cluster-id ID --namespace NAME --deployment NAME --container NAME --image REF --expected-image REF --request-id ID --change-id ID";
+    examples = "nmc k8s rollout-image --cluster-id rk1 --namespace octobot --deployment octobot --container octobot --image ghcr.io/neuralmimicry/octobot@sha256:<digest> --expected-image ghcr.io/neuralmimicry/octobot:previous --request-id octobot-release-20261010-01 --change-id OCTOBOT-20261010-01";
+    addFlag(CLI::Flag("c", "cluster-id", "Stable identity of the Continuum Kubernetes context", CLI::FlagType::String, true));
+    addFlag(CLI::Flag("n", "namespace", "Workload namespace", CLI::FlagType::String, true));
+    addFlag(CLI::Flag("d", "deployment", "Deployment name", CLI::FlagType::String, true));
+    addFlag(CLI::Flag("C", "container", "Container in the Deployment", CLI::FlagType::String, true));
+    addFlag(CLI::Flag("i", "image", "Immutable NeuralMimicry GHCR digest reference", CLI::FlagType::String, true));
+    addFlag(CLI::Flag("e", "expected-image", "Current image required for compare-and-swap", CLI::FlagType::String, true));
+    addFlag(CLI::Flag("r", "request-id", "Stable idempotency identifier", CLI::FlagType::String, true));
+    addFlag(CLI::Flag("", "change-id", "Reviewed change identifier", CLI::FlagType::String, true));
+}
+
+int K8sRolloutImageCommand::execute(
+        const std::map<std::string, std::string>& parsedFlags,
+        const std::vector<std::string>& parsedArgs,
+        const CLI::GlobalFlags& globalFlags
+) {
+    if (!validateArguments(parsedArgs) || !validateFlags(parsedFlags)) return 1;
+    const auto response = apiClient->rolloutK8sDeploymentImage(
+            parsedFlags.at("cluster-id"),
+            parsedFlags.at("namespace"),
+            parsedFlags.at("deployment"),
+            parsedFlags.at("container"),
+            parsedFlags.at("image"),
+            parsedFlags.at("expected-image"),
+            parsedFlags.at("request-id"),
+            parsedFlags.at("change-id"));
+    printOutput(response, globalFlags);
+    return response.success ? 0 : 1;
+}
+
 // --- K8sResumeCommand ---
 K8sResumeCommand::K8sResumeCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client) : BaseCommand("resume", "Resumes a k8s cluster", std::move(client)) {
     usage = "nmc k8s resume ID";

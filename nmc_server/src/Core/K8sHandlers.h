@@ -75,6 +75,8 @@ namespace NMC {
             void handleK8sHealthCheck(const httplib::Request& req, httplib::Response& res);
             void handleGetDeploymentRecoveryStatus(const httplib::Request& req, httplib::Response& res);
             void handleRestartDeployment(const httplib::Request& req, httplib::Response& res);
+            void handleGetDeploymentStatus(const httplib::Request& req, httplib::Response& res);
+            void handleRolloutDeploymentImage(const httplib::Request& req, httplib::Response& res);
             void handleResumeK8sCluster(const httplib::Request& req, httplib::Response& res);
             void handleSuspendK8sCluster(const httplib::Request& req, httplib::Response& res);
             void handleGetRefinerStatus(const httplib::Request& req, httplib::Response& res);
@@ -134,6 +136,8 @@ namespace NMC {
             // A separate explicit switch keeps production recovery disabled
             // until the operator enables it after validating the scope.
             bool recoveryEnabled{false};
+            // Image changes use a separate explicit policy gate and allowlisted workload label.
+            bool imageRolloutEnabled{false};
             // The legacy direct-URL fallback intentionally lacks kubeconfig
             // credentials and must never be used for recovery writes.
             bool recoveryClientReady{false};
@@ -158,6 +162,7 @@ namespace NMC {
 
             std::mutex& dataMutex; /**< Reference to the mutex (still useful for general thread safety). */
             std::mutex recoveryMutex; /**< Serializes recovery preflights and conditional recovery writes. */
+            std::mutex rolloutMutex; /**< Serializes rollout decisions and idempotency checks. */
             std::vector<Models::K8sCluster>& k8sClustersRef; /**< Reference to persisted K8s cluster registry */
             std::unordered_map<std::string, Models::VClusterConfig>& vclusterConfigsRef; /**< Reference to VCluster configs storage */
 

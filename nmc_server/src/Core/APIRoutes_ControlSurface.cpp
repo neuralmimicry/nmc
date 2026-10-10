@@ -517,6 +517,7 @@ namespace NMC::Server {
                 || path == "/node/recruit"
                 || path == "/k8s/refiner/scale"
                 || path == "/k8s/workload/logs"
+                || path == "/k8s/deployment/image-rollout"
                 || path == "/k8s/deployment/restart"
                 || path == "/devices/controllers/actions"
                 || path == "/providers/compute/instances/create"

@@ -91,6 +91,15 @@ the caller without being stored by NMC. Workload logs use an isolated,
 serialised Kubernetes client so concurrent routes cannot overwrite its response
 status while a log query is in progress.
 
+`POST /k8s/deployment/image-rollout` requires `continuum:control`, an explicit
+server-side policy switch, the active cluster identity and a Deployment label
+opt-in. It accepts only immutable NeuralMimicry GHCR digests, uses the
+caller's expected image and Kubernetes resource version as compare-and-swap
+preconditions, and changes only the named container. The request and change
+IDs are persisted as Pod-template annotations for deduplication and audit.
+The status route is read-only and requires an authenticated kubeconfig; it
+reports readiness independently from request acceptance.
+
 ### 2.6 Tracey network safety
 
 The server applies extra controls around Tracey status and control-plane communication:

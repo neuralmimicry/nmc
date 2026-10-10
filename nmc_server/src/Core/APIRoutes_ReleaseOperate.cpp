@@ -36,6 +36,14 @@ namespace NMC::Server {
             if (!guard(req, res)) return;
             k8sHandlers->handleGetWorkloadLogs(req, res);
         });
+        svr.Get("/k8s/deployment/status", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            k8sHandlers->handleGetDeploymentStatus(req, res);
+        });
+        svr.Post("/k8s/deployment/image-rollout", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            k8sHandlers->handleRolloutDeploymentImage(req, res);
+        });
         svr.Post("/k8s/refiner/scale", [this, guard](const httplib::Request& req, httplib::Response& res) {
             if (!guard(req, res)) return;
             k8sHandlers->handleScaleRefiner(req, res);

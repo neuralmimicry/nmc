@@ -17,6 +17,7 @@ import hashlib
 import json
 import os
 import pathlib
+import re
 import shlex
 import socket
 import ssl
@@ -199,6 +200,40 @@ class MockBackend:
         self.central_auth_status = 200
         self.central_auth_delay_seconds = 0.0
         self.central_auth_payload: object | None = None
+        self.k8s_deployments: dict[str, dict[str, Any]] = {
+            "octobot/octobot": {
+                "apiVersion": "apps/v1",
+                "kind": "Deployment",
+                "metadata": {
+                    "name": "octobot",
+                    "namespace": "octobot",
+                    "uid": "test-octobot-uid",
+                    "resourceVersion": "7",
+                    "generation": 1,
+                    "labels": {"neuralmimicry.ai/continuum-rollout": "enabled"},
+                },
+                "spec": {
+                    "replicas": 1,
+                    "template": {
+                        "metadata": {"annotations": {}},
+                        "spec": {"containers": [
+                            {"name": "octobot", "image": "ghcr.io/neuralmimicry/octobot:previous"},
+                            {"name": "metrics", "image": "ghcr.io/neuralmimicry/metrics:stable"},
+                        ]},
+                    },
+                },
+                "status": {
+                    "observedGeneration": 1,
+                    "updatedReplicas": 1,
+                    "readyReplicas": 1,
+                    "availableReplicas": 1,
+                    "containerStatuses": [
+                        {"name": "octobot", "ready": True},
+                        {"name": "metrics", "ready": True},
+                    ],
+                },
+            }
+        }
 
         outer = self
 
@@ -328,6 +363,49 @@ class MockBackend:
         path_only = handler.path.split("?", 1)[0]
         authorization = handler.headers.get("Authorization", "")
         self._record(handler.command, path_only, authorization, body)
+
+        k8s_deployment_match = re.fullmatch(
+            r"/apis/apps/v1/namespaces/([a-z0-9-]+)/deployments/([a-z0-9-]+)", path_only
+        )
+        if k8s_deployment_match:
+            key = f"{k8s_deployment_match.group(1)}/{k8s_deployment_match.group(2)}"
+            with self._lock:
+                deployment = self.k8s_deployments.get(key)
+                if deployment is None:
+                    self._send_json(handler, 404, {"message": "deployment not found"})
+                    return
+                if handler.command == "GET":
+                    self._send_json(handler, 200, json.loads(json.dumps(deployment)))
+                    return
+                if handler.command == "PATCH":
+                    patch = parse_json(body)
+                    expected_version = patch.get("metadata", {}).get("resourceVersion")
+                    if expected_version != deployment.get("metadata", {}).get("resourceVersion"):
+                        self._send_json(handler, 409, {"message": "resourceVersion conflict"})
+                        return
+                    template_patch = patch.get("spec", {}).get("template", {})
+                    template = deployment.setdefault("spec", {}).setdefault("template", {})
+                    if "metadata" in template_patch:
+                        template["metadata"] = template_patch["metadata"]
+                    if "spec" in template_patch:
+                        template.setdefault("spec", {}).update(template_patch["spec"])
+                    metadata = deployment.setdefault("metadata", {})
+                    metadata["resourceVersion"] = str(int(metadata["resourceVersion"]) + 1)
+                    metadata["generation"] = int(metadata.get("generation", 0)) + 1
+                    status = deployment.setdefault("status", {})
+                    status["observedGeneration"] = metadata["generation"]
+                    images_by_name = {
+                        container.get("name"): container.get("image")
+                        for container in template.get("spec", {}).get("containers", [])
+                    }
+                    status["containerStatuses"] = [
+                        {"name": name, "ready": True, "image": image}
+                        for name, image in images_by_name.items()
+                    ]
+                    self._send_json(handler, 200, json.loads(json.dumps(deployment)))
+                    return
+            self._send_json(handler, 405, {"message": "method not supported"})
+            return
 
         if path_only == "/api/session":
             with self._lock:
@@ -857,6 +935,8 @@ class NmcServerProcess:
         load_kubeconfig: bool = True,
         device_power_control_enabled: bool | None = None,
         recovery_enabled: bool | str | None = None,
+        image_rollout_enabled: bool | str | None = None,
+        k8s_server_url: str | None = None,
         provider_environment: dict[str, str] | None = None,
         device_management_environment: dict[str, str] | None = None,
     ) -> None:
@@ -865,6 +945,8 @@ class NmcServerProcess:
         self._load_kubeconfig = load_kubeconfig
         self._device_power_control_enabled = device_power_control_enabled
         self._recovery_enabled = recovery_enabled
+        self._image_rollout_enabled = image_rollout_enabled
+        self._k8s_server_url = k8s_server_url
         self._provider_environment = dict(provider_environment or {})
         self._device_management_environment = dict(device_management_environment or {})
         self._tmp_dir = tempfile.TemporaryDirectory(prefix="nmc-server-authz-")
@@ -883,7 +965,11 @@ class NmcServerProcess:
         return self._log_path
 
     def start(self) -> None:
-        write_k8s_config(self._home_dir, load_kubeconfig=self._load_kubeconfig)
+        write_k8s_config(
+            self._home_dir,
+            load_kubeconfig=self._load_kubeconfig,
+            server_url=self._k8s_server_url or "https://127.0.0.1:6443",
+        )
         inventory_path = write_device_inventory(self._home_dir, self._backend_base_url)
         self.inventory_path = inventory_path
         env = os.environ.copy()
@@ -926,6 +1012,9 @@ class NmcServerProcess:
         env.pop("NMC_RECOVERY_ENABLED", None)
         if self._recovery_enabled is not None:
             env["NMC_RECOVERY_ENABLED"] = str(self._recovery_enabled).lower()
+        env.pop("NMC_K8S_IMAGE_ROLLOUT_ENABLED", None)
+        if self._image_rollout_enabled is not None:
+            env["NMC_K8S_IMAGE_ROLLOUT_ENABLED"] = str(self._image_rollout_enabled).lower()
         log_file = self._log_path.open("w", encoding="utf-8")
         self._process = subprocess.Popen(
             [str(NMC_SERVER_BIN), "--port", str(self._port)],
@@ -955,7 +1044,12 @@ def reserve_port() -> int:
         return int(sock.getsockname()[1])
 
 
-def write_k8s_config(home_dir: pathlib.Path, *, load_kubeconfig: bool = True) -> None:
+def write_k8s_config(
+    home_dir: pathlib.Path,
+    *,
+    load_kubeconfig: bool = True,
+    server_url: str = "https://127.0.0.1:6443",
+) -> None:
     config_dir = home_dir / ".nmc"
     config_dir.mkdir(parents=True, exist_ok=True)
     config_path = config_dir / "config.json"
@@ -974,12 +1068,12 @@ def write_k8s_config(home_dir: pathlib.Path, *, load_kubeconfig: bool = True) ->
         kubeconfig_dir = home_dir / ".kube"
         kubeconfig_dir.mkdir(parents=True, exist_ok=True)
         (kubeconfig_dir / "config").write_text(
-            """apiVersion: v1
+            f"""apiVersion: v1
 kind: Config
 clusters:
 - cluster:
     insecure-skip-tls-verify: true
-    server: https://127.0.0.1:6443
+    server: {server_url}
   name: authz-test-cluster
 contexts:
 - context:
@@ -3142,6 +3236,176 @@ def test_recovery_requires_an_explicit_valid_enable_value(backend_base_url: str)
             server.stop()
 
 
+def test_k8s_image_rollout_requires_control_scope_and_explicit_policy(backend_base_url: str) -> None:
+    image = "ghcr.io/neuralmimicry/octobot@sha256:" + "a" * 64
+    request = {
+        "cluster_id": "authz-test-cluster",
+        "namespace": "octobot",
+        "deployment": "octobot",
+        "container": "octobot",
+        "image": image,
+        "expected_image": "ghcr.io/neuralmimicry/octobot:previous",
+        "request_id": "octobot-image-rollout-0001",
+        "change_id": "OCTOBOT-ROLLOUT-0001",
+    }
+
+    server = NmcServerProcess(backend_base_url)
+    try:
+        server.start()
+        status, _ = request_json(server.base_url, "POST", "/k8s/deployment/image-rollout", payload=request)
+        assert_status(status, 401, "image rollout requires authentication")
+        status, _ = request_json(
+            server.base_url, "POST", "/k8s/deployment/image-rollout",
+            token="continuum-observe-token", payload=request,
+        )
+        assert_status(status, 403, "image rollout requires Continuum control scope")
+        status, _ = request_json(
+            server.base_url, "POST", "/k8s/deployment/image-rollout",
+            token="continuum-control-token", payload=request,
+        )
+        assert_status(status, 403, "image rollout is disabled unless explicitly enabled")
+    finally:
+        server.stop()
+
+    # Unknown truthy-looking values must not open the mutation gate, even when
+    # the caller has control access and the Kubernetes fallback is available.
+    server = NmcServerProcess(
+        backend_base_url,
+        load_kubeconfig=False,
+        image_rollout_enabled="yes",
+    )
+    try:
+        server.start()
+        status, _ = request_json(
+            server.base_url,
+            "POST",
+            "/k8s/deployment/image-rollout",
+            token="continuum-control-token",
+            payload=request,
+        )
+        assert_status(status, 403, "unrecognised image rollout policy values must stay disabled")
+    finally:
+        server.stop()
+
+
+def test_k8s_image_rollout_updates_only_allowlisted_container_and_deduplicates(
+    backend_base_url: str,
+    backend: MockBackend,
+) -> None:
+    image = "ghcr.io/neuralmimicry/octobot@sha256:" + "b" * 64
+    request = {
+        "cluster_id": "authz-test-cluster",
+        "namespace": "octobot",
+        "deployment": "octobot",
+        "container": "octobot",
+        "image": image,
+        "expected_image": "ghcr.io/neuralmimicry/octobot:previous",
+        "request_id": "octobot-rollout-request-0001",
+        "change_id": "OCTOBOT-ROLLOUT-20261010-01",
+    }
+    server = NmcServerProcess(
+        backend_base_url,
+        image_rollout_enabled=True,
+        k8s_server_url=backend_base_url,
+    )
+    try:
+        server.start()
+        status, payload = request_json(
+            server.base_url,
+            "POST",
+            "/k8s/deployment/image-rollout",
+            token="continuum-control-token",
+            payload=request,
+        )
+        assert_status(status, 200, "allowlisted immutable Deployment image rollout")
+        data = payload.get("data", {})
+        assert_true(data.get("changed") is True and data.get("image") == image,
+                    "image rollout must return the exact changed digest without claiming readiness")
+        assert_true(data.get("rollout_complete") is True,
+                    "the mock controller should report observed, ready replicas after the patch")
+
+        with backend._lock:
+            stored = json.loads(json.dumps(backend.k8s_deployments["octobot/octobot"]))
+        containers = stored["spec"]["template"]["spec"]["containers"]
+        images = {item["name"]: item["image"] for item in containers}
+        assert_true(images == {
+            "octobot": image,
+            "metrics": "ghcr.io/neuralmimicry/metrics:stable",
+        }, "rollout must preserve unrelated sidecar images")
+
+        status, payload = request_json(
+            server.base_url,
+            "GET",
+            "/k8s/deployment/status?cluster_id=authz-test-cluster&namespace=octobot&deployment=octobot",
+            token="continuum-observe-token",
+        )
+        assert_status(status, 200, "Continuum Deployment readiness status")
+        status_data = payload.get("data", {})
+        assert_true(status_data.get("rollout_complete") is True,
+                    "status must report completion only after generation and ready replicas converge")
+        assert_true(any(item.get("name") == "octobot" and item.get("image") == image
+                        for item in status_data.get("containers", [])),
+                    "status must return the image actually recorded in the Deployment")
+
+        status, payload = request_json(
+            server.base_url,
+            "POST",
+            "/k8s/deployment/image-rollout",
+            token="continuum-control-token",
+            payload=request,
+        )
+        assert_status(status, 200, "duplicate image rollout request")
+        assert_true(payload.get("data", {}).get("already_applied") is True,
+                    "replaying the same request id and intent must be deduplicated")
+        patch_path = "/apis/apps/v1/namespaces/octobot/deployments/octobot"
+        assert_true(backend.count_requests(patch_path, "PATCH") == 1,
+                    "a duplicate request must not issue a second Kubernetes patch")
+
+        conflicting = dict(request, request_id="octobot-rollout-request-0002")
+        status, _ = request_json(
+            server.base_url,
+            "POST",
+            "/k8s/deployment/image-rollout",
+            token="continuum-control-token",
+            payload=conflicting,
+        )
+        assert_status(status, 409, "stale expected image must block another rollout")
+        assert_true(backend.count_requests(patch_path, "PATCH") == 1,
+                    "a stale expected-image conflict must not reach Kubernetes as a patch")
+    finally:
+        server.stop()
+
+    server = NmcServerProcess(backend_base_url, image_rollout_enabled=True)
+    try:
+        server.start()
+        invalid = dict(request, image="ghcr.io/neuralmimicry/octobot:latest")
+        status, _ = request_json(
+            server.base_url, "POST", "/k8s/deployment/image-rollout",
+            token="continuum-control-token", payload=invalid,
+        )
+        assert_status(status, 400, "image rollout rejects mutable image tags")
+
+        mismatched = dict(request, cluster_id="another-cluster")
+        status, _ = request_json(
+            server.base_url, "POST", "/k8s/deployment/image-rollout",
+            token="continuum-control-token", payload=mismatched,
+        )
+        assert_status(status, 409, "image rollout is bound to the active cluster identity")
+    finally:
+        server.stop()
+
+    server = NmcServerProcess(backend_base_url, load_kubeconfig=False, image_rollout_enabled=True)
+    try:
+        server.start()
+        status, _ = request_json(
+            server.base_url, "POST", "/k8s/deployment/image-rollout",
+            token="continuum-control-token", payload=request,
+        )
+        assert_status(status, 503, "image rollout rejects an unauthenticated fallback Kubernetes client")
+    finally:
+        server.stop()
+
+
 def test_tracey_route_authorisation(server: NmcServerProcess, backend: MockBackend) -> None:
     status, payload = request_json(server.base_url, "GET", "/tracey/analytics", token="tracey-observe-token")
     assert_status(status, 200, "tracey observe route")
@@ -3561,6 +3825,8 @@ fi
         test_recovery_fails_closed_without_configured_cluster_identity(backend.base_url)
         test_recovery_fails_closed_without_authenticated_kubeconfig(backend.base_url)
         test_recovery_requires_an_explicit_valid_enable_value(backend.base_url)
+        test_k8s_image_rollout_requires_control_scope_and_explicit_policy(backend.base_url)
+        test_k8s_image_rollout_updates_only_allowlisted_container_and_deduplicates(backend.base_url, backend)
     except AssertionError as exc:
         log_output = server.log_path.read_text(encoding="utf-8", errors="replace") if server.log_path.exists() else ""
         print(f"[server-authz-test] FAILED: {exc}", file=sys.stderr)
