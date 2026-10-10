@@ -102,6 +102,14 @@ namespace NMC::Core {
                                                         const std::string& expectedImage,
                                                         const std::string& requestId,
                                                         const std::string& changeId);
+        /** Reconcile the allowlisted OctoBot runtime policy through Continuum.
+         */
+        Models::CloudResponse configureOctoBot(const std::string &clusterId,
+                                               const std::string &requestId,
+                                               const std::string &expectedRequestId,
+                                               const std::string &changeId,
+                                               bool liveExecution,
+                                               bool serviceIntegrationsEnabled);
         Models::CloudResponse getDeviceInventory();
         Models::CloudResponse getDhcpObservations();
         Models::CloudResponse getHomeAssistantDevices();

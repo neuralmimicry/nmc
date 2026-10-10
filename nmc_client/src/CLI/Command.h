@@ -39,7 +39,7 @@ struct Flag {
           boolValue(false), intValue(0) {}
 
     // Method to set value based on type
-    void setValue(const std::string& val);
+    bool setValue(const std::string& val);
 };
 
 struct Argument {

@@ -31,6 +31,27 @@ kubeconfig, and returns acceptance separately from rollout readiness.
 container images and the last rollout IDs through the same authenticated
 cluster context. Repeating the same request and intent is deduplicated.
 
+OctoBot's live-execution and optional-service policy is managed by the typed
+`POST /k8s/octobot/configuration` route and
+`nmc k8s configure-octobot`. It is separately disabled by default behind
+`NMC_K8S_OCTOBOT_CONFIGURATION_ENABLED=true`, requires `continuum:control`,
+the authenticated active `rk1` kubeconfig, and the OctoBot Deployment labels
+`neuralmimicry.ai/continuum-configuration=enabled` and
+`neuralmimicry.ai/continuum-rollout=enabled`. The request accepts only the
+documented cluster, namespace, Deployment, request ID, expected current
+request ID, change ID and two explicit boolean settings. Read the current
+`octobot_config_request_id` from `/k8s/deployment/status` and pass it as
+`expected_request_id` (empty only before the first managed policy change).
+Continuum changes only the corresponding environment values in the named
+OctoBot and bootstrap containers, uses the Deployment resource version and
+expected request ID as conditional-write guards, and deduplicates repeated
+request IDs. A replay after a newer policy change fails with conflict instead
+of restoring the older policy. It never accepts arbitrary commands, file
+paths, secret values, or a generic environment-variable map. A changed policy
+starts a Deployment rollout; callers must still inspect
+`/k8s/deployment/status` and application logs before treating OctoBot as
+ready.
+
 Ansible exposes this as `nmc_recovery_enabled`, which defaults to `false` in
 `ansible/deploy.yml`. Do not enable it as part of a routine package rollout.
 Conductor also defaults to dry-run with no recovery targets; both controls

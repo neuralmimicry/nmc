@@ -523,6 +523,7 @@ namespace NMC::Server {
                 || path == "/k8s/refiner/scale"
                 || path == "/k8s/workload/logs"
                 || path == "/k8s/deployment/image-rollout"
+                || path == "/k8s/octobot/configuration"
                 || path == "/k8s/deployment/restart"
                 || path == "/devices/controllers/actions"
                 || path == "/providers/compute/instances/create"

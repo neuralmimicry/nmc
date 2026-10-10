@@ -327,6 +327,29 @@ class MockServer:
             )
             return
 
+        if handler.command == "POST" and path_only == "/k8s/octobot/configuration":
+            try:
+                payload = json.loads(body) if body else {}
+            except json.JSONDecodeError:
+                self._send_json(handler, 400, {"message": "invalid json payload"})
+                return
+            self._send_json(
+                handler,
+                200,
+                {
+                    "success": True,
+                    "message": "Continuum OctoBot configuration accepted.",
+                    "data": {
+                        "request_id": payload.get("request_id"),
+                        "expected_request_id": payload.get("expected_request_id"),
+                        "live_execution": payload.get("live_execution"),
+                        "service_integrations_enabled": payload.get("service_integrations_enabled"),
+                        "changed": True,
+                    },
+                },
+            )
+            return
+
         if handler.command == "POST" and path_only == "/providers/compute/instances/action":
             self._send_json(
                 handler,
@@ -950,6 +973,63 @@ def test_k8s_image_rollout_uses_exact_digest_and_compare_and_swap_request(server
     )
 
 
+def test_k8s_configure_octobot_serializes_explicit_policy(server: MockServer, home_dir: pathlib.Path) -> None:
+    server.clear_records()
+    result = run_nmc(
+        [
+            "--output", "json",
+            "k8s", "configure-octobot",
+            "--cluster-id", "rk1",
+            "--request-id", "octobot-config-20261010-01",
+            "--expected-request-id", "",
+            "--change-id", "octobot-live-true-services-false",
+            "--live-execution", "true",
+            "--service-integrations-enabled", "false",
+        ],
+        home_dir,
+    )
+    assert_success(result, "Continuum OctoBot configuration")
+    output = json.loads(result.stdout)
+    assert_true(output.get("success") is True, "OctoBot configuration must emit a successful JSON envelope")
+    records = server.records()
+    assert_true(len(records) == 1, f"OctoBot configuration expected one request, got {len(records)}")
+    assert_true(records[0].method == "POST" and records[0].path == "/k8s/octobot/configuration",
+                "OctoBot configuration must use the Continuum route")
+    assert_true(
+        json.loads(records[0].body) == {
+            "cluster_id": "rk1",
+            "namespace": "octobot",
+            "deployment": "octobot",
+            "request_id": "octobot-config-20261010-01",
+            "expected_request_id": "",
+            "change_id": "octobot-live-true-services-false",
+            "live_execution": True,
+            "service_integrations_enabled": False,
+        },
+        "OctoBot configuration must preserve the complete typed policy intent",
+    )
+
+
+def test_k8s_configure_octobot_rejects_implicit_or_invalid_policy_before_network(
+    server: MockServer,
+    home_dir: pathlib.Path,
+) -> None:
+    server.clear_records()
+    base_args = [
+        "k8s", "configure-octobot",
+        "--cluster-id", "rk1",
+        "--request-id", "octobot-config-20261010-01",
+        "--expected-request-id", "",
+        "--change-id", "octobot-live-true-services-false",
+        "--live-execution", "yes",
+        "--service-integrations-enabled", "false",
+    ]
+    result = run_nmc(base_args, home_dir)
+    assert_failure(result, "invalid OctoBot live-execution boolean")
+    assert_true(len(server.records()) == 0,
+                "invalid OctoBot configuration must fail before contacting Continuum")
+
+
 def test_k8s_image_rollout_rejects_mutable_tag_before_network(server: MockServer, home_dir: pathlib.Path) -> None:
     server.clear_records()
     result = run_nmc(
@@ -1361,18 +1441,24 @@ def test_invalid_json_fails_before_network(server: MockServer, home_dir: pathlib
 
 
 def test_invalid_flag_fails_before_network(server: MockServer, home_dir: pathlib.Path) -> None:
-    server.clear_records()
-    result = run_nmc(
-        ["tracey", "analytics", "--window-seconds", "not-a-number"],
-        home_dir,
+    invalid_flags = (
+        ("long option", ["--window-seconds", "not-a-number"]),
+        ("inline long option", ["--window-seconds=not-a-number"]),
+        ("short option", ["-w", "not-a-number"]),
+        ("trailing characters", ["--window-seconds", "7200seconds"]),
     )
-    assert_failure(result, "tracey analytics invalid-window")
-    assert_true(
-        ("--window-seconds must be an integer." in result.stderr)
-        or ("--window-seconds must be greater than zero." in result.stderr),
-        f"expected window-seconds validation error, got stderr:\n{result.stderr}",
-    )
-    assert_true(len(server.records()) == 0, "invalid window flag should not perform network calls")
+    for label, flag_args in invalid_flags:
+        server.clear_records()
+        result = run_nmc(["tracey", "analytics", *flag_args], home_dir)
+        assert_failure(result, f"tracey analytics invalid-window ({label})")
+        assert_true(
+            "--window-seconds must be an integer." in result.stderr,
+            f"expected window-seconds validation error, got stderr:\n{result.stderr}",
+        )
+        assert_true(
+            len(server.records()) == 0,
+            f"invalid window flag ({label}) should not perform network calls",
+        )
 
 
 def test_invalid_adaptive_policy_fails_before_network(server: MockServer, home_dir: pathlib.Path) -> None:
@@ -1975,6 +2061,8 @@ def main() -> int:
             test_k8s_workload_logs_rejects_out_of_bounds_before_network(server, home_dir)
             test_k8s_deployment_status_uses_continuum_read_route(server, home_dir)
             test_k8s_image_rollout_uses_exact_digest_and_compare_and_swap_request(server, home_dir)
+            test_k8s_configure_octobot_serializes_explicit_policy(server, home_dir)
+            test_k8s_configure_octobot_rejects_implicit_or_invalid_policy_before_network(server, home_dir)
             test_k8s_image_rollout_rejects_mutable_tag_before_network(server, home_dir)
             test_home_assistant_reconciliation_command_is_read_only(server, home_dir)
             test_k8s_restart_preflights_and_uses_idempotency_key(server, home_dir)

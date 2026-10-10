@@ -328,6 +328,74 @@ int K8sRolloutImageCommand::execute(
     return response.success ? 0 : 1;
 }
 
+K8sConfigureOctoBotCommand::K8sConfigureOctoBotCommand(
+    std::shared_ptr<NMC::Core::CloudAPIClient> client)
+    : BaseCommand("configure-octobot",
+                  "Reconcile the allowlisted OctoBot execution policy through "
+                  "Continuum",
+                  std::move(client)) {
+  usage = "nmc k8s configure-octobot --cluster-id rk1 --request-id ID "
+          "--expected-request-id ID|EMPTY --change-id ID --live-execution "
+          "true|false "
+          "--service-integrations-enabled true|false";
+  examples = "nmc k8s configure-octobot --cluster-id rk1 --request-id "
+             "octobot-config-20261010-01 --expected-request-id \"\" "
+             "--change-id octobot-live-false-services-false "
+             "--live-execution false --service-integrations-enabled false";
+  addFlag(CLI::Flag("c", "cluster-id",
+                    "Stable identity of the Continuum Kubernetes context",
+                    CLI::FlagType::String, true));
+  addFlag(CLI::Flag("r", "request-id", "Stable idempotency identifier",
+                    CLI::FlagType::String, true));
+  addFlag(CLI::Flag("", "expected-request-id",
+                    "Latest recorded policy request ID, or empty before the "
+                    "first policy change",
+                    CLI::FlagType::String, true));
+  addFlag(CLI::Flag("", "change-id", "Reviewed configuration change identifier",
+                    CLI::FlagType::String, true));
+  addFlag(CLI::Flag("", "live-execution",
+                    "Explicit live-execution policy (true or false)",
+                    CLI::FlagType::String, true));
+  addFlag(CLI::Flag("", "service-integrations-enabled",
+                    "Explicit optional-service policy (true or false)",
+                    CLI::FlagType::String, true));
+}
+
+int K8sConfigureOctoBotCommand::execute(
+    const std::map<std::string, std::string> &parsedFlags,
+    const std::vector<std::string> &parsedArgs,
+    const CLI::GlobalFlags &globalFlags) {
+  if (!validateArguments(parsedArgs) || !validateFlags(parsedFlags))
+    return 1;
+  const auto parseBoolean = [](const std::string &value, bool &parsed) {
+    if (value == "true") {
+      parsed = true;
+      return true;
+    }
+    if (value == "false") {
+      parsed = false;
+      return true;
+    }
+    return false;
+  };
+  bool liveExecution = false;
+  bool serviceIntegrationsEnabled = false;
+  if (!parseBoolean(parsedFlags.at("live-execution"), liveExecution) ||
+      !parseBoolean(parsedFlags.at("service-integrations-enabled"),
+                    serviceIntegrationsEnabled)) {
+    std::cerr << "Error: --live-execution and --service-integrations-enabled "
+                 "must be exactly true or false."
+              << std::endl;
+    return 1;
+  }
+  const auto response = apiClient->configureOctoBot(
+      parsedFlags.at("cluster-id"), parsedFlags.at("request-id"),
+      parsedFlags.at("expected-request-id"), parsedFlags.at("change-id"),
+      liveExecution, serviceIntegrationsEnabled);
+  printOutput(response, globalFlags);
+  return response.success ? 0 : 1;
+}
+
 // --- K8sResumeCommand ---
 K8sResumeCommand::K8sResumeCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client) : BaseCommand("resume", "Resumes a k8s cluster", std::move(client)) {
     usage = "nmc k8s resume ID";

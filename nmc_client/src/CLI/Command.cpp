@@ -1,32 +1,38 @@
 #include "Command.h"
 
+#include <stdexcept>
 #include <utility>
 #include "Core/Utils.h" // For string manipulation
 
 
 namespace NMC::CLI {
 
-void Flag::setValue(const std::string& val) {
+bool Flag::setValue(const std::string& val) {
     switch (type) {
         case FlagType::String:
             stringValue = val;
-            break;
+            return true;
         case FlagType::Bool:
             // Normalize boolean values
             boolValue = (val == "true" || val == "1" || val.empty()); // Empty string often implies true for boolean flags
-            break;
+            return true;
         case FlagType::Int:
             try {
-                intValue = std::stoi(val);
+                size_t consumed = 0;
+                const int parsedValue = std::stoi(val, &consumed);
+                if (consumed != val.size()) {
+                    throw std::invalid_argument("integer value contains trailing characters");
+                }
+                intValue = parsedValue;
                 // Preserve the original string to keep downstream flag parsing consistent.
                 stringValue = val;
-            } catch (const std::exception& e) {
-                std::cerr << "Error: Invalid integer value for flag --" << longName << ": " << val << std::endl;
-                // You might want to throw an exception here or set a default
-                intValue = 0;
+                return true;
+            } catch (const std::exception&) {
+                std::cerr << "Error: --" << longName << " must be an integer." << std::endl;
+                return false;
             }
-            break;
     }
+    return false;
 }
 
 Command::Command(const std::string& name, std::string  description)
