@@ -180,6 +180,10 @@
             setError("Authentication failed. Check your credentials or token and try again.");
             return false;
         }
+        if (status >= 500) {
+            setError("Central authentication is temporarily unavailable. Please try again.");
+            return false;
+        }
         const sessionPayload = await fetchAuthSession(token);
         persistIdentity(sessionPayload);
         setError("");
