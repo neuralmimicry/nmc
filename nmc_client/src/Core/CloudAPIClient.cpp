@@ -620,6 +620,51 @@ namespace NMC::Core {
         return processHttpResponse(res, "Continuum Deployment image rollout accepted.");
     }
 
+    Models::CloudResponse CloudAPIClient::configureOctoBot(
+        const std::string &clusterId, const std::string &requestId,
+        const std::string &expectedRequestId, const std::string &changeId,
+        bool liveExecution, bool serviceIntegrationsEnabled) {
+      const auto safeLabel = [](const std::string &value) {
+        return !value.empty() && value.size() <= 63 && value.front() != '-' &&
+               value.back() != '-' &&
+               std::all_of(value.begin(), value.end(), [](unsigned char ch) {
+                 return (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') ||
+                        ch == '-';
+               });
+      };
+      const auto safeIdentifier = [](const std::string &value) {
+        return value.size() >= 8 && value.size() <= 128 &&
+               std::all_of(value.begin(), value.end(), [](unsigned char ch) {
+                 return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') ||
+                        (ch >= '0' && ch <= '9') || ch == '.' || ch == '_' ||
+                        ch == '-';
+               });
+      };
+      if (!safeLabel(clusterId) || !safeIdentifier(requestId) ||
+          (!expectedRequestId.empty() && !safeIdentifier(expectedRequestId)) ||
+          !safeIdentifier(changeId)) {
+        Models::CloudResponse response;
+        response.success = false;
+        response.message = "OctoBot configuration requires a valid cluster id "
+                           "and bounded request/change identifiers.";
+        response.statusCode = 400;
+        return response;
+      }
+      nlohmann::json requestBody = {
+          {"cluster_id", clusterId},
+          {"namespace", "octobot"},
+          {"deployment", "octobot"},
+          {"request_id", requestId},
+          {"expected_request_id", expectedRequestId},
+          {"change_id", changeId},
+          {"live_execution", liveExecution},
+          {"service_integrations_enabled", serviceIntegrationsEnabled}};
+      auto res = cli->Post("/k8s/octobot/configuration", requestBody.dump(),
+                           "application/json");
+      return processHttpResponse(res,
+                                 "Continuum OctoBot configuration accepted.");
+    }
+
     Models::CloudResponse CloudAPIClient::getDeviceInventory() {
         auto res = cli->Get("/devices/inventory");
         return processHttpResponse(res, "Device inventory retrieved.");

@@ -301,6 +301,26 @@
             </code></pre>
     </section>
 
+    <section>
+        <h2>Reconcile OctoBot Runtime Policy</h2>
+        <p><strong>Endpoint:</strong> <code>POST /k8s/octobot/configuration</code></p>
+        <p>This Continuum control operation is disabled by default. It only targets the explicitly labelled <code>rk1/octobot/octobot</code> Deployment and accepts a request ID, the expected current request ID, a change ID, and explicit live-execution and optional-service booleans. Read <code>octobot_config_request_id</code> from Deployment status and pass it as <code>expected_request_id</code> (empty only before the first managed policy change). This compare-and-swap guard rejects stale replays after a newer policy request. It updates only those two values in the OctoBot and bootstrap containers; it does not accept commands, paths, secret values, or arbitrary environment variables.</p>
+        <h3>Request Body:</h3>
+        <pre><code class="language-json">
+{
+    "cluster_id": "rk1",
+    "namespace": "octobot",
+    "deployment": "octobot",
+    "request_id": "octobot-config-20261010-01",
+    "expected_request_id": "",
+    "change_id": "octobot-live-true-services-false",
+    "live_execution": true,
+    "service_integrations_enabled": false
+}
+            </code></pre>
+        <p>The caller requires <code>continuum:control</code> and an authenticated Kubernetes kubeconfig. Enable the server gate with <code>NMC_K8S_OCTOBOT_CONFIGURATION_ENABLED=true</code> only after verifying the target cluster and Deployment labels. A successful response records acceptance; check <code>GET /k8s/deployment/status</code> and application logs separately.</p>
+    </section>
+
     <footer>
         <p>&copy; 2025 NMC Server. All rights reserved.</p>
     </footer>

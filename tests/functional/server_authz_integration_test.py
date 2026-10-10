@@ -210,15 +210,33 @@ class MockBackend:
                     "uid": "test-octobot-uid",
                     "resourceVersion": "7",
                     "generation": 1,
-                    "labels": {"neuralmimicry.ai/continuum-rollout": "enabled"},
+                    "labels": {
+                        "neuralmimicry.ai/continuum-rollout": "enabled",
+                        "neuralmimicry.ai/continuum-configuration": "enabled",
+                    },
                 },
                 "spec": {
                     "replicas": 1,
                     "template": {
                         "metadata": {"annotations": {}},
                         "spec": {"containers": [
-                            {"name": "octobot", "image": "ghcr.io/neuralmimicry/octobot:previous"},
+                            {
+                                "name": "octobot",
+                                "image": "ghcr.io/neuralmimicry/octobot:previous",
+                                "env": [
+                                    {"name": "OCTOBOT_LIVE_EXECUTION_ENABLED", "value": "false"},
+                                    {"name": "OCTOBOT_SERVICE_INTEGRATIONS_ENABLED", "value": "false"},
+                                ],
+                            },
                             {"name": "metrics", "image": "ghcr.io/neuralmimicry/metrics:stable"},
+                        ], "initContainers": [
+                            {
+                                "name": "bootstrap-gail-authority",
+                                "env": [
+                                    {"name": "OCTOBOT_LIVE_EXECUTION_ENABLED", "value": "false"},
+                                    {"name": "OCTOBOT_SERVICE_INTEGRATIONS_ENABLED", "value": "false"},
+                                ],
+                            },
                         ]},
                     },
                 },
@@ -385,13 +403,18 @@ class MockBackend:
                         return
                     template_patch = patch.get("spec", {}).get("template", {})
                     template = deployment.setdefault("spec", {}).setdefault("template", {})
+                    metadata_patch = patch.get("metadata", {})
+                    for metadata_key, metadata_value in metadata_patch.items():
+                        if metadata_key != "resourceVersion":
+                            deployment.setdefault("metadata", {})[metadata_key] = metadata_value
                     if "metadata" in template_patch:
                         template["metadata"] = template_patch["metadata"]
                     if "spec" in template_patch:
                         template.setdefault("spec", {}).update(template_patch["spec"])
                     metadata = deployment.setdefault("metadata", {})
                     metadata["resourceVersion"] = str(int(metadata["resourceVersion"]) + 1)
-                    metadata["generation"] = int(metadata.get("generation", 0)) + 1
+                    if "spec" in patch:
+                        metadata["generation"] = int(metadata.get("generation", 0)) + 1
                     status = deployment.setdefault("status", {})
                     status["observedGeneration"] = metadata["generation"]
                     images_by_name = {
@@ -936,6 +959,7 @@ class NmcServerProcess:
         device_power_control_enabled: bool | None = None,
         recovery_enabled: bool | str | None = None,
         image_rollout_enabled: bool | str | None = None,
+        octobot_configuration_enabled: bool | str | None = None,
         k8s_server_url: str | None = None,
         provider_environment: dict[str, str] | None = None,
         device_management_environment: dict[str, str] | None = None,
@@ -946,6 +970,7 @@ class NmcServerProcess:
         self._device_power_control_enabled = device_power_control_enabled
         self._recovery_enabled = recovery_enabled
         self._image_rollout_enabled = image_rollout_enabled
+        self._octobot_configuration_enabled = octobot_configuration_enabled
         self._k8s_server_url = k8s_server_url
         self._provider_environment = dict(provider_environment or {})
         self._device_management_environment = dict(device_management_environment or {})
@@ -1015,6 +1040,9 @@ class NmcServerProcess:
         env.pop("NMC_K8S_IMAGE_ROLLOUT_ENABLED", None)
         if self._image_rollout_enabled is not None:
             env["NMC_K8S_IMAGE_ROLLOUT_ENABLED"] = str(self._image_rollout_enabled).lower()
+        env.pop("NMC_K8S_OCTOBOT_CONFIGURATION_ENABLED", None)
+        if self._octobot_configuration_enabled is not None:
+            env["NMC_K8S_OCTOBOT_CONFIGURATION_ENABLED"] = str(self._octobot_configuration_enabled).lower()
         log_file = self._log_path.open("w", encoding="utf-8")
         self._process = subprocess.Popen(
             [str(NMC_SERVER_BIN), "--port", str(self._port)],
@@ -3406,6 +3434,229 @@ def test_k8s_image_rollout_updates_only_allowlisted_container_and_deduplicates(
         server.stop()
 
 
+def test_octobot_configuration_requires_control_scope_and_explicit_policy(backend_base_url: str) -> None:
+    request = {
+        "cluster_id": "rk1",
+        "namespace": "octobot",
+        "deployment": "octobot",
+        "request_id": "octobot-config-authz-0001",
+        "expected_request_id": "",
+        "change_id": "octobot-live-true-services-false",
+        "live_execution": True,
+        "service_integrations_enabled": False,
+    }
+    server = NmcServerProcess(backend_base_url, cluster_id="rk1")
+    try:
+        server.start()
+        status, _ = request_json(server.base_url, "POST", "/k8s/octobot/configuration", payload=request)
+        assert_status(status, 401, "OctoBot configuration requires authentication")
+        status, _ = request_json(
+            server.base_url, "POST", "/k8s/octobot/configuration",
+            token="continuum-observe-token", payload=request,
+        )
+        assert_status(status, 403, "OctoBot configuration requires Continuum control scope")
+        status, _ = request_json(
+            server.base_url, "POST", "/k8s/octobot/configuration",
+            token="continuum-control-token", payload=request,
+        )
+        assert_status(status, 403, "OctoBot configuration is disabled unless explicitly enabled")
+    finally:
+        server.stop()
+
+    server = NmcServerProcess(
+        backend_base_url,
+        cluster_id="rk1",
+        octobot_configuration_enabled="yes",
+    )
+    try:
+        server.start()
+        status, _ = request_json(
+            server.base_url, "POST", "/k8s/octobot/configuration",
+            token="continuum-control-token", payload=request,
+        )
+        assert_status(status, 403, "unrecognised configuration gate values must stay disabled")
+    finally:
+        server.stop()
+
+
+def test_octobot_configuration_is_allowlisted_conditional_and_idempotent(
+    backend_base_url: str,
+    backend: MockBackend,
+) -> None:
+    request = {
+        "cluster_id": "rk1",
+        "namespace": "octobot",
+        "deployment": "octobot",
+        "request_id": "octobot-config-20261010-01",
+        "expected_request_id": "",
+        "change_id": "octobot-live-true-services-false",
+        "live_execution": True,
+        "service_integrations_enabled": False,
+    }
+    server = NmcServerProcess(
+        backend_base_url,
+        cluster_id="rk1",
+        octobot_configuration_enabled=True,
+        k8s_server_url=backend_base_url,
+    )
+    try:
+        server.start()
+        status, payload = request_json(
+            server.base_url,
+            "POST",
+            "/k8s/octobot/configuration",
+            token="continuum-control-token",
+            payload=request,
+        )
+        assert_status(status, 200, "allowlisted OctoBot policy reconciliation")
+        data = payload.get("data", {})
+        assert_true(data.get("changed") is True and data.get("live_execution") is True,
+                    "configuration must report its desired policy without claiming readiness")
+        assert_true(data.get("octobot_config_request_id") == request["request_id"],
+                    "Continuum status data must expose the durable current policy request ID")
+        assert_true(data.get("octobot_config_change_id") == request["change_id"],
+                    "Continuum status data must expose the current reviewed policy change ID")
+        assert_true(data.get("rollout_complete") is True,
+                    "the mock controller should report ready replicas after the env update")
+
+        with backend._lock:
+            stored = json.loads(json.dumps(backend.k8s_deployments["octobot/octobot"]))
+        pod_spec = stored["spec"]["template"]["spec"]
+        for entries in (pod_spec["containers"], pod_spec["initContainers"]):
+            target_name = "octobot" if entries is pod_spec["containers"] else "bootstrap-gail-authority"
+            target = next(item for item in entries if item["name"] == target_name)
+            values = {item["name"]: item.get("value") for item in target.get("env", [])}
+            assert_true(values["OCTOBOT_LIVE_EXECUTION_ENABLED"] == "true",
+                        "Continuum must update the active-trader policy in both containers")
+            assert_true(values["OCTOBOT_SERVICE_INTEGRATIONS_ENABLED"] == "false",
+                        "Continuum must update the optional-service policy in both containers")
+
+        patch_path = "/apis/apps/v1/namespaces/octobot/deployments/octobot"
+        assert_true(backend.count_requests(patch_path, "PATCH") == 1,
+                    "one configuration intent must issue one conditional Kubernetes patch")
+        status, payload = request_json(
+            server.base_url,
+            "POST",
+            "/k8s/octobot/configuration",
+            token="continuum-control-token",
+            payload=request,
+        )
+        assert_status(status, 200, "duplicate OctoBot configuration intent")
+        assert_true(payload.get("data", {}).get("already_applied") is True,
+                    "replaying the same configuration intent must be deduplicated")
+        assert_true(backend.count_requests(patch_path, "PATCH") == 1,
+                    "a duplicate configuration request must not issue another patch")
+
+        conflicting = dict(request, service_integrations_enabled=True)
+        status, _ = request_json(
+            server.base_url,
+            "POST",
+            "/k8s/octobot/configuration",
+            token="continuum-control-token",
+            payload=conflicting,
+        )
+        assert_status(status, 409, "a request id cannot be reused for a different OctoBot policy")
+
+        wrong_cluster = dict(request, request_id="octobot-config-20261010-02", cluster_id="another")
+        status, _ = request_json(
+            server.base_url,
+            "POST",
+            "/k8s/octobot/configuration",
+            token="continuum-control-token",
+            payload=wrong_cluster,
+        )
+        assert_status(status, 400, "OctoBot configuration cannot target another cluster identity")
+
+        # A newer policy request advances the Deployment's durable request
+        # marker. Replaying an older request with its original expected marker
+        # must fail closed and must not restore the older live-execution value.
+        newer = {
+            "cluster_id": "rk1",
+            "namespace": "octobot",
+            "deployment": "octobot",
+            "request_id": "octobot-config-20261010-02",
+            "expected_request_id": "octobot-config-20261010-01",
+            "change_id": "octobot-live-false-services-false",
+            "live_execution": False,
+            "service_integrations_enabled": False,
+        }
+        status, _ = request_json(
+            server.base_url,
+            "POST",
+            "/k8s/octobot/configuration",
+            token="continuum-control-token",
+            payload=newer,
+        )
+        assert_status(status, 200, "newer OctoBot policy request")
+        assert_true(backend.count_requests(patch_path, "PATCH") == 2,
+                    "a compare-and-swap policy change must issue one additional patch")
+
+        status, _ = request_json(
+            server.base_url,
+            "POST",
+            "/k8s/octobot/configuration",
+            token="continuum-control-token",
+            payload=request,
+        )
+        assert_status(status, 409, "stale OctoBot request replay")
+        assert_true(backend.count_requests(patch_path, "PATCH") == 2,
+                    "stale request replay must not issue another Kubernetes patch")
+        with backend._lock:
+            stored = json.loads(json.dumps(backend.k8s_deployments["octobot/octobot"]))
+        values = {
+            item["name"]: item.get("value")
+            for item in stored["spec"]["template"]["spec"]["containers"][0]["env"]
+        }
+        assert_true(values["OCTOBOT_LIVE_EXECUTION_ENABLED"] == "false",
+                    "stale replay must not restore live execution after a newer disable request")
+
+        # Reusing a historical request ID for a newly authorised change must
+        # record its new precondition. The original request body then remains
+        # distinguishable and cannot masquerade as a retry of the latest one.
+        reused_id = dict(request, expected_request_id=newer["request_id"])
+        status, _ = request_json(
+            server.base_url,
+            "POST",
+            "/k8s/octobot/configuration",
+            token="continuum-control-token",
+            payload=reused_id,
+        )
+        assert_status(status, 200, "historical request ID with current compare-and-swap marker")
+        assert_true(backend.count_requests(patch_path, "PATCH") == 3,
+                    "a new request with the current expected marker must be applied")
+
+        status, _ = request_json(
+            server.base_url,
+            "POST",
+            "/k8s/octobot/configuration",
+            token="continuum-control-token",
+            payload=request,
+        )
+        assert_status(status, 409, "replay of the old body after its request ID was reused")
+        assert_true(backend.count_requests(patch_path, "PATCH") == 3,
+                    "replaying an old expected marker must not patch Kubernetes")
+    finally:
+        server.stop()
+
+    server = NmcServerProcess(
+        backend_base_url,
+        cluster_id="rk1",
+        load_kubeconfig=False,
+        octobot_configuration_enabled=True,
+    )
+    try:
+        server.start()
+        status, _ = request_json(
+            server.base_url,
+            "POST",
+            "/k8s/octobot/configuration",
+            token="continuum-control-token",
+            payload=request,
+        )
+        assert_status(status, 503, "OctoBot configuration rejects the unauthenticated fallback Kubernetes client")
+    finally:
+        server.stop()
+
 def test_tracey_route_authorisation(server: NmcServerProcess, backend: MockBackend) -> None:
     status, payload = request_json(server.base_url, "GET", "/tracey/analytics", token="tracey-observe-token")
     assert_status(status, 200, "tracey observe route")
@@ -3827,6 +4078,8 @@ fi
         test_recovery_requires_an_explicit_valid_enable_value(backend.base_url)
         test_k8s_image_rollout_requires_control_scope_and_explicit_policy(backend.base_url)
         test_k8s_image_rollout_updates_only_allowlisted_container_and_deduplicates(backend.base_url, backend)
+        test_octobot_configuration_requires_control_scope_and_explicit_policy(backend.base_url)
+        test_octobot_configuration_is_allowlisted_conditional_and_idempotent(backend.base_url, backend)
     except AssertionError as exc:
         log_output = server.log_path.read_text(encoding="utf-8", errors="replace") if server.log_path.exists() else ""
         print(f"[server-authz-test] FAILED: {exc}", file=sys.stderr)

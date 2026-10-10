@@ -65,6 +65,7 @@ nlohmann::json deploymentStatusData(const nlohmann::json& deployment) {
     const auto metadata = deployment.value("metadata", nlohmann::json::object());
     const auto spec = deployment.value("spec", nlohmann::json::object());
     const auto status = deployment.value("status", nlohmann::json::object());
+    const auto deploymentAnnotations = metadata.value("annotations", nlohmann::json::object());
     const auto podSpec = spec.value("template", nlohmann::json::object())
             .value("spec", nlohmann::json::object());
     const auto templateMetadata = spec.value("template", nlohmann::json::object())
@@ -112,6 +113,8 @@ nlohmann::json deploymentStatusData(const nlohmann::json& deployment) {
             {"available_replicas", available},
             {"rollout_request_id", annotations.value("neuralmimicry.ai/rollout-request-id", "")},
             {"rollout_change_id", annotations.value("neuralmimicry.ai/rollout-change-id", "")},
+            {"octobot_config_request_id", deploymentAnnotations.value("neuralmimicry.ai/octobot-config-request-id", "")},
+            {"octobot_config_change_id", deploymentAnnotations.value("neuralmimicry.ai/octobot-config-change-id", "")},
             {"containers", std::move(containerImages)},
             {"rollout_complete", desired > 0 && observedGeneration >= generation
                     && updated >= desired && ready >= desired && available >= desired}
@@ -119,12 +122,13 @@ nlohmann::json deploymentStatusData(const nlohmann::json& deployment) {
 }
 
 std::string utcTimestamp() {
-    const std::time_t now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
-    std::tm utc{};
-    gmtime_r(&now, &utc);
-    char buffer[32]{};
-    std::strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M:%SZ", &utc);
-    return buffer;
+  const std::time_t now =
+      std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+  std::tm utc{};
+  gmtime_r(&now, &utc);
+  char buffer[32]{};
+  std::strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M:%SZ", &utc);
+  return buffer;
 }
 
 bool rolloutSettingWithin(const nlohmann::json& value, int maximum, bool allowZero) {
@@ -1119,10 +1123,392 @@ void K8sHandlers::handleRolloutDeploymentImage(const httplib::Request& req, http
         response.data["already_applied"] = false;
         sendJsonResponse(res, response);
     } catch (const nlohmann::json::parse_error&) {
-        sendErrorResponse(res, 400, "Invalid JSON body.");
-    } catch (const std::exception&) {
-        sendErrorResponse(res, 500, "Deployment image rollout failed safely.");
+      sendErrorResponse(res, 400, "Invalid JSON body.");
+    } catch (const std::exception &) {
+      sendErrorResponse(res, 500, "Deployment image rollout failed safely.");
     }
+}
+
+void K8sHandlers::handleConfigureOctoBot(const httplib::Request &req,
+                                         httplib::Response &res) {
+  if (!octobotConfigurationEnabled) {
+    return sendErrorResponse(res, 403,
+                             "Continuum OctoBot configuration is disabled by "
+                             "NMC_K8S_OCTOBOT_CONFIGURATION_ENABLED policy.");
+  }
+  if (!recoveryClientReady || !workloadLogsApiClient) {
+    return sendErrorResponse(res, 503,
+                             "OctoBot configuration requires the configured "
+                             "authenticated Kubernetes kubeconfig.");
+  }
+  if (req.body.size() > 8192) {
+    return sendErrorResponse(
+        res, 413, "OctoBot configuration request exceeds the 8 KiB limit.");
+  }
+
+  try {
+    const auto request = nlohmann::json::parse(req.body);
+    if (!containsExactKeySet(request, {"cluster_id", "namespace", "deployment",
+                                       "request_id", "expected_request_id",
+                                       "change_id", "live_execution",
+                                       "service_integrations_enabled"})) {
+      return sendErrorResponse(res, 400,
+                               "OctoBot configuration requires exactly the "
+                               "documented policy fields.");
+    }
+    for (const std::string &key :
+         {"cluster_id", "namespace", "deployment", "request_id",
+          "expected_request_id", "change_id"}) {
+      if (!request[key].is_string()) {
+        return sendErrorResponse(
+            res, 400, "OctoBot configuration identifiers must be strings.");
+      }
+    }
+    const std::string clusterId = request.at("cluster_id").get<std::string>();
+    const std::string namespaceName =
+        request.at("namespace").get<std::string>();
+    const std::string deploymentName =
+        request.at("deployment").get<std::string>();
+    const std::string requestId = request.at("request_id").get<std::string>();
+    const std::string expectedRequestId =
+        request.at("expected_request_id").get<std::string>();
+    const std::string changeId = request.at("change_id").get<std::string>();
+    if (clusterId != "rk1" || namespaceName != "octobot" ||
+        deploymentName != "octobot") {
+      return sendErrorResponse(res, 400,
+                               "OctoBot configuration is restricted to cluster "
+                               "rk1, namespace octobot, Deployment octobot.");
+    }
+    if (!validRequestId(requestId) ||
+        (!expectedRequestId.empty() && !validRequestId(expectedRequestId)) ||
+        !printableValue(changeId, 128)) {
+      return sendErrorResponse(
+          res, 400,
+          "request_id, expected_request_id and change_id must be bounded, "
+          "printable identifiers; expected_request_id may be empty only before "
+          "the first recorded policy request.");
+    }
+    if (!request.at("live_execution").is_boolean() ||
+        !request.at("service_integrations_enabled").is_boolean()) {
+      return sendErrorResponse(
+          res, 400,
+          "live_execution and service_integrations_enabled must be JSON "
+          "booleans.");
+    }
+    if (activeRecoveryClusterId != clusterId) {
+      return sendErrorResponse(res, 409,
+                               "Requested cluster does not match Continuum's "
+                               "active Kubernetes context.");
+    }
+
+    const bool liveExecution = request.at("live_execution").get<bool>();
+    const bool serviceIntegrationsEnabled =
+        request.at("service_integrations_enabled").get<bool>();
+    std::lock_guard<std::mutex> rolloutLock(rolloutMutex);
+    std::lock_guard<std::mutex> clientLock(workloadLogsClientMutex);
+    char group[] = "apps";
+    char version[] = "v1";
+    char plural[] = "deployments";
+    genericClient_t *deploymentClient =
+        genericClient_create(workloadLogsApiClient, group, version, plural);
+    if (!deploymentClient) {
+      return sendErrorResponse(
+          res, 503,
+          "Continuum could not initialise its Kubernetes Deployment client.");
+    }
+
+    char *rawDeployment = Generic_readNamespacedResource(
+        deploymentClient, const_cast<char *>(namespaceName.c_str()),
+        const_cast<char *>(deploymentName.c_str()));
+    const int readStatus = workloadLogsApiClient->response_code;
+    if (!rawDeployment) {
+      genericClient_free(deploymentClient);
+      return sendErrorResponse(
+          res, readStatus == 404 ? 404 : 502,
+          readStatus == 404
+              ? "OctoBot Deployment was not found."
+              : "Continuum could not read the OctoBot Deployment.");
+    }
+
+    nlohmann::json deployment;
+    try {
+      deployment = nlohmann::json::parse(rawDeployment);
+    } catch (const std::exception &) {
+      free(rawDeployment);
+      genericClient_free(deploymentClient);
+      return sendErrorResponse(
+          res, 502, "Kubernetes returned invalid OctoBot Deployment JSON.");
+    }
+    free(rawDeployment);
+    const auto metadata =
+        deployment.value("metadata", nlohmann::json::object());
+    const auto labels = metadata.value("labels", nlohmann::json::object());
+    if (!labels.is_object() ||
+        labels.value("neuralmimicry.ai/continuum-configuration", "") !=
+            "enabled" ||
+        labels.value("neuralmimicry.ai/continuum-rollout", "") != "enabled") {
+      genericClient_free(deploymentClient);
+      return sendErrorResponse(res, 403,
+                               "OctoBot Deployment must explicitly enable "
+                               "Continuum configuration and rollout.");
+    }
+    const std::string resourceVersion = metadata.value("resourceVersion", "");
+    if (resourceVersion.empty()) {
+      genericClient_free(deploymentClient);
+      return sendErrorResponse(res, 409,
+                               "OctoBot Deployment resourceVersion is missing; "
+                               "configuration precondition failed.");
+    }
+
+    auto policyAnnotations =
+        metadata.value("annotations", nlohmann::json::object());
+    if (!policyAnnotations.is_object())
+      policyAnnotations = nlohmann::json::object();
+    const std::string currentRequestId = policyAnnotations.value(
+        "neuralmimicry.ai/octobot-config-request-id", "");
+    if (policyAnnotations.value("neuralmimicry.ai/octobot-config-request-id",
+                                "") == requestId) {
+      const auto currentPodSpec =
+          deployment.value("spec", nlohmann::json::object())
+              .value("template", nlohmann::json::object())
+              .value("spec", nlohmann::json::object());
+      const auto matchesEnvironmentValue =
+          [&](const std::string &collectionName, const std::string &targetName,
+              const std::string &variableName,
+              const std::string &desiredValue) {
+            const auto entries =
+                currentPodSpec.value(collectionName, nlohmann::json::array());
+            if (!entries.is_array())
+              return false;
+            const nlohmann::json *target = nullptr;
+            for (const auto &entry : entries) {
+              if (!entry.is_object() || entry.value("name", "") != targetName)
+                continue;
+              if (target)
+                return false;
+              target = &entry;
+            }
+            if (!target)
+              return false;
+            const auto env = target->value("env", nlohmann::json::array());
+            if (!env.is_array())
+              return false;
+            const nlohmann::json *variable = nullptr;
+            for (const auto &entry : env) {
+              if (!entry.is_object() || entry.value("name", "") != variableName)
+                continue;
+              if (variable)
+                return false;
+              variable = &entry;
+            }
+            return variable && !variable->contains("valueFrom") &&
+                   variable->value("value", "") == desiredValue;
+          };
+      const std::string expectedLive = liveExecution ? "true" : "false";
+      const std::string expectedServices =
+          serviceIntegrationsEnabled ? "true" : "false";
+      const bool settingsMatch =
+          matchesEnvironmentValue("containers", "octobot",
+                                  "OCTOBOT_LIVE_EXECUTION_ENABLED",
+                                  expectedLive) &&
+          matchesEnvironmentValue("containers", "octobot",
+                                  "OCTOBOT_SERVICE_INTEGRATIONS_ENABLED",
+                                  expectedServices) &&
+          matchesEnvironmentValue("initContainers", "bootstrap-gail-authority",
+                                  "OCTOBOT_LIVE_EXECUTION_ENABLED",
+                                  expectedLive) &&
+          matchesEnvironmentValue("initContainers", "bootstrap-gail-authority",
+                                  "OCTOBOT_SERVICE_INTEGRATIONS_ENABLED",
+                                  expectedServices);
+      const bool sameIntent =
+          settingsMatch &&
+          policyAnnotations.value(
+              "neuralmimicry.ai/octobot-config-expected-request-id", "") ==
+              expectedRequestId &&
+          policyAnnotations.value("neuralmimicry.ai/octobot-config-change-id",
+                                  "") == changeId &&
+          policyAnnotations.value("neuralmimicry.ai/octobot-live-execution",
+                                  "") == expectedLive &&
+          policyAnnotations.value(
+              "neuralmimicry.ai/octobot-service-integrations", "") ==
+              expectedServices;
+      genericClient_free(deploymentClient);
+      if (!sameIntent) {
+        return sendErrorResponse(res, 409,
+                                 "request_id was already used for a different "
+                                 "OctoBot configuration intent.");
+      }
+      Models::CloudResponse response;
+      response.success = true;
+      response.message = "OctoBot configuration intent was already applied; "
+                         "inspect Deployment status for readiness.";
+      response.data = deploymentStatusData(deployment);
+      response.data["cluster_id"] = clusterId;
+      response.data["request_id"] = requestId;
+      response.data["change_id"] = changeId;
+      response.data["live_execution"] = liveExecution;
+      response.data["service_integrations_enabled"] =
+          serviceIntegrationsEnabled;
+      response.data["changed"] = false;
+      response.data["already_applied"] = true;
+      sendJsonResponse(res, response);
+      return;
+    }
+
+    if (expectedRequestId != currentRequestId) {
+      genericClient_free(deploymentClient);
+      return sendErrorResponse(
+          res, 409,
+          "OctoBot configuration is stale: expected_request_id does not match "
+          "the latest recorded policy request.");
+    }
+
+    auto podTemplate = deployment.value("spec", nlohmann::json::object())
+                           .value("template", nlohmann::json::object());
+    auto podSpec = podTemplate.value("spec", nlohmann::json::object());
+    auto containers = podSpec.value("containers", nlohmann::json::array());
+    auto initContainers =
+        podSpec.value("initContainers", nlohmann::json::array());
+    if (!containers.is_array() || !initContainers.is_array()) {
+      genericClient_free(deploymentClient);
+      return sendErrorResponse(
+          res, 409,
+          "OctoBot Deployment must define container and initContainer arrays.");
+    }
+
+    bool changed = false;
+    const auto setPolicy = [&](nlohmann::json &entries,
+                               const std::string &targetName,
+                               const std::string &variableName,
+                               const std::string &desiredValue) -> bool {
+      auto target = entries.end();
+      for (auto it = entries.begin(); it != entries.end(); ++it) {
+        if (!it->is_object() || it->value("name", "") != targetName)
+          continue;
+        if (target != entries.end())
+          return false;
+        target = it;
+      }
+      if (target == entries.end())
+        return false;
+      auto env = target->value("env", nlohmann::json::array());
+      if (!env.is_array())
+        return false;
+      auto variable = env.end();
+      for (auto it = env.begin(); it != env.end(); ++it) {
+        if (!it->is_object() || it->value("name", "") != variableName)
+          continue;
+        if (variable != env.end())
+          return false;
+        variable = it;
+      }
+      if (variable == env.end()) {
+        env.push_back({{"name", variableName}, {"value", desiredValue}});
+        changed = true;
+      } else {
+        if (variable->contains("valueFrom"))
+          return false;
+        if (variable->value("value", "") != desiredValue) {
+          (*variable)["value"] = desiredValue;
+          changed = true;
+        }
+      }
+      (*target)["env"] = std::move(env);
+      return true;
+    };
+
+    const std::string liveValue = liveExecution ? "true" : "false";
+    const std::string servicesValue =
+        serviceIntegrationsEnabled ? "true" : "false";
+    const bool mainLiveReady = setPolicy(
+        containers, "octobot", "OCTOBOT_LIVE_EXECUTION_ENABLED", liveValue);
+    const bool mainServicesReady =
+        setPolicy(containers, "octobot", "OCTOBOT_SERVICE_INTEGRATIONS_ENABLED",
+                  servicesValue);
+    const bool initLiveReady =
+        setPolicy(initContainers, "bootstrap-gail-authority",
+                  "OCTOBOT_LIVE_EXECUTION_ENABLED", liveValue);
+    const bool initServicesReady =
+        setPolicy(initContainers, "bootstrap-gail-authority",
+                  "OCTOBOT_SERVICE_INTEGRATIONS_ENABLED", servicesValue);
+    if (!mainLiveReady || !mainServicesReady || !initLiveReady ||
+        !initServicesReady) {
+      genericClient_free(deploymentClient);
+      return sendErrorResponse(
+          res, 409,
+          "OctoBot must have unique, literal configuration variables in its "
+          "main and bootstrap containers.");
+    }
+
+    const std::string requestedAt = utcTimestamp();
+    policyAnnotations["neuralmimicry.ai/octobot-config-request-id"] = requestId;
+    policyAnnotations["neuralmimicry.ai/octobot-config-expected-request-id"] =
+        expectedRequestId;
+    policyAnnotations["neuralmimicry.ai/octobot-config-change-id"] = changeId;
+    policyAnnotations["neuralmimicry.ai/octobot-live-execution"] = liveValue;
+    policyAnnotations["neuralmimicry.ai/octobot-service-integrations"] =
+        servicesValue;
+    policyAnnotations["neuralmimicry.ai/octobot-config-requested-at"] =
+        requestedAt;
+    nlohmann::json patch = {{"metadata",
+                             {{"resourceVersion", resourceVersion},
+                              {"annotations", policyAnnotations}}}};
+    if (changed) {
+      patch["spec"] = {{"template",
+                        {{"spec",
+                          {{"containers", containers},
+                           {"initContainers", initContainers}}}}}};
+    }
+    const std::string patchBody = patch.dump();
+    char *rawPatched = Generic_patchNamespacedResource(
+        deploymentClient, const_cast<char *>(namespaceName.c_str()),
+        const_cast<char *>(deploymentName.c_str()),
+        const_cast<char *>(patchBody.c_str()), nullptr, nullptr, nullptr,
+        nullptr, nullptr);
+    const int patchStatus = workloadLogsApiClient->response_code;
+    genericClient_free(deploymentClient);
+    if (!rawPatched) {
+      return sendErrorResponse(
+          res, patchStatus >= 400 ? patchStatus : 503,
+          "Kubernetes rejected the conditional OctoBot configuration request.");
+    }
+    nlohmann::json patched;
+    try {
+      patched = nlohmann::json::parse(rawPatched);
+    } catch (const std::exception &) {
+      free(rawPatched);
+      return sendErrorResponse(res, 502,
+                               "Kubernetes accepted OctoBot configuration but "
+                               "returned invalid JSON.");
+    }
+    free(rawPatched);
+    if (!patched.is_object()) {
+      return sendErrorResponse(
+          res, 502,
+          "Kubernetes returned an invalid patched OctoBot Deployment.");
+    }
+
+    Models::CloudResponse response;
+    response.success = true;
+    response.message = changed ? "OctoBot configuration accepted; poll "
+                                 "Continuum status for readiness."
+                               : "OctoBot configuration recorded; the "
+                                 "requested settings were already present.";
+    response.data = deploymentStatusData(patched);
+    response.data["cluster_id"] = clusterId;
+    response.data["request_id"] = requestId;
+    response.data["change_id"] = changeId;
+    response.data["live_execution"] = liveExecution;
+    response.data["service_integrations_enabled"] = serviceIntegrationsEnabled;
+    response.data["requested_at"] = requestedAt;
+    response.data["changed"] = changed;
+    response.data["already_applied"] = false;
+    sendJsonResponse(res, response);
+  } catch (const nlohmann::json::parse_error &) {
+    sendErrorResponse(res, 400, "Invalid JSON body.");
+  } catch (const std::exception &) {
+    sendErrorResponse(res, 500, "OctoBot configuration request failed safely.");
+  }
 }
 
 } // namespace NMC::Server

@@ -462,11 +462,31 @@ namespace NMC {
                     std::cerr << "Warning: NMC_K8S_IMAGE_ROLLOUT_ENABLED has an invalid value; image rollouts remain disabled." << std::endl;
                 }
             }
+            const char *octobotConfigurationEnabledValue =
+                std::getenv("NMC_K8S_OCTOBOT_CONFIGURATION_ENABLED");
+            if (octobotConfigurationEnabledValue) {
+              const std::string normalisedOctobotConfigurationEnabled =
+                  toLowerCopy(trimCopy(octobotConfigurationEnabledValue));
+              octobotConfigurationEnabled =
+                  normalisedOctobotConfigurationEnabled == "true" ||
+                  normalisedOctobotConfigurationEnabled == "1";
+              if (!normalisedOctobotConfigurationEnabled.empty() &&
+                  normalisedOctobotConfigurationEnabled != "true" &&
+                  normalisedOctobotConfigurationEnabled != "1" &&
+                  normalisedOctobotConfigurationEnabled != "false" &&
+                  normalisedOctobotConfigurationEnabled != "0") {
+                std::cerr
+                    << "Warning: NMC_K8S_OCTOBOT_CONFIGURATION_ENABLED has an "
+                       "invalid value; OctoBot configuration remains disabled."
+                    << std::endl;
+              }
+            }
             // Initialize Kubernetes C client
             int rc = 0;
             if (!kubeconfig_path.empty()) {
-                // Set KUBECONFIG env var for load_kube_config if a specific path is given
-                setenv("KUBECONFIG", kubeconfig_path.c_str(), 1);
+              // Set KUBECONFIG env var for load_kube_config if a specific path
+              // is given
+              setenv("KUBECONFIG", kubeconfig_path.c_str(), 1);
             }
 
             // Load configuration from kubeconfig file or default locations

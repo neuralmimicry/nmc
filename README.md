@@ -32,7 +32,7 @@ Within the wider NeuralMimicry estate, Continuum is the `release` and `operate` 
 |---|---|---|
 | Connectivity | `connection`, `server`, `version` | Local connection profiles live in `~/.nmc/config.json`; selected commands also support a server-side connection registry via `--server`. |
 | Core resources | `bucket`, `ssh`, `vm`, `model` | CRUD-style resource endpoints exposed through the CLI and HTTP API. Several of these server-side resources are currently in-memory and non-persistent. |
-| Kubernetes | `k8s` | Cluster create/get/get-config/list/list-locations/health/resume/suspend plus bounded Deployment-selected workload logs through the authenticated server API. |
+| Kubernetes | `k8s` | Cluster create/get/get-config/list/list-locations/health/resume/suspend, bounded Deployment status/logs, gated image rollout and typed OctoBot runtime-policy reconciliation through the authenticated server API. |
 | Virtual clusters | `vcluster` | Create/delete/get/get-config/list plus pause/resume/backup/restore/upgrade/config-get/config-update/metrics/health/resources. Advanced create configuration exists on the server API via a `config` JSON payload; the CLI create command currently exposes `name` and optional `namespace`. |
 | Provider portals | `openshift`, `openstack`, `proxmox` | Capacity listing, cluster listing, cluster request, and polling status workflows against external portal APIs. |
 | Tracey | `tracey` | Heartbeat ingestion, fleet inventory, analytics, the adaptive plan/ramp/optimise/repeat loop, operator-selectable placement policies, CVE status, compromise assessment, per-agent assessment plan/report flows, rack views, agent telemetry, control, deep-dive diagnostics, debounced snapshot persistence, and optional PostgreSQL history storage. |
@@ -123,6 +123,7 @@ Global output formats currently implemented are:
 ```bash
 ./nmc_client/build/nmc k8s list
 ./nmc_client/build/nmc k8s health
+./nmc_client/build/nmc --output json k8s deployment-status --cluster-id rk1 --namespace octobot --deployment octobot
 ./nmc_client/build/nmc vcluster create demo --namespace vcluster-demo
 ./nmc_client/build/nmc vcluster create demo-uat --config-file ./vcluster-config.json
 ./nmc_client/build/nmc vcluster health demo
@@ -131,6 +132,12 @@ Global output formats currently implemented are:
 ```
 
 `vcluster-config.json` is a JSON object containing the advanced server-side vcluster configuration, such as placement, HA, ingress, security/RBAC, sync, monitoring, or Tracey metadata. The CLI validates the file locally, limits it to 1 MiB, and sends it as the nested `config` field without printing its contents.
+
+OctoBot policy changes must use `nmc k8s configure-octobot` with a new
+request ID, the current `octobot_config_request_id` from Deployment status as
+`--expected-request-id` (empty only before the first managed change), a
+reviewed change ID, and both explicit booleans. The expected request ID is a
+compare-and-swap guard; stale requests are rejected.
 
 ### Provider portal workflows
 

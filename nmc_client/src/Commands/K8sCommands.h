@@ -98,6 +98,16 @@ public:
                 const CLI::GlobalFlags& globalFlags) override;
 };
 
+/** Apply the supported OctoBot runtime policy through Continuum. */
+class K8sConfigureOctoBotCommand : public BaseCommand {
+public:
+  explicit K8sConfigureOctoBotCommand(
+      std::shared_ptr<NMC::Core::CloudAPIClient> client);
+  int execute(const std::map<std::string, std::string> &parsedFlags,
+              const std::vector<std::string> &parsedArgs,
+              const CLI::GlobalFlags &globalFlags) override;
+};
+
 class K8sResumeCommand : public BaseCommand {
 public:
     K8sResumeCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client);
