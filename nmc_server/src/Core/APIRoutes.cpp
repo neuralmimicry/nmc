@@ -523,6 +523,7 @@ namespace NMC::Server {
         registerDomainCrudRoutes(svr, guard);
         registerReleaseOperateRoutes(svr, guard);
         registerDomainProxyRoutes(svr, guard);
+        registerGitHubActionsRoutes(svr, guard);
 
         registerTraceyRoutes(svr, guard);
 
