@@ -161,7 +161,7 @@ bool CLIParser::parseFlags(std::vector<std::string>& args,
             // Canonicalize all flag names to the long form so commands can
             // consistently look up "location" even if the user passed "-r".
             const std::string canonical = flagDef->longName.empty() ? flagDef->shortName : flagDef->longName;
-            const std::string normalized = flagDef->stringValue.empty()
+            const std::string normalized = flagDef->type == FlagType::Bool
                     ? std::to_string(flagDef->boolValue)
                     : flagDef->stringValue;
             if (flagDef->type == FlagType::String && outFlags.count(canonical) && !normalized.empty()) {
@@ -190,7 +190,7 @@ bool CLIParser::parseFlags(std::vector<std::string>& args,
                 }
             }
             const std::string canonical = flagDef->longName.empty() ? flagDef->shortName : flagDef->longName;
-            const std::string normalized = flagDef->stringValue.empty()
+            const std::string normalized = flagDef->type == FlagType::Bool
                     ? std::to_string(flagDef->boolValue)
                     : flagDef->stringValue;
             if (flagDef->type == FlagType::String && outFlags.count(canonical) && !normalized.empty()) {
