@@ -60,6 +60,7 @@ Covered behaviours:
 - invalid JSON rejection before network execution
 - invalid flag rejection before network execution
 - malformed upstream response handling
+- AARNN runtime resource reads use a dedicated Continuum observe route and reach only the fixed upstream `GET /api/runtime/resources` endpoint
 
 The functional suite runs the real `nmc` binary against a local mock HTTP server and inspects the emitted HTTP method, path, and body.
 

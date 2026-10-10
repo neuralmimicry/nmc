@@ -260,6 +260,7 @@ namespace NMC::Core {
                                          const std::string& contentType = "",
                                          const std::string& clusterId = "",
                                          const std::string& orchestratorId = "");
+        Models::CloudResponse aarnnRuntimeResources();
 
         // Server-side Connection Management
         Models::CloudResponse getServerConnectionStatus();

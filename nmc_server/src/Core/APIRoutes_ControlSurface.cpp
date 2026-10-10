@@ -511,7 +511,12 @@ namespace NMC::Server {
                 if (path == "/aarnn/proxy/control") {
                     return {"aarnn", SERVICE_ACCESS_CONTROL};
                 }
-                return {"aarnn", SERVICE_ACCESS_OBSERVE};
+                if (method == "GET"
+                    && (path == "/aarnn/endpoints" || path == "/aarnn/inventory"
+                        || path == "/aarnn/runtime/resources")) {
+                    return {"aarnn", SERVICE_ACCESS_OBSERVE};
+                }
+                return {"aarnn", SERVICE_ACCESS_CONTROL};
             }
             if (path.rfind("/connections", 0) == 0
                 || path == "/node/recruit"

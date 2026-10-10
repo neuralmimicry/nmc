@@ -166,6 +166,18 @@ Global output formats currently implemented are:
 ./nmc_client/build/nmc tracey deepdive tracey-1
 ```
 
+### AARNN runtime diagnostics
+
+```bash
+./nmc_client/build/nmc aarnn runtime status
+./nmc_client/build/nmc aarnn runtime resources
+```
+
+`runtime resources` reads the web-ui process RSS and available cgroup memory
+counters through Continuum's dedicated observe-authorised route. It is
+intended for bounded operational measurement; unavailable kernel counters are
+returned as null. It does not require mutation-capable AARNN access.
+
 ### Node recruitment and Refiner workflows
 
 ```bash
@@ -216,7 +228,9 @@ The lightweight unauthenticated liveness route is `GET /health`.
   - `continuum:use` for mutating Continuum routes
   - `continuum:control` for `/connections*`, `/node/recruit`, and `/k8s/refiner/scale`
   - `tracey:observe` for Tracey read routes, `tracey:use` for heartbeat and assessment report ingest, and `tracey:control` for other Tracey mutations
-  - `aarnn:observe` for AARNN read routes, `aarnn:use` for `/aarnn/proxy/runtime`, and `aarnn:control` for `/aarnn/proxy/control`
+  - `aarnn:observe` for `GET /aarnn/endpoints`, `/aarnn/inventory`, and
+    `/aarnn/runtime/resources`; `aarnn:use` for `/aarnn/proxy/runtime`; and
+    `aarnn:control` for `/aarnn/proxy/control` and registered non-read routes
 - `GET /auth/session` returns the normalised identity payload consumed by the built-in docs dashboard, including `service_access`, `visible_services`, and group visibility metadata.
 - Client bearer token precedence is:
   1. `NMC_OIDC_ACCESS_TOKEN`

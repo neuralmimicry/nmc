@@ -506,6 +506,18 @@ class MockBackend:
             )
             return
 
+        if path_only == "/runtime/api/runtime/resources":
+            self._send_json(
+                handler,
+                200,
+                {
+                    "process_rss_bytes": 4096,
+                    "memory_current_bytes": 8192,
+                    "memory_limit_bytes": 16384,
+                },
+            )
+            return
+
         if path_only == "/control/echo":
             request_payload = parse_json(body)
             self._send_json(
@@ -3506,6 +3518,32 @@ def test_aarnn_route_authorisation(server: NmcServerProcess, backend: MockBacken
     assert_true(
         backend.count_requests("/runtime/echo", "POST") == 1,
         "allowed aarnn runtime requests should reach the upstream runtime endpoint exactly once",
+    )
+
+    backend.clear_records()
+    status, _ = request_json(
+        server.base_url,
+        "GET",
+        "/aarnn/runtime/resources",
+        token="aarnn-request-token",
+    )
+    assert_status(status, 403, "aarnn runtime resources denied without observe access")
+    assert_true(
+        backend.count_requests("/runtime/api/runtime/resources", "GET") == 0,
+        "denied aarnn runtime resource reads must not reach the upstream endpoint",
+    )
+
+    status, payload = request_json(
+        server.base_url,
+        "GET",
+        "/aarnn/runtime/resources",
+        token="aarnn-observe-token",
+    )
+    assert_status(status, 200, "aarnn runtime resources allowed with observe access")
+    assert_true(payload.get("success") is True, "aarnn runtime resource read should succeed with observe access")
+    assert_true(
+        backend.count_requests("/runtime/api/runtime/resources", "GET") == 1,
+        "allowed aarnn resource reads should reach the fixed upstream GET exactly once",
     )
 
     control_payload = {
