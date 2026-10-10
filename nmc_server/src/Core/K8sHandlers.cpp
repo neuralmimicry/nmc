@@ -582,6 +582,7 @@ namespace NMC {
                 const std::string& namespaceName,
                 const std::string& resourceName
         ) {
+            std::lock_guard<std::recursive_mutex> apiClientLock(apiClientMutex);
             if (namespaceName.empty() || resourceName.empty()) {
                 return std::nullopt;
             }
@@ -619,6 +620,7 @@ namespace NMC {
                 const std::string& plural,
                 const std::string& namespaceName
         ) {
+            std::lock_guard<std::recursive_mutex> apiClientLock(apiClientMutex);
             if (namespaceName.empty()) {
                 return std::nullopt;
             }
@@ -694,6 +696,7 @@ namespace NMC {
         }
 
         void K8sHandlers::handleCreateK8sCluster(const httplib::Request& req, httplib::Response& res) {
+            std::lock_guard<std::recursive_mutex> apiClientLock(apiClientMutex);
             try {
                 auto json_body = nlohmann::json::parse(req.body);
                 std::string name = json_body.value("name", "");
@@ -760,6 +763,7 @@ namespace NMC {
         }
 
         void K8sHandlers::handleDeleteK8sCluster(const httplib::Request& req, httplib::Response& res) {
+            std::lock_guard<std::recursive_mutex> apiClientLock(apiClientMutex);
             try {
                 std::string id = extractClusterIdentifierFromRequest(req);
                 if (id.empty()) {
@@ -811,6 +815,7 @@ namespace NMC {
         }
 
         void K8sHandlers::handleGetK8sCluster(const httplib::Request& req, httplib::Response& res) {
+            std::lock_guard<std::recursive_mutex> apiClientLock(apiClientMutex);
             try {
                 std::string id = extractClusterIdentifierFromRequest(req);
                 if (id.empty()) {
@@ -857,6 +862,7 @@ namespace NMC {
         }
 
         void K8sHandlers::handleGetK8sClusterDetails(const httplib::Request& req, httplib::Response& res) {
+            std::lock_guard<std::recursive_mutex> apiClientLock(apiClientMutex);
             try {
                 const std::string identifier = extractClusterIdentifierFromRequest(req);
                 if (identifier.empty()) {
@@ -1343,6 +1349,7 @@ namespace NMC {
         }
 
         void K8sHandlers::handleGetKubeConfig(const httplib::Request& req, httplib::Response& res) {
+            std::lock_guard<std::recursive_mutex> apiClientLock(apiClientMutex);
             try {
                 std::string id = extractClusterIdentifierFromRequest(req);
                 if (id.empty()) {
@@ -1415,6 +1422,7 @@ users:
         }
 
         void K8sHandlers::handleListK8sClusters(const httplib::Request& req, httplib::Response& res) {
+            std::lock_guard<std::recursive_mutex> apiClientLock(apiClientMutex);
             try {
                 const std::string filterName = req.get_param_value("filter-name");
 
@@ -1674,6 +1682,7 @@ users:
         }
 
         void K8sHandlers::handleListK8sLocations(const httplib::Request& req, httplib::Response& res) {
+            std::lock_guard<std::recursive_mutex> apiClientLock(apiClientMutex);
             try {
                 // The CoreV1API functions take the apiClient_t directly.
                 if (!apiClient) {
@@ -1753,6 +1762,7 @@ users:
         }
 
         void K8sHandlers::handleGetRefinerStatus(const httplib::Request& req, httplib::Response& res) {
+            std::lock_guard<std::recursive_mutex> apiClientLock(apiClientMutex);
             try {
                 std::string namespaceName = req.has_param("namespace") ? trimCopy(req.get_param_value("namespace")) : "refiner";
                 std::string deploymentName = req.has_param("deployment") ? trimCopy(req.get_param_value("deployment")) : "refiner";
@@ -2080,6 +2090,7 @@ users:
         }
 
         void K8sHandlers::handleScaleRefiner(const httplib::Request& req, httplib::Response& res) {
+            std::lock_guard<std::recursive_mutex> apiClientLock(apiClientMutex);
             try {
                 auto jsonBody = nlohmann::json::parse(req.body);
                 if (!jsonBody.is_object()) {
@@ -2183,6 +2194,7 @@ users:
         }
 
         void K8sHandlers::handleResumeK8sCluster(const httplib::Request& req, httplib::Response& res) {
+            std::lock_guard<std::recursive_mutex> apiClientLock(apiClientMutex);
             try {
                 std::string id = extractClusterIdentifierFromRequest(req);
                 if (id.empty()) {
@@ -2254,6 +2266,7 @@ users:
         }
 
         void K8sHandlers::handleSuspendK8sCluster(const httplib::Request& req, httplib::Response& res) {
+            std::lock_guard<std::recursive_mutex> apiClientLock(apiClientMutex);
             try {
                 std::string id = extractClusterIdentifierFromRequest(req);
                 if (id.empty()) {
@@ -2324,6 +2337,7 @@ users:
 
         // Vcluster management implementation
         void K8sHandlers::handleListVClusters(const httplib::Request& req, httplib::Response& res) {
+            std::lock_guard<std::recursive_mutex> apiClientLock(apiClientMutex);
             try {
                 const std::string filterName = req.get_param_value("filter-name");
 
@@ -2412,6 +2426,7 @@ users:
         }
 
         void K8sHandlers::handleGetVCluster(const httplib::Request& req, httplib::Response& res) {
+            std::lock_guard<std::recursive_mutex> apiClientLock(apiClientMutex);
             try {
                 std::string id = extractClusterIdentifierFromRequest(req);
                 if (id.empty()) {
@@ -2503,6 +2518,7 @@ users:
         }
 
         void K8sHandlers::handleDeleteVCluster(const httplib::Request& req, httplib::Response& res) {
+            std::lock_guard<std::recursive_mutex> apiClientLock(apiClientMutex);
             try {
                 std::string id = extractClusterIdentifierFromRequest(req);
                 if (id.empty()) {
@@ -2615,6 +2631,7 @@ users:
         }
 
         void K8sHandlers::handleGetVClusterKubeConfig(const httplib::Request& req, httplib::Response& res) {
+            std::lock_guard<std::recursive_mutex> apiClientLock(apiClientMutex);
             try {
                 std::string id = extractClusterIdentifierFromRequest(req);
                 if (id.empty()) {
