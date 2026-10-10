@@ -1037,6 +1037,11 @@ void K8sHandlers::handleRolloutDeploymentImage(const httplib::Request& req, http
             sendJsonResponse(res, response);
             return;
         }
+        if (currentImage != expectedImage) {
+            genericClient_free(deploymentClient);
+            return sendErrorResponse(res, 409,
+                    "Current container image does not match expected_image; no rollout was attempted.");
+        }
         if (currentImage == image) {
             genericClient_free(deploymentClient);
             Models::CloudResponse response;
@@ -1049,11 +1054,6 @@ void K8sHandlers::handleRolloutDeploymentImage(const httplib::Request& req, http
             response.data["already_applied"] = true;
             sendJsonResponse(res, response);
             return;
-        }
-        if (currentImage != expectedImage) {
-            genericClient_free(deploymentClient);
-            return sendErrorResponse(res, 409,
-                    "Current container image does not match expected_image; no rollout was attempted.");
         }
 
         selected->operator[]("image") = image;
