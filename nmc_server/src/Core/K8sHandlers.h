@@ -77,6 +77,7 @@ namespace NMC {
             void handleResumeK8sCluster(const httplib::Request& req, httplib::Response& res);
             void handleSuspendK8sCluster(const httplib::Request& req, httplib::Response& res);
             void handleGetRefinerStatus(const httplib::Request& req, httplib::Response& res);
+            void handleGetWorkloadLogs(const httplib::Request& req, httplib::Response& res);
             void handleScaleRefiner(const httplib::Request& req, httplib::Response& res);
 
             // Vcluster management handlers
@@ -119,6 +120,13 @@ namespace NMC {
             char *basePath;
             sslConfig_t *sslConfig;
             list_t *apiKeys; // List of apiKey_t for authentication
+            // Workload logs use an isolated client because the generated C client
+            // stores response state on apiClient_t and other routes are concurrent.
+            apiClient_t *workloadLogsApiClient{nullptr};
+            char *workloadLogsBasePath{nullptr};
+            sslConfig_t *workloadLogsSslConfig{nullptr};
+            list_t *workloadLogsApiKeys{nullptr};
+            std::mutex workloadLogsClientMutex;
             // Recovery is allowed only for the cluster identity explicitly
             // bound to this process's single active kubeconfig context.
             std::string activeRecoveryClusterId;

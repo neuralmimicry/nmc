@@ -3397,6 +3397,36 @@ def test_gail_trading_route_authorisation(server: NmcServerProcess, backend: Moc
     )
 
 
+def test_k8s_workload_logs_require_control_and_enforce_bounds(server: NmcServerProcess) -> None:
+    valid_path = "/k8s/workload/logs?namespace=octobot&deployment=octobot"
+    status, _ = request_json(server.base_url, "GET", valid_path)
+    assert_status(status, 401, "workload logs require authentication")
+
+    status, _ = request_json(
+        server.base_url,
+        "GET",
+        valid_path,
+        token="continuum-observe-token",
+    )
+    assert_status(status, 403, "workload logs require Continuum control access")
+
+    status, _ = request_json(
+        server.base_url,
+        "GET",
+        valid_path + "&since_seconds=86401",
+        token="continuum-control-token",
+    )
+    assert_status(status, 400, "workload log age is capped at one day")
+
+    status, _ = request_json(
+        server.base_url,
+        "GET",
+        "/k8s/workload/logs?namespace=octobot&deployment=OctoBot",
+        token="continuum-control-token",
+    )
+    assert_status(status, 400, "workload log target must be a Kubernetes DNS label")
+
+
 def main() -> int:
     if not NMC_SERVER_BIN.exists():
         print(
@@ -3514,6 +3544,7 @@ fi
         test_central_auth_parallel_requests_share_one_validation(server, backend)
         test_central_auth_outage_returns_503_and_invalid_token_stays_401(server, backend)
         test_continuum_route_authorisation(server, backend)
+        test_k8s_workload_logs_require_control_and_enforce_bounds(server)
         test_provider_compute_lifecycle(server, backend)
         test_controller_action_rejects_malformed_body_shapes(server)
         test_global_controller_power_gate_can_be_explicitly_disabled(backend.base_url)

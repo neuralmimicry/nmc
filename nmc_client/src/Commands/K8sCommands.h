@@ -53,6 +53,15 @@ public:
     int execute(const std::map<std::string, std::string>& parsedFlags, const std::vector<std::string>& parsedArgs, const CLI::GlobalFlags& globalFlags) override;
 };
 
+/** Read bounded logs from pods matching a named Deployment through nmc_server. */
+class K8sLogsCommand : public BaseCommand {
+public:
+    explicit K8sLogsCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client);
+    int execute(const std::map<std::string, std::string>& parsedFlags,
+                const std::vector<std::string>& parsedArgs,
+                const CLI::GlobalFlags& globalFlags) override;
+};
+
 /** Read Continuum's live, fail-closed Deployment and hosting-node recovery preflight. */
 class K8sRecoveryStatusCommand : public BaseCommand {
 public:

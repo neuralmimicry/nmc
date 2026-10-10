@@ -69,6 +69,12 @@ namespace NMC::Core {
         Models::CloudResponse listK8sClusters(const std::string& filterName = "");
         Models::CloudResponse listK8sLocations(const std::string& filterSku = "");
         Models::CloudResponse getK8sHealth();
+        /** Read bounded logs from pods selected by an existing Deployment in the configured cluster. */
+        Models::CloudResponse getK8sWorkloadLogs(const std::string& namespaceName,
+                                                 const std::string& deploymentName,
+                                                 int sinceSeconds = 300,
+                                                 int tailLines = 500,
+                                                 bool previous = false);
         Models::CloudResponse getRefinerDeploymentStatus(const std::string& namespaceName = "refiner",
                                                          const std::string& deploymentName = "refiner");
         Models::CloudResponse scaleRefinerDeployment(int replicas,

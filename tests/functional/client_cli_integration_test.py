@@ -233,6 +233,23 @@ class MockServer:
             )
             return
 
+        if handler.command == "GET" and path_only == "/k8s/workload/logs":
+            self._send_json(
+                handler,
+                200,
+                {
+                    "success": True,
+                    "message": "Bounded workload logs retrieved.",
+                    "data": {
+                        "namespace": "octobot",
+                        "deployment": "octobot",
+                        "items": [],
+                        "truncated": False,
+                    },
+                },
+            )
+            return
+
         if handler.command == "GET" and path_only == "/devices/home-assistant/reconciliation":
             self._send_json(
                 handler,
@@ -784,6 +801,50 @@ def test_k8s_recovery_status_json_output(server: MockServer, home_dir: pathlib.P
         )
         records = server.records()
         assert_true(len(records) == 1 and records[0].method == "GET", "JSON recovery status must remain read-only")
+
+
+def test_k8s_workload_logs_serialization(server: MockServer, home_dir: pathlib.Path) -> None:
+    server.clear_records()
+    result = run_nmc(
+        [
+            "--output", "json",
+            "k8s", "logs",
+            "--namespace", "octobot",
+            "--deployment", "octobot",
+            "--since-seconds", "1200",
+            "--tail-lines", "1000",
+            "--previous",
+        ],
+        home_dir,
+    )
+    assert_success(result, "bounded k8s workload logs")
+    try:
+        output = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise AssertionError(f"k8s logs JSON output must be valid: {exc}: {result.stdout!r}") from exc
+    assert_true(output.get("success") is True, "k8s logs JSON output must preserve response success")
+    records = server.records()
+    assert_true(len(records) == 1, f"k8s logs expected one request, got {len(records)}")
+    assert_true(records[0].method == "GET", "k8s logs must use a read-only GET")
+    assert_true(
+        records[0].path == "/k8s/workload/logs?namespace=octobot&deployment=octobot&since_seconds=1200&tail_lines=1000&previous=true",
+        f"k8s logs query was not serialised as expected: {records[0].path}",
+    )
+
+
+def test_k8s_workload_logs_rejects_out_of_bounds_before_network(server: MockServer, home_dir: pathlib.Path) -> None:
+    server.clear_records()
+    result = run_nmc(
+        [
+            "k8s", "logs",
+            "--namespace", "octobot",
+            "--deployment", "octobot",
+            "--since-seconds", "86401",
+        ],
+        home_dir,
+    )
+    assert_failure(result, "out-of-bounds k8s workload logs")
+    assert_true(len(server.records()) == 0, "out-of-bounds k8s logs must fail before network access")
 
 
 def test_home_assistant_reconciliation_command_is_read_only(server: MockServer, home_dir: pathlib.Path) -> None:
@@ -1775,6 +1836,8 @@ def main() -> int:
             test_analytics_query_serialization(server, home_dir)
             test_k8s_recovery_status_serialization(server, home_dir)
             test_k8s_recovery_status_json_output(server, home_dir)
+            test_k8s_workload_logs_serialization(server, home_dir)
+            test_k8s_workload_logs_rejects_out_of_bounds_before_network(server, home_dir)
             test_home_assistant_reconciliation_command_is_read_only(server, home_dir)
             test_k8s_restart_preflights_and_uses_idempotency_key(server, home_dir)
             test_k8s_restart_rejects_invalid_id_before_network(server, home_dir)

@@ -1,6 +1,7 @@
 #include "K8sCommands.h"
 #include <algorithm>
 #include <iostream>
+#include <string>
 
 namespace NMC::Commands {
 
@@ -145,6 +146,42 @@ K8sHealthCommand::K8sHealthCommand(std::shared_ptr<NMC::Core::CloudAPIClient> cl
     : BaseCommand("health", "Check K8s API health endpoint", std::move(client)) {
     usage = "nmc k8s health";
     examples = "nmc k8s health";
+}
+
+K8sLogsCommand::K8sLogsCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client)
+    : BaseCommand("logs", "Read bounded Kubernetes workload logs through Continuum", std::move(client)) {
+    usage = "nmc k8s logs --namespace NAMESPACE --deployment DEPLOYMENT [--since-seconds 300] [--tail-lines 500] [--previous]";
+    examples = "nmc k8s logs --namespace octobot --deployment octobot --since-seconds 1200 --tail-lines 1000";
+    addFlag(CLI::Flag("n", "namespace", "Kubernetes namespace", CLI::FlagType::String, true));
+    addFlag(CLI::Flag("d", "deployment", "Kubernetes Deployment", CLI::FlagType::String, true));
+    addFlag(CLI::Flag("s", "since-seconds", "Maximum age of log entries (1-86400)", CLI::FlagType::Int, false, "300"));
+    addFlag(CLI::Flag("t", "tail-lines", "Maximum lines per container (1-2000)", CLI::FlagType::Int, false, "500"));
+    addFlag(CLI::Flag("p", "previous", "Read the previous terminated container instance", CLI::FlagType::Bool, false));
+}
+
+int K8sLogsCommand::execute(const std::map<std::string, std::string>& parsedFlags,
+                            const std::vector<std::string>& parsedArgs,
+                            const CLI::GlobalFlags& globalFlags) {
+    if (!validateArguments(parsedArgs) || !validateFlags(parsedFlags)) return 1;
+    int sinceSeconds = 0;
+    int tailLines = 0;
+    try {
+        sinceSeconds = std::stoi(optionalFlag(parsedFlags, "since-seconds", "300"));
+        tailLines = std::stoi(optionalFlag(parsedFlags, "tail-lines", "500"));
+    } catch (const std::exception&) {
+        std::cerr << "Error: since-seconds and tail-lines must be integers." << std::endl;
+        return 1;
+    }
+    const std::string namespaceName = requiredFlag(parsedFlags, "namespace");
+    const std::string deploymentName = requiredFlag(parsedFlags, "deployment");
+    const bool previous = parsedFlags.count("previous") > 0 && parsedFlags.at("previous") == "1";
+    if (sinceSeconds < 1 || sinceSeconds > 86400 || tailLines < 1 || tailLines > 2000) {
+        std::cerr << "Error: since-seconds must be 1-86400 and tail-lines must be 1-2000." << std::endl;
+        return 1;
+    }
+    const auto response = apiClient->getK8sWorkloadLogs(namespaceName, deploymentName, sinceSeconds, tailLines, previous);
+    printOutput(response, globalFlags);
+    return response.success ? 0 : 1;
 }
 
 int K8sHealthCommand::execute(const std::map<std::string, std::string>& parsedFlags,

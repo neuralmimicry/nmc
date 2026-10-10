@@ -32,6 +32,10 @@ namespace NMC::Server {
             if (!guard(req, res)) return;
             k8sHandlers->handleGetRefinerStatus(req, res);
         });
+        svr.Get("/k8s/workload/logs", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            k8sHandlers->handleGetWorkloadLogs(req, res);
+        });
         svr.Post("/k8s/refiner/scale", [this, guard](const httplib::Request& req, httplib::Response& res) {
             if (!guard(req, res)) return;
             k8sHandlers->handleScaleRefiner(req, res);
