@@ -13,6 +13,7 @@ Coverage goals:
 from __future__ import annotations
 
 import base64
+from contextlib import contextmanager
 import hashlib
 import json
 import os
@@ -189,6 +190,9 @@ class MockBackend:
         self._lock = threading.Lock()
         self._httpd: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
+        self.k8s_request_delay_seconds = 0.025
+        self.active_k8s_requests = 0
+        self.max_concurrent_k8s_requests = 0
         self.home_assistant_status = 200
         self.home_assistant_states = [
             {"entity_id": "sensor.authz_device", "state": "online", "last_changed": "2026-10-07T10:00:00Z"},
@@ -201,6 +205,26 @@ class MockBackend:
         self.central_auth_delay_seconds = 0.0
         self.central_auth_payload: object | None = None
         self.k8s_deployments: dict[str, dict[str, Any]] = {
+            "refiner/refiner": {
+                "apiVersion": "apps/v1",
+                "kind": "Deployment",
+                "metadata": {
+                    "name": "refiner",
+                    "namespace": "refiner",
+                    "uid": "test-refiner-uid",
+                    "resourceVersion": "3",
+                    "generation": 1,
+                    "labels": {},
+                },
+                "spec": {"replicas": 1, "template": {"spec": {"containers": [{"name": "refiner"}]}}},
+                "status": {
+                    "observedGeneration": 1,
+                    "updatedReplicas": 1,
+                    "readyReplicas": 1,
+                    "availableReplicas": 1,
+                    "containerStatuses": [{"name": "refiner", "ready": True}],
+                },
+            },
             "octobot/octobot": {
                 "apiVersion": "apps/v1",
                 "kind": "Deployment",
@@ -351,6 +375,23 @@ class MockBackend:
             self.home_assistant_status = status
             self.home_assistant_states = states
 
+    @contextmanager
+    def _track_k8s_request(self):
+        with self._lock:
+            self.active_k8s_requests += 1
+            self.max_concurrent_k8s_requests = max(
+                self.max_concurrent_k8s_requests,
+                self.active_k8s_requests,
+            )
+            delay = self.k8s_request_delay_seconds
+        try:
+            if delay:
+                time.sleep(delay)
+            yield
+        finally:
+            with self._lock:
+                self.active_k8s_requests -= 1
+
     def _record(self, method: str, path: str, authorization: str, body: str) -> None:
         with self._lock:
             self._records.append(
@@ -386,47 +427,48 @@ class MockBackend:
             r"/apis/apps/v1/namespaces/([a-z0-9-]+)/deployments/([a-z0-9-]+)", path_only
         )
         if k8s_deployment_match:
-            key = f"{k8s_deployment_match.group(1)}/{k8s_deployment_match.group(2)}"
-            with self._lock:
-                deployment = self.k8s_deployments.get(key)
-                if deployment is None:
-                    self._send_json(handler, 404, {"message": "deployment not found"})
-                    return
-                if handler.command == "GET":
-                    self._send_json(handler, 200, json.loads(json.dumps(deployment)))
-                    return
-                if handler.command == "PATCH":
-                    patch = parse_json(body)
-                    expected_version = patch.get("metadata", {}).get("resourceVersion")
-                    if expected_version != deployment.get("metadata", {}).get("resourceVersion"):
-                        self._send_json(handler, 409, {"message": "resourceVersion conflict"})
+            with self._track_k8s_request():
+                key = f"{k8s_deployment_match.group(1)}/{k8s_deployment_match.group(2)}"
+                with self._lock:
+                    deployment = self.k8s_deployments.get(key)
+                    if deployment is None:
+                        self._send_json(handler, 404, {"message": "deployment not found"})
                         return
-                    template_patch = patch.get("spec", {}).get("template", {})
-                    template = deployment.setdefault("spec", {}).setdefault("template", {})
-                    metadata_patch = patch.get("metadata", {})
-                    for metadata_key, metadata_value in metadata_patch.items():
-                        if metadata_key != "resourceVersion":
-                            deployment.setdefault("metadata", {})[metadata_key] = metadata_value
-                    if "metadata" in template_patch:
-                        template["metadata"] = template_patch["metadata"]
-                    if "spec" in template_patch:
-                        template.setdefault("spec", {}).update(template_patch["spec"])
-                    metadata = deployment.setdefault("metadata", {})
-                    metadata["resourceVersion"] = str(int(metadata["resourceVersion"]) + 1)
-                    if "spec" in patch:
-                        metadata["generation"] = int(metadata.get("generation", 0)) + 1
-                    status = deployment.setdefault("status", {})
-                    status["observedGeneration"] = metadata["generation"]
-                    images_by_name = {
-                        container.get("name"): container.get("image")
-                        for container in template.get("spec", {}).get("containers", [])
-                    }
-                    status["containerStatuses"] = [
-                        {"name": name, "ready": True, "image": image}
-                        for name, image in images_by_name.items()
-                    ]
-                    self._send_json(handler, 200, json.loads(json.dumps(deployment)))
-                    return
+                    if handler.command == "GET":
+                        self._send_json(handler, 200, json.loads(json.dumps(deployment)))
+                        return
+                    if handler.command == "PATCH":
+                        patch = parse_json(body)
+                        expected_version = patch.get("metadata", {}).get("resourceVersion")
+                        if expected_version != deployment.get("metadata", {}).get("resourceVersion"):
+                            self._send_json(handler, 409, {"message": "resourceVersion conflict"})
+                            return
+                        template_patch = patch.get("spec", {}).get("template", {})
+                        template = deployment.setdefault("spec", {}).setdefault("template", {})
+                        metadata_patch = patch.get("metadata", {})
+                        for metadata_key, metadata_value in metadata_patch.items():
+                            if metadata_key != "resourceVersion":
+                                deployment.setdefault("metadata", {})[metadata_key] = metadata_value
+                        if "metadata" in template_patch:
+                            template["metadata"] = template_patch["metadata"]
+                        if "spec" in template_patch:
+                            template.setdefault("spec", {}).update(template_patch["spec"])
+                        metadata = deployment.setdefault("metadata", {})
+                        metadata["resourceVersion"] = str(int(metadata["resourceVersion"]) + 1)
+                        if "spec" in patch:
+                            metadata["generation"] = int(metadata.get("generation", 0)) + 1
+                        status = deployment.setdefault("status", {})
+                        status["observedGeneration"] = metadata["generation"]
+                        images_by_name = {
+                            container.get("name"): container.get("image")
+                            for container in template.get("spec", {}).get("containers", [])
+                        }
+                        status["containerStatuses"] = [
+                            {"name": name, "ready": True, "image": image}
+                            for name, image in images_by_name.items()
+                        ]
+                        self._send_json(handler, 200, json.loads(json.dumps(deployment)))
+                        return
             self._send_json(handler, 405, {"message": "method not supported"})
             return
 
@@ -3981,6 +4023,45 @@ def test_k8s_workload_logs_require_control_and_enforce_bounds(server: NmcServerP
     assert_status(status, 400, "workload log target must be a Kubernetes DNS label")
 
 
+def test_refiner_status_serializes_shared_kubernetes_client(backend: MockBackend) -> None:
+    server = NmcServerProcess(backend.base_url, k8s_server_url=backend.base_url)
+    with backend._lock:
+        backend.active_k8s_requests = 0
+        backend.max_concurrent_k8s_requests = 0
+    try:
+        server.start()
+        path = "/k8s/refiner/status"
+        with ThreadPoolExecutor(max_workers=12) as pool:
+            responses = list(
+                pool.map(
+                    lambda _: request_json(
+                        server.base_url,
+                        "GET",
+                        path,
+                        token=STATIC_ADMIN_TOKEN,
+                    ),
+                    range(24),
+                )
+            )
+
+        assert all(status == 200 for status, _ in responses), (
+            "concurrent Refiner status requests must all complete successfully: "
+            + repr([status for status, _ in responses])
+        )
+        assert all(payload.get("success") is True for _, payload in responses), (
+            "concurrent Refiner status responses must retain their parsed payloads"
+        )
+        assert backend.count_requests(
+            "/apis/apps/v1/namespaces/refiner/deployments/refiner",
+            method="GET",
+        ) == 24, "each Refiner status request must reach the Kubernetes API once"
+        assert backend.max_concurrent_k8s_requests == 1, (
+            "the shared generated Kubernetes C client must not serve overlapping requests"
+        )
+    finally:
+        server.stop()
+
+
 def main() -> int:
     if not NMC_SERVER_BIN.exists():
         print(
@@ -4099,6 +4180,7 @@ fi
         test_central_auth_outage_returns_503_and_invalid_token_stays_401(server, backend)
         test_continuum_route_authorisation(server, backend)
         test_k8s_workload_logs_require_control_and_enforce_bounds(server)
+        test_refiner_status_serializes_shared_kubernetes_client(backend)
         test_provider_compute_lifecycle(server, backend)
         test_controller_action_rejects_malformed_body_shapes(server)
         test_global_controller_power_gate_can_be_explicitly_disabled(backend.base_url)

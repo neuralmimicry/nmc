@@ -124,6 +124,11 @@ namespace NMC {
             char *basePath;
             sslConfig_t *sslConfig;
             list_t *apiKeys; // List of apiKey_t for authentication
+            // The generated Kubernetes C client stores mutable response state on
+            // apiClient_t. Keep each request's API calls and response parsing
+            // together; recursive use is needed by recovery helpers that call the
+            // public namespaced-resource readers from inside a request handler.
+            std::recursive_mutex apiClientMutex;
             // Workload logs use an isolated client because the generated C client
             // stores response state on apiClient_t and other routes are concurrent.
             apiClient_t *workloadLogsApiClient{nullptr};

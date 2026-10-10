@@ -507,6 +507,7 @@ nlohmann::json K8sHandlers::inspectDeploymentRecoveryState(
 }
 
 void K8sHandlers::handleGetDeploymentRecoveryStatus(const httplib::Request& req, httplib::Response& res) {
+    std::lock_guard<std::recursive_mutex> apiClientLock(apiClientMutex);
     std::lock_guard<std::mutex> recoveryLock(recoveryMutex);
     const std::string clusterId = req.get_param_value("cluster_id");
     const std::string namespaceName = req.get_param_value("namespace");
@@ -597,6 +598,7 @@ void K8sHandlers::handleGetDeploymentRecoveryStatus(const httplib::Request& req,
 }
 
 void K8sHandlers::handleRestartDeployment(const httplib::Request& req, httplib::Response& res) {
+    std::lock_guard<std::recursive_mutex> apiClientLock(apiClientMutex);
     std::lock_guard<std::mutex> recoveryLock(recoveryMutex);
     try {
         const auto body = nlohmann::json::parse(req.body);
@@ -823,6 +825,7 @@ void K8sHandlers::handleRestartDeployment(const httplib::Request& req, httplib::
 }
 
 void K8sHandlers::handleGetDeploymentStatus(const httplib::Request& req, httplib::Response& res) {
+    std::lock_guard<std::recursive_mutex> apiClientLock(apiClientMutex);
     const std::string clusterId = req.get_param_value("cluster_id");
     const std::string namespaceName = req.get_param_value("namespace");
     const std::string deploymentName = req.get_param_value("deployment");
@@ -883,6 +886,7 @@ void K8sHandlers::handleGetDeploymentStatus(const httplib::Request& req, httplib
 }
 
 void K8sHandlers::handleRolloutDeploymentImage(const httplib::Request& req, httplib::Response& res) {
+    std::lock_guard<std::recursive_mutex> apiClientLock(apiClientMutex);
     if (!imageRolloutEnabled) {
         return sendErrorResponse(res, 403,
                 "Continuum Deployment image rollouts are disabled by NMC_K8S_IMAGE_ROLLOUT_ENABLED policy.");
@@ -1131,6 +1135,7 @@ void K8sHandlers::handleRolloutDeploymentImage(const httplib::Request& req, http
 
 void K8sHandlers::handleConfigureOctoBot(const httplib::Request &req,
                                          httplib::Response &res) {
+  std::lock_guard<std::recursive_mutex> apiClientLock(apiClientMutex);
   if (!octobotConfigurationEnabled) {
     return sendErrorResponse(res, 403,
                              "Continuum OctoBot configuration is disabled by "
