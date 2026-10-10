@@ -28,7 +28,10 @@ def main() -> int:
         "Ansible recovery defaults off": "nmc_recovery_enabled: false" in sources["playbook"],
         "Ansible requires a cluster ID before enabling recovery": "nmc_k8s_cluster_id | length > 0" in sources["playbook"],
         "the environment template carries cluster scope and recovery policy": "NMC_K8S_CLUSTER_ID=" in sources["environment"] and "NMC_RECOVERY_ENABLED=" in sources["environment"],
+        "image rollout policy is an independent opt-in": "bool imageRolloutEnabled{false};" in sources["handler"] and "nmc_k8s_image_rollout_enabled: false" in sources["playbook"],
+        "the environment template carries the image rollout gate": "NMC_K8S_IMAGE_ROLLOUT_ENABLED=" in sources["environment"],
         "operator documentation describes the guarded workflow": "NMC_RECOVERY_ENABLED=true" in sources["documentation"] and "nmc_k8s_cluster_id" in sources["documentation"],
+        "operator documentation describes the image rollout route": "POST /k8s/deployment/image-rollout" in sources["documentation"] and "neuralmimicry.ai/continuum-rollout=enabled" in sources["documentation"],
     }
     failures = [description for description, passed in requirements.items() if not passed]
     if failures:

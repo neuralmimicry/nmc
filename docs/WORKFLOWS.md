@@ -243,6 +243,18 @@ terminated container instance. The route requires `continuum:control`, and it
 rejects queries outside the documented time, line, pod, container, content and
 serialised-response limits.
 
+### 8.4 Continuum-managed image rollouts
+
+`nmc k8s deployment-status --cluster-id <id> --namespace <ns> --deployment <name>`
+reads bounded Deployment readiness and container image state. To change one
+container, `nmc k8s rollout-image` requires the desired immutable NeuralMimicry
+GHCR digest, its expected current image, and stable request/change IDs. The
+server checks its active cluster context, authenticated kubeconfig, explicit
+rollout policy and Deployment label opt-in before applying a conditional
+patch. A successful request means Kubernetes accepted the desired image; poll
+`deployment-status` until observed generation and ready replicas converge.
+Both commands call Continuum rather than invoking `kubectl` on the caller.
+
 ## 9. Version Check Workflow
 
 - `nmc version` reports the local client version and, unless `--no-check` is used, checks the latest GitHub release.

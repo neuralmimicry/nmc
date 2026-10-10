@@ -24,6 +24,99 @@ bool validRequestId(const std::string& value) {
     return std::regex_match(value, pattern);
 }
 
+bool validGhcrDigest(const std::string& value) {
+    static const std::string prefix = "ghcr.io/neuralmimicry/";
+    static const std::string marker = "@sha256:";
+    static const std::regex repositoryPattern(
+            R"(^[a-z0-9]+(?:[._-][a-z0-9]+)*(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)*$)");
+    if (value.size() > 255 || value.rfind(prefix, 0) != 0) return false;
+    const size_t digestMarker = value.rfind(marker);
+    if (digestMarker == std::string::npos || digestMarker <= prefix.size()
+            || value.size() - digestMarker - marker.size() != 64) return false;
+    const std::string repository = value.substr(prefix.size(), digestMarker - prefix.size());
+    const std::string digest = value.substr(digestMarker + marker.size());
+    return std::regex_match(repository, repositoryPattern)
+            && std::all_of(digest.begin(), digest.end(), [](unsigned char ch) {
+                return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f');
+            });
+}
+
+bool printableValue(const std::string& value, size_t maximum) {
+    if (value.empty() || value.size() > maximum
+            || std::isspace(static_cast<unsigned char>(value.front()))
+            || std::isspace(static_cast<unsigned char>(value.back()))) {
+        return false;
+    }
+    return std::none_of(value.begin(), value.end(), [](unsigned char ch) {
+        return std::isspace(ch) != 0 || std::iscntrl(ch) != 0;
+    });
+}
+
+bool containsExactKeySet(const nlohmann::json& object,
+                         const std::set<std::string>& requiredKeys) {
+    if (!object.is_object() || object.size() != requiredKeys.size()) return false;
+    return std::all_of(object.begin(), object.end(), [&](const auto& item) {
+        return requiredKeys.count(item.key()) != 0;
+    });
+}
+
+nlohmann::json deploymentStatusData(const nlohmann::json& deployment) {
+    const auto metadata = deployment.value("metadata", nlohmann::json::object());
+    const auto spec = deployment.value("spec", nlohmann::json::object());
+    const auto status = deployment.value("status", nlohmann::json::object());
+    const auto podSpec = spec.value("template", nlohmann::json::object())
+            .value("spec", nlohmann::json::object());
+    const auto templateMetadata = spec.value("template", nlohmann::json::object())
+            .value("metadata", nlohmann::json::object());
+    const auto annotations = templateMetadata.value("annotations", nlohmann::json::object());
+    const auto containers = podSpec.value("containers", nlohmann::json::array());
+    const auto containerStatuses = status.value("containerStatuses", nlohmann::json::array());
+    std::unordered_map<std::string, bool> readyByName;
+    if (containerStatuses.is_array()) {
+        for (const auto& item : containerStatuses) {
+            if (!item.is_object() || !item.contains("name") || !item["name"].is_string()) continue;
+            readyByName[item["name"].get<std::string>()] = item.value("ready", false);
+        }
+    }
+
+    nlohmann::json containerImages = nlohmann::json::array();
+    if (containers.is_array()) {
+        for (const auto& item : containers) {
+            if (!item.is_object() || !item.contains("name") || !item["name"].is_string()) continue;
+            const std::string name = item["name"].get<std::string>();
+            containerImages.push_back({
+                    {"name", name},
+                    {"image", item.value("image", "")},
+                    {"ready", readyByName[name]}
+            });
+        }
+    }
+
+    const int64_t generation = metadata.value("generation", int64_t{0});
+    const int64_t observedGeneration = status.value("observedGeneration", int64_t{0});
+    const int desired = spec.value("replicas", 1);
+    const int updated = status.value("updatedReplicas", 0);
+    const int ready = status.value("readyReplicas", 0);
+    const int available = status.value("availableReplicas", 0);
+    return {
+            {"name", metadata.value("name", "")},
+            {"namespace", metadata.value("namespace", "")},
+            {"uid", metadata.value("uid", "")},
+            {"resource_version", metadata.value("resourceVersion", "")},
+            {"generation", generation},
+            {"observed_generation", observedGeneration},
+            {"desired_replicas", desired},
+            {"updated_replicas", updated},
+            {"ready_replicas", ready},
+            {"available_replicas", available},
+            {"rollout_request_id", annotations.value("neuralmimicry.ai/rollout-request-id", "")},
+            {"rollout_change_id", annotations.value("neuralmimicry.ai/rollout-change-id", "")},
+            {"containers", std::move(containerImages)},
+            {"rollout_complete", desired > 0 && observedGeneration >= generation
+                    && updated >= desired && ready >= desired && available >= desired}
+    };
+}
+
 std::string utcTimestamp() {
     const std::time_t now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
     std::tm utc{};
@@ -721,6 +814,313 @@ void K8sHandlers::handleRestartDeployment(const httplib::Request& req, httplib::
         sendErrorResponse(res, 400, "Invalid JSON body.");
     } catch (const std::exception&) {
         sendErrorResponse(res, 500, "Deployment recovery request failed safely.");
+    }
+}
+
+void K8sHandlers::handleGetDeploymentStatus(const httplib::Request& req, httplib::Response& res) {
+    const std::string clusterId = req.get_param_value("cluster_id");
+    const std::string namespaceName = req.get_param_value("namespace");
+    const std::string deploymentName = req.get_param_value("deployment");
+    if (!validDnsLabel(clusterId) || !validDnsLabel(namespaceName) || !validDnsLabel(deploymentName)) {
+        return sendErrorResponse(res, 400, "cluster_id, namespace and deployment must be valid Kubernetes DNS labels.");
+    }
+    if (activeRecoveryClusterId.empty() || clusterId != activeRecoveryClusterId) {
+        return sendErrorResponse(res, 409, "Requested cluster does not match Continuum's active Kubernetes context.");
+    }
+    if (!recoveryClientReady || !workloadLogsApiClient) {
+        return sendErrorResponse(res, 503, "Deployment status requires the configured authenticated kubeconfig.");
+    }
+
+    std::lock_guard<std::mutex> clientLock(workloadLogsClientMutex);
+    char group[] = "apps";
+    char version[] = "v1";
+    char plural[] = "deployments";
+    genericClient_t* deploymentClient = genericClient_create(
+            workloadLogsApiClient,
+            group,
+            version,
+            plural
+    );
+    if (!deploymentClient) {
+        return sendErrorResponse(res, 503, "Continuum could not initialise its Kubernetes Deployment reader.");
+    }
+    char* rawDeployment = Generic_readNamespacedResource(
+            deploymentClient,
+            const_cast<char*>(namespaceName.c_str()),
+            const_cast<char*>(deploymentName.c_str())
+    );
+    const int readStatus = workloadLogsApiClient->response_code;
+    genericClient_free(deploymentClient);
+    if (!rawDeployment) {
+        return sendErrorResponse(res, readStatus == 404 ? 404 : 502,
+                readStatus == 404 ? "Deployment was not found in the requested namespace."
+                                  : "Continuum could not read Deployment status from Kubernetes.");
+    }
+
+    nlohmann::json deployment;
+    try {
+        deployment = nlohmann::json::parse(rawDeployment);
+    } catch (const std::exception&) {
+        free(rawDeployment);
+        return sendErrorResponse(res, 502, "Kubernetes returned invalid Deployment status JSON.");
+    }
+    free(rawDeployment);
+    if (!deployment.is_object()) {
+        return sendErrorResponse(res, 502, "Kubernetes returned an invalid Deployment object.");
+    }
+
+    Models::CloudResponse response;
+    response.success = true;
+    response.message = "Continuum Deployment status retrieved.";
+    response.data = deploymentStatusData(deployment);
+    response.data["cluster_id"] = clusterId;
+    sendJsonResponse(res, response);
+}
+
+void K8sHandlers::handleRolloutDeploymentImage(const httplib::Request& req, httplib::Response& res) {
+    if (!imageRolloutEnabled) {
+        return sendErrorResponse(res, 403,
+                "Continuum Deployment image rollouts are disabled by NMC_K8S_IMAGE_ROLLOUT_ENABLED policy.");
+    }
+    if (!recoveryClientReady || !workloadLogsApiClient) {
+        return sendErrorResponse(res, 503,
+                "Deployment image rollouts require the configured authenticated kubeconfig.");
+    }
+
+    try {
+        const auto body = nlohmann::json::parse(req.body);
+        static const std::set<std::string> expectedKeys = {
+                "cluster_id", "namespace", "deployment", "container", "image",
+                "expected_image", "request_id", "change_id"
+        };
+        if (!containsExactKeySet(body, expectedKeys)) {
+            return sendErrorResponse(res, 400,
+                    "Expected exactly cluster_id, namespace, deployment, container, image, expected_image, request_id and change_id.");
+        }
+        for (const auto& key : expectedKeys) {
+            if (!body[key].is_string()) {
+                return sendErrorResponse(res, 400, key + " must be a string.");
+            }
+        }
+
+        const std::string clusterId = body["cluster_id"].get<std::string>();
+        const std::string namespaceName = body["namespace"].get<std::string>();
+        const std::string deploymentName = body["deployment"].get<std::string>();
+        const std::string containerName = body["container"].get<std::string>();
+        const std::string image = body["image"].get<std::string>();
+        const std::string expectedImage = body["expected_image"].get<std::string>();
+        const std::string requestId = body["request_id"].get<std::string>();
+        const std::string changeId = body["change_id"].get<std::string>();
+
+        if (!validDnsLabel(clusterId) || !validDnsLabel(namespaceName)
+                || !validDnsLabel(deploymentName) || !validDnsLabel(containerName)) {
+            return sendErrorResponse(res, 400,
+                    "cluster_id, namespace, deployment and container must be valid Kubernetes DNS labels.");
+        }
+        if (!validGhcrDigest(image)) {
+            return sendErrorResponse(res, 400,
+                    "image must be an immutable ghcr.io/neuralmimicry/<repository>@sha256:<64 lowercase hex> reference.");
+        }
+        if (!printableValue(expectedImage, 512) || !validRequestId(requestId)
+                || !validRequestId(changeId)) {
+            return sendErrorResponse(res, 400,
+                    "expected_image must be a bounded reference and request_id/change_id must be valid identifiers.");
+        }
+        if (activeRecoveryClusterId.empty() || clusterId != activeRecoveryClusterId) {
+            return sendErrorResponse(res, 409,
+                    "Requested cluster does not match Continuum's active Kubernetes context.");
+        }
+
+        std::lock_guard<std::mutex> rolloutLock(rolloutMutex);
+        std::lock_guard<std::mutex> clientLock(workloadLogsClientMutex);
+        char group[] = "apps";
+        char version[] = "v1";
+        char plural[] = "deployments";
+        genericClient_t* deploymentClient = genericClient_create(
+                workloadLogsApiClient,
+                group,
+                version,
+                plural
+        );
+        if (!deploymentClient) {
+            return sendErrorResponse(res, 503, "Continuum could not initialise its Kubernetes Deployment client.");
+        }
+
+        char* rawDeployment = Generic_readNamespacedResource(
+                deploymentClient,
+                const_cast<char*>(namespaceName.c_str()),
+                const_cast<char*>(deploymentName.c_str())
+        );
+        const int readStatus = workloadLogsApiClient->response_code;
+        if (!rawDeployment) {
+            genericClient_free(deploymentClient);
+            return sendErrorResponse(res, readStatus == 404 ? 404 : 502,
+                    readStatus == 404 ? "Deployment was not found in the requested namespace."
+                                      : "Continuum could not read current Deployment state.");
+        }
+
+        nlohmann::json deployment;
+        try {
+            deployment = nlohmann::json::parse(rawDeployment);
+        } catch (const std::exception&) {
+            free(rawDeployment);
+            genericClient_free(deploymentClient);
+            return sendErrorResponse(res, 502, "Kubernetes returned invalid Deployment JSON.");
+        }
+        free(rawDeployment);
+        if (!deployment.is_object()) {
+            genericClient_free(deploymentClient);
+            return sendErrorResponse(res, 502, "Kubernetes returned an invalid Deployment object.");
+        }
+
+        const auto metadata = deployment.value("metadata", nlohmann::json::object());
+        const auto labels = metadata.value("labels", nlohmann::json::object());
+        if (!labels.is_object()
+                || labels.value("neuralmimicry.ai/continuum-rollout", "") != "enabled") {
+            genericClient_free(deploymentClient);
+            return sendErrorResponse(res, 403,
+                    "Deployment must explicitly set neuralmimicry.ai/continuum-rollout=enabled.");
+        }
+        const std::string resourceVersion = metadata.value("resourceVersion", "");
+        if (resourceVersion.empty()) {
+            genericClient_free(deploymentClient);
+            return sendErrorResponse(res, 409, "Deployment resourceVersion is missing; rollout precondition failed.");
+        }
+
+        auto podTemplate = deployment.value("spec", nlohmann::json::object())
+                .value("template", nlohmann::json::object());
+        auto podSpec = podTemplate.value("spec", nlohmann::json::object());
+        auto containers = podSpec.value("containers", nlohmann::json::array());
+        if (!containers.is_array()) {
+            genericClient_free(deploymentClient);
+            return sendErrorResponse(res, 502, "Deployment has no valid container list.");
+        }
+        auto selected = containers.end();
+        for (auto it = containers.begin(); it != containers.end(); ++it) {
+            if (it->is_object() && it->value("name", "") == containerName) {
+                selected = it;
+                break;
+            }
+        }
+        if (selected == containers.end()) {
+            genericClient_free(deploymentClient);
+            return sendErrorResponse(res, 404, "The requested container is not present in the Deployment.");
+        }
+        const std::string currentImage = selected->value("image", "");
+        if (!printableValue(currentImage, 512)) {
+            genericClient_free(deploymentClient);
+            return sendErrorResponse(res, 409, "Current container image is missing or invalid.");
+        }
+
+        auto templateMetadata = podTemplate.value("metadata", nlohmann::json::object());
+        auto annotations = templateMetadata.value("annotations", nlohmann::json::object());
+        if (!annotations.is_object()) annotations = nlohmann::json::object();
+        const std::string previousRequestId = annotations.value("neuralmimicry.ai/rollout-request-id", "");
+        if (!previousRequestId.empty() && previousRequestId == requestId) {
+            const bool sameIntent = annotations.value("neuralmimicry.ai/rollout-change-id", "") == changeId
+                    && annotations.value("neuralmimicry.ai/rollout-container", "") == containerName
+                    && annotations.value("neuralmimicry.ai/rollout-image", "") == image
+                    && currentImage == image;
+            genericClient_free(deploymentClient);
+            if (!sameIntent) {
+                return sendErrorResponse(res, 409, "request_id was already used for a different image rollout intent.");
+            }
+            Models::CloudResponse response;
+            response.success = true;
+            response.message = "Deployment image rollout request was already applied.";
+            response.data = deploymentStatusData(deployment);
+            response.data["cluster_id"] = clusterId;
+            response.data["container"] = containerName;
+            response.data["image"] = image;
+            response.data["already_applied"] = true;
+            sendJsonResponse(res, response);
+            return;
+        }
+        if (currentImage == image) {
+            genericClient_free(deploymentClient);
+            Models::CloudResponse response;
+            response.success = true;
+            response.message = "Deployment already uses the requested immutable image.";
+            response.data = deploymentStatusData(deployment);
+            response.data["cluster_id"] = clusterId;
+            response.data["container"] = containerName;
+            response.data["image"] = image;
+            response.data["already_applied"] = true;
+            sendJsonResponse(res, response);
+            return;
+        }
+        if (currentImage != expectedImage) {
+            genericClient_free(deploymentClient);
+            return sendErrorResponse(res, 409,
+                    "Current container image does not match expected_image; no rollout was attempted.");
+        }
+
+        selected->operator[]("image") = image;
+        const std::string requestedAt = utcTimestamp();
+        annotations["neuralmimicry.ai/rollout-request-id"] = requestId;
+        annotations["neuralmimicry.ai/rollout-change-id"] = changeId;
+        annotations["neuralmimicry.ai/rollout-container"] = containerName;
+        annotations["neuralmimicry.ai/rollout-image"] = image;
+        annotations["neuralmimicry.ai/rollout-previous-image"] = currentImage;
+        annotations["neuralmimicry.ai/rollout-requested-at"] = requestedAt;
+        templateMetadata["annotations"] = annotations;
+
+        const nlohmann::json patch = {
+                {"metadata", {{"resourceVersion", resourceVersion}}},
+                {"spec", {{"template", {
+                        {"metadata", templateMetadata},
+                        {"spec", {{"containers", containers}}}
+                }}}}
+        };
+        const std::string patchBody = patch.dump();
+        char* rawPatched = Generic_patchNamespacedResource(
+                deploymentClient,
+                const_cast<char*>(namespaceName.c_str()),
+                const_cast<char*>(deploymentName.c_str()),
+                const_cast<char*>(patchBody.c_str()),
+                nullptr,
+                nullptr,
+                nullptr,
+                nullptr,
+                nullptr
+        );
+        const int patchStatus = workloadLogsApiClient->response_code;
+        genericClient_free(deploymentClient);
+        if (!rawPatched) {
+            return sendErrorResponse(res, patchStatus >= 400 ? patchStatus : 503,
+                    "Kubernetes rejected the conditional Deployment image rollout.");
+        }
+
+        nlohmann::json patched;
+        try {
+            patched = nlohmann::json::parse(rawPatched);
+        } catch (const std::exception&) {
+            free(rawPatched);
+            return sendErrorResponse(res, 502, "Kubernetes accepted the image rollout but returned invalid JSON.");
+        }
+        free(rawPatched);
+        if (!patched.is_object()) {
+            return sendErrorResponse(res, 502, "Kubernetes returned an invalid patched Deployment object.");
+        }
+
+        Models::CloudResponse response;
+        response.success = true;
+        response.message = "Deployment image rollout accepted; poll Continuum status for readiness.";
+        response.data = deploymentStatusData(patched);
+        response.data["cluster_id"] = clusterId;
+        response.data["container"] = containerName;
+        response.data["previous_image"] = currentImage;
+        response.data["image"] = image;
+        response.data["request_id"] = requestId;
+        response.data["change_id"] = changeId;
+        response.data["requested_at"] = requestedAt;
+        response.data["changed"] = true;
+        response.data["already_applied"] = false;
+        sendJsonResponse(res, response);
+    } catch (const nlohmann::json::parse_error&) {
+        sendErrorResponse(res, 400, "Invalid JSON body.");
+    } catch (const std::exception&) {
+        sendErrorResponse(res, 500, "Deployment image rollout failed safely.");
     }
 }
 

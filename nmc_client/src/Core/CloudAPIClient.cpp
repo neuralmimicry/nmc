@@ -3,7 +3,10 @@
 #include <iostream>
 #include <nlohmann/json.hpp> // For JSON parsing and creation
 #include <algorithm> // For std::find_if, std::remove_if
+#include <cctype>
 #include <chrono>
+#include <cstddef>
+#include <regex>
 #include <fstream>   // For file operations (std::ifstream, std::ofstream)
 #include <filesystem> // For creating directories (C++17)
 #include <array>
@@ -530,6 +533,91 @@ namespace NMC::Core {
         appendQueryString(path, "deployment", deploymentName);
         auto res = cli->Get(path);
         return processHttpResponse(res, "Deployment recovery preflight retrieved.");
+    }
+
+    Models::CloudResponse CloudAPIClient::getK8sDeploymentStatus(
+            const std::string& clusterId,
+            const std::string& namespaceName,
+            const std::string& deploymentName
+    ) {
+        const auto safeLabel = [](const std::string& value) {
+            return !value.empty() && value.size() <= 63
+                    && value.front() != '-' && value.back() != '-'
+                    && std::all_of(value.begin(), value.end(), [](unsigned char ch) {
+                        return (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '-';
+                    });
+        };
+        if (!safeLabel(clusterId) || !safeLabel(namespaceName) || !safeLabel(deploymentName)) {
+            Models::CloudResponse response;
+            response.success = false;
+            response.message = "cluster_id, namespace and deployment must be valid Kubernetes DNS labels.";
+            response.statusCode = 400;
+            return response;
+        }
+        std::string path = "/k8s/deployment/status";
+        appendQueryString(path, "cluster_id", encodeQueryValue(clusterId));
+        appendQueryString(path, "namespace", encodeQueryValue(namespaceName));
+        appendQueryString(path, "deployment", encodeQueryValue(deploymentName));
+        auto res = cli->Get(path);
+        return processHttpResponse(res, "Continuum Deployment status retrieved.");
+    }
+
+    Models::CloudResponse CloudAPIClient::rolloutK8sDeploymentImage(
+            const std::string& clusterId,
+            const std::string& namespaceName,
+            const std::string& deploymentName,
+            const std::string& containerName,
+            const std::string& image,
+            const std::string& expectedImage,
+            const std::string& requestId,
+            const std::string& changeId
+    ) {
+        const auto safeLabel = [](const std::string& value) {
+            return !value.empty() && value.size() <= 63
+                    && value.front() != '-' && value.back() != '-'
+                    && std::all_of(value.begin(), value.end(), [](unsigned char ch) {
+                        return (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '-';
+                    });
+        };
+        const auto safeIdentifier = [](const std::string& value) {
+            return value.size() >= 8 && value.size() <= 128
+                    && std::all_of(value.begin(), value.end(), [](unsigned char ch) {
+                        return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z')
+                                || (ch >= '0' && ch <= '9') || ch == '.' || ch == '_' || ch == '-';
+                    });
+        };
+        const auto safeImage = [](const std::string& value) {
+            static const std::regex pattern(
+                    R"(^ghcr\.io/neuralmimicry/[a-z0-9]+(?:[._-][a-z0-9]+)*(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)*@sha256:[a-f0-9]{64}$)");
+            return value.size() <= 255 && std::regex_match(value, pattern);
+        };
+        const auto printable = [](const std::string& value) {
+            return !value.empty() && value.size() <= 512
+                    && std::all_of(value.begin(), value.end(), [](unsigned char ch) {
+                        return std::isspace(ch) == 0 && std::iscntrl(ch) == 0;
+                    });
+        };
+        if (!safeLabel(clusterId) || !safeLabel(namespaceName) || !safeLabel(deploymentName)
+                || !safeLabel(containerName) || !safeImage(image) || !printable(expectedImage)
+                || !safeIdentifier(requestId) || !safeIdentifier(changeId)) {
+            Models::CloudResponse response;
+            response.success = false;
+            response.message = "Rollout requires valid Kubernetes names, bounded identifiers, an expected image and an immutable NeuralMimicry GHCR digest.";
+            response.statusCode = 400;
+            return response;
+        }
+        nlohmann::json requestBody = {
+                {"cluster_id", clusterId},
+                {"namespace", namespaceName},
+                {"deployment", deploymentName},
+                {"container", containerName},
+                {"image", image},
+                {"expected_image", expectedImage},
+                {"request_id", requestId},
+                {"change_id", changeId}
+        };
+        auto res = cli->Post("/k8s/deployment/image-rollout", requestBody.dump(), "application/json");
+        return processHttpResponse(res, "Continuum Deployment image rollout accepted.");
     }
 
     Models::CloudResponse CloudAPIClient::getDeviceInventory() {

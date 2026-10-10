@@ -450,6 +450,18 @@ namespace NMC {
                     std::cerr << "Warning: NMC_RECOVERY_ENABLED has an invalid value; workload recovery remains disabled." << std::endl;
                 }
             }
+            const char* imageRolloutEnabledValue = std::getenv("NMC_K8S_IMAGE_ROLLOUT_ENABLED");
+            if (imageRolloutEnabledValue) {
+                const std::string normalisedImageRolloutEnabled = toLowerCopy(trimCopy(imageRolloutEnabledValue));
+                imageRolloutEnabled = normalisedImageRolloutEnabled == "true" || normalisedImageRolloutEnabled == "1";
+                if (!normalisedImageRolloutEnabled.empty()
+                        && normalisedImageRolloutEnabled != "true"
+                        && normalisedImageRolloutEnabled != "1"
+                        && normalisedImageRolloutEnabled != "false"
+                        && normalisedImageRolloutEnabled != "0") {
+                    std::cerr << "Warning: NMC_K8S_IMAGE_ROLLOUT_ENABLED has an invalid value; image rollouts remain disabled." << std::endl;
+                }
+            }
             // Initialize Kubernetes C client
             int rc = 0;
             if (!kubeconfig_path.empty()) {
