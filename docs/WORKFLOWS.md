@@ -246,7 +246,13 @@ serialised-response limits.
 ### 8.4 Continuum-managed image rollouts
 
 `nmc k8s deployment-status --cluster-id <id> --namespace <ns> --deployment <name>`
-reads bounded Deployment readiness and container image state. To change one
+reads bounded Deployment readiness, container image state, and up to 64 matching
+Pod summaries. Each summary includes node placement, phase, scheduling conditions,
+and bounded container/init-container waiting or termination details. Pod and
+condition messages are capped at 512 bytes; `pod_diagnostics_available` and
+`pod_diagnostics_truncated` state whether the returned diagnostics are complete.
+Use this response to distinguish scheduling, image-pull, init-container, and
+readiness failures before considering recovery. To change one
 container, `nmc k8s rollout-image` requires the desired immutable NeuralMimicry
 GHCR digest, its expected current image, and stable request/change IDs. The
 server checks its active cluster context, authenticated kubeconfig, explicit

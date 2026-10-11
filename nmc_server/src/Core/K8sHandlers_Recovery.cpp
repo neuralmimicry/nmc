@@ -19,6 +19,41 @@ bool validDnsLabel(const std::string& value) {
     return value.size() <= 63 && std::regex_match(value, pattern);
 }
 
+size_t boundedUtf8Prefix(const std::string& value, size_t maximumBytes) {
+    if (value.size() <= maximumBytes) return value.size();
+    size_t end = maximumBytes;
+    if (end < value.size()
+            && (static_cast<unsigned char>(value[end]) & 0xc0) == 0x80) {
+        while (end > 0 && (static_cast<unsigned char>(value[end]) & 0xc0) == 0x80) --end;
+    }
+    return end;
+}
+
+std::string boundedTextValue(const nlohmann::json& source,
+                             const char* key,
+                             size_t maximumBytes,
+                             bool& truncated) {
+    truncated = false;
+    if (!source.is_object()) return "";
+    const auto value = source.find(key);
+    if (value == source.end() || !value->is_string()) return "";
+    const std::string text = value->get<std::string>();
+    const size_t prefixLength = boundedUtf8Prefix(text, maximumBytes);
+    truncated = prefixLength < text.size();
+    return text.substr(0, prefixLength);
+}
+
+void addBoundedText(nlohmann::json& target,
+                    const nlohmann::json& source,
+                    const char* sourceKey,
+                    size_t maximumBytes,
+                    const char* targetKey = nullptr) {
+    const std::string outputKey = targetKey ? targetKey : sourceKey;
+    bool truncated = false;
+    target[outputKey] = boundedTextValue(source, sourceKey, maximumBytes, truncated);
+    if (truncated) target[outputKey + "_truncated"] = true;
+}
+
 bool validRequestId(const std::string& value) {
     static const std::regex pattern(R"(^[A-Za-z0-9][A-Za-z0-9._-]{7,127}$)");
     return std::regex_match(value, pattern);
@@ -77,10 +112,15 @@ nlohmann::json deploymentStatusData(const nlohmann::json& deployment,
     std::unordered_map<std::string, bool> readyByName;
     std::unordered_map<std::string, size_t> statusCountByName;
     size_t nonTerminatingPodCount = 0;
+    nlohmann::json podDiagnostics = nlohmann::json::array();
+    bool podDiagnosticsTruncated = false;
     bool podListComplete = podList && podList->is_object()
             && podList->contains("items") && podList->at("items").is_array();
     if (podListComplete) {
         const auto listMetadata = podList->value("metadata", nlohmann::json::object());
+        if (listMetadata.is_object()) {
+            podDiagnosticsTruncated = !listMetadata.value("continue", "").empty();
+        }
         podListComplete = listMetadata.is_object()
                 && listMetadata.value("continue", "").empty();
     }
@@ -128,6 +168,112 @@ nlohmann::json deploymentStatusData(const nlohmann::json& deployment,
         }
     }
 
+    if (podListComplete) {
+        constexpr size_t maxDiagnosticPods = 64;
+        constexpr size_t maxDiagnosticConditionsPerPod = 16;
+        constexpr size_t maxDiagnosticContainerStatuses = 128;
+        size_t diagnosticContainerStatusCount = 0;
+        for (const auto& pod : podList->at("items")) {
+            if (!pod.is_object()) continue;
+            const auto podMetadata = pod.value("metadata", nlohmann::json::object());
+            if (!podMetadata.is_object()) continue;
+            const auto deletionTimestamp = podMetadata.value("deletionTimestamp", nlohmann::json());
+            if (deletionTimestamp.is_string() && !deletionTimestamp.get<std::string>().empty()) continue;
+            if (podDiagnostics.size() >= maxDiagnosticPods) {
+                podDiagnosticsTruncated = true;
+                break;
+            }
+
+            const auto podStatusValue = pod.value("status", nlohmann::json::object());
+            const auto podSpecValue = pod.value("spec", nlohmann::json::object());
+            const auto podStatus = podStatusValue.is_object() ? podStatusValue : nlohmann::json::object();
+            const auto podSpec = podSpecValue.is_object() ? podSpecValue : nlohmann::json::object();
+            nlohmann::json summary = nlohmann::json::object();
+            addBoundedText(summary, podMetadata, "name", 63);
+            addBoundedText(summary, podSpec, "nodeName", 253, "node");
+            addBoundedText(summary, podStatus, "phase", 32);
+            if (summary["phase"].get<std::string>().empty()) summary["phase"] = "Unknown";
+            addBoundedText(summary, podStatus, "reason", 128);
+            addBoundedText(summary, podStatus, "message", 512);
+
+            nlohmann::json conditions = nlohmann::json::array();
+            const auto conditionList = podStatus.value("conditions", nlohmann::json::array());
+            if (conditionList.is_array()) {
+                for (const auto& condition : conditionList) {
+                    if (!condition.is_object()) continue;
+                    if (conditions.size() >= maxDiagnosticConditionsPerPod) {
+                        podDiagnosticsTruncated = true;
+                        break;
+                    }
+                    nlohmann::json conditionSummary = nlohmann::json::object();
+                    addBoundedText(conditionSummary, condition, "type", 64);
+                    addBoundedText(conditionSummary, condition, "status", 16);
+                    addBoundedText(conditionSummary, condition, "reason", 128);
+                    addBoundedText(conditionSummary, condition, "message", 512);
+                    addBoundedText(conditionSummary, condition, "lastTransitionTime", 64);
+                    conditions.push_back(std::move(conditionSummary));
+                }
+                if (conditionList.size() > maxDiagnosticConditionsPerPod) {
+                    podDiagnosticsTruncated = true;
+                }
+            }
+            summary["conditions"] = std::move(conditions);
+
+            const auto summariseContainerStatuses = [&](const char* fieldName) {
+                nlohmann::json result = nlohmann::json::array();
+                const auto statuses = podStatus.value(fieldName, nlohmann::json::array());
+                if (!statuses.is_array()) return result;
+                for (const auto& containerStatus : statuses) {
+                    if (!containerStatus.is_object()) continue;
+                    if (diagnosticContainerStatusCount >= maxDiagnosticContainerStatuses) {
+                        podDiagnosticsTruncated = true;
+                        break;
+                    }
+                    ++diagnosticContainerStatusCount;
+                    nlohmann::json containerSummary = nlohmann::json::object();
+                    addBoundedText(containerSummary, containerStatus, "name", 63);
+                    const auto readyValue = containerStatus.find("ready");
+                    containerSummary["ready"] = readyValue != containerStatus.end()
+                            && readyValue->is_boolean() && readyValue->get<bool>();
+                    const auto restartCount = containerStatus.find("restartCount");
+                    containerSummary["restart_count"] = restartCount != containerStatus.end()
+                            && restartCount->is_number_integer()
+                            ? std::max<int64_t>(0, restartCount->get<int64_t>()) : 0;
+                    const auto state = containerStatus.value("state", nlohmann::json::object());
+                    if (state.is_object()) {
+                        for (const char* stateName : {"waiting", "running", "terminated"}) {
+                            const auto stateValue = state.find(stateName);
+                            if (stateValue == state.end() || !stateValue->is_object()) continue;
+                            containerSummary["state"] = stateName;
+                            if (std::string(stateName) == "waiting"
+                                    || std::string(stateName) == "terminated") {
+                                addBoundedText(containerSummary, *stateValue, "reason", 128);
+                                addBoundedText(containerSummary, *stateValue, "message", 512);
+                            }
+                            if (std::string(stateName) == "running") {
+                                addBoundedText(containerSummary, *stateValue, "startedAt", 64);
+                            }
+                            if (std::string(stateName) == "terminated") {
+                                if (stateValue->contains("exitCode") && (*stateValue)["exitCode"].is_number_integer()) {
+                                    containerSummary["exit_code"] = (*stateValue)["exitCode"];
+                                }
+                                if (stateValue->contains("signal") && (*stateValue)["signal"].is_number_integer()) {
+                                    containerSummary["signal"] = (*stateValue)["signal"];
+                                }
+                            }
+                            break;
+                        }
+                    }
+                    result.push_back(std::move(containerSummary));
+                }
+                return result;
+            };
+            summary["containers"] = summariseContainerStatuses("containerStatuses");
+            summary["init_containers"] = summariseContainerStatuses("initContainerStatuses");
+            podDiagnostics.push_back(std::move(summary));
+        }
+    }
+
     nlohmann::json containerImages = nlohmann::json::array();
     if (containers.is_array()) {
         for (const auto& item : containers) {
@@ -166,6 +312,9 @@ nlohmann::json deploymentStatusData(const nlohmann::json& deployment,
             {"ready_replicas", ready},
             {"available_replicas", available},
             {"container_readiness_available", podListComplete},
+            {"pod_diagnostics_available", podListComplete},
+            {"pod_diagnostics_truncated", podDiagnosticsTruncated},
+            {"pods", std::move(podDiagnostics)},
             {"continuum_configuration_enabled",
                     deploymentLabels.is_object()
                     && deploymentLabels.value("neuralmimicry.ai/continuum-configuration", "") == "enabled"},
