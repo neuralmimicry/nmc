@@ -205,6 +205,7 @@ class MockBackend:
         self.k8s_request_delay_seconds = 0.025
         self.active_k8s_requests = 0
         self.max_concurrent_k8s_requests = 0
+        self.k8s_pod_log_accept_headers: list[str] = []
         self.home_assistant_status = 200
         self.home_assistant_states = [
             {"entity_id": "sensor.authz_device", "state": "online", "last_changed": "2026-10-07T10:00:00Z"},
@@ -537,6 +538,12 @@ class MockBackend:
         )
         if k8s_pod_log_match and handler.command == "GET":
             with self._track_k8s_request():
+                accept_header = handler.headers.get("Accept", "")
+                with self._lock:
+                    self.k8s_pod_log_accept_headers.append(accept_header)
+                if accept_header.strip().lower() != "text/plain":
+                    self._send_json(handler, 406, {"message": "pod logs require Accept: text/plain"})
+                    return
                 content = b"2026-10-11T00:00:00Z bounded mock workload log\n"
                 handler.send_response(200)
                 handler.send_header("Content-Type", "text/plain; charset=utf-8")
@@ -4271,6 +4278,7 @@ def test_workload_status_and_logs_use_bounded_raw_pod_lists_and_serialize(
         pod_list_path: backend.count_requests(pod_list_path, "GET"),
         container_logs_path: backend.count_requests(container_logs_path, "GET"),
     }
+    log_accept_headers_before = len(backend.k8s_pod_log_accept_headers)
     server = NmcServerProcess(
         backend.base_url,
         cluster_id="authz-test-cluster",
@@ -4339,6 +4347,12 @@ def test_workload_status_and_logs_use_bounded_raw_pod_lists_and_serialize(
             - request_counts_before[container_logs_path]
         )
         assert container_log_streams == 12, "the six log requests must read both selected container streams"
+        with backend._lock:
+            pod_log_accept_headers = list(backend.k8s_pod_log_accept_headers[log_accept_headers_before:])
+        assert len(pod_log_accept_headers) == container_log_streams and all(
+            header.strip().lower() == "text/plain"
+            for header in pod_log_accept_headers
+        ), "pod log requests must negotiate the Kubernetes text/plain response type only"
         assert backend.max_concurrent_k8s_requests == 1, (
             "isolated generated-client response state must remain serialized across status and logs"
         )
