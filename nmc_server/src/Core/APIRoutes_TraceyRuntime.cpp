@@ -1257,7 +1257,9 @@ namespace NMC::Server {
     }
 
     void APIRoutes::pollTraceyStatus(const std::string& agentId, const std::string& statusAddr, int64_t nowMs) {
-        auto markFailure = [&](const std::string& message, const TraceyEndpoint* endpoint = nullptr) {
+        auto markFailure = [&](const std::string& message,
+                               const TraceyEndpoint* endpoint = nullptr,
+                               bool discardStatusSnapshot = false) {
             std::lock_guard<std::mutex> lock(dataMutex);
             auto& agent = traceyAgents[agentId];
             const std::string previousStatus = normalizeTraceyStatus(agent.status);
@@ -1274,6 +1276,9 @@ namespace NMC::Server {
             agent.linkState = agent.queryFailures >= 3 ? "offline" : "degraded";
             agent.status = agent.queryFailures >= 3 ? "offline" : "degraded";
             agent.lastError = message;
+            if (discardStatusSnapshot && agent.metrics.is_object()) {
+                agent.metrics.erase("status_snapshot");
+            }
             agent.linkSecurity = deriveLinkSecurity(agent.signaturePresent, endpoint, traceyTlsVerify);
             const std::string currentStatus = normalizeTraceyStatus(agent.status);
             appendTraceyAgentLogLocked(
@@ -1305,7 +1310,7 @@ namespace NMC::Server {
 
         const std::string statusPath = buildTraceyStatusPath(endpoint);
         const int timeoutSec = static_cast<int>(std::max<int64_t>(1, (traceyStatusTimeoutMs + 999) / 1000));
-        httplib::Headers headers{{"Accept", "application/json"}};
+        httplib::Headers headers{{"Accept", "application/json"}, {"X-Tracey-Proxy-Hop", "1"}};
         if (!traceyStatusBearerToken.empty()) {
             headers.emplace("Authorization", "Bearer " + traceyStatusBearerToken);
         }
@@ -1343,6 +1348,22 @@ namespace NMC::Server {
         auto statusPayload = nlohmann::json::parse(result->body, nullptr, false);
         if (statusPayload.is_discarded()) {
             markFailure("Status endpoint returned non-JSON payload.", &endpoint);
+            return;
+        }
+        if (!statusPayload.is_object()) {
+            markFailure("Status endpoint returned an invalid status object.", &endpoint, true);
+            return;
+        }
+        const std::string responseAgentId = firstStringValue(
+                statusPayload,
+                {"agent_id", "agentId", "node_id", "nodeId", "id"}
+        );
+        if (responseAgentId.empty()) {
+            markFailure("Status endpoint omitted its agent identity.", &endpoint, true);
+            return;
+        }
+        if (responseAgentId != agentId) {
+            markFailure("Status endpoint identity does not match the requested agent.", &endpoint, true);
             return;
         }
 
