@@ -2008,24 +2008,86 @@ Json DeviceManagement::performControllerAction(const Inventory& inventory,
     const std::vector<std::string> expectedDependencies = stringArray(device->value("depends_on", Json::array()));
     const std::vector<std::string> suppliedServices = stringArray(preflight.value("affected_services", Json::array()));
     const std::vector<std::string> suppliedDependencies = stringArray(preflight.value("dependency_ids", Json::array()));
+    const Json outageRecovery = preflight.value("outage_recovery", Json());
+    const bool recoveryMode = !outageRecovery.is_null();
+    std::string outageId;
+    Json outageEvidence = Json::array();
+    bool outageEvidenceValid = false;
+    if (recoveryMode && outageRecovery.is_object()) {
+        outageId = stringField(outageRecovery, "outage_id");
+        const Json observations = outageRecovery.value("affected_services", Json());
+        std::unordered_set<std::string> observedServices;
+        outageEvidenceValid = safeIdentifier(outageId) && observations.is_array()
+                && observations.size() == expectedServices.size() && !expectedServices.empty();
+        if (outageEvidenceValid) {
+            for (const Json& observation : observations) {
+                if (!observation.is_object()) {
+                    outageEvidenceValid = false;
+                    break;
+                }
+                const std::string service = stringField(observation, "service");
+                const std::string state = lower(stringField(observation, "state"));
+                const std::string source = stringField(observation, "source");
+                const std::string reference = stringField(observation, "reference");
+                if (!observation.contains("observed_at_unix_ms")
+                    || !observation["observed_at_unix_ms"].is_number_integer()) {
+                    outageEvidenceValid = false;
+                    break;
+                }
+                const int64_t serviceObservedAt = observation["observed_at_unix_ms"].get<int64_t>();
+                const int64_t serviceEvidenceAge = nowEpochMs() - serviceObservedAt;
+                const auto safeEvidenceText = [](const std::string& value, size_t maxLength) {
+                    return !value.empty() && value.size() <= maxLength
+                            && std::all_of(value.begin(), value.end(), [](unsigned char ch) {
+                                return ch >= 0x20 && ch != 0x7f;
+                            });
+                };
+                if (service.empty()
+                    || std::find(expectedServices.begin(), expectedServices.end(), service) == expectedServices.end()
+                    || !observedServices.insert(service).second
+                    || state != "unavailable"
+                    || serviceEvidenceAge < -30000 || serviceEvidenceAge > 60000
+                    || !safeEvidenceText(source, 128) || !safeEvidenceText(reference, 512)) {
+                    outageEvidenceValid = false;
+                    break;
+                }
+                outageEvidence.push_back({
+                        {"service", service}, {"state", state},
+                        {"observed_at_unix_ms", serviceObservedAt},
+                        {"source", source}, {"reference", reference}});
+            }
+        }
+        if (outageEvidenceValid) {
+            outageEvidenceValid = observedServices.size() == expectedServices.size();
+        }
+    }
+    const bool serviceHealthSatisfied = recoveryMode
+            ? outageEvidenceValid && (action == "warm_restart" || action == "cold_restart")
+              && preflight.contains("affected_services_healthy")
+              && preflight["affected_services_healthy"].is_boolean()
+              && !preflight["affected_services_healthy"].get<bool>()
+            : trueField(preflight, "affected_services_healthy") && outageRecovery.is_null();
     if (age < -30000 || age > 60000
         || stringField(preflight, "inventory_revision") != inventory.revision
         || stringField(preflight, "dependency_graph_revision") != inventory.document["dependency_graph_revision"].get<std::string>()
         || !trueField(preflight, "target_identity_verified")
         || !trueField(preflight, "dependencies_healthy")
         || !trueField(preflight, "dependents_known")
-        || !trueField(preflight, "affected_services_healthy")
+        || !serviceHealthSatisfied
         || !trueField(preflight, "monitoring_healthy")
         || expectedPowerState != requiredPowerState
         || expectedServices.empty() || suppliedServices != expectedServices
         || suppliedDependencies != expectedDependencies) {
         statusCode = 409;
-        return errorBody("controller_preflight_blocked", "fresh identity, dependency, affected-service and monitoring evidence must match the active inventory");
+        return errorBody("controller_preflight_blocked", "fresh identity, dependency and monitoring evidence must match the active inventory; services must be healthy or have a complete, fresh outage-recovery record");
     }
     const std::string intentDigest = controllerActionIntentDigest(controllerId, request);
     Json auditBase{{"request_id", requestId}, {"controller_id", controllerId}, {"device_id", deviceId},
                    {"action", action}, {"change_id", changeId}, {"inventory_revision", inventory.revision},
                    {"reason", reason}, {"intent_sha256", intentDigest}, {"started_at_unix_ms", nowEpochMs()}};
+    if (recoveryMode) {
+        auditBase["outage_recovery"] = {{"outage_id", outageId}, {"affected_services", outageEvidence}};
+    }
     Json intent = auditBase;
     intent["phase"] = "intent";
     if (!appendAuditRecord(auditPath, intent, auditError)) {

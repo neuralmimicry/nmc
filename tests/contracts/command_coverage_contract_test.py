@@ -279,7 +279,16 @@ def is_docs_route(route: Route) -> bool:
 
 def endpoint_samples(path: str) -> Sequence[str]:
     if "{var}" in path:
-        return (path.replace("{var}", "contract-id"),)
+        # Exercise dynamic server routes with valid examples for the common
+        # identifier shapes used by CloudAPIClient methods: provider job IDs,
+        # numeric Actions run IDs and canonical Actions task UUIDs.
+        candidates = (
+            "contract-id",
+            "a" * 32,
+            "12345",
+            "00000000-0000-4000-8000-000000000000",
+        )
+        return tuple(path.replace("{var}", candidate) for candidate in candidates)
     if path.endswith("/"):
         return (path + "contract-id",)
     return (path,)
