@@ -244,6 +244,10 @@ void CLIParser::printRootHelp() const {
     std::cout << "Usage:" << std::endl;
     std::cout << "  nmc [command]" << std::endl;
     std::cout << "Available Commands:" << std::endl;
+    size_t commandNameWidth = 12;
+    for (const auto& pair : rootCommands) {
+        commandNameWidth = std::max(commandNameWidth, pair.first.length());
+    }
     for (const auto& pair : rootCommands) {
          // Only print direct command names, not aliases here to avoid duplication
         bool isAlias = false;
@@ -259,7 +263,8 @@ void CLIParser::printRootHelp() const {
             if (isAlias) break;
         }
         if (!isAlias) {
-            std::cout << "  " << pair.first << Core::Utils::padRight("", 12 - pair.first.length()) << pair.second->description << std::endl;
+            std::cout << "  " << Core::Utils::padRight(pair.first, commandNameWidth + 2)
+                      << pair.second->description << std::endl;
         }
     }
     std::cout << "Flags:" << std::endl;

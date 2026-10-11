@@ -792,6 +792,15 @@ def assert_failure(result: subprocess.CompletedProcess[str], label: str) -> None
     )
 
 
+def test_root_help_handles_long_command_names(home_dir: pathlib.Path) -> None:
+    result = run_nmc(["--help"], home_dir)
+    assert_success(result, "root help")
+    assert_true(
+        "github-actions" in result.stdout and "vcluster" in result.stdout,
+        f"root help must list long and short commands without aborting, got stdout:\n{result.stdout}",
+    )
+
+
 def test_analytics_query_serialization(server: MockServer, home_dir: pathlib.Path) -> None:
     server.clear_records()
     result = run_nmc(
@@ -2054,6 +2063,7 @@ def main() -> int:
             home_dir = pathlib.Path(tmp_home)
             write_connection_config(home_dir, server.base_url)
 
+            test_root_help_handles_long_command_names(home_dir)
             test_analytics_query_serialization(server, home_dir)
             test_k8s_recovery_status_serialization(server, home_dir)
             test_k8s_recovery_status_json_output(server, home_dir)

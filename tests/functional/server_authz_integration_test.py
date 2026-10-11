@@ -206,6 +206,7 @@ class MockBackend:
         self.active_k8s_requests = 0
         self.max_concurrent_k8s_requests = 0
         self.k8s_pod_log_accept_headers: list[str] = []
+        self.k8s_pod_status_override: dict[str, Any] | None = None
         self.home_assistant_status = 200
         self.home_assistant_states = [
             {"entity_id": "sensor.authz_device", "state": "online", "last_changed": "2026-10-07T10:00:00Z"},
@@ -497,6 +498,11 @@ class MockBackend:
                     pod_spec = deployment.get("spec", {}).get("template", {}).get("spec", {})
                     containers = pod_spec.get("containers", [])
                     labels = deployment.get("spec", {}).get("template", {}).get("metadata", {}).get("labels", {})
+                    pod_status_override = (
+                        json.loads(json.dumps(self.k8s_pod_status_override))
+                        if self.k8s_pod_status_override is not None
+                        else None
+                    )
                 expected_selector = ",".join(f"{key}={value}" for key, value in sorted(labels.items()))
                 items = []
                 if label_selector == expected_selector:
@@ -510,14 +516,23 @@ class MockBackend:
                             "uid": f"{namespace}-test-pod-uid",
                         },
                         "spec": {
+                            "nodeName": "qc01",
                             "containers": [{"name": item.get("name", "")}
                                             for item in containers if item.get("name")]
                         },
-                        "status": {
+                        "status": pod_status_override or {
                             "phase": "Running",
+                            "conditions": [{
+                                "type": "Ready",
+                                "status": "True",
+                                "reason": "ContainersReady",
+                                "message": "All selected containers are ready.",
+                                "lastTransitionTime": "2026-10-11T00:00:00Z",
+                            }],
                             "containerStatuses": [
                                 {"name": item.get("name", ""), "ready": True,
-                                 "image": item.get("image", "")}
+                                 "image": item.get("image", ""), "restartCount": 0,
+                                 "state": {"running": {"startedAt": "2026-10-11T00:00:00Z"}}}
                                 for item in containers if item.get("name")
                             ],
                             # Newer Kubernetes fields must not make a bounded
@@ -4330,6 +4345,13 @@ def test_workload_status_and_logs_use_bounded_raw_pod_lists_and_serialize(
                    for payload in status_payloads), (
             "container readiness must come from Pod status, not Deployment status"
         )
+        assert all(payload.get("data", {}).get("pod_diagnostics_available") is True
+                   and payload.get("data", {}).get("pods", [{}])[0].get("name") == "octobot-test-pod"
+                   and payload.get("data", {}).get("pods", [{}])[0].get("node") == "qc01"
+                   and payload.get("data", {}).get("pods", [{}])[0].get("conditions", [{}])[0].get("reason") == "ContainersReady"
+                   for payload in status_payloads), (
+            "bounded deployment status must include matching pod placement and conditions"
+        )
         log_payloads = [payload for kind, _, payload in responses if kind == "logs"]
         assert all(any("bounded mock workload log" in item.get("logs", "")
                        for item in payload.get("data", {}).get("items", []))
@@ -4355,6 +4377,51 @@ def test_workload_status_and_logs_use_bounded_raw_pod_lists_and_serialize(
         ), "pod log requests must negotiate an API representation accepted by Kubernetes"
         assert backend.max_concurrent_k8s_requests == 1, (
             "isolated generated-client response state must remain serialized across status and logs"
+        )
+
+        long_message = "image registry denied access; " * 40
+        with backend._lock:
+            backend.k8s_pod_status_override = {
+                "phase": "Pending",
+                "reason": "Unschedulable",
+                "message": long_message,
+                "conditions": [{
+                    "type": "PodScheduled",
+                    "status": "False",
+                    "reason": "Unschedulable",
+                    "message": long_message,
+                    "lastTransitionTime": "2026-10-11T00:00:00Z",
+                }],
+                "containerStatuses": [{
+                    "name": "octobot",
+                    "ready": False,
+                    "restartCount": 0,
+                    "state": {"waiting": {
+                        "reason": "ImagePullBackOff",
+                        "message": long_message,
+                    }},
+                }],
+                "initContainerStatuses": [],
+            }
+        status, payload = request_json(
+            server.base_url,
+            "GET",
+            status_path,
+            token=STATIC_ADMIN_TOKEN,
+        )
+        assert_status(status, 200, "pending Deployment pod diagnostic status")
+        pending_pod = payload.get("data", {}).get("pods", [{}])[0]
+        waiting_container = pending_pod.get("containers", [{}])[0]
+        condition = pending_pod.get("conditions", [{}])[0]
+        assert pending_pod.get("phase") == "Pending" and condition.get("reason") == "Unschedulable", (
+            "Deployment status must return pod phase and scheduling failure reason"
+        )
+        assert waiting_container.get("state") == "waiting" and waiting_container.get("reason") == "ImagePullBackOff", (
+            "Deployment status must return a pending container's waiting reason"
+        )
+        assert len(waiting_container.get("message", "")) <= 512
+        assert waiting_container.get("message_truncated") is True, (
+            "container state messages must be bounded and report truncation"
         )
     finally:
         server.stop()
