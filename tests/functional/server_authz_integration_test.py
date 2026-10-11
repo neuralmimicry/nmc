@@ -4263,6 +4263,14 @@ def test_refiner_status_serializes_shared_kubernetes_client(backend: MockBackend
 def test_workload_status_and_logs_use_bounded_raw_pod_lists_and_serialize(
     backend: MockBackend,
 ) -> None:
+    deployment_path = "/apis/apps/v1/namespaces/octobot/deployments/octobot"
+    pod_list_path = "/api/v1/namespaces/octobot/pods"
+    container_logs_path = "/api/v1/namespaces/octobot/pods/octobot-test-pod/log"
+    request_counts_before = {
+        deployment_path: backend.count_requests(deployment_path, "GET"),
+        pod_list_path: backend.count_requests(pod_list_path, "GET"),
+        container_logs_path: backend.count_requests(container_logs_path, "GET"),
+    }
     server = NmcServerProcess(
         backend.base_url,
         cluster_id="authz-test-cluster",
@@ -4320,15 +4328,17 @@ def test_workload_status_and_logs_use_bounded_raw_pod_lists_and_serialize(
                    for payload in log_payloads), (
             "raw PodList handling must still retrieve bounded container logs"
         )
-        assert backend.count_requests(
-            "/apis/apps/v1/namespaces/octobot/deployments/octobot", "GET"
-        ) == 12, "each status/log request must read the selected Deployment once"
-        assert backend.count_requests("/api/v1/namespaces/octobot/pods", "GET") == 12, (
+        deployment_reads = backend.count_requests(deployment_path, "GET") - request_counts_before[deployment_path]
+        assert deployment_reads == 12, "each status/log request must read the selected Deployment once"
+        pod_lists = backend.count_requests(pod_list_path, "GET") - request_counts_before[pod_list_path]
+        assert pod_lists == 12, (
             "each request must use a bounded label-selected raw PodList"
         )
-        assert backend.count_requests(
-            "/api/v1/namespaces/octobot/pods/octobot-test-pod/log", "GET"
-        ) == 12, "the six log requests must read both selected container streams"
+        container_log_streams = (
+            backend.count_requests(container_logs_path, "GET")
+            - request_counts_before[container_logs_path]
+        )
+        assert container_log_streams == 12, "the six log requests must read both selected container streams"
         assert backend.max_concurrent_k8s_requests == 1, (
             "isolated generated-client response state must remain serialized across status and logs"
         )
