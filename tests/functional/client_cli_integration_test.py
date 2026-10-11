@@ -278,6 +278,18 @@ class MockServer:
             )
             return
 
+        if handler.command == "GET" and path_only == "/github/actions/workflow":
+            self._send_json(
+                handler,
+                200,
+                {
+                    "success": True,
+                    "message": "Configured GitHub Actions workflow retrieved.",
+                    "data": {"workflow_id": "nmide-remote-task.yml", "state": "active"},
+                },
+            )
+            return
+
         if handler.command == "GET" and path_only == "/devices/home-assistant/reconciliation":
             self._send_json(
                 handler,
@@ -798,6 +810,30 @@ def test_root_help_handles_long_command_names(home_dir: pathlib.Path) -> None:
     assert_true(
         "github-actions" in result.stdout and "vcluster" in result.stdout,
         f"root help must list long and short commands without aborting, got stdout:\n{result.stdout}",
+    )
+
+
+def test_github_actions_workflow_command_accepts_operation_and_uses_continuum(
+    server: MockServer,
+    home_dir: pathlib.Path,
+) -> None:
+    server.clear_records()
+    result = run_nmc(
+        [
+            "--output", "json",
+            "github-actions", "workflow",
+            "--workflow-id", "nmide-remote-task.yml",
+        ],
+        home_dir,
+    )
+    assert_success(result, "GitHub Actions workflow status")
+    output = json.loads(result.stdout)
+    assert_true(output.get("success") is True, "workflow status must emit a successful JSON envelope")
+    records = server.records()
+    assert_true(len(records) == 1 and records[0].method == "GET", "workflow status must use one read-only request")
+    assert_true(
+        records[0].path == "/github/actions/workflow?workflow_id=nmide-remote-task.yml",
+        f"workflow status query was not serialised as expected: {records[0].path}",
     )
 
 
@@ -2084,6 +2120,7 @@ def main() -> int:
             write_connection_config(home_dir, server.base_url)
 
             test_root_help_handles_long_command_names(home_dir)
+            test_github_actions_workflow_command_accepts_operation_and_uses_continuum(server, home_dir)
             test_analytics_query_serialization(server, home_dir)
             test_k8s_recovery_status_serialization(server, home_dir)
             test_k8s_recovery_status_json_output(server, home_dir)
