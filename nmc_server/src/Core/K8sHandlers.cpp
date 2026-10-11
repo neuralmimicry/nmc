@@ -23,6 +23,11 @@
 namespace {
     constexpr curl_off_t maxBoundedPodListBytes = 8 * 1024 * 1024;
 
+    struct BoundedWorkloadLogDownload {
+        curl_off_t maxBytes;
+        bool exceeded{false};
+    };
+
     int abortOversizedPodList(void* limitPointer,
                               curl_off_t downloadTotal,
                               curl_off_t downloadNow,
@@ -30,6 +35,97 @@ namespace {
                               curl_off_t) {
         const auto* limit = static_cast<const curl_off_t*>(limitPointer);
         return limit && (downloadNow > *limit || downloadTotal > *limit) ? 1 : 0;
+    }
+
+    int abortOversizedWorkloadLog(void* limitPointer,
+                                  curl_off_t downloadTotal,
+                                  curl_off_t downloadNow,
+                                  curl_off_t,
+                                  curl_off_t) {
+        auto* limit = static_cast<BoundedWorkloadLogDownload*>(limitPointer);
+        if (!limit || (downloadNow <= limit->maxBytes && downloadTotal <= limit->maxBytes)) {
+            return 0;
+        }
+        limit->exceeded = true;
+        return 1;
+    }
+
+    std::optional<std::string> readBoundedWorkloadLog(apiClient_t* client,
+                                                       const std::string& podName,
+                                                       const std::string& namespaceName,
+                                                       const std::string& containerName,
+                                                       int sinceSeconds,
+                                                       int tailLines,
+                                                       int maxBytes,
+                                                       bool previous,
+                                                       bool& truncated) {
+        if (!client || maxBytes <= 0) return std::nullopt;
+
+        if (client->dataReceived) {
+            free(client->dataReceived);
+            client->dataReceived = nullptr;
+            client->dataReceivedLen = 0;
+        }
+        client->response_code = 0;
+
+        // The Kubernetes pod-log endpoint serves text/plain. The generated
+        // client advertises several response types at once, which the live
+        // API rejects with HTTP 406. Send only the media type this endpoint
+        // actually returns, while retaining the authenticated Kubernetes
+        // client's TLS and bearer-token configuration.
+        list_t* acceptedTypes = list_createList();
+        if (!acceptedTypes) return std::nullopt;
+        list_addElement(acceptedTypes, const_cast<char*>("text/plain"));
+
+        const std::string requestPath =
+                "/api/v1/namespaces/" + namespaceName + "/pods/" + podName + "/log"
+                + "?container=" + containerName
+                + "&follow=0"
+                + "&limitBytes=" + std::to_string(maxBytes)
+                + "&previous=" + (previous ? "1" : "0")
+                + "&sinceSeconds=" + std::to_string(sinceSeconds)
+                + "&tailLines=" + std::to_string(tailLines)
+                + "&timestamps=1";
+
+        BoundedWorkloadLogDownload downloadLimit{static_cast<curl_off_t>(maxBytes)};
+        auto* previousProgressFunction = client->progress_func;
+        void* previousProgressData = client->progress_data;
+        client->progress_func = abortOversizedWorkloadLog;
+        client->progress_data = &downloadLimit;
+        apiClient_invoke(client,
+                         requestPath.c_str(),
+                         nullptr,
+                         nullptr,
+                         nullptr,
+                         acceptedTypes,
+                         nullptr,
+                         nullptr,
+                         0,
+                         "GET");
+        client->progress_func = previousProgressFunction;
+        client->progress_data = previousProgressData;
+        list_freeList(acceptedTypes);
+
+        truncated = downloadLimit.exceeded;
+        std::optional<std::string> content;
+        if (client->response_code >= 200 && client->response_code < 300) {
+            const size_t receivedBytes = client->dataReceived
+                    ? static_cast<size_t>(client->dataReceivedLen)
+                    : 0;
+            const size_t boundedBytes = std::min(receivedBytes, static_cast<size_t>(maxBytes));
+            if (receivedBytes > boundedBytes) truncated = true;
+            if (client->dataReceived && boundedBytes > 0) {
+                content.emplace(static_cast<const char*>(client->dataReceived), boundedBytes);
+            } else {
+                content.emplace();
+            }
+        }
+        if (client->dataReceived) {
+            free(client->dataReceived);
+            client->dataReceived = nullptr;
+            client->dataReceivedLen = 0;
+        }
+        return content;
     }
 
     std::string trimCopy(const std::string& value) {
@@ -2299,47 +2395,41 @@ users:
                             truncated = true;
                             break;
                         }
-                        int follow = 0;
                         int limitBytes = static_cast<int>(std::min(remainingBytes, static_cast<size_t>(perContainerLogBytes)));
-                        int previousFlag = previous ? 1 : 0;
-                        int since = sinceSeconds;
-                        int lines = tailLines;
-                        int timestamps = 1;
-                        char* rawLog = CoreV1API_readNamespacedPodLog(
-                                workloadLogsApiClient,
-                                const_cast<char*>(podName.c_str()),
-                                const_cast<char*>(namespaceName.c_str()),
-                                const_cast<char*>(containerName.c_str()),
-                                &follow,
-                                nullptr,
-                                &limitBytes,
-                                nullptr,
-                                &previousFlag,
-                                &since,
-                                nullptr,
-                                &lines,
-                                &timestamps);
                         nlohmann::json logItem = {
                                 {"pod", podName}, {"container", containerName}, {"phase", phase},
                                 {"previous", previous}, {"truncated", false}
                         };
+                        bool logTruncated = false;
+                        auto rawLog = readBoundedWorkloadLog(
+                                workloadLogsApiClient,
+                                podName,
+                                namespaceName,
+                                containerName,
+                                sinceSeconds,
+                                tailLines,
+                                limitBytes,
+                                previous,
+                                logTruncated);
                         const int logStatus = workloadLogsApiClient->response_code;
                         if (rawLog && logStatus >= 200 && logStatus < 300) {
-                            std::string content(rawLog);
+                            std::string content = std::move(*rawLog);
                             const size_t allowedBytes = std::min(remainingBytes, static_cast<size_t>(perContainerLogBytes));
                             if (content.size() > allowedBytes) {
                                 content.resize(allowedBytes);
-                                logItem["truncated"] = true;
-                                truncated = true;
+                                logTruncated = true;
                             }
                             totalLogBytes += content.size();
                             logItem["logs"] = std::move(content);
+                            if (logTruncated) {
+                                logItem["truncated"] = true;
+                                truncated = true;
+                            }
                         } else {
                             ++errorCount;
                             logItem["error"] = "Kubernetes API could not retrieve this container log.";
                             logItem["status_code"] = logStatus;
                         }
-                        if (rawLog) free(rawLog);
                         logItems.push_back(std::move(logItem));
                         if (totalLogBytes >= maxResponseLogBytes) {
                             truncated = true;
