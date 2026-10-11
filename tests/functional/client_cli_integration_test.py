@@ -439,6 +439,22 @@ class MockServer:
             )
             return
 
+        if handler.command == "GET" and path_only == "/gail/status/training":
+            self._send_json(
+                handler,
+                200,
+                {
+                    "success": True,
+                    "message": "Gail trainer status retrieved.",
+                    "data": {
+                        "gail_path": "/v1/status/training",
+                        "upstream_status": 200,
+                        "payload": {"jobs": [], "results": []},
+                    },
+                },
+            )
+            return
+
         if handler.command == "GET" and path_only == "/v1/status/api-issues":
             self._send_json(
                 handler,
