@@ -168,7 +168,7 @@ jobs:
           - component: client
             os: linux
             arch: arm64
-            runs_on: '["ubuntu-24.04-arm"]'
+            runs_on: '["self-hosted","Linux","ARM64"]'
             platform: linux-arm64
             source_dir: nmc_client
             build_dir: nmc_client/build
@@ -190,7 +190,7 @@ jobs:
           - component: server
             os: linux
             arch: arm64
-            runs_on: '["ubuntu-24.04-arm"]'
+            runs_on: '["self-hosted","Linux","ARM64"]'
             platform: linux-arm64
             source_dir: nmc_server
             build_dir: nmc_server/build
