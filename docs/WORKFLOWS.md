@@ -261,6 +261,18 @@ patch. A successful request means Kubernetes accepted the desired image; poll
 `deployment-status` until observed generation and ready replicas converge.
 Both commands call Continuum rather than invoking `kubectl` on the caller.
 
+### 8.5 Gail trainer status through Continuum
+
+`nmc gail trainer-status --limit 10` reads the active Gail trainer snapshot,
+worker and Slurm heartbeat state, exact scheduler job ID, and a bounded list of
+recent training-result summaries through Continuum's `/gail/status/training`
+route. The Continuum server forwards only the bounded `limit` to Gail's
+`/v1/status/training` endpoint and requires both an authenticated Continuum
+request and its configured Gail service credential. The result does not include
+trainer logs or scan historical snapshots. Use the returned snapshot and job
+identity to reconcile the actual scheduler run; an HTTP success alone does not
+mean training completed or a model was promoted.
+
 ## 9. Version Check Workflow
 
 - `nmc version` reports the local client version and, unless `--no-check` is used, checks the latest GitHub release.

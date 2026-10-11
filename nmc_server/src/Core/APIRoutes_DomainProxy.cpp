@@ -1,5 +1,5 @@
 // APIRoutes_DomainProxy.cpp
-// Cross-domain proxy route registration and handlers for AARNN, provider portals, and Gail trading.
+// Cross-domain proxy route registration and handlers for AARNN, provider portals, and Gail status/trading.
 
 #include "APIRoutes.h"
 #include "K8sHandlers.h"
@@ -34,6 +34,7 @@
 #include <thread>
 #include <tuple>
 #include <unistd.h>
+#include <utility>
 #include <vector>
 
 namespace NMC::Server {
@@ -489,6 +490,10 @@ namespace NMC::Server {
         svr.Get("/gail/status/api-issues", [this, guard](const httplib::Request& req, httplib::Response& res) {
             if (!guard(req, res)) return;
             handleGailApiIssues(req, res);
+        });
+        svr.Get("/gail/status/training", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            handleGailTrainerStatus(req, res);
         });
 
         // --- OpenShift Routes ---
@@ -2837,6 +2842,60 @@ namespace NMC::Server {
 
     void APIRoutes::handleGailApiIssues(const httplib::Request& req, httplib::Response& res) {
         proxyGailTradingRequest(req, res, "/v1/status/api-issues", "GET");
+    }
+
+    void APIRoutes::handleGailTrainerStatus(const httplib::Request& req, httplib::Response& res) {
+        int limit = 10;
+        if (!parseBoundedPositiveInt(req.params, "limit", 10, 25, limit)) {
+            sendErrorResponse(res, 400, "Invalid query parameter 'limit'; expected a positive integer.");
+            return;
+        }
+        if (resolveGailApiToken().empty()) {
+            sendErrorResponse(res, 503, "Gail API token is not configured for trainer status.");
+            return;
+        }
+
+        httplib::Params boundedParams;
+        boundedParams.emplace("limit", std::to_string(limit));
+        int upstreamStatus = 0;
+        nlohmann::json parsedPayload;
+        std::string rawBody;
+        std::string errorMessage;
+        const bool fetched = fetchGailTradingPayload(
+            &boundedParams,
+            "/v1/status/training",
+            "GET",
+            {},
+            upstreamStatus,
+            parsedPayload,
+            rawBody,
+            errorMessage
+        );
+        if (!fetched) {
+            sendErrorResponse(res, upstreamStatus > 0 ? upstreamStatus : 502, errorMessage);
+            return;
+        }
+
+        nlohmann::json upstreamData = {
+            {"gail_path", "/v1/status/training"},
+            {"upstream_status", upstreamStatus}
+        };
+        if (!parsedPayload.is_null()) {
+            upstreamData["payload"] = std::move(parsedPayload);
+        } else if (!rawBody.empty()) {
+            upstreamData["text"] = std::move(rawBody);
+        } else {
+            upstreamData["payload"] = nlohmann::json::object();
+        }
+
+        Models::CloudResponse apiResponse;
+        apiResponse.success = upstreamStatus >= 200 && upstreamStatus < 300;
+        apiResponse.message = apiResponse.success
+            ? "Gail trainer status retrieved."
+            : ("Gail trainer status failed with HTTP " + std::to_string(upstreamStatus) + ".");
+        apiResponse.data = std::move(upstreamData);
+        sendJsonResponse(res, apiResponse);
+        res.status = upstreamStatus;
     }
 
 } // namespace NMC::Server

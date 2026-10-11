@@ -1940,6 +1940,26 @@ def test_gail_api_issues_uses_server_route_by_default(server: MockServer, home_d
     assert_true(req.path == "/gail/status/api-issues", f"gail api-issues wrong path: {req.path}")
 
 
+def test_gail_trainer_status_uses_continuum_route_and_bounds_limit(server: MockServer, home_dir: pathlib.Path) -> None:
+    server.clear_records()
+    result = run_nmc(["gail", "trainer-status", "--limit", "5"], home_dir)
+    assert_success(result, "gail trainer status")
+
+    records = server.records()
+    assert_true(len(records) == 1, f"gail trainer status expected 1 request, got {len(records)}")
+    req = records[0]
+    assert_true(req.method == "GET", f"gail trainer status expected GET, got {req.method}")
+    assert_true(
+        req.path == "/gail/status/training?limit=5",
+        f"gail trainer status wrong path: {req.path}",
+    )
+
+    server.clear_records()
+    invalid = run_nmc(["gail", "trainer-status", "--limit", "26"], home_dir)
+    assert_failure(invalid, "gail trainer status oversized limit")
+    assert_true(not server.records(), "invalid trainer-status limit must not send a request")
+
+
 def test_gail_api_issues_direct_mode_uses_gail_endpoint(server: MockServer, home_dir: pathlib.Path) -> None:
     server.clear_records()
     result = run_nmc(
@@ -2112,6 +2132,7 @@ def main() -> int:
             test_gail_transcribe_multipart_serialization(server, home_dir)
             test_gail_request_raw_body_serialization(server, home_dir)
             test_gail_api_issues_uses_server_route_by_default(server, home_dir)
+            test_gail_trainer_status_uses_continuum_route_and_bounds_limit(server, home_dir)
             test_gail_api_issues_direct_mode_uses_gail_endpoint(server, home_dir)
             test_gail_trading_status_uses_server_route_by_default(server, home_dir)
             test_gail_trading_overview_uses_server_route_with_limits(server, home_dir)
