@@ -541,8 +541,8 @@ class MockBackend:
                 accept_header = handler.headers.get("Accept", "")
                 with self._lock:
                     self.k8s_pod_log_accept_headers.append(accept_header)
-                if accept_header.strip().lower() != "text/plain":
-                    self._send_json(handler, 406, {"message": "pod logs require Accept: text/plain"})
+                if accept_header.strip().lower() != "application/json":
+                    self._send_json(handler, 406, {"message": "pod log negotiation requires Accept: application/json"})
                     return
                 content = b"2026-10-11T00:00:00Z bounded mock workload log\n"
                 handler.send_response(200)
@@ -4350,9 +4350,9 @@ def test_workload_status_and_logs_use_bounded_raw_pod_lists_and_serialize(
         with backend._lock:
             pod_log_accept_headers = list(backend.k8s_pod_log_accept_headers[log_accept_headers_before:])
         assert len(pod_log_accept_headers) == container_log_streams and all(
-            header.strip().lower() == "text/plain"
+            header.strip().lower() == "application/json"
             for header in pod_log_accept_headers
-        ), "pod log requests must negotiate the Kubernetes text/plain response type only"
+        ), "pod log requests must negotiate an API representation accepted by Kubernetes"
         assert backend.max_concurrent_k8s_requests == 1, (
             "isolated generated-client response state must remain serialized across status and logs"
         )
