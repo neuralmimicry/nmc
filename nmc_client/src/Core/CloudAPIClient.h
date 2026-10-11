@@ -95,6 +95,11 @@ namespace NMC::Core {
         Models::CloudResponse getK8sDeploymentStatus(const std::string& clusterId,
                                                      const std::string& namespaceName,
                                                      const std::string& deploymentName);
+        /** Read bounded Kubernetes Events for Pods selected by a Deployment. */
+        Models::CloudResponse getK8sDeploymentEvents(const std::string& clusterId,
+                                                      const std::string& namespaceName,
+                                                      const std::string& deploymentName,
+                                                      int maxEvents = 20);
         /** Request one compare-and-swap rollout to an immutable NeuralMimicry GHCR image digest. */
         Models::CloudResponse rolloutK8sDeploymentImage(const std::string& clusterId,
                                                         const std::string& namespaceName,

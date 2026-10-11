@@ -1,6 +1,7 @@
 #include "K8sCommands.h"
 #include <algorithm>
 #include <iostream>
+#include <stdexcept>
 #include <string>
 
 namespace NMC::Commands {
@@ -309,6 +310,44 @@ int K8sDeploymentStatusCommand::execute(
     if (!validateArguments(parsedArgs) || !validateFlags(parsedFlags)) return 1;
     const auto response = apiClient->getK8sDeploymentStatus(
             parsedFlags.at("cluster-id"), parsedFlags.at("namespace"), parsedFlags.at("deployment"));
+    printOutput(response, globalFlags);
+    return response.success ? 0 : 1;
+}
+
+K8sDeploymentEventsCommand::K8sDeploymentEventsCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client)
+    : BaseCommand("deployment-events", "Read bounded Pod scheduling and lifecycle Events through Continuum",
+                  std::move(client)) {
+    usage = "nmc k8s deployment-events --cluster-id ID --namespace NAME --deployment NAME [--max-events 20]";
+    examples = "nmc k8s deployment-events --cluster-id rk1 --namespace octobot --deployment octobot --max-events 50";
+    addFlag(CLI::Flag("c", "cluster-id", "Stable identity of the Continuum Kubernetes context", CLI::FlagType::String,
+                      true));
+    addFlag(CLI::Flag("n", "namespace", "Workload namespace", CLI::FlagType::String, true));
+    addFlag(CLI::Flag("d", "deployment", "Kubernetes Deployment", CLI::FlagType::String, true));
+    addFlag(CLI::Flag("m", "max-events", "Maximum returned Events (1-100)", CLI::FlagType::Int, false, "20"));
+}
+
+int K8sDeploymentEventsCommand::execute(const std::map<std::string, std::string> &parsedFlags,
+                                        const std::vector<std::string> &parsedArgs,
+                                        const CLI::GlobalFlags &globalFlags) {
+    if (!validateArguments(parsedArgs) || !validateFlags(parsedFlags))
+        return 1;
+    int maxEvents = 0;
+    try {
+        const std::string rawMaxEvents = parsedFlags.count("max-events") ? parsedFlags.at("max-events") : "20";
+        size_t consumed = 0;
+        maxEvents = std::stoi(rawMaxEvents, &consumed);
+        if (consumed != rawMaxEvents.size())
+            throw std::invalid_argument("max-events");
+    } catch (const std::exception &) {
+        std::cerr << "Error: max-events must be an integer." << std::endl;
+        return 1;
+    }
+    if (maxEvents < 1 || maxEvents > 100) {
+        std::cerr << "Error: max-events must be between 1 and 100." << std::endl;
+        return 1;
+    }
+    const auto response = apiClient->getK8sDeploymentEvents(parsedFlags.at("cluster-id"), parsedFlags.at("namespace"),
+                                                            parsedFlags.at("deployment"), maxEvents);
     printOutput(response, globalFlags);
     return response.success ? 0 : 1;
 }

@@ -595,6 +595,38 @@ namespace NMC::Core {
         return processHttpResponse(res, "Continuum Deployment status retrieved.");
     }
 
+    Models::CloudResponse CloudAPIClient::getK8sDeploymentEvents(const std::string &clusterId,
+                                                                 const std::string &namespaceName,
+                                                                 const std::string &deploymentName, int maxEvents) {
+        const auto safeLabel = [](const std::string &value) {
+            return !value.empty() && value.size() <= 63 && value.front() != '-' && value.back() != '-' &&
+                   std::all_of(value.begin(), value.end(), [](unsigned char ch) {
+                       return (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '-';
+                   });
+        };
+        if (!safeLabel(clusterId) || !safeLabel(namespaceName) || !safeLabel(deploymentName)) {
+            Models::CloudResponse response;
+            response.success = false;
+            response.message = "cluster_id, namespace and deployment must be valid Kubernetes DNS labels.";
+            response.statusCode = 400;
+            return response;
+        }
+        if (maxEvents < 1 || maxEvents > 100) {
+            Models::CloudResponse response;
+            response.success = false;
+            response.message = "max_events must be between 1 and 100.";
+            response.statusCode = 400;
+            return response;
+        }
+        std::string path = "/k8s/deployment/events";
+        appendQueryString(path, "cluster_id", encodeQueryValue(clusterId));
+        appendQueryString(path, "namespace", encodeQueryValue(namespaceName));
+        appendQueryString(path, "deployment", encodeQueryValue(deploymentName));
+        appendQueryString(path, "max_events", std::to_string(maxEvents));
+        auto res = cli->Get(path);
+        return processHttpResponse(res, "Continuum Deployment Events retrieved.");
+    }
+
     Models::CloudResponse CloudAPIClient::rolloutK8sDeploymentImage(
             const std::string& clusterId,
             const std::string& namespaceName,

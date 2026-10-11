@@ -91,6 +91,15 @@ the caller without being stored by NMC. Workload logs use an isolated,
 serialised Kubernetes client so concurrent routes cannot overwrite its response
 status while a log query is in progress.
 
+`k8s deployment-events` requires `continuum:observe`. It reads events only for
+Pods selected by the named Deployment and scopes each Kubernetes Events query
+to that Pod's UID, then verifies the UID again before returning an event. The
+read is capped at 20 Pods, 10 Events per Pod, 100 returned Events, 128 KiB per
+Kubernetes Event-list response and a 512 KiB serialised response; returned
+messages are limited to 1 KiB. Kubernetes API errors are summarised without
+including raw response bodies. Event data is returned to the caller and is not
+stored by NMC.
+
 `POST /k8s/deployment/image-rollout` requires `continuum:control`, an explicit
 server-side policy switch, the active cluster identity and a Deployment label
 opt-in. It accepts only immutable NeuralMimicry GHCR digests, uses the

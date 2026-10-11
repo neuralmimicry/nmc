@@ -3,11 +3,13 @@
 #include <algorithm>
 #include <chrono>
 #include <cctype>
+#include <cstdint>
 #include <ctime>
 #include <iomanip>
 #include <set>
 #include <regex>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <unordered_map>
 
@@ -94,6 +96,106 @@ bool containsExactKeySet(const nlohmann::json& object,
         if (requiredKeys.count(item.key()) == 0) return false;
     }
     return true;
+}
+
+struct BoundedPodEventListDownload {
+    curl_off_t maximumBytes;
+    bool exceeded{false};
+};
+
+int abortOversizedPodEventList(void *limitPointer, curl_off_t downloadTotal, curl_off_t downloadNow, curl_off_t,
+                               curl_off_t) {
+    auto *limit = static_cast<BoundedPodEventListDownload *>(limitPointer);
+    if (!limit || (downloadNow <= limit->maximumBytes && downloadTotal <= limit->maximumBytes)) {
+        return 0;
+    }
+    limit->exceeded = true;
+    return 1;
+}
+
+std::optional<nlohmann::json> listBoundedPodEvents(apiClient_t *client, const std::string &namespaceName,
+                                                   const std::string &podUid, int limit, long &responseStatus,
+                                                   bool &truncated) {
+    constexpr curl_off_t maximumResponseBytes = 128 * 1024;
+    responseStatus = 0;
+    truncated = false;
+    if (!client || namespaceName.empty() || podUid.empty() || limit < 1 || limit > 10) {
+        return std::nullopt;
+    }
+    if (client->dataReceived) {
+        free(client->dataReceived);
+        client->dataReceived = nullptr;
+        client->dataReceivedLen = 0;
+    }
+    client->response_code = 0;
+
+    // Namespace and pod UID are read from validated Kubernetes objects. Encode
+    // the field-selector equality delimiter so it cannot alter the query.
+    const std::string requestPath = "/api/v1/namespaces/" + namespaceName +
+                                    "/events?fieldSelector=involvedObject.uid%3D" + podUid +
+                                    "&limit=" + std::to_string(limit);
+    BoundedPodEventListDownload downloadLimit{maximumResponseBytes};
+    const auto previousProgressFunction = client->progress_func;
+    void *const previousProgressData = client->progress_data;
+    client->progress_func = abortOversizedPodEventList;
+    client->progress_data = &downloadLimit;
+    apiClient_invoke(client, requestPath.c_str(), nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, 0, "GET");
+    responseStatus = client->response_code;
+    client->progress_func = previousProgressFunction;
+    client->progress_data = previousProgressData;
+
+    std::optional<nlohmann::json> result;
+    if (!downloadLimit.exceeded && responseStatus >= 200 && responseStatus < 300 && client->dataReceived &&
+        client->dataReceivedLen >= 0 &&
+        static_cast<size_t>(client->dataReceivedLen) <= static_cast<size_t>(maximumResponseBytes)) {
+        try {
+            const std::string responseBody(static_cast<const char *>(client->dataReceived),
+                                           static_cast<size_t>(client->dataReceivedLen));
+            auto parsed = nlohmann::json::parse(responseBody);
+            if (parsed.is_object() && parsed.contains("items") && parsed["items"].is_array()) {
+                const auto metadata = parsed.value("metadata", nlohmann::json::object());
+                if (metadata.is_object() && metadata.value("continue", "") != "") {
+                    truncated = true;
+                }
+                result = std::move(parsed);
+            }
+        } catch (const std::exception &) {
+            result = std::nullopt;
+        }
+    }
+    if (downloadLimit.exceeded) {
+        truncated = true;
+        responseStatus = 502;
+    } else if (client->dataReceivedLen > maximumResponseBytes) {
+        truncated = true;
+        responseStatus = 502;
+    }
+    if (client->dataReceived) {
+        free(client->dataReceived);
+        client->dataReceived = nullptr;
+        client->dataReceivedLen = 0;
+    }
+    return result;
+}
+
+bool validPodUid(const std::string &value) {
+    return !value.empty() && value.size() <= 128 && std::all_of(value.begin(), value.end(), [](unsigned char ch) {
+        return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '-';
+    });
+}
+
+const nlohmann::json *objectField(const nlohmann::json &source, const char *key) {
+    if (!source.is_object())
+        return nullptr;
+    const auto value = source.find(key);
+    return value != source.end() && value->is_object() ? &*value : nullptr;
+}
+
+std::string stringField(const nlohmann::json &source, const char *key) {
+    if (!source.is_object())
+        return "";
+    const auto value = source.find(key);
+    return value != source.end() && value->is_string() ? value->get<std::string>() : "";
 }
 
 nlohmann::json deploymentStatusData(const nlohmann::json& deployment,
@@ -1149,6 +1251,231 @@ void K8sHandlers::handleGetDeploymentStatus(const httplib::Request& req, httplib
     response.data = deploymentStatusData(deployment, podList ? &*podList : nullptr);
     response.data["cluster_id"] = clusterId;
     sendJsonResponse(res, response);
+}
+
+void K8sHandlers::handleGetDeploymentEvents(const httplib::Request& req, httplib::Response& res) {
+    std::lock_guard<std::recursive_mutex> apiClientLock(apiClientMutex);
+    try {
+        const std::string clusterId = trimCopy(req.get_param_value("cluster_id"));
+        const std::string namespaceName = trimCopy(req.get_param_value("namespace"));
+        const std::string deploymentName = trimCopy(req.get_param_value("deployment"));
+        if (!validDnsLabel(clusterId) || !validDnsLabel(namespaceName) || !validDnsLabel(deploymentName)) {
+            return sendErrorResponse(res, 400,
+                                     "cluster_id, namespace and deployment must be valid Kubernetes DNS labels.");
+        }
+        if (activeRecoveryClusterId.empty() || clusterId != activeRecoveryClusterId) {
+            return sendErrorResponse(res, 409,
+                                     "Requested cluster does not match Continuum's active Kubernetes context.");
+        }
+        int maxEvents = 20;
+        if (req.has_param("max_events")) {
+            const std::string raw = trimCopy(req.get_param_value("max_events"));
+            try {
+                size_t consumed = 0;
+                maxEvents = std::stoi(raw, &consumed);
+                if (consumed != raw.size())
+                    throw std::invalid_argument("max_events");
+            } catch (const std::exception &) {
+                return sendErrorResponse(res, 400, "max_events must be an integer between 1 and 100.");
+            }
+        }
+        if (maxEvents < 1 || maxEvents > 100) {
+            return sendErrorResponse(res, 400, "max_events must be between 1 and 100.");
+        }
+        if (!recoveryClientReady || !workloadLogsApiClient) {
+            return sendErrorResponse(res, 503, "Deployment Events require the configured authenticated kubeconfig.");
+        }
+
+        std::lock_guard<std::recursive_mutex> clientLock(workloadLogsClientMutex);
+        char group[] = "apps";
+        char version[] = "v1";
+        char plural[] = "deployments";
+        genericClient_t *deploymentClient = genericClient_create(workloadLogsApiClient, group, version, plural);
+        if (!deploymentClient) {
+            return sendErrorResponse(res, 503, "Continuum could not initialise its Kubernetes Deployment reader.");
+        }
+        char *rawDeployment =
+                Generic_readNamespacedResource(deploymentClient, const_cast<char *>(namespaceName.c_str()),
+                                               const_cast<char *>(deploymentName.c_str()));
+        const int readStatus = workloadLogsApiClient->response_code;
+        genericClient_free(deploymentClient);
+        if (!rawDeployment) {
+            return sendErrorResponse(res, readStatus == 404 ? 404 : 502,
+                                     readStatus == 404 ? "Deployment was not found in the requested namespace."
+                                                       : "Continuum could not read the requested Deployment.");
+        }
+
+        nlohmann::json deployment;
+        try {
+            deployment = nlohmann::json::parse(rawDeployment);
+        } catch (const std::exception &) {
+            free(rawDeployment);
+            return sendErrorResponse(res, 502, "Kubernetes returned invalid Deployment JSON.");
+        }
+        free(rawDeployment);
+        if (!deployment.is_object()) {
+            return sendErrorResponse(res, 502, "Kubernetes returned an invalid Deployment object.");
+        }
+        const auto labelSelector = deploymentLabelSelector(deployment);
+        if (!labelSelector) {
+            return sendErrorResponse(
+                    res, 422,
+                    "Deployment requires a non-empty matchLabels selector; selector expressions are not supported.");
+        }
+
+        constexpr int maxPods = 20;
+        constexpr int maxEventsPerPod = 10;
+        constexpr size_t maxSerializedResponseBytes = 512 * 1024;
+        long podListStatus = 0;
+        auto podList = listWorkloadPods(namespaceName, *labelSelector, maxPods, podListStatus);
+        if (!podList) {
+            return sendErrorResponse(
+                    res, podListStatus >= 400 && podListStatus <= 599 ? static_cast<int>(podListStatus) : 502,
+                    "Continuum could not retrieve a bounded Pod list for the Deployment.");
+        }
+
+        bool truncated = false;
+        if (podList->contains("metadata") && (*podList)["metadata"].is_object() &&
+            (*podList)["metadata"].value("continue", "") != "") {
+            truncated = true;
+        }
+        nlohmann::json podStatuses = nlohmann::json::array();
+        std::vector<nlohmann::json> events;
+        int errorCount = 0;
+        int podsConsidered = 0;
+        for (const auto &pod : (*podList)["items"]) {
+            if (!pod.is_object())
+                continue;
+            if (podsConsidered >= maxPods) {
+                truncated = true;
+                break;
+            }
+            const auto *metadata = objectField(pod, "metadata");
+            const std::string podName = metadata ? stringField(*metadata, "name") : "";
+            if (!validDnsLabel(podName))
+                continue;
+            ++podsConsidered;
+            const auto *spec = objectField(pod, "spec");
+            const auto *status = objectField(pod, "status");
+            const std::string podUid = metadata ? stringField(*metadata, "uid") : "";
+            const std::string nodeName = spec ? stringField(*spec, "nodeName") : "";
+            std::string phase = status ? stringField(*status, "phase") : "";
+            if (phase.empty())
+                phase = "Unknown";
+            nlohmann::json podSummary = {{"name", podName},
+                                         {"node", nodeName},
+                                         {"phase", phase},
+                                         {"event_status", "unavailable"},
+                                         {"event_count", 0}};
+            if (!validPodUid(podUid)) {
+                ++errorCount;
+                podSummary["status_code"] = 502;
+                podStatuses.push_back(std::move(podSummary));
+                continue;
+            }
+
+            long eventStatus = 0;
+            bool eventListTruncated = false;
+            auto eventList = listBoundedPodEvents(workloadLogsApiClient, namespaceName, podUid, maxEventsPerPod,
+                                                  eventStatus, eventListTruncated);
+            if (!eventList) {
+                ++errorCount;
+                podSummary["status_code"] = eventStatus >= 400 && eventStatus <= 599 ? eventStatus : 502;
+                truncated = truncated || eventListTruncated;
+                podStatuses.push_back(std::move(podSummary));
+                continue;
+            }
+
+            podSummary["event_status"] = "ok";
+            const auto eventItems = eventList->value("items", nlohmann::json::array());
+            int matchedEvents = 0;
+            for (const auto &event : eventItems) {
+                if (!event.is_object())
+                    continue;
+                const auto *involvedObject = objectField(event, "involvedObject");
+                if (!involvedObject || stringField(*involvedObject, "uid") != podUid)
+                    continue;
+
+                const auto *eventMetadata = objectField(event, "metadata");
+                const auto *series = objectField(event, "series");
+                const auto *source = objectField(event, "source");
+                std::string lastSeen = stringField(event, "eventTime");
+                if (lastSeen.empty() && series)
+                    lastSeen = stringField(*series, "lastObservedTime");
+                if (lastSeen.empty())
+                    lastSeen = stringField(event, "lastTimestamp");
+                if (lastSeen.empty() && eventMetadata)
+                    lastSeen = stringField(*eventMetadata, "creationTimestamp");
+                std::string firstSeen = stringField(event, "firstTimestamp");
+                if (firstSeen.empty())
+                    firstSeen = stringField(event, "eventTime");
+                if (lastSeen.size() > 64)
+                    lastSeen.resize(64);
+                if (firstSeen.size() > 64)
+                    firstSeen.resize(64);
+
+                int eventCount = 1;
+                const auto count = event.find("count");
+                if (count != event.end() && count->is_number_integer()) {
+                    const int64_t suppliedCount = count->get<int64_t>();
+                    if (suppliedCount > 0 && suppliedCount <= 1000000) {
+                        eventCount = static_cast<int>(suppliedCount);
+                    }
+                }
+
+                nlohmann::json normalized = {{"pod", podName},
+                                             {"node", nodeName},
+                                             {"last_seen", lastSeen},
+                                             {"first_seen", firstSeen},
+                                             {"count", eventCount}};
+                if (eventMetadata)
+                    addBoundedText(normalized, *eventMetadata, "name", 253);
+                addBoundedText(normalized, event, "type", 32);
+                addBoundedText(normalized, event, "reason", 128);
+                if (event.contains("message")) {
+                    addBoundedText(normalized, event, "message", 1024);
+                } else {
+                    addBoundedText(normalized, event, "note", 1024, "message");
+                }
+                if (event.contains("reportingComponent")) {
+                    addBoundedText(normalized, event, "reportingComponent", 128, "reporting_component");
+                } else if (source) {
+                    addBoundedText(normalized, *source, "component", 128, "reporting_component");
+                }
+                events.push_back(std::move(normalized));
+                ++matchedEvents;
+            }
+            podSummary["event_count"] = matchedEvents;
+            if (matchedEvents == 0)
+                podSummary["event_status"] = "empty";
+            podStatuses.push_back(std::move(podSummary));
+            truncated = truncated || eventListTruncated;
+        }
+
+        std::sort(events.begin(), events.end(), [](const nlohmann::json &left, const nlohmann::json &right) {
+            return left.value("last_seen", "") > right.value("last_seen", "");
+        });
+        if (events.size() > static_cast<size_t>(maxEvents)) {
+            events.resize(static_cast<size_t>(maxEvents));
+            truncated = true;
+        }
+        const size_t eventCount = events.size();
+
+        Models::CloudResponse response;
+        response.success = true;
+        response.message = "Bounded Deployment Pod Events retrieved.";
+        response.data = {
+                {"cluster_id", clusterId},       {"namespace", namespaceName},        {"deployment", deploymentName},
+                {"max_events", maxEvents},       {"pods_considered", podsConsidered}, {"events", std::move(events)},
+                {"event_count", eventCount},     {"error_count", errorCount},         {"truncated", truncated},
+                {"pods", std::move(podStatuses)}};
+        if (response.toJsonString().dump(4).size() > maxSerializedResponseBytes) {
+            return sendErrorResponse(res, 502, "Bounded Deployment Events response exceeded its size limit.");
+        }
+        sendJsonResponse(res, response);
+    } catch (const std::exception &) {
+        sendErrorResponse(res, 500, "Deployment Event diagnostics failed safely.");
+    }
 }
 
 void K8sHandlers::handleRolloutDeploymentImage(const httplib::Request& req, httplib::Response& res) {
