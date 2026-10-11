@@ -68,14 +68,15 @@ namespace {
         }
         client->response_code = 0;
 
-        // The Kubernetes pod-log endpoint serves text/plain. The generated
-        // client advertises several response types at once, which the live
-        // API rejects with HTTP 406. Send only the media type this endpoint
-        // actually returns, while retaining the authenticated Kubernetes
-        // client's TLS and bearer-token configuration.
+        // The Kubernetes pod-log endpoint returns text/plain, but the live
+        // K3s API rejects Accept: text/plain with HTTP 406 because its API
+        // negotiation accepts Kubernetes representations such as
+        // application/json. Request one supported representation; the log
+        // subresource still returns the raw text stream. Keep the
+        // authenticated Kubernetes client's TLS and bearer-token settings.
         list_t* acceptedTypes = list_createList();
         if (!acceptedTypes) return std::nullopt;
-        list_addElement(acceptedTypes, const_cast<char*>("text/plain"));
+        list_addElement(acceptedTypes, const_cast<char*>("application/json"));
 
         const std::string requestPath =
                 "/api/v1/namespaces/" + namespaceName + "/pods/" + podName + "/log"
