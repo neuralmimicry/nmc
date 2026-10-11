@@ -21,6 +21,17 @@
 #include <kubernetes/api/CoreV1API.h>     // For CoreV1API functions
 
 namespace {
+    constexpr curl_off_t maxBoundedPodListBytes = 8 * 1024 * 1024;
+
+    int abortOversizedPodList(void* limitPointer,
+                              curl_off_t downloadTotal,
+                              curl_off_t downloadNow,
+                              curl_off_t,
+                              curl_off_t) {
+        const auto* limit = static_cast<const curl_off_t*>(limitPointer);
+        return limit && (downloadNow > *limit || downloadTotal > *limit) ? 1 : 0;
+    }
+
     std::string trimCopy(const std::string& value) {
         const auto start = value.find_first_not_of(" \t\r\n");
         if (start == std::string::npos) {
@@ -743,6 +754,141 @@ namespace NMC {
             if (genericClient) {
                 genericClient_free(genericClient);
             }
+            return result;
+        }
+
+        std::optional<std::string> K8sHandlers::deploymentLabelSelector(
+                const nlohmann::json& deployment) const {
+            const auto spec = deployment.value("spec", nlohmann::json::object());
+            const auto selector = spec.value("selector", nlohmann::json::object());
+            const auto expressions = selector.value("matchExpressions", nlohmann::json::array());
+            if (!expressions.is_array() || !expressions.empty()) {
+                return std::nullopt;
+            }
+            const auto labels = selector.value("matchLabels", nlohmann::json::object());
+            if (!labels.is_object() || labels.empty()) {
+                return std::nullopt;
+            }
+
+            std::string labelSelector;
+            for (auto it = labels.begin(); it != labels.end(); ++it) {
+                const std::string key = it.key();
+                if (!it.value().is_string() || key.empty() || key.size() > 317
+                        || key.find_first_not_of("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._/")
+                                != std::string::npos) {
+                    return std::nullopt;
+                }
+                const std::string value = it.value().get<std::string>();
+                if (value.size() > 63
+                        || value.find_first_not_of("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._")
+                                != std::string::npos) {
+                    return std::nullopt;
+                }
+                if (!labelSelector.empty()) labelSelector += ",";
+                labelSelector += key + "=" + value;
+            }
+            return labelSelector;
+        }
+
+        std::optional<nlohmann::json> K8sHandlers::listWorkloadPods(
+                const std::string& namespaceName,
+                const std::string& labelSelector,
+                int limit,
+                long& responseStatus) {
+            std::lock_guard<std::recursive_mutex> clientLock(workloadLogsClientMutex);
+            responseStatus = 0;
+            if (!workloadLogsApiClient || namespaceName.empty() || namespaceName.size() > 63
+                    || namespaceName.find_first_not_of("abcdefghijklmnopqrstuvwxyz0123456789-")
+                            != std::string::npos
+                    || labelSelector.empty() || limit < 1 || limit > 1000) {
+                return std::nullopt;
+            }
+
+            list_t* queryParameters = list_createList();
+            if (!queryParameters) return std::nullopt;
+            const auto addQueryParameter = [queryParameters](const char* name,
+                                                              const std::string& value) {
+                char* key = strdup(name);
+                char* parameterValue = strdup(value.c_str());
+                if (!key || !parameterValue) {
+                    free(key);
+                    free(parameterValue);
+                    return false;
+                }
+                keyValuePair_t* pair = keyValuePair_create(key, parameterValue);
+                if (!pair) {
+                    free(key);
+                    free(parameterValue);
+                    return false;
+                }
+                list_addElement(queryParameters, pair);
+                return true;
+            };
+
+            const bool parametersReady = addQueryParameter("labelSelector", labelSelector)
+                    && addQueryParameter("limit", std::to_string(limit));
+            if (!parametersReady) {
+                listEntry_t* entry = nullptr;
+                list_ForEach(entry, queryParameters) {
+                    auto* pair = static_cast<keyValuePair_t*>(entry->data);
+                    if (!pair) continue;
+                    free(pair->key);
+                    free(pair->value);
+                    keyValuePair_free(pair);
+                }
+                list_freeList(queryParameters);
+                return std::nullopt;
+            }
+
+            if (workloadLogsApiClient->dataReceived) {
+                free(workloadLogsApiClient->dataReceived);
+                workloadLogsApiClient->dataReceived = nullptr;
+                workloadLogsApiClient->dataReceivedLen = 0;
+            }
+            const std::string path = "/api/v1/namespaces/" + namespaceName + "/pods";
+            const auto previousProgress = workloadLogsApiClient->progress_func;
+            void* const previousProgressData = workloadLogsApiClient->progress_data;
+            curl_off_t responseLimit = maxBoundedPodListBytes;
+            workloadLogsApiClient->progress_func = abortOversizedPodList;
+            workloadLogsApiClient->progress_data = &responseLimit;
+            workloadLogsApiClient->response_code = 0;
+            apiClient_invoke(workloadLogsApiClient, path.c_str(), queryParameters,
+                             nullptr, nullptr, nullptr, nullptr, nullptr, 0, "GET");
+            responseStatus = workloadLogsApiClient->response_code;
+            workloadLogsApiClient->progress_func = previousProgress;
+            workloadLogsApiClient->progress_data = previousProgressData;
+
+            std::optional<nlohmann::json> result;
+            if (responseStatus >= 200 && responseStatus < 300
+                    && workloadLogsApiClient->dataReceived
+                    && workloadLogsApiClient->dataReceivedLen >= 0) {
+                const std::string responseBody(
+                        static_cast<const char*>(workloadLogsApiClient->dataReceived),
+                        static_cast<size_t>(workloadLogsApiClient->dataReceivedLen));
+                try {
+                    auto parsed = nlohmann::json::parse(responseBody);
+                    if (parsed.is_object() && parsed.contains("items") && parsed["items"].is_array()) {
+                        result = std::move(parsed);
+                    }
+                } catch (const nlohmann::json::parse_error&) {
+                    result = std::nullopt;
+                }
+            }
+            if (workloadLogsApiClient->dataReceived) {
+                free(workloadLogsApiClient->dataReceived);
+                workloadLogsApiClient->dataReceived = nullptr;
+                workloadLogsApiClient->dataReceivedLen = 0;
+            }
+
+            listEntry_t* entry = nullptr;
+            list_ForEach(entry, queryParameters) {
+                auto* pair = static_cast<keyValuePair_t*>(entry->data);
+                if (!pair) continue;
+                free(pair->key);
+                free(pair->value);
+                keyValuePair_free(pair);
+            }
+            list_freeList(queryParameters);
             return result;
         }
 
@@ -2057,7 +2203,7 @@ users:
                     return sendErrorResponse(res, 503, "Kubernetes API client is unavailable.");
                 }
 
-                std::lock_guard<std::mutex> logsClientLock(workloadLogsClientMutex);
+                std::lock_guard<std::recursive_mutex> logsClientLock(workloadLogsClientMutex);
                 const std::string appsGroup = "apps";
                 const std::string apiVersion = "v1";
                 const std::string deploymentsResource = "deployments";
@@ -2091,35 +2237,10 @@ users:
                 if (!deployment.is_object()) {
                     return sendErrorResponse(res, 502, "Kubernetes API returned an invalid Deployment.");
                 }
-                const auto specIt = deployment.find("spec");
-                if (specIt == deployment.end() || !specIt->is_object()) {
-                    return sendErrorResponse(res, 422, "Deployment has no readable selector.");
-                }
-                const auto selectorIt = specIt->find("selector");
-                if (selectorIt == specIt->end() || !selectorIt->is_object()) {
-                    return sendErrorResponse(res, 422, "Deployment has no readable selector.");
-                }
-                const auto expressionsIt = selectorIt->find("matchExpressions");
-                if (expressionsIt != selectorIt->end() && expressionsIt->is_array() && !expressionsIt->empty()) {
-                    return sendErrorResponse(res, 422, "Deployment selector expressions are not supported by this bounded log query.");
-                }
-                const auto labelsIt = selectorIt->find("matchLabels");
-                if (labelsIt == selectorIt->end() || !labelsIt->is_object() || labelsIt->empty()) {
-                    return sendErrorResponse(res, 422, "Deployment selector must contain at least one match label.");
-                }
-                std::string labelSelector;
-                for (auto it = labelsIt->begin(); it != labelsIt->end(); ++it) {
-                    const std::string key = it.key();
-                    if (!it.value().is_string() || key.empty() || key.size() > 317
-                        || key.find_first_not_of("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._/") != std::string::npos) {
-                        return sendErrorResponse(res, 422, "Deployment selector contains an unsupported label.");
-                    }
-                    const std::string value = it.value().get<std::string>();
-                    if (value.size() > 63 || value.find_first_not_of("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._") != std::string::npos) {
-                        return sendErrorResponse(res, 422, "Deployment selector contains an unsupported label value.");
-                    }
-                    if (!labelSelector.empty()) labelSelector += ",";
-                    labelSelector += key + "=" + value;
+                const auto labelSelector = deploymentLabelSelector(deployment);
+                if (!labelSelector) {
+                    return sendErrorResponse(res, 422,
+                            "Deployment requires a non-empty matchLabels selector; selector expressions are not supported.");
                 }
 
                 constexpr int maxPods = 20;
@@ -2127,49 +2248,16 @@ users:
                 constexpr size_t maxResponseLogBytes = 1024 * 1024;
                 constexpr size_t maxSerializedResponseBytes = 8 * 1024 * 1024;
                 constexpr int perContainerLogBytes = 128 * 1024;
-                int podLimit = maxPods;
-                v1_pod_list_t* podListModel = CoreV1API_listNamespacedPod(
-                        workloadLogsApiClient,
-                        const_cast<char*>(namespaceName.c_str()),
-                        nullptr, nullptr, nullptr, nullptr,
-                        const_cast<char*>(labelSelector.c_str()),
-                        &podLimit,
-                        nullptr, nullptr, nullptr, nullptr, nullptr);
-                const int podListStatus = workloadLogsApiClient->response_code;
-                if (!podListModel) {
-                    const int statusCode = podListStatus;
-                    return sendErrorResponse(res, statusCode >= 400 && statusCode <= 599 ? statusCode : 502,
-                                             "Kubernetes API could not list matching pods.");
-                }
-                if (podListStatus < 200 || podListStatus >= 300) {
-                    v1_pod_list_free(podListModel);
-                    const int statusCode = podListStatus >= 400 && podListStatus <= 599 ? podListStatus : 502;
-                    return sendErrorResponse(res, statusCode, "Kubernetes API returned an invalid pod list.");
-                }
-                cJSON* podListObject = v1_pod_list_convertToJSON(podListModel);
-                v1_pod_list_free(podListModel);
-                if (!podListObject) {
+                long podListStatus = 0;
+                auto podListResult = listWorkloadPods(namespaceName, *labelSelector, maxPods, podListStatus);
+                if (!podListResult) {
+                    if (podListStatus >= 400 && podListStatus <= 599) {
+                        return sendErrorResponse(res, static_cast<int>(podListStatus),
+                                                 "Kubernetes API could not list matching pods.");
+                    }
                     return sendErrorResponse(res, 502, "Kubernetes API returned an invalid pod list.");
                 }
-                char* podListRaw = cJSON_PrintUnformatted(podListObject);
-                cJSON_Delete(podListObject);
-                if (!podListRaw) {
-                    return sendErrorResponse(res, 502, "Kubernetes API could not serialise the pod list.");
-                }
-
-                nlohmann::json podList;
-                try {
-                    podList = nlohmann::json::parse(podListRaw);
-                } catch (const std::exception&) {
-                    cJSON_free(podListRaw);
-                    return sendErrorResponse(res, 502, "Kubernetes API returned an invalid pod list.");
-                }
-                cJSON_free(podListRaw);
-                if (!podList.is_object() || !podList.contains("items") || !podList["items"].is_array()) {
-                    const int statusCode = podListStatus;
-                    return sendErrorResponse(res, statusCode >= 400 && statusCode <= 599 ? statusCode : 502,
-                                             "Kubernetes API returned an invalid pod list.");
-                }
+                nlohmann::json podList = std::move(*podListResult);
 
                 nlohmann::json logItems = nlohmann::json::array();
                 size_t totalLogBytes = 0;

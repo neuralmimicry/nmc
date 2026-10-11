@@ -61,8 +61,10 @@ bool containsExactKeySet(const nlohmann::json& object,
     return true;
 }
 
-nlohmann::json deploymentStatusData(const nlohmann::json& deployment) {
+nlohmann::json deploymentStatusData(const nlohmann::json& deployment,
+                                   const nlohmann::json* podList = nullptr) {
     const auto metadata = deployment.value("metadata", nlohmann::json::object());
+    const auto deploymentLabels = metadata.value("labels", nlohmann::json::object());
     const auto spec = deployment.value("spec", nlohmann::json::object());
     const auto status = deployment.value("status", nlohmann::json::object());
     const auto deploymentAnnotations = metadata.value("annotations", nlohmann::json::object());
@@ -72,25 +74,77 @@ nlohmann::json deploymentStatusData(const nlohmann::json& deployment) {
             .value("metadata", nlohmann::json::object());
     const auto annotations = templateMetadata.value("annotations", nlohmann::json::object());
     const auto containers = podSpec.value("containers", nlohmann::json::array());
-    const auto containerStatuses = status.value("containerStatuses", nlohmann::json::array());
     std::unordered_map<std::string, bool> readyByName;
-    if (containerStatuses.is_array()) {
-        for (const auto& item : containerStatuses) {
-            if (!item.is_object() || !item.contains("name") || !item["name"].is_string()) continue;
-            readyByName[item["name"].get<std::string>()] = item.value("ready", false);
+    std::unordered_map<std::string, size_t> statusCountByName;
+    size_t nonTerminatingPodCount = 0;
+    bool podListComplete = podList && podList->is_object()
+            && podList->contains("items") && podList->at("items").is_array();
+    if (podListComplete) {
+        const auto listMetadata = podList->value("metadata", nlohmann::json::object());
+        podListComplete = listMetadata.is_object()
+                && listMetadata.value("continue", "").empty();
+    }
+    if (podListComplete) {
+        for (const auto& pod : podList->at("items")) {
+            if (!pod.is_object()) {
+                podListComplete = false;
+                break;
+            }
+            const auto podMetadata = pod.value("metadata", nlohmann::json::object());
+            if (!podMetadata.is_object()) {
+                podListComplete = false;
+                break;
+            }
+            const auto deletionTimestamp = podMetadata.value("deletionTimestamp", nlohmann::json());
+            if (deletionTimestamp.is_string() && !deletionTimestamp.get<std::string>().empty()) continue;
+            ++nonTerminatingPodCount;
+            const auto podStatus = pod.value("status", nlohmann::json::object());
+            if (!podStatus.is_object()) {
+                for (const auto& item : containers) {
+                    if (item.is_object() && item.contains("name") && item["name"].is_string()) {
+                        readyByName[item["name"].get<std::string>()] = false;
+                    }
+                }
+                continue;
+            }
+            const auto containerStatuses = podStatus.value("containerStatuses", nlohmann::json::array());
+            if (!containerStatuses.is_array()) {
+                for (const auto& item : containers) {
+                    if (item.is_object() && item.contains("name") && item["name"].is_string()) {
+                        const std::string name = item["name"].get<std::string>();
+                        readyByName[name] = false;
+                    }
+                }
+                continue;
+            }
+            for (const auto& item : containerStatuses) {
+                if (!item.is_object() || !item.contains("name") || !item["name"].is_string()) continue;
+                const std::string name = item["name"].get<std::string>();
+                const bool ready = item.value("ready", false);
+                if (statusCountByName[name] == 0) readyByName[name] = ready;
+                else readyByName[name] = readyByName[name] && ready;
+                ++statusCountByName[name];
+            }
         }
     }
 
     nlohmann::json containerImages = nlohmann::json::array();
     if (containers.is_array()) {
         for (const auto& item : containers) {
-            if (!item.is_object() || !item.contains("name") || !item["name"].is_string()) continue;
-            const std::string name = item["name"].get<std::string>();
-            containerImages.push_back({
-                    {"name", name},
-                    {"image", item.value("image", "")},
-                    {"ready", readyByName[name]}
-            });
+        if (!item.is_object() || !item.contains("name") || !item["name"].is_string()) continue;
+        const std::string name = item["name"].get<std::string>();
+        nlohmann::json containerReady = nullptr;
+        if (podListComplete && nonTerminatingPodCount == 0 && spec.value("replicas", 1) > 0) {
+            containerReady = false;
+        } else if (podListComplete && nonTerminatingPodCount > 0) {
+            containerReady = statusCountByName[name] == nonTerminatingPodCount
+                    && readyByName[name];
+        }
+        containerImages.push_back({
+                {"name", name},
+                {"image", item.value("image", "")},
+                {"ready", std::move(containerReady)}
+        });
         }
     }
 
@@ -111,6 +165,13 @@ nlohmann::json deploymentStatusData(const nlohmann::json& deployment) {
             {"updated_replicas", updated},
             {"ready_replicas", ready},
             {"available_replicas", available},
+            {"container_readiness_available", podListComplete},
+            {"continuum_configuration_enabled",
+                    deploymentLabels.is_object()
+                    && deploymentLabels.value("neuralmimicry.ai/continuum-configuration", "") == "enabled"},
+            {"continuum_rollout_enabled",
+                    deploymentLabels.is_object()
+                    && deploymentLabels.value("neuralmimicry.ai/continuum-rollout", "") == "enabled"},
             {"rollout_request_id", annotations.value("neuralmimicry.ai/rollout-request-id", "")},
             {"rollout_change_id", annotations.value("neuralmimicry.ai/rollout-change-id", "")},
             {"octobot_config_request_id", deploymentAnnotations.value("neuralmimicry.ai/octobot-config-request-id", "")},
@@ -839,7 +900,7 @@ void K8sHandlers::handleGetDeploymentStatus(const httplib::Request& req, httplib
         return sendErrorResponse(res, 503, "Deployment status requires the configured authenticated kubeconfig.");
     }
 
-    std::lock_guard<std::mutex> clientLock(workloadLogsClientMutex);
+    std::lock_guard<std::recursive_mutex> clientLock(workloadLogsClientMutex);
     char group[] = "apps";
     char version[] = "v1";
     char plural[] = "deployments";
@@ -877,10 +938,18 @@ void K8sHandlers::handleGetDeploymentStatus(const httplib::Request& req, httplib
         return sendErrorResponse(res, 502, "Kubernetes returned an invalid Deployment object.");
     }
 
+    std::optional<nlohmann::json> podList;
+    const auto labelSelector = deploymentLabelSelector(deployment);
+    if (labelSelector) {
+        constexpr int maxStatusPods = 64;
+        long podListStatus = 0;
+        podList = listWorkloadPods(namespaceName, *labelSelector, maxStatusPods, podListStatus);
+    }
+
     Models::CloudResponse response;
     response.success = true;
     response.message = "Continuum Deployment status retrieved.";
-    response.data = deploymentStatusData(deployment);
+    response.data = deploymentStatusData(deployment, podList ? &*podList : nullptr);
     response.data["cluster_id"] = clusterId;
     sendJsonResponse(res, response);
 }
@@ -941,7 +1010,7 @@ void K8sHandlers::handleRolloutDeploymentImage(const httplib::Request& req, http
         }
 
         std::lock_guard<std::mutex> rolloutLock(rolloutMutex);
-        std::lock_guard<std::mutex> clientLock(workloadLogsClientMutex);
+        std::lock_guard<std::recursive_mutex> clientLock(workloadLogsClientMutex);
         char group[] = "apps";
         char version[] = "v1";
         char plural[] = "deployments";
@@ -1210,7 +1279,7 @@ void K8sHandlers::handleConfigureOctoBot(const httplib::Request &req,
     const bool serviceIntegrationsEnabled =
         request.at("service_integrations_enabled").get<bool>();
     std::lock_guard<std::mutex> rolloutLock(rolloutMutex);
-    std::lock_guard<std::mutex> clientLock(workloadLogsClientMutex);
+  std::lock_guard<std::recursive_mutex> clientLock(workloadLogsClientMutex);
     char group[] = "apps";
     char version[] = "v1";
     char plural[] = "deployments";

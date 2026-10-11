@@ -234,7 +234,6 @@ class MockBackend:
                     "updatedReplicas": 1,
                     "readyReplicas": 1,
                     "availableReplicas": 1,
-                    "containerStatuses": [{"name": "refiner", "ready": True}],
                 },
             },
             "octobot/octobot": {
@@ -253,8 +252,12 @@ class MockBackend:
                 },
                 "spec": {
                     "replicas": 1,
+                    "selector": {"matchLabels": {"app.kubernetes.io/name": "octobot"}},
                     "template": {
-                        "metadata": {"annotations": {}},
+                        "metadata": {
+                            "annotations": {},
+                            "labels": {"app.kubernetes.io/name": "octobot"},
+                        },
                         "spec": {"containers": [
                             {
                                 "name": "octobot",
@@ -281,10 +284,6 @@ class MockBackend:
                     "updatedReplicas": 1,
                     "readyReplicas": 1,
                     "availableReplicas": 1,
-                    "containerStatuses": [
-                        {"name": "octobot", "ready": True},
-                        {"name": "metrics", "ready": True},
-                    ],
                 },
             }
         }
@@ -471,18 +470,80 @@ class MockBackend:
                             metadata["generation"] = int(metadata.get("generation", 0)) + 1
                         status = deployment.setdefault("status", {})
                         status["observedGeneration"] = metadata["generation"]
-                        images_by_name = {
-                            container.get("name"): container.get("image")
-                            for container in template.get("spec", {}).get("containers", [])
-                        }
-                        status["containerStatuses"] = [
-                            {"name": name, "ready": True, "image": image}
-                            for name, image in images_by_name.items()
-                        ]
                         self._send_json(handler, 200, json.loads(json.dumps(deployment)))
                         return
             self._send_json(handler, 405, {"message": "method not supported"})
             return
+
+        k8s_pod_list_match = re.fullmatch(r"/api/v1/namespaces/([a-z0-9-]+)/pods", path_only)
+        if k8s_pod_list_match and handler.command == "GET":
+            with self._track_k8s_request():
+                namespace = k8s_pod_list_match.group(1)
+                query = parse_qs(urlsplit(handler.path).query)
+                label_selector = query.get("labelSelector", [""])[0]
+                try:
+                    limit = int(query.get("limit", ["0"])[0])
+                except ValueError:
+                    limit = 0
+                if not label_selector or limit < 1 or limit > 1000:
+                    self._send_json(handler, 400, {"message": "bounded labelSelector and limit are required"})
+                    return
+                with self._lock:
+                    deployment = self.k8s_deployments.get(f"{namespace}/{namespace}")
+                    if deployment is None:
+                        self._send_json(handler, 200, {"apiVersion": "v1", "kind": "PodList", "items": []})
+                        return
+                    pod_spec = deployment.get("spec", {}).get("template", {}).get("spec", {})
+                    containers = pod_spec.get("containers", [])
+                    labels = deployment.get("spec", {}).get("template", {}).get("metadata", {}).get("labels", {})
+                expected_selector = ",".join(f"{key}={value}" for key, value in sorted(labels.items()))
+                items = []
+                if label_selector == expected_selector:
+                    items.append({
+                        "apiVersion": "v1",
+                        "kind": "Pod",
+                        "metadata": {
+                            "name": f"{namespace}-test-pod",
+                            "namespace": namespace,
+                            "labels": labels,
+                            "uid": f"{namespace}-test-pod-uid",
+                        },
+                        "spec": {
+                            "containers": [{"name": item.get("name", "")}
+                                            for item in containers if item.get("name")]
+                        },
+                        "status": {
+                            "phase": "Running",
+                            "containerStatuses": [
+                                {"name": item.get("name", ""), "ready": True,
+                                 "image": item.get("image", "")}
+                                for item in containers if item.get("name")
+                            ],
+                            # Newer Kubernetes fields must not make a bounded
+                            # raw PodList unreadable by an older generated model.
+                            "ephemeralContainerStatuses": [],
+                        },
+                    })
+                self._send_json(handler, 200, {
+                    "apiVersion": "v1",
+                    "kind": "PodList",
+                    "metadata": {"resourceVersion": "pod-list-resource-version"},
+                    "items": items[:limit],
+                })
+                return
+
+        k8s_pod_log_match = re.fullmatch(
+            r"/api/v1/namespaces/([a-z0-9-]+)/pods/([a-z0-9-]+)/log", path_only
+        )
+        if k8s_pod_log_match and handler.command == "GET":
+            with self._track_k8s_request():
+                content = b"2026-10-11T00:00:00Z bounded mock workload log\n"
+                handler.send_response(200)
+                handler.send_header("Content-Type", "text/plain; charset=utf-8")
+                handler.send_header("Content-Length", str(len(content)))
+                handler.end_headers()
+                handler.wfile.write(content)
+                return
 
         if path_only == "/api/session":
             with self._lock:
@@ -4107,6 +4168,82 @@ def test_refiner_status_serializes_shared_kubernetes_client(backend: MockBackend
         server.stop()
 
 
+def test_workload_status_and_logs_use_bounded_raw_pod_lists_and_serialize(
+    backend: MockBackend,
+) -> None:
+    server = NmcServerProcess(
+        backend.base_url,
+        cluster_id="authz-test-cluster",
+        k8s_server_url=backend.base_url,
+    )
+    with backend._lock:
+        backend.active_k8s_requests = 0
+        backend.max_concurrent_k8s_requests = 0
+    try:
+        server.start()
+        status_path = (
+            "/k8s/deployment/status?cluster_id=authz-test-cluster"
+            "&namespace=octobot&deployment=octobot"
+        )
+        logs_path = "/k8s/workload/logs?namespace=octobot&deployment=octobot&tail_lines=20"
+
+        def invoke(kind: str) -> tuple[str, int, dict[str, Any]]:
+            path = status_path if kind == "status" else logs_path
+            status, payload = request_json(
+                server.base_url,
+                "GET",
+                path,
+                token=STATIC_ADMIN_TOKEN,
+            )
+            return kind, status, payload
+
+        kinds = ["status", "logs"] * 6
+        with ThreadPoolExecutor(max_workers=12) as pool:
+            responses = list(pool.map(invoke, kinds))
+
+        assert all(status == 200 and payload.get("success") is True
+                   for _, status, payload in responses), (
+            "concurrent workload status/log requests must complete: "
+            + repr([(kind, status) for kind, status, _ in responses])
+        )
+        status_payloads = [payload for kind, _, payload in responses if kind == "status"]
+        assert all(payload.get("data", {}).get("container_readiness_available") is True
+                   for payload in status_payloads), (
+            "Deployment status must derive container readiness from a complete PodList"
+        )
+        assert all(payload.get("data", {}).get("continuum_configuration_enabled") is True
+                   and payload.get("data", {}).get("continuum_rollout_enabled") is True
+                   for payload in status_payloads), (
+            "status must expose both OctoBot Continuum opt-in labels"
+        )
+        assert all(len(payload.get("data", {}).get("containers", [])) == 2
+                   and all(item.get("ready") is True
+                           for item in payload.get("data", {}).get("containers", []))
+                   for payload in status_payloads), (
+            "container readiness must come from Pod status, not Deployment status"
+        )
+        log_payloads = [payload for kind, _, payload in responses if kind == "logs"]
+        assert all(any("bounded mock workload log" in item.get("logs", "")
+                       for item in payload.get("data", {}).get("items", []))
+                   for payload in log_payloads), (
+            "raw PodList handling must still retrieve bounded container logs"
+        )
+        assert backend.count_requests(
+            "/apis/apps/v1/namespaces/octobot/deployments/octobot", "GET"
+        ) == 12, "each status/log request must read the selected Deployment once"
+        assert backend.count_requests("/api/v1/namespaces/octobot/pods", "GET") == 12, (
+            "each request must use a bounded label-selected raw PodList"
+        )
+        assert backend.count_requests(
+            "/api/v1/namespaces/octobot/pods/octobot-test-pod/log", "GET"
+        ) == 12, "the six log requests must read both selected container streams"
+        assert backend.max_concurrent_k8s_requests == 1, (
+            "isolated generated-client response state must remain serialized across status and logs"
+        )
+    finally:
+        server.stop()
+
+
 def main() -> int:
     if not NMC_SERVER_BIN.exists():
         print(
@@ -4247,6 +4384,7 @@ fi
         test_k8s_image_rollout_updates_only_allowlisted_container_and_deduplicates(backend.base_url, backend)
         test_octobot_configuration_requires_control_scope_and_explicit_policy(backend.base_url)
         test_octobot_configuration_is_allowlisted_conditional_and_idempotent(backend.base_url, backend)
+        test_workload_status_and_logs_use_bounded_raw_pod_lists_and_serialize(backend)
     except AssertionError as exc:
         log_output = server.log_path.read_text(encoding="utf-8", errors="replace") if server.log_path.exists() else ""
         print(f"[server-authz-test] FAILED: {exc}", file=sys.stderr)

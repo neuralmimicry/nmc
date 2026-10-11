@@ -27,7 +27,6 @@ extern "C" {
 #include <kubernetes/model/v1_object_meta.h>
 #include <kubernetes/model/v1_node.h>
 #include <kubernetes/model/v1_node_list.h>
-#include <kubernetes/model/v1_pod_list.h>
 #include <kubernetes/model/v1_label_selector.h> // Potentially needed for labels
 #ifdef __cplusplus
 } // End of extern "C" block
@@ -121,6 +120,12 @@ namespace NMC {
                                                                   const std::string& namespaceName);
 
         private:
+            std::optional<std::string> deploymentLabelSelector(const nlohmann::json& deployment) const;
+            std::optional<nlohmann::json> listWorkloadPods(const std::string& namespaceName,
+                                                           const std::string& labelSelector,
+                                                           int limit,
+                                                           long& responseStatus);
+
             // Kubernetes C client related members
             apiClient_t *apiClient;
             char *basePath;
@@ -137,7 +142,11 @@ namespace NMC {
             char *workloadLogsBasePath{nullptr};
             sslConfig_t *workloadLogsSslConfig{nullptr};
             list_t *workloadLogsApiKeys{nullptr};
-            std::mutex workloadLogsClientMutex;
+            // The isolated generated client stores its HTTP response on the
+            // apiClient_t. A recursive lock permits status/log handlers to
+            // reuse the bounded PodList helper while holding one request-wide
+            // critical section.
+            std::recursive_mutex workloadLogsClientMutex;
             // Recovery is allowed only for the cluster identity explicitly
             // bound to this process's single active kubeconfig context.
             std::string activeRecoveryClusterId;
