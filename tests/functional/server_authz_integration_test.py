@@ -2982,6 +2982,125 @@ def test_ipmi_diagnostics_and_actions(backend_base_url: str) -> None:
             and recovery_intent.get("outage_recovery", {}).get("affected_services", [])[0].get("state") == "unavailable",
             "the durable intent must preserve the outage identifier and each affected-service state",
         )
+
+        inventory_document = json.loads(inventory_path.read_text(encoding="utf-8"))
+        inventory_document["dependency_graph_revision"] = "authz-dependency-graph-v2"
+        inventory_document["devices"][0]["depends_on"] = ["authz-parent"]
+        inventory_document["devices"].append(
+            {
+                "id": "authz-parent",
+                "kind": "platform_device",
+                "services": [],
+                "depends_on": [],
+                "affected_services": [],
+                "addresses": [],
+                "mac_addresses": [],
+                "dhcp_client_ids": [],
+            }
+        )
+        inventory_path.write_text(json.dumps(inventory_document), encoding="utf-8")
+        inventory_path.chmod(0o600)
+        host_recovery_request = build_controller_action_payload(
+            "warm_restart",
+            request_id="ipmi-host-recovery-0001",
+            change_id="IPMI-HOST-RECOVERY-1",
+            expected_power_state="On",
+        )
+        host_recovery_preflight = host_recovery_request["preflight"]
+        host_recovery_preflight["affected_services_healthy"] = False
+        host_recovery_preflight["dependency_graph_revision"] = "authz-dependency-graph-v2"
+        host_recovery_preflight["dependency_ids"] = ["authz-parent"]
+        observed_at = int(time.time() * 1000)
+        host_recovery_preflight["host_recovery"] = {
+            "outage_id": "IPMI-QC00-DEGRADED-20261011",
+            "target": {
+                "device_id": "authz-device",
+                "state": "unreachable",
+                "observed_at_unix_ms": observed_at,
+                "source": "host_probe",
+                "reference": "test evidence: host unreachable over SSH",
+            },
+            "hosted_services": [
+                {
+                    "service": "authz-test-service",
+                    "state": "unavailable",
+                    "observed_at_unix_ms": observed_at,
+                    "source": "host_probe",
+                    "reference": "test evidence: hosted service unavailable with target",
+                }
+            ],
+            "dependencies": [
+                {
+                    "dependency_id": "authz-parent",
+                    "state": "healthy",
+                    "observed_at_unix_ms": observed_at,
+                    "source": "continuum_mock",
+                    "reference": "test evidence: configured prerequisite healthy",
+                }
+            ],
+            "monitoring": {
+                "state": "healthy",
+                "observed_at_unix_ms": observed_at,
+                "source": "continuum_mock",
+                "reference": "test evidence: independent monitoring endpoint healthy",
+            },
+        }
+        incomplete_host_recovery = json.loads(json.dumps(host_recovery_request))
+        incomplete_host_recovery["preflight"]["host_recovery"]["hosted_services"] = []
+        calls_before_host_recovery = calls_path.read_text(encoding="utf-8").splitlines()
+        incomplete_status, incomplete_payload = request_json(
+            server.base_url,
+            "POST",
+            "/devices/controllers/actions",
+            token="continuum-control-token",
+            payload=incomplete_host_recovery,
+        )
+        assert_status(incomplete_status, 409, "incomplete hosted-service recovery evidence")
+        assert_true(incomplete_payload.get("error", {}).get("code") == "controller_preflight_blocked",
+                    "incomplete host recovery evidence must block the action")
+        assert_true(calls_path.read_text(encoding="utf-8").splitlines() == calls_before_host_recovery,
+                    "incomplete host recovery evidence must fail before BMC contact")
+
+        missing_dependency = json.loads(json.dumps(host_recovery_request))
+        missing_dependency["request_id"] = "ipmi-host-recovery-missing-dependency-0001"
+        missing_dependency["preflight"]["host_recovery"]["dependencies"] = []
+        missing_dependency_status, missing_dependency_payload = request_json(
+            server.base_url,
+            "POST",
+            "/devices/controllers/actions",
+            token="continuum-control-token",
+            payload=missing_dependency,
+        )
+        assert_status(missing_dependency_status, 409, "missing host recovery dependency evidence")
+        assert_true(missing_dependency_payload.get("error", {}).get("code") == "controller_preflight_blocked",
+                    "host recovery without every healthy dependency must be blocked")
+        assert_true(calls_path.read_text(encoding="utf-8").splitlines() == calls_before_host_recovery,
+                    "missing dependency evidence must fail before BMC contact")
+
+        host_recovery_status, host_recovery_payload = request_json(
+            server.base_url,
+            "POST",
+            "/devices/controllers/actions",
+            token="continuum-control-token",
+            payload=host_recovery_request,
+        )
+        assert_status(host_recovery_status, 200, "host recovery with complete hosted-service and dependency evidence")
+        assert_true(host_recovery_payload.get("data", {}).get("verified") is True,
+                    "a host recovery restart must still verify the BMC power state")
+        host_recovery_calls = calls_path.read_text(encoding="utf-8").splitlines()
+        assert_true(sum("chassis power reset" in line for line in host_recovery_calls) == 2,
+                    "a verified host recovery should issue exactly one additional warm restart")
+        audit_records = [json.loads(line) for line in audit_path.read_text(encoding="utf-8").splitlines()]
+        host_recovery_intent = next(
+            record for record in audit_records
+            if record.get("request_id") == "ipmi-host-recovery-0001" and record.get("phase") == "intent"
+        )
+        assert_true(
+            host_recovery_intent.get("host_recovery", {}).get("target", {}).get("state") == "unreachable"
+            and host_recovery_intent.get("host_recovery", {}).get("hosted_services", [])[0].get("state") == "unavailable"
+            and host_recovery_intent.get("host_recovery", {}).get("monitoring", {}).get("state") == "healthy",
+            "the durable intent must retain the verified target, hosted-service and monitoring evidence",
+        )
     finally:
         server.stop()
         mock_dir.cleanup()

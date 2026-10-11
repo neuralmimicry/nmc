@@ -2010,9 +2010,27 @@ Json DeviceManagement::performControllerAction(const Inventory& inventory,
     const std::vector<std::string> suppliedDependencies = stringArray(preflight.value("dependency_ids", Json::array()));
     const Json outageRecovery = preflight.value("outage_recovery", Json());
     const bool recoveryMode = !outageRecovery.is_null();
+    const Json hostRecovery = preflight.value("host_recovery", Json());
+    const bool hostRecoveryMode = !hostRecovery.is_null();
     std::string outageId;
     Json outageEvidence = Json::array();
     bool outageEvidenceValid = false;
+    Json hostRecoveryEvidence = Json::object();
+    bool hostRecoveryEvidenceValid = false;
+    const auto safeEvidenceText = [](const std::string& value, size_t maxLength) {
+        return !value.empty() && value.size() <= maxLength
+                && std::all_of(value.begin(), value.end(), [](unsigned char ch) {
+                    return ch >= 0x20 && ch != 0x7f;
+                });
+    };
+    const auto freshEvidenceTimestamp = [](const Json& evidence) {
+        if (!evidence.is_object() || !evidence.contains("observed_at_unix_ms")
+            || !evidence["observed_at_unix_ms"].is_number_integer()) {
+            return false;
+        }
+        const int64_t ageMs = nowEpochMs() - evidence["observed_at_unix_ms"].get<int64_t>();
+        return ageMs >= -30000 && ageMs <= 60000;
+    };
     if (recoveryMode && outageRecovery.is_object()) {
         outageId = stringField(outageRecovery, "outage_id");
         const Json observations = outageRecovery.value("affected_services", Json());
@@ -2036,12 +2054,6 @@ Json DeviceManagement::performControllerAction(const Inventory& inventory,
                 }
                 const int64_t serviceObservedAt = observation["observed_at_unix_ms"].get<int64_t>();
                 const int64_t serviceEvidenceAge = nowEpochMs() - serviceObservedAt;
-                const auto safeEvidenceText = [](const std::string& value, size_t maxLength) {
-                    return !value.empty() && value.size() <= maxLength
-                            && std::all_of(value.begin(), value.end(), [](unsigned char ch) {
-                                return ch >= 0x20 && ch != 0x7f;
-                            });
-                };
                 if (service.empty()
                     || std::find(expectedServices.begin(), expectedServices.end(), service) == expectedServices.end()
                     || !observedServices.insert(service).second
@@ -2061,7 +2073,127 @@ Json DeviceManagement::performControllerAction(const Inventory& inventory,
             outageEvidenceValid = observedServices.size() == expectedServices.size();
         }
     }
-    const bool serviceHealthSatisfied = recoveryMode
+    if (hostRecoveryMode && hostRecovery.is_object() && !recoveryMode) {
+        const std::string hostRecoveryId = stringField(hostRecovery, "outage_id");
+        const Json target = hostRecovery.value("target", Json());
+        const Json hostedServiceObservations = hostRecovery.value("hosted_services", Json());
+        const Json dependencyObservations = hostRecovery.value("dependencies", Json());
+        const Json monitoring = hostRecovery.value("monitoring", Json());
+        const std::vector<std::string> expectedHostedServices = stringArray(device->value("services", Json::array()));
+        Json canonicalTarget = Json::object();
+        Json canonicalHostedServices = Json::array();
+        Json canonicalDependencies = Json::array();
+        Json canonicalMonitoring = Json::object();
+        const bool targetValid = target.is_object()
+                && stringField(target, "device_id") == deviceId
+                && lower(stringField(target, "state")) == "unreachable"
+                && freshEvidenceTimestamp(target)
+                && safeEvidenceText(stringField(target, "source"), 128)
+                && safeEvidenceText(stringField(target, "reference"), 512);
+        std::unordered_set<std::string> observedHostedServices;
+        hostRecoveryEvidenceValid = safeIdentifier(hostRecoveryId) && targetValid
+                && hostedServiceObservations.is_array()
+                && hostedServiceObservations.size() == expectedHostedServices.size()
+                && !expectedHostedServices.empty()
+                && dependencyObservations.is_array()
+                && dependencyObservations.size() == expectedDependencies.size();
+        if (hostRecoveryEvidenceValid) {
+            for (const Json& observation : hostedServiceObservations) {
+                if (!observation.is_object()) {
+                    hostRecoveryEvidenceValid = false;
+                    break;
+                }
+                const std::string service = stringField(observation, "service");
+                const std::string state = lower(stringField(observation, "state"));
+                const std::string source = stringField(observation, "source");
+                const std::string reference = stringField(observation, "reference");
+                if (service.empty()
+                    || std::find(expectedHostedServices.begin(), expectedHostedServices.end(), service)
+                            == expectedHostedServices.end()
+                    || !observedHostedServices.insert(service).second
+                    || state != "unavailable"
+                    || !freshEvidenceTimestamp(observation)
+                    || !safeEvidenceText(source, 128)
+                    || !safeEvidenceText(reference, 512)) {
+                    hostRecoveryEvidenceValid = false;
+                    break;
+                }
+                canonicalHostedServices.push_back({
+                        {"service", service}, {"state", state},
+                        {"observed_at_unix_ms", observation["observed_at_unix_ms"]},
+                        {"source", source}, {"reference", reference}});
+            }
+        }
+        if (hostRecoveryEvidenceValid) {
+            hostRecoveryEvidenceValid = observedHostedServices.size() == expectedHostedServices.size();
+        }
+        std::unordered_set<std::string> observedDependencies;
+        if (hostRecoveryEvidenceValid) {
+            for (const Json& observation : dependencyObservations) {
+                if (!observation.is_object()) {
+                    hostRecoveryEvidenceValid = false;
+                    break;
+                }
+                const std::string dependencyId = stringField(observation, "dependency_id");
+                const std::string state = lower(stringField(observation, "state"));
+                const std::string source = stringField(observation, "source");
+                const std::string reference = stringField(observation, "reference");
+                if (dependencyId.empty()
+                    || std::find(expectedDependencies.begin(), expectedDependencies.end(), dependencyId)
+                            == expectedDependencies.end()
+                    || !observedDependencies.insert(dependencyId).second
+                    || state != "healthy"
+                    || !freshEvidenceTimestamp(observation)
+                    || !safeEvidenceText(source, 128)
+                    || !safeEvidenceText(reference, 512)) {
+                    hostRecoveryEvidenceValid = false;
+                    break;
+                }
+                canonicalDependencies.push_back({
+                        {"dependency_id", dependencyId}, {"state", state},
+                        {"observed_at_unix_ms", observation["observed_at_unix_ms"]},
+                        {"source", source}, {"reference", reference}});
+            }
+        }
+        if (hostRecoveryEvidenceValid) {
+            if (!monitoring.is_object()) {
+                hostRecoveryEvidenceValid = false;
+            } else {
+                const std::string monitoringState = lower(stringField(monitoring, "state"));
+                const std::string monitoringSource = stringField(monitoring, "source");
+                const std::string monitoringReference = stringField(monitoring, "reference");
+                hostRecoveryEvidenceValid = observedDependencies.size() == expectedDependencies.size()
+                        && monitoringState == "healthy"
+                        && freshEvidenceTimestamp(monitoring)
+                        && safeEvidenceText(monitoringSource, 128)
+                        && safeEvidenceText(monitoringReference, 512);
+                if (hostRecoveryEvidenceValid) {
+                    canonicalTarget = {
+                            {"device_id", deviceId}, {"state", "unreachable"},
+                            {"observed_at_unix_ms", target["observed_at_unix_ms"]},
+                            {"source", stringField(target, "source")},
+                            {"reference", stringField(target, "reference")}};
+                    canonicalMonitoring = {
+                            {"state", monitoringState},
+                            {"observed_at_unix_ms", monitoring["observed_at_unix_ms"]},
+                            {"source", monitoringSource}, {"reference", monitoringReference}};
+                }
+            }
+        }
+        if (hostRecoveryEvidenceValid) {
+            hostRecoveryEvidence = {
+                    {"outage_id", hostRecoveryId}, {"target", canonicalTarget},
+                    {"hosted_services", canonicalHostedServices},
+                    {"dependencies", canonicalDependencies}, {"monitoring", canonicalMonitoring}};
+        }
+    }
+    const bool serviceHealthSatisfied = hostRecoveryMode
+            ? hostRecoveryEvidenceValid && !recoveryMode
+              && (action == "warm_restart" || action == "cold_restart")
+              && preflight.contains("affected_services_healthy")
+              && preflight["affected_services_healthy"].is_boolean()
+              && !preflight["affected_services_healthy"].get<bool>()
+            : recoveryMode
             ? outageEvidenceValid && (action == "warm_restart" || action == "cold_restart")
               && preflight.contains("affected_services_healthy")
               && preflight["affected_services_healthy"].is_boolean()
@@ -2079,7 +2211,7 @@ Json DeviceManagement::performControllerAction(const Inventory& inventory,
         || expectedServices.empty() || suppliedServices != expectedServices
         || suppliedDependencies != expectedDependencies) {
         statusCode = 409;
-        return errorBody("controller_preflight_blocked", "fresh identity, dependency and monitoring evidence must match the active inventory; services must be healthy or have a complete, fresh outage-recovery record");
+        return errorBody("controller_preflight_blocked", "fresh identity, dependency and monitoring evidence must match the active inventory; services must be healthy or have a complete, fresh outage or host-recovery record");
     }
     const std::string intentDigest = controllerActionIntentDigest(controllerId, request);
     Json auditBase{{"request_id", requestId}, {"controller_id", controllerId}, {"device_id", deviceId},
@@ -2087,6 +2219,9 @@ Json DeviceManagement::performControllerAction(const Inventory& inventory,
                    {"reason", reason}, {"intent_sha256", intentDigest}, {"started_at_unix_ms", nowEpochMs()}};
     if (recoveryMode) {
         auditBase["outage_recovery"] = {{"outage_id", outageId}, {"affected_services", outageEvidence}};
+    }
+    if (hostRecoveryMode) {
+        auditBase["host_recovery"] = hostRecoveryEvidence;
     }
     Json intent = auditBase;
     intent["phase"] = "intent";
