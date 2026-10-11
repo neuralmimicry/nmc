@@ -2,6 +2,7 @@
 #include "Commands/RootCommand.h"
 #include "Commands/BucketCommands.h"
 #include "Commands/AarnnCommands.h"
+#include "Commands/GithubActionsCommands.h"
 #include "Commands/K8sCommands.h"
 #include "Commands/VClusterCommands.h"
 #include "Commands/ModelCommands.h"
@@ -132,6 +133,8 @@ int main(int argc, char* argv[]) {
     providerComputeCmd->addSubcommand(std::make_shared<NMC::Commands::ProviderComputeActionCommand>(apiClient));
     providerCmd->addSubcommand(providerComputeCmd);
     parser.registerCommand(providerCmd);
+
+    parser.registerCommand(std::make_shared<NMC::Commands::GithubActionsCommand>(apiClient));
 
     auto serverCmd = std::make_shared<NMC::Commands::ServerCommand>(apiClient);
     serverCmd->addSubcommand(std::make_shared<NMC::Commands::ServerHealthCommand>(apiClient));

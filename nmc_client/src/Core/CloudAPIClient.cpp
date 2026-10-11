@@ -55,6 +55,26 @@ namespace {
         return encoded.str();
     }
 
+    bool isValidGithubRunId(const std::string& value) {
+        static const std::regex pattern(R"(^[0-9]{1,20}$)");
+        return std::regex_match(value, pattern);
+    }
+
+    bool isValidGithubTaskId(const std::string& value) {
+        static const std::regex pattern(
+                R"(^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$)");
+        return std::regex_match(value, pattern);
+    }
+
+    bool pathEntryExists(const std::filesystem::path& path, std::error_code& error) {
+        const auto status = std::filesystem::symlink_status(path, error);
+        if (error == std::errc::no_such_file_or_directory) {
+            error.clear();
+            return false;
+        }
+        return status.type() != std::filesystem::file_type::not_found;
+    }
+
     void appendTraceySimulationQuery(std::string& path, const NMC::Core::TraceySimulationQuery& simulation) {
         appendQueryInt(path, "simulation_nodes", simulation.simulationNodes);
         appendQueryInt(path, "simulation_gpus", simulation.simulationGpus);
@@ -1632,6 +1652,154 @@ namespace NMC::Core {
     Models::CloudResponse CloudAPIClient::aarnnRuntimeResources() {
         auto res = cli->Get("/aarnn/runtime/resources");
         return processHttpResponse(res, "AARNN runtime resources retrieved.");
+    }
+
+    Models::CloudResponse CloudAPIClient::getGithubActionsWorkflow() {
+        auto res = cli->Get("/github/actions/workflow");
+        return processHttpResponse(res, "Configured GitHub Actions workflow retrieved.");
+    }
+
+    Models::CloudResponse CloudAPIClient::dispatchGithubActionsTask(const nlohmann::json& request) {
+        if (!request.is_object()) {
+            Models::CloudResponse response;
+            response.success = false;
+            response.message = "GitHub Actions task request must be a JSON object.";
+            response.data = nlohmann::json::object();
+            response.statusCode = 400;
+            return response;
+        }
+        auto res = cli->Post("/github/actions/dispatch", request.dump(), "application/json");
+        return processHttpResponse(res, "Trusted GitHub Actions task submitted.");
+    }
+
+    Models::CloudResponse CloudAPIClient::getGithubActionsTask(const std::string& taskId) {
+        if (!isValidGithubTaskId(taskId)) {
+            Models::CloudResponse response;
+            response.success = false;
+            response.message = "A canonical GitHub Actions task UUID is required.";
+            response.data = nlohmann::json::object();
+            response.statusCode = 400;
+            return response;
+        }
+        auto res = cli->Get("/github/actions/tasks/" + taskId);
+        return processHttpResponse(res, "GitHub Actions task status retrieved.");
+    }
+
+    Models::CloudResponse CloudAPIClient::getGithubActionsRun(const std::string& runId,
+                                                               const std::string& taskId) {
+        if (!isValidGithubRunId(runId) || !isValidGithubTaskId(taskId)) {
+            Models::CloudResponse response;
+            response.success = false;
+            response.message = "A numeric run ID and canonical task UUID are required.";
+            response.data = nlohmann::json::object();
+            response.statusCode = 400;
+            return response;
+        }
+        std::string path = "/github/actions/runs/" + runId + "?task_id=" + encodeQueryValue(taskId);
+        auto res = cli->Get(path);
+        return processHttpResponse(res, "Registered GitHub Actions run status retrieved.");
+    }
+
+    Models::CloudResponse CloudAPIClient::cancelGithubActionsRun(const std::string& runId,
+                                                                  const std::string& taskId) {
+        if (!isValidGithubRunId(runId) || !isValidGithubTaskId(taskId)) {
+            Models::CloudResponse response;
+            response.success = false;
+            response.message = "A numeric run ID and canonical task UUID are required.";
+            response.data = nlohmann::json::object();
+            response.statusCode = 400;
+            return response;
+        }
+        std::string path = "/github/actions/runs/" + runId + "/cancel?task_id=" + encodeQueryValue(taskId);
+        auto res = cli->Post(path, "{}", "application/json");
+        return processHttpResponse(res, "Cancellation requested for the registered GitHub Actions run.");
+    }
+
+    Models::CloudResponse CloudAPIClient::downloadGithubActionsRunResult(const std::string& runId,
+                                                                         const std::string& taskId,
+                                                                         const std::string& outputPath) {
+        constexpr std::size_t maxResultBytes = 64U * 1024U * 1024U;
+        Models::CloudResponse response;
+        response.success = false;
+        response.data = nlohmann::json::object();
+        response.statusCode = 400;
+        if (!isValidGithubRunId(runId) || !isValidGithubTaskId(taskId) || outputPath.empty()) {
+            response.message = "A numeric run ID, canonical task UUID and output path are required.";
+            return response;
+        }
+
+        const std::filesystem::path target(outputPath);
+        std::error_code filesystemError;
+        if (pathEntryExists(target, filesystemError) || filesystemError) {
+            response.statusCode = filesystemError ? 400 : 409;
+            response.message = filesystemError ? "The result output path could not be inspected."
+                                               : "Refusing to overwrite an existing result file.";
+            return response;
+        }
+
+        std::string path = "/github/actions/runs/" + runId + "/result?task_id=" + encodeQueryValue(taskId);
+        auto res = cli->Get(path);
+        if (!res || res->status < 200 || res->status >= 300) {
+            return processHttpResponse(res, "GitHub Actions result download failed.");
+        }
+        if (res->body.size() > maxResultBytes) {
+            response.statusCode = 413;
+            response.message = "GitHub Actions result exceeds the 64 MiB transfer limit.";
+            return response;
+        }
+        const std::string contentType = res->get_header_value("Content-Type");
+        if (contentType.rfind("application/zip", 0) != 0) {
+            response.statusCode = 502;
+            response.message = "Continuum returned an unexpected result content type.";
+            return response;
+        }
+
+        std::filesystem::path temporary = target;
+        temporary += ".partial-" + runId + "-" + taskId;
+        filesystemError.clear();
+        if (pathEntryExists(temporary, filesystemError) || filesystemError) {
+            response.statusCode = 409;
+            response.message = "A partial result file already exists at the selected output path.";
+            return response;
+        }
+        {
+            std::ofstream output(temporary, std::ios::binary | std::ios::out | std::ios::trunc);
+            if (!output.is_open()) {
+                response.statusCode = 400;
+                response.message = "The selected result output path could not be opened.";
+                return response;
+            }
+            output.write(res->body.data(), static_cast<std::streamsize>(res->body.size()));
+            output.close();
+            if (!output) {
+                std::filesystem::remove(temporary, filesystemError);
+                response.statusCode = 500;
+                response.message = "The bounded result archive could not be written.";
+                return response;
+            }
+        }
+
+        filesystemError.clear();
+        if (pathEntryExists(target, filesystemError) || filesystemError) {
+            std::filesystem::remove(temporary, filesystemError);
+            response.statusCode = 409;
+            response.message = "Refusing to overwrite an existing result file.";
+            return response;
+        }
+        std::filesystem::rename(temporary, target, filesystemError);
+        if (filesystemError) {
+            std::filesystem::remove(temporary, filesystemError);
+            response.statusCode = 500;
+            response.message = "The result archive could not be moved into place.";
+            return response;
+        }
+
+        response.success = true;
+        response.statusCode = 200;
+        response.message = "Bounded GitHub Actions result archive downloaded through Continuum.";
+        response.data = {{"run_id", runId}, {"task_id", taskId}, {"path", target.string()},
+                         {"bytes", res->body.size()}};
+        return response;
     }
 
 // --- Server-side Connection Management ---

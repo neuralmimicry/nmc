@@ -272,6 +272,16 @@ namespace NMC::Core {
                                          const std::string& orchestratorId = "");
         Models::CloudResponse aarnnRuntimeResources();
 
+        // Allowlisted GitHub Actions task control through Continuum.
+        Models::CloudResponse getGithubActionsWorkflow();
+        Models::CloudResponse dispatchGithubActionsTask(const nlohmann::json& request);
+        Models::CloudResponse getGithubActionsTask(const std::string& taskId);
+        Models::CloudResponse getGithubActionsRun(const std::string& runId, const std::string& taskId);
+        Models::CloudResponse cancelGithubActionsRun(const std::string& runId, const std::string& taskId);
+        Models::CloudResponse downloadGithubActionsRunResult(const std::string& runId,
+                                                              const std::string& taskId,
+                                                              const std::string& outputPath);
+
         // Server-side Connection Management
         Models::CloudResponse getServerConnectionStatus();
         Models::CloudResponse makeServerConnection(const std::string& name, const std::string& endpoint, bool setDefault);

@@ -48,6 +48,7 @@ set(NMC_CLIENT_SOURCES
         src/Commands/ConnectionCommands.cpp
         src/Commands/DeviceCommands.cpp
         src/Commands/GailCommands.cpp
+        src/Commands/GithubActionsCommands.cpp
         src/Commands/K8sCommands.cpp
         src/Commands/ModelCommands.cpp
         src/Commands/NodeCommands.cpp

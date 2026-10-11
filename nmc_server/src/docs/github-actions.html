@@ -47,6 +47,16 @@
 }</code></pre>
     <p>Only <code>check</code>, <code>test</code> and <code>python-test</code> profiles are accepted. Repository, workflow and ref come from protected Continuum configuration; callers cannot select arbitrary workflows, branches or GitHub API paths. The workflow's run name includes the task ID so an uncertain response can be reconciled without dispatching a duplicate.</p>
 
+    <h2>NMC client</h2>
+    <p>Operators can use the Continuum-backed client without calling GitHub directly:</p>
+    <pre><code>nmc github-actions workflow
+nmc github-actions dispatch --task-id UUID --workspace-id workspace-one --source-sha COMMIT_SHA --source-tree TREE_SHA --task-kind test
+nmc github-actions task --task-id UUID
+nmc github-actions run --run-id RUN_ID --task-id UUID
+nmc github-actions result --run-id RUN_ID --task-id UUID --output ./nmide-result.zip
+nmc github-actions cancel --run-id RUN_ID --task-id UUID</code></pre>
+    <p>The result command writes the bounded ZIP to a new path and refuses to overwrite an existing file. Dispatch and cancellation still require the caller's <code>control</code> claim.</p>
+
     <h2>Result handling</h2>
     <p>Continuum verifies that the run belongs to the persisted task before forwarding status, cancellation or results. It selects only <code>nmide-result-{task_id}</code> from that run and proxies the bounded ZIP response. The task broker validates the archive paths, task ID, source commit/tree, profile, run ID and attempt before importing diagnostics or continuing the agent turn.</p>
 </main>

@@ -150,9 +150,19 @@ def route_matches_endpoint(route: Route, endpoint: str) -> bool:
         try:
             candidates = [endpoint]
             if "contract-id" in endpoint:
-                # Provider job IDs are validated as 32 lowercase hexadecimal
-                # characters, so exercise that supported dynamic path shape.
-                candidates.append(endpoint.replace("contract-id", "a" * 32))
+                # Exercise the ID shapes used by registered API routes. This
+                # includes provider job IDs, UUID task IDs and numeric Actions
+                # run IDs; a single generic placeholder misses those routes.
+                candidates.extend(
+                    endpoint.replace("contract-id", sample)
+                    for sample in (
+                        "a" * 32,
+                        "a" * 36,
+                        "00000000-0000-0000-0000-000000000000",
+                        "1",
+                        "12345678901234567890",
+                    )
+                )
             return any(re.fullmatch(route.path, candidate) is not None for candidate in candidates)
         except re.error as exc:
             print(f"[contract-test] invalid server regex route '{route.path}': {exc}", file=sys.stderr)
