@@ -15,7 +15,7 @@ import re
 import sys
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import DefaultDict, Dict, Iterable, List, Sequence, Set, Tuple
+from typing import DefaultDict, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 from server_route_sources import read_route_registration_source
 
@@ -65,12 +65,74 @@ def extract_braced_block(src: str, open_brace_index: int) -> Tuple[str, int]:
     raise ValueError("unterminated brace block")
 
 
-def template_from_literal_parts(parts: Sequence[str]) -> str:
-    template = parts[0]
-    for part in parts[1:]:
-        # Dynamic concatenations are represented as "{var}" placeholders.
-        template += "{var}" + part
-    return template
+def split_cpp_string_concatenation(expr: str) -> List[str]:
+    """Split a simple C++ string expression on top-level ``+`` operators."""
+    parts: List[str] = []
+    start = 0
+    depth = 0
+    in_string = False
+    escaped = False
+    for index, character in enumerate(expr):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+            continue
+        if character == '"':
+            in_string = True
+        elif character == "(":
+            depth += 1
+        elif character == ")":
+            depth = max(0, depth - 1)
+        elif character == "+" and depth == 0:
+            parts.append(expr[start:index].strip())
+            start = index + 1
+    parts.append(expr[start:].strip())
+    return parts
+
+
+def template_from_cpp_path_expr(expr: str) -> Optional[str]:
+    """Convert a C++ path expression into a route with dynamic placeholders.
+
+    Query strings are deliberately excluded because they do not participate
+    in path matching. For example, ``"/runs/" + id + "?task_id=" + task``
+    becomes ``/runs/{var}``.
+    """
+    template = ""
+    saw_path = False
+    for part in split_cpp_string_concatenation(expr):
+        literal_match = re.fullmatch(r'"((?:\\.|[^"\\])*)"', part, re.DOTALL)
+        if literal_match:
+            literal = literal_match.group(1)
+            path_literal = literal.split("?", 1)[0]
+            if not saw_path:
+                if not path_literal.startswith("/"):
+                    continue
+                saw_path = True
+            template += path_literal
+            if "?" in literal:
+                break
+        elif saw_path and part:
+            # Each non-literal C++ concatenand represents one path value.
+            template += "{var}"
+    return template if saw_path else None
+
+
+def verify_dynamic_path_templates() -> None:
+    fixtures = {
+        '"/github/actions/tasks/" + taskId': "/github/actions/tasks/{var}",
+        '"/github/actions/runs/" + runId + "?task_id=" + encodeQueryValue(taskId)':
+            "/github/actions/runs/{var}",
+    }
+    for expression, expected in fixtures.items():
+        actual = template_from_cpp_path_expr(expression)
+        if actual != expected:
+            raise ValueError(
+                f"dynamic path parser produced {actual!r} for {expression!r}; expected {expected!r}"
+            )
 
 
 def collect_server_routes(server_src: str) -> List[Route]:
@@ -144,19 +206,19 @@ def collect_cloud_method_routes(cloud_src: str) -> Dict[str, List[Route]]:
         for var_name, expr in var_pattern.findall(body):
             # CloudAPIClient paths may append query parameters to a literal;
             # only the URL path participates in the server route contract.
-            literal_parts = re.findall(r'"(/[^"?]*)(?:\?[^\"]*)?"', expr)
-            if not literal_parts:
+            path_template = template_from_cpp_path_expr(expr)
+            if path_template is None:
                 continue
-            var_paths[var_name].add(template_from_literal_parts(literal_parts))
+            var_paths[var_name].add(path_template)
 
         call_first_arg_pattern = re.compile(
             r"(?:tempCli|cli)->(Get|Post|Delete|Put|Patch)\(\s*(.*?)\s*(?:,|\))",
             re.MULTILINE | re.DOTALL,
         )
         for http_method, first_arg_expr in call_first_arg_pattern.findall(body):
-            literal_parts = re.findall(r'"(/[^"?]*)(?:\?[^\"]*)?"', first_arg_expr)
-            if literal_parts:
-                routes.add(Route(http_method, template_from_literal_parts(literal_parts), False))
+            path_template = template_from_cpp_path_expr(first_arg_expr)
+            if path_template is not None:
+                routes.add(Route(http_method, path_template, False))
                 continue
 
             var_match = re.fullmatch(r"([A-Za-z_]\w*)", first_arg_expr.strip())
@@ -344,6 +406,12 @@ def match_server_route_to_cloud_methods(
 
 
 def main() -> int:
+    try:
+        verify_dynamic_path_templates()
+    except ValueError as exc:
+        print(f"[command-coverage] {exc}", file=sys.stderr)
+        return 1
+
     server_src = read_route_registration_source()
     cloud_src = read_text(CLOUD_API_FILE)
     main_src = read_text(MAIN_FILE)
