@@ -2722,6 +2722,37 @@ def test_global_controller_power_gate_can_be_explicitly_disabled(backend_base_ur
             payload.get("error", {}).get("code") == "controller_actions_disabled",
             "an explicit global false must reject controller actions before hardware contact",
         )
+        recovery_payload = build_controller_action_payload(
+            "cold_restart",
+            request_id="global-power-gate-disabled-recovery-0001",
+            change_id="GLOBAL-POWER-GATE-RECOVERY-TEST",
+            expected_power_state="On",
+        )
+        recovery_payload["preflight"]["affected_services_healthy"] = False
+        recovery_payload["preflight"]["outage_recovery"] = {
+            "outage_id": "authz-test-outage-0001",
+            "affected_services": [
+                {
+                    "service": "authz-test-service",
+                    "state": "unavailable",
+                    "observed_at_unix_ms": int(time.time() * 1000),
+                    "source": "host_probe",
+                    "reference": "test evidence: host unreachable",
+                }
+            ],
+        }
+        recovery_status, recovery_response = request_json(
+            server.base_url,
+            "POST",
+            "/devices/controllers/actions",
+            token="continuum-control-token",
+            payload=recovery_payload,
+        )
+        assert_status(recovery_status, 423, "outage recovery must retain the global power-control gate")
+        assert_true(
+            recovery_response.get("error", {}).get("code") == "controller_actions_disabled",
+            "an outage-recovery record must not override an explicit global power-control opt-out",
+        )
     finally:
         server.stop()
 
@@ -2868,6 +2899,67 @@ def test_ipmi_diagnostics_and_actions(backend_base_url: str) -> None:
                     and sum("chassis power on" in line for line in recorded_calls) == 1
                     and sum("chassis power cycle" in line for line in recorded_calls) == 1,
                     "IPMI power-on, power-off and cold-restart commands must map to fixed argv")
+
+        recovery_request = build_controller_action_payload(
+            "cold_restart",
+            request_id="ipmi-outage-recovery-0001",
+            change_id="IPMI-OUTAGE-RECOVERY-1",
+            expected_power_state="On",
+        )
+        recovery_preflight = recovery_request["preflight"]
+        recovery_preflight["affected_services_healthy"] = False
+        recovery_preflight["outage_recovery"] = {
+            "outage_id": "IPMI-QC00-OUTAGE-20261011",
+            "affected_services": [
+                {
+                    "service": "authz-test-service",
+                    "state": "unavailable",
+                    "observed_at_unix_ms": int(time.time() * 1000),
+                    "source": "host_probe",
+                    "reference": "test evidence: host unreachable over SSH",
+                }
+            ],
+        }
+        partial_recovery = json.loads(json.dumps(recovery_request))
+        partial_recovery["preflight"]["outage_recovery"]["affected_services"] = []
+        calls_before_recovery = calls_path.read_text(encoding="utf-8").splitlines()
+        partial_status, partial_payload = request_json(
+            server.base_url,
+            "POST",
+            "/devices/controllers/actions",
+            token="continuum-control-token",
+            payload=partial_recovery,
+        )
+        assert_status(partial_status, 409, "incomplete affected-service outage evidence")
+        assert_true(partial_payload.get("error", {}).get("code") == "controller_preflight_blocked",
+                    "incomplete outage evidence must block recovery")
+        assert_true(calls_path.read_text(encoding="utf-8").splitlines() == calls_before_recovery,
+                    "an invalid outage record must fail before BMC contact")
+
+        recovery_status, recovery_payload = request_json(
+            server.base_url,
+            "POST",
+            "/devices/controllers/actions",
+            token="continuum-control-token",
+            payload=recovery_request,
+        )
+        assert_status(recovery_status, 200, "IPMI restart with a complete existing-outage record")
+        assert_true(recovery_payload.get("data", {}).get("verified") is True,
+                    "an outage-recovery restart must still verify the BMC power state")
+        recovery_calls = calls_path.read_text(encoding="utf-8").splitlines()
+        assert_true(sum("chassis power cycle" in line for line in recovery_calls) == 2,
+                    "the complete outage-recovery record should issue exactly one additional cold restart")
+        audit_path = server._home_dir / ".nmc" / "device-actions.jsonl"
+        audit_records = [json.loads(line) for line in audit_path.read_text(encoding="utf-8").splitlines()]
+        recovery_intent = next(
+            record for record in audit_records
+            if record.get("request_id") == "ipmi-outage-recovery-0001" and record.get("phase") == "intent"
+        )
+        assert_true(
+            recovery_intent.get("outage_recovery", {}).get("outage_id") == "IPMI-QC00-OUTAGE-20261011"
+            and recovery_intent.get("outage_recovery", {}).get("affected_services", [])[0].get("state") == "unavailable",
+            "the durable intent must preserve the outage identifier and each affected-service state",
+        )
     finally:
         server.stop()
         mock_dir.cleanup()
