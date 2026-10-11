@@ -20,6 +20,9 @@ def main() -> int:
         "documentation": (REPO_ROOT / "docs/RECOVERY.md").read_text(encoding="utf-8"),
     }
     restart_handler = sources["recovery"].split("void K8sHandlers::handleRestartDeployment", 1)[-1]
+    recovery_inspector = sources["recovery"].split(
+        "nlohmann::json K8sHandlers::inspectDeploymentRecoveryState", 1
+    )[-1].split("void K8sHandlers::handleGetDeploymentRecoveryStatus", 1)[0]
     requirements = {
         "recovery is disabled in the server constructor by default": "bool recoveryEnabled{false};" in sources["handler"],
         "only an explicit true or 1 value opens the server gate": '== "true" || normalisedRecoveryEnabled == "1"' in sources["server"],
@@ -35,6 +38,12 @@ def main() -> int:
         "operator documentation describes the typed, compare-and-swap OctoBot configuration route": "POST /k8s/octobot/configuration" in sources["documentation"] and "continuum-configuration=enabled" in sources["documentation"] and "expected_request_id" in sources["documentation"],
         "operator documentation describes the guarded workflow": "NMC_RECOVERY_ENABLED=true" in sources["documentation"] and "nmc_k8s_cluster_id" in sources["documentation"],
         "operator documentation describes the image rollout route": "POST /k8s/deployment/image-rollout" in sources["documentation"] and "neuralmimicry.ai/continuum-rollout=enabled" in sources["documentation"],
+        "readiness degradation is visible without conflating it with Kubernetes API failure": '"readiness_degraded"' in recovery_inspector and '"degraded_pods"' in recovery_inspector,
+        "a stable fully updated rollout may be eligible for readiness recovery": 'if (status.value("updatedReplicas", 0) < desired)' in recovery_inspector and "stableDegradedAvailability" in recovery_inspector,
+        "Available=False is recoverable only for missing replicas on the observed current template": 'reason == "MinimumReplicasUnavailable"' in recovery_inspector and "observedGeneration >= generation" in recovery_inspector,
+        "progress-deadline recovery requires all desired current-template replicas": 'reason == "ProgressDeadlineExceeded"' in recovery_inspector and 'status.value("updatedReplicas", 0) >= desired' in recovery_inspector,
+        "explicit maxUnavailable cannot make every desired replica unavailable": "bool maxUnavailableWithin(const nlohmann::json& value, int desiredReplicas)" in sources["recovery"] and restart_handler.count("!maxUnavailableWithin(rollingUpdate[\"maxUnavailable\"], desired)") == 1 and recovery_inspector.count("!maxUnavailableWithin(rollingUpdate[\"maxUnavailable\"], desired)") == 1,
+        "degraded Pod readiness does not waive placement, termination or healthy-host gates": '"pod_terminating"' in recovery_inspector and '"pod_unscheduled"' in recovery_inspector and '"host_unhealthy"' in recovery_inspector and '"pod_not_running"' in recovery_inspector,
     }
     failures = [description for description, passed in requirements.items() if not passed]
     if failures:

@@ -216,6 +216,27 @@ bool rolloutSettingWithin(const nlohmann::json& value, int maximum, bool allowZe
     }
 }
 
+bool maxUnavailableWithin(const nlohmann::json& value, int desiredReplicas) {
+    if (desiredReplicas < 1) return false;
+    if (value.is_number_integer()) {
+        const int parsed = value.get<int>();
+        return parsed >= 0 && parsed < desiredReplicas;
+    }
+    if (!value.is_string()) return false;
+    std::string text = value.get<std::string>();
+    if (text.empty() || text.back() != '%') return false;
+    text.pop_back();
+    if (text.empty() || !std::all_of(text.begin(), text.end(), [](unsigned char ch) {
+            return std::isdigit(ch) != 0;
+        })) return false;
+    try {
+        const int parsed = std::stoi(text);
+        return parsed >= 0 && parsed <= 25;
+    } catch (const std::exception&) {
+        return false;
+    }
+}
+
 bool ownedBy(const nlohmann::json& object, const std::string& uid, const std::string& kind) {
     const auto references = object.value("metadata", nlohmann::json::object())
             .value("ownerReferences", nlohmann::json::array());
@@ -346,6 +367,7 @@ nlohmann::json K8sHandlers::inspectDeploymentRecoveryState(
             {"blockers", nlohmann::json::array()},
             {"replicasets", nlohmann::json::array()},
             {"pods", nlohmann::json::array()},
+            {"degraded_pods", nlohmann::json::array()},
             {"hosts", nlohmann::json::array()},
     };
     auto& blockers = result["blockers"];
@@ -378,6 +400,9 @@ nlohmann::json K8sHandlers::inspectDeploymentRecoveryState(
     result["ready_replicas"] = status.value("readyReplicas", 0);
     result["available_replicas"] = status.value("availableReplicas", 0);
     result["updated_replicas"] = status.value("updatedReplicas", 0);
+    result["readiness_degraded"] = status.value("readyReplicas", 0) < desired
+            || status.value("availableReplicas", 0) < desired
+            || status.value("unavailableReplicas", 0) > 0;
 
     const auto deploymentLabels = metadata.value("labels", nlohmann::json::object());
     if (!deploymentLabels.is_object()
@@ -396,7 +421,7 @@ nlohmann::json K8sHandlers::inspectDeploymentRecoveryState(
     }
     const auto rollingUpdate = strategy.value("rollingUpdate", nlohmann::json::object());
     if (rollingUpdate.contains("maxUnavailable")
-            && !rolloutSettingWithin(rollingUpdate["maxUnavailable"], 25, true)) {
+            && !maxUnavailableWithin(rollingUpdate["maxUnavailable"], desired)) {
         addBlocker(blockers, "unsafe_max_unavailable", "Deployment maxUnavailable exceeds the recovery safety limit.");
     }
     if (rollingUpdate.contains("maxSurge")
@@ -406,11 +431,13 @@ nlohmann::json K8sHandlers::inspectDeploymentRecoveryState(
     if (generation > 0 && observedGeneration < generation) {
         addBlocker(blockers, "generation_unobserved", "Deployment controller has not observed the current spec.");
     }
-    if (status.value("updatedReplicas", 0) < desired
-            || status.value("readyReplicas", 0) < desired
-            || status.value("availableReplicas", 0) < desired
-            || status.value("unavailableReplicas", 0) > 0) {
-        addBlocker(blockers, "rollout_incomplete", "The Deployment does not have all desired replicas updated, ready and available.");
+    // A rollout that has not yet placed the current template everywhere is
+    // ambiguous and must finish before another restart. Once every desired
+    // replica runs the observed template, failed readiness is a recovery
+    // signal rather than a blanket blocker: a surge-first restart can replace
+    // the unhealthy Pods without deliberately taking healthy replicas down.
+    if (status.value("updatedReplicas", 0) < desired) {
+        addBlocker(blockers, "rollout_incomplete", "The current Deployment template is not running on all desired replicas.");
     }
 
     const auto conditions = status.value("conditions", nlohmann::json::array());
@@ -425,11 +452,21 @@ nlohmann::json K8sHandlers::inspectDeploymentRecoveryState(
             const std::string conditionStatus = condition.value("status", "");
             if (type == "Available") availableConditionSeen = true;
             if (type == "Progressing") progressingConditionSeen = true;
-            if ((type == "Available" && conditionStatus != "True")
-                    || (type == "Progressing" && conditionStatus != "True")
-                    || condition.value("reason", "") == "ProgressDeadlineExceeded") {
+            const std::string reason = condition.value("reason", "unknown");
+            const bool stableDegradedAvailability = type == "Available"
+                    && conditionStatus == "False"
+                    && reason == "MinimumReplicasUnavailable"
+                    && observedGeneration >= generation
+                    && status.value("updatedReplicas", 0) >= desired;
+            const bool recoverableProgressDeadline = type == "Progressing"
+                    && conditionStatus == "False"
+                    && reason == "ProgressDeadlineExceeded"
+                    && observedGeneration >= generation
+                    && status.value("updatedReplicas", 0) >= desired;
+            if ((type == "Available" && conditionStatus != "True" && !stableDegradedAvailability)
+                    || (type == "Progressing" && conditionStatus != "True" && !recoverableProgressDeadline)) {
                 addBlocker(blockers, "deployment_condition", type + " is " + conditionStatus
-                        + " (" + condition.value("reason", "unknown") + ").");
+                        + " (" + reason + ").");
             }
         }
         if (!availableConditionSeen) {
@@ -509,7 +546,14 @@ nlohmann::json K8sHandlers::inspectDeploymentRecoveryState(
                     {"ready", ready}, {"terminating", terminating}, {"replicaset_uid", replicaSetUid}});
             if (terminating) addBlocker(blockers, "pod_terminating", "Active Deployment Pod " + podName + " is terminating.");
             if (nodeName.empty()) addBlocker(blockers, "pod_unscheduled", "Active Deployment Pod " + podName + " has no assigned host.");
-            if (phase != "Running" || !ready) addBlocker(blockers, "pod_not_ready", "Active Deployment Pod " + podName + " is not Running and Ready.");
+            if (phase != "Running") {
+                addBlocker(blockers, "pod_not_running", "Active Deployment Pod " + podName + " is not Running.");
+            } else if (!ready) {
+                // Readiness failure is the condition the explicitly opted-in
+                // recovery action is intended to address. Placement,
+                // termination and host checks below remain fail-closed.
+                result["degraded_pods"].push_back(podName);
+            }
             if (!nodeName.empty()) hostNames.insert(nodeName);
         }
     }
@@ -652,7 +696,7 @@ void K8sHandlers::handleGetDeploymentRecoveryStatus(const httplib::Request& req,
     // endpoint useful for diagnosing safe suppression rather than conflating
     // it with an HTTP/API failure.
     response.success = true;
-    response.message = error.empty() ? "Deployment and host recovery preflight completed."
+    response.message = error.empty() ? "Deployment recovery preflight completed; readiness degradation is reported separately."
                                      : "Recovery preflight could not establish safe live state.";
     response.data = std::move(state);
     sendJsonResponse(res, response);
@@ -743,7 +787,7 @@ void K8sHandlers::handleRestartDeployment(const httplib::Request& req, httplib::
         // explicit values so a restart cannot intentionally take the whole
         // workload down; malformed settings fail closed.
         if (rollingUpdate.contains("maxUnavailable")
-            && !rolloutSettingWithin(rollingUpdate["maxUnavailable"], 25, true)) {
+            && !maxUnavailableWithin(rollingUpdate["maxUnavailable"], desired)) {
             genericClient_free(deploymentClient);
             return sendErrorResponse(res, 409, "Deployment maxUnavailable exceeds the recovery safety limit.");
         }
@@ -770,7 +814,9 @@ void K8sHandlers::handleRestartDeployment(const httplib::Request& req, httplib::
                     {"already_applied", true},
                     {"desired_replicas", desired},
                     {"ready_replicas", ready},
-                    {"available_replicas", available}
+                    {"available_replicas", available},
+                    {"readiness_degraded", ready < desired || available < desired
+                            || status.value("unavailableReplicas", 0) > 0}
             };
             return sendJsonResponse(res, response);
         }
@@ -875,6 +921,8 @@ void K8sHandlers::handleRestartDeployment(const httplib::Request& req, httplib::
                 {"desired_replicas", desired},
                 {"ready_replicas", ready},
                 {"available_replicas", available},
+                {"readiness_degraded", ready < desired || available < desired
+                        || status.value("unavailableReplicas", 0) > 0},
                 {"resource_version", patched.value("metadata", nlohmann::json::object()).value("resourceVersion", "")}
         };
         sendJsonResponse(res, response);

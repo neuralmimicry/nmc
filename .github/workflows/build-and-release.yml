@@ -77,6 +77,10 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Verify guarded recovery policy contract
+        shell: bash
+        run: python3 tests/contracts/recovery_policy_contract_test.py
+
       - name: Assert Ubuntu runner architecture
         env:
           EXPECTED_ARCH: ${{ matrix.arch }}

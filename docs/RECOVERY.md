@@ -4,9 +4,16 @@ Continuum can inspect a Deployment, its owned ReplicaSets and Pods, and the
 health of the Nodes hosting those Pods through the read-only
 `GET /k8s/deployment/recovery-status` route. The request must name the active
 cluster, namespace and Deployment explicitly. Missing or mismatched cluster
-identity, unavailable Kubernetes data, stale Node heartbeats, incomplete
-rollouts, unsafe rollout strategy, or a Deployment without
-`neuralmimicry.ai/recovery=enabled` makes the preflight ineligible.
+identity, unavailable Kubernetes data, stale or unhealthy Node state, an
+unobserved Deployment generation, an active template rollout, missing,
+terminating, unscheduled or non-Running Pods, unsafe rollout strategy, or a
+Deployment without `neuralmimicry.ai/recovery=enabled` makes the preflight
+ineligible. A stable Deployment whose desired replicas all run the current
+template can remain eligible when Pods are Running but not Ready; the response
+reports `readiness_degraded` and the affected `degraded_pods` separately. A
+failed availability condition is accepted only for Kubernetes'
+`MinimumReplicasUnavailable` reason, and a progress deadline is recoverable
+only after the observed current template is on every desired replica.
 
 Restart requests use `POST /k8s/deployment/restart`. They are disabled by
 default. Operators must explicitly set `NMC_RECOVERY_ENABLED=true` in the
@@ -14,8 +21,14 @@ protected NMC environment file to permit requests. Any unset, false, malformed
 or unrecognised value leaves the gate closed. The request must still use the
 cluster identity bound to the server's authenticated kubeconfig and pass the
 live dependency, Pod, Node, label, rollout and resource-version checks. The
-restart uses the Deployment's resource version as a conditional write and a
-stable request ID for idempotency.
+restart requires positive surge and limits `maxUnavailable` to less than the
+desired replica count (or at most 25 percent), then uses the Deployment's
+resource version as a conditional write and a stable request ID for
+idempotency. This permits Kubernetes to add replacement capacity before
+replacing an unhealthy Pod while still refusing an overlapping rollout or an
+unhealthy/ambiguous host placement. The accepted response reports the observed
+readiness degradation; acceptance is not proof that the replacement Pods
+become ready.
 
 Immutable Deployment image changes use the separate
 `POST /k8s/deployment/image-rollout` control route. It only accepts an
@@ -54,8 +67,12 @@ ready.
 
 Ansible exposes this as `nmc_recovery_enabled`, which defaults to `false` in
 `ansible/deploy.yml`. Do not enable it as part of a routine package rollout.
-Conductor also defaults to dry-run with no recovery targets; both controls
-must be configured deliberately before an automated recovery can be used.
+This endpoint is a guarded request surface, not the Continuum-owned automatic
+recovery controller. A durable supervisor, validated service dependency graph,
+failure thresholds, cooldowns and restart reconciliation remain required before
+Continuum can act independently when Conductor, Refiner or Gail is unavailable.
+Conductor also defaults to dry-run with no recovery targets; both controls must
+be configured deliberately before an automated recovery can be used.
 If recovery is enabled, Ansible requires `nmc_k8s_cluster_id` to name the
 stable identity of the single active kubeconfig context. The deployment
 automation rejects an empty or invalid cluster ID when the opt-in is enabled.
