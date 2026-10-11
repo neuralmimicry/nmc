@@ -27,6 +27,14 @@ public:
                 const CLI::GlobalFlags& globalFlags) override;
 };
 
+class GailTrainerStatusCommand : public BaseCommand {
+public:
+    GailTrainerStatusCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client);
+    int execute(const std::map<std::string, std::string>& parsedFlags,
+                const std::vector<std::string>& parsedArgs,
+                const CLI::GlobalFlags& globalFlags) override;
+};
+
 class GailTradingCommand : public BaseCommand {
 public:
     GailTradingCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client);

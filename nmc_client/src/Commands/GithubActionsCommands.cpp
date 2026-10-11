@@ -55,6 +55,11 @@ int printInputError(const std::string& message, const CLI::GlobalFlags& globalFl
 GithubActionsCommand::GithubActionsCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client)
     : BaseCommand("github-actions", "Use Continuum to control allowlisted GitHub Actions tasks", std::move(client)) {
     usage = "nmc github-actions <workflow|dispatch|task|run|cancel|result> [flags]";
+    addArgument(CLI::Argument(
+            "operation",
+            "Operation: workflow, dispatch, task, run, cancel or result",
+            true,
+            0));
     examples =
             "nmc github-actions workflow [--workflow-id nmide-build-images.yml]\n"
             "nmc github-actions dispatch --workflow-id nmide-remote-task.yml --task-id UUID --workspace-id workspace-one --source-sha SHA --source-tree TREE --task-kind test\n"

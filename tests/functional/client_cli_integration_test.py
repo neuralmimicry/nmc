@@ -278,6 +278,18 @@ class MockServer:
             )
             return
 
+        if handler.command == "GET" and path_only == "/github/actions/workflow":
+            self._send_json(
+                handler,
+                200,
+                {
+                    "success": True,
+                    "message": "Configured GitHub Actions workflow retrieved.",
+                    "data": {"workflow_id": "nmide-remote-task.yml", "state": "active"},
+                },
+            )
+            return
+
         if handler.command == "GET" and path_only == "/devices/home-assistant/reconciliation":
             self._send_json(
                 handler,
@@ -423,6 +435,22 @@ class MockServer:
                     "success": True,
                     "message": "Gail API issues retrieved.",
                     "data": {"route": "gail_api_issues_proxy", "path": handler.path},
+                },
+            )
+            return
+
+        if handler.command == "GET" and path_only == "/gail/status/training":
+            self._send_json(
+                handler,
+                200,
+                {
+                    "success": True,
+                    "message": "Gail trainer status retrieved.",
+                    "data": {
+                        "gail_path": "/v1/status/training",
+                        "upstream_status": 200,
+                        "payload": {"jobs": [], "results": []},
+                    },
                 },
             )
             return
@@ -798,6 +826,30 @@ def test_root_help_handles_long_command_names(home_dir: pathlib.Path) -> None:
     assert_true(
         "github-actions" in result.stdout and "vcluster" in result.stdout,
         f"root help must list long and short commands without aborting, got stdout:\n{result.stdout}",
+    )
+
+
+def test_github_actions_workflow_command_accepts_operation_and_uses_continuum(
+    server: MockServer,
+    home_dir: pathlib.Path,
+) -> None:
+    server.clear_records()
+    result = run_nmc(
+        [
+            "--output", "json",
+            "github-actions", "workflow",
+            "--workflow-id", "nmide-remote-task.yml",
+        ],
+        home_dir,
+    )
+    assert_success(result, "GitHub Actions workflow status")
+    output = json.loads(result.stdout)
+    assert_true(output.get("success") is True, "workflow status must emit a successful JSON envelope")
+    records = server.records()
+    assert_true(len(records) == 1 and records[0].method == "GET", "workflow status must use one read-only request")
+    assert_true(
+        records[0].path == "/github/actions/workflow?workflow_id=nmide-remote-task.yml",
+        f"workflow status query was not serialised as expected: {records[0].path}",
     )
 
 
@@ -1940,6 +1992,26 @@ def test_gail_api_issues_uses_server_route_by_default(server: MockServer, home_d
     assert_true(req.path == "/gail/status/api-issues", f"gail api-issues wrong path: {req.path}")
 
 
+def test_gail_trainer_status_uses_continuum_route_and_bounds_limit(server: MockServer, home_dir: pathlib.Path) -> None:
+    server.clear_records()
+    result = run_nmc(["gail", "trainer-status", "--limit", "5"], home_dir)
+    assert_success(result, "gail trainer status")
+
+    records = server.records()
+    assert_true(len(records) == 1, f"gail trainer status expected 1 request, got {len(records)}")
+    req = records[0]
+    assert_true(req.method == "GET", f"gail trainer status expected GET, got {req.method}")
+    assert_true(
+        req.path == "/gail/status/training?limit=5",
+        f"gail trainer status wrong path: {req.path}",
+    )
+
+    server.clear_records()
+    invalid = run_nmc(["gail", "trainer-status", "--limit", "26"], home_dir)
+    assert_failure(invalid, "gail trainer status oversized limit")
+    assert_true(not server.records(), "invalid trainer-status limit must not send a request")
+
+
 def test_gail_api_issues_direct_mode_uses_gail_endpoint(server: MockServer, home_dir: pathlib.Path) -> None:
     server.clear_records()
     result = run_nmc(
@@ -2064,6 +2136,7 @@ def main() -> int:
             write_connection_config(home_dir, server.base_url)
 
             test_root_help_handles_long_command_names(home_dir)
+            test_github_actions_workflow_command_accepts_operation_and_uses_continuum(server, home_dir)
             test_analytics_query_serialization(server, home_dir)
             test_k8s_recovery_status_serialization(server, home_dir)
             test_k8s_recovery_status_json_output(server, home_dir)
@@ -2112,6 +2185,7 @@ def main() -> int:
             test_gail_transcribe_multipart_serialization(server, home_dir)
             test_gail_request_raw_body_serialization(server, home_dir)
             test_gail_api_issues_uses_server_route_by_default(server, home_dir)
+            test_gail_trainer_status_uses_continuum_route_and_bounds_limit(server, home_dir)
             test_gail_api_issues_direct_mode_uses_gail_endpoint(server, home_dir)
             test_gail_trading_status_uses_server_route_by_default(server, home_dir)
             test_gail_trading_overview_uses_server_route_with_limits(server, home_dir)

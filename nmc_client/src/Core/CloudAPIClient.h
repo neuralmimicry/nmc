@@ -182,6 +182,7 @@ namespace NMC::Core {
         Models::CloudResponse getServerHealth();
         Models::CloudResponse getServerVersion();
         Models::CloudResponse getGailApiIssues();
+        Models::CloudResponse getGailTrainerStatus(int limit = 10);
         Models::CloudResponse getGailTradingOverview(int historyLimit = -1, int logLimit = -1);
         Models::CloudResponse getGailTradingStatus();
         Models::CloudResponse getGailTradingPortfolio();

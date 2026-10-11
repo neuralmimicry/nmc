@@ -23,6 +23,18 @@ def main() -> int:
     require(CLIENT, 'std::string path = "/gail/trading/overview"', "client overview route")
     require(CLIENT_HEADER, "getGailTradingOverview(int historyLimit = -1, int logLimit = -1)", "client overview declaration")
 
+    training_route = 'svr.Get("/gail/status/training"'
+    require(SERVER, training_route, "Continuum trainer-status route")
+    route_start = SERVER.index(training_route)
+    route_body = SERVER[route_start : SERVER.index("});", route_start) + 3]
+    require(route_body, "if (!guard(req, res)) return;", "trainer-status authentication guard")
+    require(route_body, "handleGailTrainerStatus(req, res);", "trainer-status handler")
+    require(SERVER, 'parseBoundedPositiveInt(req.params, "limit", 10, 25, limit)', "bounded trainer history")
+    require(SERVER, "if (resolveGailApiToken().empty())", "trainer-status Gail credential requirement")
+    require(SERVER, '"/v1/status/training"', "Gail trainer-status upstream endpoint")
+    require(CLIENT, 'std::string path = "/gail/status/training"', "Continuum trainer-status client route")
+    require(CLIENT_HEADER, "getGailTrainerStatus(int limit = 10)", "Continuum trainer-status client declaration")
+
     # The dashboard contract needs an active issue count and normalized trade
     # fields, while issue details must remain bounded per polling response.
     require(SERVER, 'nlohmann::json summarizeApiIssues', "bounded issue summarizer")

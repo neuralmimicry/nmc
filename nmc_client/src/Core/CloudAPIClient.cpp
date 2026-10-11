@@ -1166,6 +1166,15 @@ namespace NMC::Core {
         return apiResponse;
     }
 
+    Models::CloudResponse CloudAPIClient::getGailTrainerStatus(int limit) {
+        std::string path = "/gail/status/training";
+        appendQueryInt(path, "limit", limit);
+        auto res = cli->Get(path);
+        auto apiResponse = processHttpResponse(res, "Gail trainer status retrieved.");
+        unwrapStandardEnvelopeResponse(apiResponse);
+        return apiResponse;
+    }
+
     Models::CloudResponse CloudAPIClient::getGailTradingOverview(int historyLimit, int logLimit) {
         std::string path = "/gail/trading/overview";
         appendQueryInt(path, "history_limit", historyLimit);

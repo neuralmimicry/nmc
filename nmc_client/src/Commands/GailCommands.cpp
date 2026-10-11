@@ -619,6 +619,7 @@ GailCommand::GailCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client)
     examples = "nmc gail health --base-url https://gail.internal.example\n"
                "nmc gail status --probe-engines\n"
                "nmc gail api-issues\n"
+               "nmc gail trainer-status --limit 10\n"
                "nmc gail trading status";
 }
 
@@ -656,6 +657,36 @@ int GailApiIssuesCommand::execute(const std::map<std::string, std::string>& pars
     }
     if (response.success) {
         response.message = "Gail API issues retrieved.";
+    }
+    return printAndReturnResponse(response, globalFlags);
+}
+
+GailTrainerStatusCommand::GailTrainerStatusCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client)
+    : BaseCommand("trainer-status", "Show Gail trainer and Slurm job status through Continuum", std::move(client)) {
+    usage = "nmc gail trainer-status [--limit N]";
+    examples = "nmc gail trainer-status\nnmc gail trainer-status --limit 5";
+    addFlag(CLI::Flag("l", "limit", "Number of recent training results to include (1-25).", CLI::Int, false, "10"));
+}
+
+int GailTrainerStatusCommand::execute(const std::map<std::string, std::string>& parsedFlags,
+                                      const std::vector<std::string>& parsedArgs,
+                                      const CLI::GlobalFlags& globalFlags) {
+    if (!validateArguments(parsedArgs) || !validateFlags(parsedFlags)) {
+        return 1;
+    }
+
+    int limit = 10;
+    std::string parseError;
+    if (!parsePositiveInt(parsedFlags, "limit", 10, limit, parseError) || limit > 25) {
+        if (parseError.empty()) {
+            parseError = "--limit must be between 1 and 25.";
+        }
+        return printAndReturnResponse(errorResponse(parseError), globalFlags);
+    }
+
+    Models::CloudResponse response = apiClient->getGailTrainerStatus(limit);
+    if (response.success) {
+        response.message = "Gail trainer status retrieved through Continuum.";
     }
     return printAndReturnResponse(response, globalFlags);
 }
