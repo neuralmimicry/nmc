@@ -45,6 +45,83 @@ def strip_single_line_comments(src: str) -> str:
     return "\n".join(lines)
 
 
+def skip_cxx_literal_or_comment(src: str, index: int) -> int | None:
+    if src.startswith("//", index):
+        newline = src.find("\n", index + 2)
+        return len(src) if newline < 0 else newline + 1
+    if src.startswith("/*", index):
+        end = src.find("*/", index + 2)
+        return len(src) if end < 0 else end + 2
+    if src.startswith('R"', index):
+        opening = src.find("(", index + 2)
+        if opening >= 0:
+            delimiter = src[index + 2 : opening]
+            closing = src.find(")" + delimiter + '"', opening + 1)
+            if closing >= 0:
+                return closing + len(delimiter) + 2
+    if src[index] in {'"', "'"}:
+        quote = src[index]
+        cursor = index + 1
+        while cursor < len(src):
+            if src[cursor] == "\\":
+                cursor += 2
+            elif src[cursor] == quote:
+                return cursor + 1
+            else:
+                cursor += 1
+        return len(src)
+    return None
+
+
+def find_matching_delimiter(src: str, opening_index: int, opening: str, closing: str) -> int | None:
+    depth = 0
+    cursor = opening_index
+    while cursor < len(src):
+        skipped = skip_cxx_literal_or_comment(src, cursor)
+        if skipped is not None:
+            cursor = skipped
+            continue
+        if src[cursor] == opening:
+            depth += 1
+        elif src[cursor] == closing:
+            depth -= 1
+            if depth == 0:
+                return cursor
+        cursor += 1
+    return None
+
+
+def client_function_bodies(src: str) -> List[str]:
+    bodies: List[str] = []
+    signature_pattern = re.compile(r"\bCloudAPIClient::[A-Za-z_]\w*\s*\(")
+    for match in signature_pattern.finditer(src):
+        opening_params = src.find("(", match.start(), match.end())
+        closing_params = find_matching_delimiter(src, opening_params, "(", ")")
+        if closing_params is None:
+            continue
+
+        cursor = closing_params + 1
+        opening_body = None
+        while cursor < len(src):
+            skipped = skip_cxx_literal_or_comment(src, cursor)
+            if skipped is not None:
+                cursor = skipped
+                continue
+            if src[cursor] == ";":
+                break
+            if src[cursor] == "{":
+                opening_body = cursor
+                break
+            cursor += 1
+        if opening_body is None:
+            continue
+
+        closing_body = find_matching_delimiter(src, opening_body, "{", "}")
+        if closing_body is not None:
+            bodies.append(src[opening_body + 1 : closing_body])
+    return bodies
+
+
 def collect_client_routes(client_src: str) -> List[Route]:
     src = strip_single_line_comments(client_src)
     routes: Dict[tuple[str, str], Route] = {}
@@ -78,30 +155,50 @@ def collect_client_routes(client_src: str) -> List[Route]:
     # std::string path = "/k8s/list";
     # std::string path = "/tracey/agents/" + agentId + "/analysis";
     var_pattern = re.compile(r"std::string\s+([A-Za-z_]\w*)\s*=\s*(.+?);", re.MULTILINE | re.DOTALL)
-    var_paths: Dict[str, set[str]] = {}
-    for name, expr in var_pattern.findall(src):
-        literal_parts = re.findall(r'"(/[^"?]*)(?:\?[^\"]*)?"', expr)
-        if not literal_parts:
-            continue
-        var_paths.setdefault(name, set()).add(template_from_literal_parts(literal_parts))
-
-    # Variable-based calls, e.g. cli->Get(path)
     variable_call_pattern = re.compile(
         r"(?:tempCli|cli)->(Get|Post|Delete|Put|Patch)\(\s*([A-Za-z_]\w*)\s*[\),]",
         re.MULTILINE,
     )
-    for method, var_name in variable_call_pattern.findall(src):
-        paths = var_paths.get(var_name)
-        if not paths:
-            continue
-        for path in paths:
-            routes[(method, path)] = Route(method, path, False)
+    # Resolve local path variables within each method. CloudAPIClient reuses
+    # names such as path in unrelated methods, so a file-wide variable map can
+    # attach one method's HTTP verb to every route using that name.
+    for function_body in client_function_bodies(src):
+        var_paths: Dict[str, set[str]] = {}
+        for name, expr in var_pattern.findall(function_body):
+            literal_parts = re.findall(r'"(/[^"?]*)(?:\?[^\"]*)?"', expr)
+            if literal_parts:
+                var_paths.setdefault(name, set()).add(template_from_literal_parts(literal_parts))
+        for method, var_name in variable_call_pattern.findall(function_body):
+            for path in var_paths.get(var_name, set()):
+                routes[(method, path)] = Route(method, path, False)
 
     if not routes:
         print("[contract-test] no client endpoints were detected", file=sys.stderr)
         sys.exit(1)
 
     return sorted(routes.values(), key=lambda item: (item.method, item.path))
+
+
+def verify_variable_routes_are_method_scoped() -> bool:
+    sample = '''
+    void CloudAPIClient::readSomething() {
+        std::string path = "/read-only";
+        auto response = cli->Get(path);
+    }
+    void CloudAPIClient::writeSomething() {
+        std::string path = "/write-only";
+        auto response = cli->Post(path, "{}", "application/json");
+    }
+    '''
+    actual = {(route.method, route.path) for route in collect_client_routes(sample)}
+    expected = {("Get", "/read-only"), ("Post", "/write-only")}
+    if actual == expected:
+        return True
+    print(
+        f"[contract-test] method-scoped route parser regression: expected {sorted(expected)}, got {sorted(actual)}",
+        file=sys.stderr,
+    )
+    return False
 
 
 def collect_server_routes(server_src: str) -> List[Route]:
@@ -195,6 +292,8 @@ def server_has_route_for_client(client_route: Route, server_routes: Sequence[Rou
 
 
 def main() -> int:
+    if not verify_variable_routes_are_method_scoped():
+        return 1
     client_src = read_text(CLIENT_FILE)
     server_src = read_route_registration_source()
 
