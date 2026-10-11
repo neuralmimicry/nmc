@@ -273,7 +273,7 @@ namespace NMC::Core {
         Models::CloudResponse aarnnRuntimeResources();
 
         // Allowlisted GitHub Actions task control through Continuum.
-        Models::CloudResponse getGithubActionsWorkflow();
+        Models::CloudResponse getGithubActionsWorkflow(const std::string& workflowId = {});
         Models::CloudResponse dispatchGithubActionsTask(const nlohmann::json& request);
         Models::CloudResponse getGithubActionsTask(const std::string& taskId);
         Models::CloudResponse getGithubActionsRun(const std::string& runId, const std::string& taskId);

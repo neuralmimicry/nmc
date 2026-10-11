@@ -28,6 +28,7 @@ namespace NMC::Server {
         struct GithubConfig {
             std::string repository;
             std::string workflow{"nmide-remote-task.yml"};
+            std::string imageWorkflow{"nmide-build-images.yml"};
             std::string trustedRef{"main"};
             std::string token;
             std::filesystem::path statePath;
@@ -75,13 +76,32 @@ namespace NMC::Server {
             return !config.token.empty()
                     && std::regex_match(config.repository, repositoryPattern)
                     && std::regex_match(config.workflow, workflowPattern)
+                    && std::regex_match(config.imageWorkflow, workflowPattern)
+                    && config.workflow != config.imageWorkflow
                     && std::regex_match(config.trustedRef, refPattern)
                     && config.trustedRef.find("..") == std::string::npos
                     && config.trustedRef.find("//") == std::string::npos;
         }
 
+        bool isAllowedWorkflow(const GithubConfig& config, const std::string& workflow) {
+            return workflow == config.workflow || workflow == config.imageWorkflow;
+        }
+
+        std::string workflowPath(const GithubConfig& config, const std::string& workflow) {
+            return "/repos/" + config.repository + "/actions/workflows/" + workflow;
+        }
+
         std::string workflowPath(const GithubConfig& config) {
-            return "/repos/" + config.repository + "/actions/workflows/" + config.workflow;
+            return workflowPath(config, config.workflow);
+        }
+
+        std::string taskWorkflow(const GithubConfig& config, const Json& task) {
+            const std::string workflow = task.value("workflow_id", config.workflow);
+            return isAllowedWorkflow(config, workflow) ? workflow : std::string();
+        }
+
+        std::string runTitle(const std::string& workflow, const std::string& taskId) {
+            return (workflow == "nmide-build-images.yml" ? "NeuralMimicry images " : "NeuralMimicry task ") + taskId;
         }
 
         httplib::Headers githubHeaders(const GithubConfig& config) {
@@ -296,12 +316,15 @@ namespace NMC::Server {
             }
         }
 
-        std::optional<Json> reconcileTaskRun(const GithubConfig& config, const std::string& taskId) {
-            GithubResponse response = githubRequest(config, "GET", workflowPath(config) + "/runs?per_page=100");
+        std::optional<Json> reconcileTaskRun(const GithubConfig& config, const Json& task) {
+            const std::string taskId = task.value("task_id", std::string());
+            const std::string workflow = taskWorkflow(config, task);
+            if (workflow.empty()) return std::nullopt;
+            GithubResponse response = githubRequest(config, "GET", workflowPath(config, workflow) + "/runs?per_page=100");
             if (response.status < 200 || response.status >= 300) return std::nullopt;
             Json body = parseJson(response);
             if (!body.contains("workflow_runs") || !body["workflow_runs"].is_array()) return std::nullopt;
-            const std::string expectedTitle = "NeuralMimicry task " + taskId;
+            const std::string expectedTitle = runTitle(workflow, taskId);
             for (const auto& run : body["workflow_runs"]) {
                 if (run.value("display_title", std::string()) != expectedTitle
                     || run.value("event", std::string()) != "workflow_dispatch"
@@ -318,7 +341,7 @@ namespace NMC::Server {
             if (task->contains("run_id")) return task;
             if (task->value("state", std::string()) != "dispatch_unknown"
                 && task->value("state", std::string()) != "dispatching") return task;
-            const auto run = reconcileTaskRun(config, taskId);
+            const auto run = reconcileTaskRun(config, *task);
             if (!run) return task;
             (*task)["run_id"] = (*run).value("id", Json());
             (*task)["run"] = *run;
@@ -400,16 +423,18 @@ namespace NMC::Server {
         return "authenticated-client";
     }
 
-    void APIRoutes::handleGitHubActionsWorkflow(const httplib::Request&, httplib::Response& res) {
+    void APIRoutes::handleGitHubActionsWorkflow(const httplib::Request& req, httplib::Response& res) {
         const GithubConfig config = githubConfig();
         if (!validConfig(config)) return sendGithubError(res, 503, "GitHub Actions control is not configured with a repository-scoped credential.");
-        const GithubResponse response = githubRequest(config, "GET", workflowPath(config));
+        const std::string workflow = req.has_param("workflow_id") ? req.get_param_value("workflow_id") : config.workflow;
+        if (!isAllowedWorkflow(config, workflow)) return sendGithubError(res, 400, "Workflow is outside the Continuum allowlist.");
+        const GithubResponse response = githubRequest(config, "GET", workflowPath(config, workflow));
         if (response.status < 200 || response.status >= 300) return sendGithubError(res, 503, "The trusted GitHub workflow could not be inspected.");
         const Json body = parseJson(response);
         if (!body.contains("id") || !body.contains("state")) return sendGithubError(res, 502, "GitHub returned invalid workflow metadata.");
         res.set_content(Json{{"success", true}, {"message", "Trusted GitHub workflow resolved."},
                              {"data", {{"id", body["id"]}, {"path", body.value("path", std::string())},
-                                       {"state", body["state"]}, {"trusted_ref", config.trustedRef}}}}.dump(), "application/json");
+                                       {"state", body["state"]}, {"workflow_id", workflow}, {"trusted_ref", config.trustedRef}}}}.dump(), "application/json");
     }
 
     void APIRoutes::handleGitHubActionsDispatch(const httplib::Request& req, httplib::Response& res) {
@@ -418,29 +443,49 @@ namespace NMC::Server {
         if (req.body.size() > 16 * 1024) return sendGithubError(res, 413, "Task dispatch body exceeds the 16 KiB limit.");
         Json body = Json::parse(req.body, nullptr, false);
         if (body.is_discarded() || !body.is_object()) return sendGithubError(res, 400, "A JSON task dispatch body is required.");
-        static const std::set<std::string> allowedFields = {"task_id", "workspace_id", "source_sha", "source_tree", "task_kind"};
-        if (body.size() != allowedFields.size()) return sendGithubError(res, 400, "Task dispatch must contain only its five required fields.");
+        const bool hasWorkflow = body.contains("workflow_id");
+        if (hasWorkflow && !body["workflow_id"].is_string())
+            return sendGithubError(res, 400, "Workflow ID must be a string.");
+        const std::string workflow = body.value("workflow_id", config.workflow);
+        if (!isAllowedWorkflow(config, workflow)) return sendGithubError(res, 400, "Workflow is outside the Continuum allowlist.");
+        const bool imageBuild = workflow == config.imageWorkflow;
+        const std::set<std::string> allowedFields = imageBuild
+                ? std::set<std::string>{"task_id", "workspace_id", "source_sha", "source_tree", "package_version", "workflow_id"}
+                : std::set<std::string>{"task_id", "workspace_id", "source_sha", "source_tree", "task_kind", "workflow_id"};
+        const std::set<std::string> legacyRemoteFields = {"task_id", "workspace_id", "source_sha", "source_tree", "task_kind"};
+        if (body.size() != allowedFields.size() && !( !imageBuild && !hasWorkflow && body.size() == legacyRemoteFields.size()))
+            return sendGithubError(res, 400, "Task dispatch does not match the selected workflow's exact input fields.");
         for (auto it = body.begin(); it != body.end(); ++it) {
-            if (allowedFields.find(it.key()) == allowedFields.end()) return sendGithubError(res, 400, "Task dispatch includes an unsupported field.");
+            if (allowedFields.find(it.key()) == allowedFields.end()
+                && !( !imageBuild && !hasWorkflow && legacyRemoteFields.find(it.key()) != legacyRemoteFields.end()))
+                return sendGithubError(res, 400, "Task dispatch includes an unsupported field.");
+        }
+        for (const char* key : {"task_id", "workspace_id", "source_sha", "source_tree", imageBuild ? "package_version" : "task_kind"}) {
+            if (!body.contains(key) || !body[key].is_string())
+                return sendGithubError(res, 400, "Task dispatch fields must be strings and match the selected workflow schema.");
         }
         const std::string taskId = body.value("task_id", std::string());
         const std::string workspaceId = body.value("workspace_id", std::string());
         const std::string sourceSha = body.value("source_sha", std::string());
         const std::string sourceTree = body.value("source_tree", std::string());
         const std::string taskKind = body.value("task_kind", std::string());
+        const std::string packageVersion = body.value("package_version", std::string());
         static const std::regex workspacePattern(R"(^[a-z0-9-]{1,48}$)");
         static const std::regex shaPattern(R"(^[0-9a-f]{40}$)");
+        static const std::regex packageVersionPattern(R"(^[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}$)");
         if (!validTaskId(taskId) || !std::regex_match(workspaceId, workspacePattern)
             || !std::regex_match(sourceSha, shaPattern) || !std::regex_match(sourceTree, shaPattern)
-            || (taskKind != "check" && taskKind != "test" && taskKind != "python-test")) {
-            return sendGithubError(res, 400, "Task ID, workspace, checkpoint SHA/tree or fixed task profile is invalid.");
+            || (imageBuild ? !std::regex_match(packageVersion, packageVersionPattern)
+                           : (taskKind != "check" && taskKind != "test" && taskKind != "python-test"))) {
+            return sendGithubError(res, 400, "Task ID, workspace, exact checkpoint or selected workflow inputs are invalid.");
         }
 
         Json record = {{"task_id", taskId}, {"workspace_id", workspaceId}, {"source_sha", sourceSha},
-                       {"source_tree", sourceTree}, {"task_kind", taskKind},
+                       {"source_tree", sourceTree}, {"workflow_id", workflow},
                        {"state", "dispatching"}, {"request_id", req.get_header_value("X-Request-ID")},
                        {"actor", githubActionsActor(req)}, {"created_epoch_ms", nowEpochMs()},
                        {"updated_epoch_ms", nowEpochMs()}};
+        record[imageBuild ? "package_version" : "task_kind"] = imageBuild ? packageVersion : taskKind;
         {
             std::lock_guard<std::mutex> lock(stateMutex);
             Json store;
@@ -449,7 +494,7 @@ namespace NMC::Server {
             pruneOldTaskRecords(store);
             auto prior = store["tasks"].find(taskId);
             if (prior != store["tasks"].end()) {
-                for (const char* key : {"workspace_id", "source_sha", "source_tree", "task_kind"}) {
+                for (const char* key : {"workspace_id", "source_sha", "source_tree", "workflow_id", imageBuild ? "package_version" : "task_kind"}) {
                     if (prior->value(key, std::string()) != record.value(key, std::string()))
                         return sendGithubError(res, 409, "Task ID was previously bound to a different source snapshot.");
                 }
@@ -464,10 +509,11 @@ namespace NMC::Server {
             catch (const std::exception&) { return sendGithubError(res, 503, "GitHub Actions task state could not be persisted; dispatch was not attempted."); }
         }
 
-        Json dispatchBody = {{"ref", config.trustedRef}, {"return_run_details", true}, {"inputs", {
-                {"task_id", taskId}, {"workspace_id", workspaceId}, {"source_sha", sourceSha},
-                {"source_tree", sourceTree}, {"task_kind", taskKind}}}};
-        const GithubResponse response = githubRequest(config, "POST", workflowPath(config) + "/dispatches", dispatchBody.dump());
+        Json inputs = {{"task_id", taskId}, {"workspace_id", workspaceId}, {"source_sha", sourceSha}, {"source_tree", sourceTree}};
+        if (imageBuild) inputs["package_version"] = packageVersion;
+        else inputs["task_kind"] = taskKind;
+        Json dispatchBody = {{"ref", config.trustedRef}, {"return_run_details", true}, {"inputs", inputs}};
+        const GithubResponse response = githubRequest(config, "POST", workflowPath(config, workflow) + "/dispatches", dispatchBody.dump());
         Json updated = record;
         updated["state"] = "dispatch_unknown";
         if (response.status >= 200 && response.status < 300) {

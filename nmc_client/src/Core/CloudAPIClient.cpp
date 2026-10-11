@@ -1654,8 +1654,10 @@ namespace NMC::Core {
         return processHttpResponse(res, "AARNN runtime resources retrieved.");
     }
 
-    Models::CloudResponse CloudAPIClient::getGithubActionsWorkflow() {
-        auto res = cli->Get("/github/actions/workflow");
+    Models::CloudResponse CloudAPIClient::getGithubActionsWorkflow(const std::string& workflowId) {
+        std::string path = "/github/actions/workflow";
+        if (!workflowId.empty()) path += "?workflow_id=" + encodeQueryValue(workflowId);
+        auto res = cli->Get(path);
         return processHttpResponse(res, "Configured GitHub Actions workflow retrieved.");
     }
 

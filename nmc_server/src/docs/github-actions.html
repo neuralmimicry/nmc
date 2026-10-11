@@ -21,15 +21,15 @@
     <p>Continuum is the control plane for allowlisted remote tasks. It keeps the GitHub credential in the protected server environment and returns task results only for a run that Continuum correlated to that task ID.</p>
 
     <h2>Configuration and access</h2>
-    <p>Configure <code>NMC_GITHUB_ACTIONS_REPOSITORY</code>, <code>NMC_GITHUB_ACTIONS_WORKFLOW</code>, <code>NMC_GITHUB_ACTIONS_TRUSTED_REF</code>, <code>NMC_GITHUB_ACTIONS_STATE_ROOT</code> and the restricted <code>NMC_GITHUB_ACTIONS_TOKEN</code>. The token is separate from package-download and workspace checkpoint credentials. The runtime state directory is private and must persist across service restarts.</p>
+    <p>Configure <code>NMC_GITHUB_ACTIONS_REPOSITORY</code>, <code>NMC_GITHUB_ACTIONS_WORKFLOW</code>, <code>NMC_GITHUB_ACTIONS_TRUSTED_REF</code>, <code>NMC_GITHUB_ACTIONS_STATE_ROOT</code> and the restricted <code>NMC_GITHUB_ACTIONS_TOKEN</code>. Continuum also has a fixed image workflow allowlist entry for <code>nmide-build-images.yml</code>. The token is separate from package-download and workspace checkpoint credentials. The runtime state directory is private and must persist across service restarts.</p>
     <p>Callers need the <code>github_actions</code> service access claim. GET routes require <code>observe</code>; dispatch and cancellation require <code>control</code>. General Continuum access does not grant this scope.</p>
 
     <h2>Routes</h2>
     <table>
         <thead><tr><th>Method and route</th><th>Purpose</th></tr></thead>
         <tbody>
-        <tr><td><code>GET /github/actions/workflow</code></td><td>Inspect the one configured workflow and trusted ref.</td></tr>
-        <tr><td><code>POST /github/actions/dispatch</code></td><td>Submit an allowlisted task against a fixed trusted ref.</td></tr>
+        <tr><td><code>GET /github/actions/workflow?workflow_id=…</code></td><td>Inspect either allowlisted NMIDE workflow and trusted ref.</td></tr>
+        <tr><td><code>POST /github/actions/dispatch</code></td><td>Submit a typed remote task or immutable image build against the fixed trusted ref.</td></tr>
         <tr><td><code>GET /github/actions/tasks/{task_id}</code></td><td>Reconcile the persisted task ID to its unique workflow run and return status.</td></tr>
         <tr><td><code>GET /github/actions/runs/{run_id}?task_id=…</code></td><td>Read status for the exact run registered to the task.</td></tr>
         <tr><td><code>POST /github/actions/runs/{run_id}/cancel?task_id=…</code></td><td>Request cancellation for that registered run.</td></tr>
@@ -43,14 +43,17 @@
   "workspace_id": "workspace-one",
   "source_sha": "&lt;40-character checkpoint commit&gt;",
   "source_tree": "&lt;40-character checkpoint tree&gt;",
-  "task_kind": "test"
+  "task_kind": "test",
+  "workflow_id": "nmide-remote-task.yml"
 }</code></pre>
-    <p>Only <code>check</code>, <code>test</code> and <code>python-test</code> profiles are accepted. Repository, workflow and ref come from protected Continuum configuration; callers cannot select arbitrary workflows, branches or GitHub API paths. The workflow's run name includes the task ID so an uncertain response can be reconciled without dispatching a duplicate.</p>
+    <p>Remote tasks accept only <code>check</code>, <code>test</code> and <code>python-test</code>. The image workflow instead requires <code>package_version</code> and returns a bounded digest manifest in the same task-correlated result artifact. Repository and trusted ref come from protected Continuum configuration; callers can select only <code>nmide-remote-task.yml</code> or <code>nmide-build-images.yml</code>. The workflow run name includes the task ID so an uncertain response can be reconciled without dispatching a duplicate.</p>
 
     <h2>NMC client</h2>
     <p>Operators can use the Continuum-backed client without calling GitHub directly:</p>
     <pre><code>nmc github-actions workflow
-nmc github-actions dispatch --task-id UUID --workspace-id workspace-one --source-sha COMMIT_SHA --source-tree TREE_SHA --task-kind test
+nmc github-actions workflow --workflow-id nmide-build-images.yml
+nmc github-actions dispatch --workflow-id nmide-remote-task.yml --task-id UUID --workspace-id workspace-one --source-sha COMMIT_SHA --source-tree TREE_SHA --task-kind test
+nmc github-actions dispatch --workflow-id nmide-build-images.yml --task-id UUID --workspace-id workspace-one --source-sha COMMIT_SHA --source-tree TREE_SHA --package-version pilot-0.1.0
 nmc github-actions task --task-id UUID
 nmc github-actions run --run-id RUN_ID --task-id UUID
 nmc github-actions result --run-id RUN_ID --task-id UUID --output ./nmide-result.zip

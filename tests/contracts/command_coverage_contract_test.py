@@ -76,18 +76,38 @@ def template_from_literal_parts(parts: Sequence[str]) -> str:
 def collect_server_routes(server_src: str) -> List[Route]:
     src = strip_single_line_comments(server_src)
     routes: Dict[Tuple[str, str, bool], Route] = {}
-    pattern = re.compile(
-        r"svr\.(Get|Post|Delete|Put|Patch)\(\s*(R\"\((.*?)\)\"|\"([^\"]+)\")",
-        re.MULTILINE | re.DOTALL,
-    )
-    for match in pattern.finditer(src):
+    method_pattern = re.compile(r"svr\.(Get|Post|Delete|Put|Patch)\(\s*", re.MULTILINE)
+    for match in method_pattern.finditer(src):
         method = match.group(1)
-        raw_regex = match.group(3)
-        raw_static = match.group(4)
-        if raw_static is not None:
-            route = Route(method, raw_static, False)
-        elif raw_regex is not None:
-            route = Route(method, raw_regex, True)
+        cursor = match.end()
+        if src.startswith('R"', cursor):
+            delimiter_start = cursor + 2
+            opening = src.find("(", delimiter_start)
+            if opening < 0:
+                continue
+            delimiter = src[delimiter_start:opening]
+            terminator = ")" + delimiter + '"'
+            closing = src.find(terminator, opening + 1)
+            if closing < 0:
+                continue
+            route = Route(method, src[opening + 1:closing], True)
+        elif cursor < len(src) and src[cursor] == '"':
+            cursor += 1
+            path_chars: List[str] = []
+            escaped = False
+            while cursor < len(src):
+                character = src[cursor]
+                cursor += 1
+                if escaped:
+                    path_chars.append(character)
+                    escaped = False
+                elif character == "\\":
+                    escaped = True
+                elif character == '"':
+                    break
+                else:
+                    path_chars.append(character)
+            route = Route(method, "".join(path_chars), False)
         else:
             continue
         routes[(route.method, route.path, route.is_regex)] = route
