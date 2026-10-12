@@ -537,8 +537,39 @@ void addBlocker(nlohmann::json& blockers, const std::string& code, const std::st
     blockers.push_back({{"code", code}, {"detail", detail}});
 }
 
-bool freshNodeHeartbeat(const std::string& timestamp) {
-    if (timestamp.empty()) return false;
+bool freshNodeLease(const nlohmann::json& lease) {
+    if (!lease.is_object()) return false;
+    const auto spec = lease.value("spec", nlohmann::json::object());
+    if (!spec.is_object()) return false;
+    const auto duration = spec.find("leaseDurationSeconds");
+    const auto renewTime = spec.find("renewTime");
+    if (duration == spec.end() || !duration->is_number_integer()
+            || renewTime == spec.end() || !renewTime->is_string()) return false;
+    const std::string timestamp = renewTime->get<std::string>();
+    if (timestamp.size() < 20 || timestamp.size() > 64) return false;
+    int64_t leaseDurationValue = 0;
+    if (duration->is_number_unsigned()) {
+        const uint64_t unsignedDuration = duration->get<uint64_t>();
+        if (unsignedDuration > 3600) return false;
+        leaseDurationValue = static_cast<int64_t>(unsignedDuration);
+    } else {
+        leaseDurationValue = duration->get<int64_t>();
+    }
+    if (leaseDurationValue < 1 || leaseDurationValue > 3600) return false;
+    const int leaseDurationSeconds = static_cast<int>(leaseDurationValue);
+
+    // Kubernetes serialises Lease renewTime as UTC RFC3339. Accept its
+    // optional fractional seconds while rejecting a missing timezone or
+    // malformed suffix before parsing the whole-second portion.
+    size_t suffix = 19;
+    if (timestamp[suffix] == '.') {
+        ++suffix;
+        const size_t fractionStart = suffix;
+        while (suffix < timestamp.size() && timestamp[suffix] >= '0' && timestamp[suffix] <= '9') ++suffix;
+        if (suffix == fractionStart) return false;
+    }
+    if (suffix + 1 != timestamp.size() || timestamp[suffix] != 'Z') return false;
+
     std::tm heartbeat{};
     std::istringstream input(timestamp);
     input >> std::get_time(&heartbeat, "%Y-%m-%dT%H:%M:%S");
@@ -546,7 +577,8 @@ bool freshNodeHeartbeat(const std::string& timestamp) {
     const std::time_t heartbeatTime = timegm(&heartbeat);
     const std::time_t now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
     const double ageSeconds = std::difftime(now, heartbeatTime);
-    return ageSeconds >= -30.0 && ageSeconds <= 120.0;
+    const double maximumAgeSeconds = std::max(120.0, static_cast<double>(leaseDurationSeconds) + 30.0);
+    return ageSeconds >= -30.0 && ageSeconds <= maximumAgeSeconds;
 }
 
 bool podReady(const nlohmann::json& pod) {
@@ -562,7 +594,7 @@ bool podReady(const nlohmann::json& pod) {
     });
 }
 
-bool nodeHealthy(const nlohmann::json& node, nlohmann::json& reasons) {
+bool nodeHealthy(const nlohmann::json& node, bool freshLease, nlohmann::json& reasons) {
     const auto status = node.value("status", nlohmann::json::object());
     const auto conditions = status.value("conditions", nlohmann::json::array());
     std::set<std::string> seenConditions;
@@ -582,12 +614,12 @@ bool nodeHealthy(const nlohmann::json& node, nlohmann::json& reasons) {
                         && value != "False")) {
                 reasons.push_back(type + "=" + value);
             }
-            if (type == "Ready"
-                    && !freshNodeHeartbeat(condition.value("lastHeartbeatTime", ""))) {
-                reasons.push_back("Ready heartbeat is missing, stale or in the future");
-            }
         }
     }
+    // Node.status is only refreshed every five minutes by default when it is
+    // unchanged. NodeLease is the independent, lightweight kubelet heartbeat
+    // (normally renewed every ten seconds), so use that for liveness freshness.
+    if (!freshLease) reasons.push_back("NodeLease heartbeat is missing, stale or malformed");
     for (const auto* required : {"Ready", "MemoryPressure", "DiskPressure", "PIDPressure"}) {
         if (seenConditions.count(required) == 0) {
             reasons.push_back(std::string("missing node condition ") + required);
@@ -1025,6 +1057,25 @@ nlohmann::json K8sHandlers::inspectDeploymentRecoveryState(
     if (!nodeList || !nodeList->contains("items") || !(*nodeList)["items"].is_array()) {
         addBlocker(blockers, "nodes_unavailable", "Kubernetes host readiness could not be inspected.");
     } else {
+        const auto nodeLeaseList = listNamespacedResources(
+                "coordination.k8s.io", "v1", "leases", "kube-node-lease");
+        const bool nodeLeaseListAvailable = nodeLeaseList
+                && nodeLeaseList->contains("items") && (*nodeLeaseList)["items"].is_array();
+        if (!nodeLeaseListAvailable) {
+            addBlocker(blockers, "leases_unavailable",
+                    "Kubernetes NodeLease heartbeats could not be inspected.");
+        }
+        std::unordered_map<std::string, nlohmann::json> nodeLeasesByName;
+        if (nodeLeaseListAvailable) {
+            for (const auto& lease : (*nodeLeaseList)["items"]) {
+                if (!lease.is_object()) continue;
+                const auto metadata = lease.value("metadata", nlohmann::json::object());
+                if (!metadata.is_object()) continue;
+                const std::string name = metadata.value("name", "");
+                if (!name.empty()) nodeLeasesByName.emplace(name, lease);
+            }
+        }
+
         std::unordered_map<std::string, nlohmann::json> nodesByName;
         for (const auto& node : (*nodeList)["items"]) {
             const std::string name = node.value("metadata", nlohmann::json::object()).value("name", "");
@@ -1038,7 +1089,16 @@ nlohmann::json K8sHandlers::inspectDeploymentRecoveryState(
                 continue;
             }
             nlohmann::json reasons = nlohmann::json::array();
-            const bool healthy = nodeHealthy(found->second, reasons);
+            const auto lease = nodeLeasesByName.find(host);
+            const bool leaseHealthy = nodeLeaseListAvailable
+                    && lease != nodeLeasesByName.end() && freshNodeLease(lease->second);
+            if (nodeLeaseListAvailable && lease == nodeLeasesByName.end()) {
+                addBlocker(blockers, "node_lease_missing", "Pod host " + host + " has no NodeLease.");
+            } else if (nodeLeaseListAvailable && !leaseHealthy) {
+                addBlocker(blockers, "node_lease_stale", "Pod host " + host
+                        + " has a stale or malformed NodeLease heartbeat.");
+            }
+            const bool healthy = nodeHealthy(found->second, leaseHealthy, reasons);
             const auto hostMetadata = found->second.value("metadata", nlohmann::json::object());
             const auto hostLabels = hostMetadata.value("labels", nlohmann::json::object());
             result["hosts"].push_back({
@@ -1049,6 +1109,7 @@ nlohmann::json K8sHandlers::inspectDeploymentRecoveryState(
                     {"environment", hostLabels.value("neuralmimicry.ai/environment", "unknown")},
                     {"zone", hostLabels.value("topology.kubernetes.io/zone", "")},
                     {"instance_type", hostLabels.value("node.kubernetes.io/instance-type", "")},
+                    {"node_lease_healthy", leaseHealthy},
                     {"healthy", healthy},
                     {"reasons", reasons}
             });

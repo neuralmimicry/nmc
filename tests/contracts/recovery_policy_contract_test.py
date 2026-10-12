@@ -44,6 +44,8 @@ def main() -> int:
         "progress-deadline recovery requires all desired current-template replicas": 'reason == "ProgressDeadlineExceeded"' in recovery_inspector and 'status.value("updatedReplicas", 0) >= desired' in recovery_inspector,
         "explicit maxUnavailable cannot make every desired replica unavailable": "bool maxUnavailableWithin(const nlohmann::json& value, int desiredReplicas)" in sources["recovery"] and restart_handler.count("!maxUnavailableWithin(rollingUpdate[\"maxUnavailable\"], desired)") == 1 and recovery_inspector.count("!maxUnavailableWithin(rollingUpdate[\"maxUnavailable\"], desired)") == 1,
         "degraded Pod readiness does not waive placement, termination or healthy-host gates": '"pod_terminating"' in recovery_inspector and '"pod_unscheduled"' in recovery_inspector and '"host_unhealthy"' in recovery_inspector and '"pod_not_running"' in recovery_inspector,
+        "node liveness uses the dedicated Kubernetes NodeLease heartbeat": '"coordination.k8s.io", "v1", "leases", "kube-node-lease"' in recovery_inspector and "freshNodeLease" in recovery_inspector and '"node_lease_stale"' in recovery_inspector,
+        "Node status lastHeartbeatTime is not mistaken for the frequent node lease": 'condition.value("lastHeartbeatTime"' not in recovery_inspector and "K8sRecoveryAPIMock" in (REPO_ROOT / "tests/functional/server_authz_integration_test.py").read_text(encoding="utf-8"),
     }
     failures = [description for description, passed in requirements.items() if not passed]
     if failures:
