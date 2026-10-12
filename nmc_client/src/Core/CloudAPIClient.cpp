@@ -619,7 +619,9 @@ namespace NMC::Core {
         appendQueryString(path, "namespace", encodeQueryValue(namespaceName));
         appendQueryString(path, "statefulset", encodeQueryValue(statefulSetName));
         auto res = cli->Get(path);
-        return processHttpResponse(res, "Continuum StatefulSet status retrieved.");
+        auto apiResponse = processHttpResponse(res, "Continuum StatefulSet status retrieved.");
+        unwrapStandardEnvelopeResponse(apiResponse);
+        return apiResponse;
     }
 
     Models::CloudResponse CloudAPIClient::rolloutK8sDeploymentImage(
