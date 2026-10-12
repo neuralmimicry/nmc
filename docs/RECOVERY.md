@@ -46,7 +46,12 @@ Immutable Deployment image changes use the separate
 labelled `neuralmimicry.ai/continuum-rollout=enabled`. Callers provide the
 expected current image plus stable request and change IDs; Continuum compares
 the current image and Deployment resource version before patching only the
-selected container and recording rollout annotations. The operation is
+selected container and recording rollout annotations. For `octobot/octobot`
+with container `octobot`, it also updates the three named application bootstrap
+containers in that same conditional patch; their existing images must match the
+application before mutation. BusyBox and unrelated containers are preserved.
+Otherwise the Gail guard would still run the old code and the service would
+remain unavailable after a main-container upgrade. The operation is
 disabled by default behind `NMC_K8S_IMAGE_ROLLOUT_ENABLED=true`, requires
 `continuum:control`, the active cluster identity and the authenticated
 kubeconfig, and returns acceptance separately from rollout readiness.

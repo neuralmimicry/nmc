@@ -277,8 +277,12 @@ class MockBackend:
                             },
                             {"name": "metrics", "image": "ghcr.io/neuralmimicry/metrics:stable"},
                         ], "initContainers": [
+                            {"name": "bootstrap-runtime", "image": "busybox:1.36"},
+                            {"name": "bootstrap-python-dependencies", "image": "ghcr.io/neuralmimicry/octobot:previous"},
+                            {"name": "bootstrap-tentacles", "image": "ghcr.io/neuralmimicry/octobot:previous"},
                             {
                                 "name": "bootstrap-gail-authority",
+                                "image": "ghcr.io/neuralmimicry/octobot:previous",
                                 "env": [
                                     {"name": "OCTOBOT_LIVE_EXECUTION_ENABLED", "value": "false"},
                                     {"name": "OCTOBOT_SERVICE_INTEGRATIONS_ENABLED", "value": "false"},
@@ -4159,6 +4163,35 @@ def test_aarnn_fpv_storage_is_scoped_persistent_conditional_and_idempotent(backe
             backend.k8s_image_id_overrides.clear()
 
 
+def test_octobot_image_rollout_rejects_incomplete_or_divergent_bootstrap(backend: MockBackend) -> None:
+    with backend._lock:
+        original = json.loads(json.dumps(backend.k8s_deployments["octobot/octobot"]))
+    request = {"cluster_id": "authz-test-cluster", "namespace": "octobot", "deployment": "octobot",
+        "container": "octobot", "expected_image": original["spec"]["template"]["spec"]["containers"][0]["image"],
+        "image": "ghcr.io/neuralmimicry/octobot@sha256:" + "b" * 64,
+        "request_id": "bootstrap-rollout-0001", "change_id": "BOOTSTRAP-ROLLOUT-0001"}
+    server = NmcServerProcess(backend.base_url, image_rollout_enabled=True, k8s_server_url=backend.base_url)
+    try:
+        server.start()
+        for invalid_kind in ["missing", "duplicate", "different-image"]:
+            deployment = json.loads(json.dumps(original))
+            spec = deployment["spec"]["template"]["spec"]
+            target = next(item for item in spec["initContainers"] if item["name"] == "bootstrap-gail-authority")
+            if invalid_kind == "missing": spec["initContainers"].remove(target)
+            elif invalid_kind == "duplicate": spec["initContainers"].append(dict(target))
+            else: target["image"] = "ghcr.io/neuralmimicry/octobot:unrelated-code"
+            with backend._lock: backend.k8s_deployments["octobot/octobot"] = deployment
+            before = backend.count_requests("/apis/apps/v1/namespaces/octobot/deployments/octobot", "PATCH")
+            status, _ = request_json(server.base_url, "POST", "/k8s/deployment/image-rollout",
+                token="continuum-control-token", payload=request)
+            assert_status(status, 409, "OctoBot bootstrap identity and image coherence must be verified before rollout")
+            assert_true(backend.count_requests("/apis/apps/v1/namespaces/octobot/deployments/octobot", "PATCH") == before,
+                "Divergent or incomplete bootstrap must be rejected without mutation")
+    finally:
+        with backend._lock: backend.k8s_deployments["octobot/octobot"] = original
+        server.stop()
+
+
 def test_k8s_image_rollout_updates_only_allowlisted_container_and_deduplicates(
     backend_base_url: str,
     backend: MockBackend,
@@ -4203,6 +4236,10 @@ def test_k8s_image_rollout_updates_only_allowlisted_container_and_deduplicates(
             "octobot": image,
             "metrics": "ghcr.io/neuralmimicry/metrics:stable",
         }, "rollout must preserve unrelated sidecar images")
+        init_images = {item["name"]: item["image"] for item in stored["spec"]["template"]["spec"]["initContainers"]}
+        assert_true(init_images == {"bootstrap-runtime": "busybox:1.36", "bootstrap-python-dependencies": image,
+            "bootstrap-tentacles": image, "bootstrap-gail-authority": image},
+            "One conditional rollout must update the OctoBot bootstrap code while preserving BusyBox")
 
         status, payload = request_json(
             server.base_url,
@@ -4231,6 +4268,14 @@ def test_k8s_image_rollout_updates_only_allowlisted_container_and_deduplicates(
         patch_path = "/apis/apps/v1/namespaces/octobot/deployments/octobot"
         assert_true(backend.count_requests(patch_path, "PATCH") == 1,
                     "a duplicate request must not issue a second Kubernetes patch")
+        with backend._lock:
+            changed = backend.k8s_deployments["octobot/octobot"]["spec"]["template"]["spec"]["initContainers"]
+            next(item for item in changed if item["name"] == "bootstrap-gail-authority")["image"] = "stale-bootstrap"
+        status, _ = request_json(server.base_url, "POST", "/k8s/deployment/image-rollout",
+            token="continuum-control-token", payload=request)
+        assert_status(status, 409, "A replay cannot hide bootstrap image drift")
+        assert_true(backend.count_requests(patch_path, "PATCH") == 1, "A conflicting replay must not mutate bootstrap")
+        with backend._lock: backend.k8s_deployments["octobot/octobot"] = stored
 
         conflicting = dict(request, request_id="octobot-rollout-request-0002")
         status, _ = request_json(
@@ -5429,6 +5474,7 @@ fi
         test_recovery_requires_an_explicit_valid_enable_value(backend.base_url)
         test_recovery_uses_fresh_nodelease_not_node_status_heartbeat(backend.base_url)
         test_k8s_image_rollout_requires_control_scope_and_explicit_policy(backend.base_url)
+        test_octobot_image_rollout_rejects_incomplete_or_divergent_bootstrap(backend)
         test_k8s_image_rollout_updates_only_allowlisted_container_and_deduplicates(backend.base_url, backend)
         test_aarnn_fpv_storage_is_scoped_persistent_conditional_and_idempotent(backend)
         test_k8s_image_rollout_preserves_upstream_patch_rejections(backend)

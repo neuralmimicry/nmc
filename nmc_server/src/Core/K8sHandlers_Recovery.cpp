@@ -1974,6 +1974,30 @@ void K8sHandlers::handleRolloutDeploymentImage(const httplib::Request& req, http
             return sendErrorResponse(res, 409, "Current container image is missing or invalid.");
         }
 
+        const bool octobotBootstrap = namespaceName == "octobot" && deploymentName == "octobot"
+                && containerName == "octobot";
+        const std::set<std::string> bootstrapNames = {
+                "bootstrap-python-dependencies", "bootstrap-tentacles", "bootstrap-gail-authority"};
+        auto initContainers = podSpec.value("initContainers", nlohmann::json::array());
+        if (octobotBootstrap) {
+            std::set<std::string> found;
+            if (initContainers.is_array()) {
+                for (const auto& init : initContainers) {
+                    if (!init.is_object() || !init.contains("name") || !init["name"].is_string()) continue;
+                    const auto name = init["name"].get<std::string>();
+                    if (!bootstrapNames.count(name)) continue;
+                    if (!found.insert(name).second || init.value("image", "") != currentImage) {
+                        genericClient_free(deploymentClient);
+                        return sendErrorResponse(res, 409, "OctoBot bootstrap images must match the current application image before an atomic rollout.");
+                    }
+                }
+            }
+            if (found != bootstrapNames) {
+                genericClient_free(deploymentClient);
+                return sendErrorResponse(res, 409, "All three named OctoBot bootstrap containers are required for an atomic image rollout.");
+            }
+        }
+
         auto templateMetadata = podTemplate.value("metadata", nlohmann::json::object());
         auto annotations = templateMetadata.value("annotations", nlohmann::json::object());
         if (!annotations.is_object()) annotations = nlohmann::json::object();
@@ -2018,6 +2042,11 @@ void K8sHandlers::handleRolloutDeploymentImage(const httplib::Request& req, http
         }
 
         selected->operator[]("image") = image;
+        if (octobotBootstrap) {
+            for (auto& init : initContainers) {
+                if (init.is_object() && bootstrapNames.count(init.value("name", ""))) init["image"] = image;
+            }
+        }
         const std::string requestedAt = utcTimestamp();
         annotations["neuralmimicry.ai/rollout-request-id"] = requestId;
         annotations["neuralmimicry.ai/rollout-change-id"] = changeId;
@@ -2027,13 +2056,14 @@ void K8sHandlers::handleRolloutDeploymentImage(const httplib::Request& req, http
         annotations["neuralmimicry.ai/rollout-requested-at"] = requestedAt;
         templateMetadata["annotations"] = annotations;
 
-        const nlohmann::json patch = {
+        nlohmann::json patch = {
                 {"metadata", {{"resourceVersion", resourceVersion}}},
                 {"spec", {{"template", {
                         {"metadata", templateMetadata},
                         {"spec", {{"containers", containers}}}
                 }}}}
         };
+        if (octobotBootstrap) patch["spec"]["template"]["spec"]["initContainers"] = initContainers;
         const std::string patchBody = patch.dump();
         char* rawPatched = mergePatchNamespacedResource(
                 deploymentClient,
@@ -2074,6 +2104,7 @@ void K8sHandlers::handleRolloutDeploymentImage(const httplib::Request& req, http
         response.data["requested_at"] = requestedAt;
         response.data["changed"] = true;
         response.data["already_applied"] = false;
+        if (octobotBootstrap) response.data["updated_init_containers"] = bootstrapNames;
         sendJsonResponse(res, response);
     } catch (const nlohmann::json::parse_error&) {
       sendErrorResponse(res, 400, "Invalid JSON body.");
