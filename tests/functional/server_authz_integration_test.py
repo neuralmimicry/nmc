@@ -4644,13 +4644,19 @@ def test_statefulset_status_uses_bounded_owned_pods_and_serialized_reads(backend
             + repr([status for status, _ in responses])
         )
         data = [payload.get("data", {}) for _, payload in responses]
-        assert all(item.get("kind") == "StatefulSet"
-                   and item.get("cluster_id") == "authz-test-cluster"
-                   and item.get("healthy") is True
-                   and item.get("desired_replicas") == 1
-                   and item.get("ready_replicas") == 1
-                   and item.get("current_revision") == "postgres-revision-a"
-                   for item in data), "StatefulSet status must report observed replica and revision state"
+        for field, expected in (
+            ("kind", "StatefulSet"),
+            ("cluster_id", "authz-test-cluster"),
+            ("healthy", True),
+            ("desired_replicas", 1),
+            ("ready_replicas", 1),
+            ("current_revision", "postgres-revision-a"),
+        ):
+            actual = [item.get(field) for item in data]
+            assert all(value == expected for value in actual), (
+                f"StatefulSet status field {field!r} must be {expected!r}; "
+                f"observed {actual!r} in {data[0]!r}"
+            )
         assert all(item.get("pod_diagnostics_available") is True
                    and item.get("pod_diagnostics_truncated") is False
                    and item.get("pods", [{}])[0].get("node") == "qc01"
