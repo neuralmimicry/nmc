@@ -212,6 +212,7 @@ class MockBackend:
         self.k8s_pod_list_queries: list[dict[str, Any]] = []
         self.k8s_pod_status_override: dict[str, Any] | None = None
         self.k8s_image_id_overrides: dict[str, str] = {}
+        self.k8s_patch_status_override: int | None = None
         self.home_assistant_status = 200
         self.home_assistant_states = [
             {"entity_id": "sensor.authz_device", "state": "online", "last_changed": "2026-10-07T10:00:00Z"},
@@ -485,6 +486,14 @@ class MockBackend:
                         self._send_json(handler, 200, json.loads(json.dumps(deployment)))
                         return
                     if handler.command == "PATCH":
+                        if handler.headers.get("Content-Type", "").split(";", 1)[0] != "application/merge-patch+json":
+                            self._send_json(handler, 415, {"kind": "Status", "status": "Failure", "code": 415,
+                                "message": "Kubernetes requires an explicit supported patch content type"})
+                            return
+                        if self.k8s_patch_status_override is not None:
+                            self._send_json(handler, self.k8s_patch_status_override, {"kind": "Status", "status": "Failure",
+                                "code": self.k8s_patch_status_override, "message": "conditional patch rejected"})
+                            return
                         patch = parse_json(body)
                         expected_version = patch.get("metadata", {}).get("resourceVersion")
                         if expected_version != deployment.get("metadata", {}).get("resourceVersion"):
@@ -4088,6 +4097,15 @@ def test_aarnn_fpv_storage_is_scoped_persistent_conditional_and_idempotent(backe
             assert_true(backend.count_requests("/apis/apps/v1/namespaces/aarnn/deployments/aarnn-web-ui", "PATCH") == before,
                 "Unsafe Pod observations must not cause a patch")
         with backend._lock: backend.k8s_pod_status_override = None
+        for rejected_status in [409, 415, 422, 503]:
+            with backend._lock: backend.k8s_patch_status_override = rejected_status
+            status, payload = request_json(server.base_url, "POST", path, token="continuum-control-token", payload=request)
+            assert_status(status, rejected_status, "FPV repair must preserve a non-null Kubernetes Status rejection")
+            assert_true(payload.get("success") is False, "Rejected Kubernetes patch cannot be reported as applied")
+            with backend._lock:
+                assert_true(backend.k8s_deployments["aarnn/aarnn-web-ui"]["spec"]["template"]["spec"]["containers"][0]["image"] == image,
+                    "Rejected patch must preserve the running workload declaration")
+        with backend._lock: backend.k8s_patch_status_override = None
         status, payload = request_json(server.base_url, "POST", path, token="continuum-control-token", payload=request)
         assert_status(status, 200, "FPV root is repaired inside the shared claim")
         assert_true(payload["data"]["job_root"] == "/var/lib/aarnn/fpv-jobs", "FPV root must be derived from the mounted PVC")
@@ -4128,6 +4146,7 @@ def test_aarnn_fpv_storage_is_scoped_persistent_conditional_and_idempotent(backe
         assert_true(payload["data"]["job_root"] == "/var/lib/aarnn/fpv-jobs", "Workers must read producer storage")
     finally:
         with backend._lock: backend.k8s_pod_status_override = None
+        with backend._lock: backend.k8s_patch_status_override = None
         server.stop()
     disabled = NmcServerProcess(backend.base_url, image_rollout_enabled=False)
     try:
@@ -4255,6 +4274,30 @@ def test_k8s_image_rollout_updates_only_allowlisted_container_and_deduplicates(
         )
         assert_status(status, 503, "image rollout rejects an unauthenticated fallback Kubernetes client")
     finally:
+        server.stop()
+
+
+def test_k8s_image_rollout_preserves_upstream_patch_rejections(backend: MockBackend) -> None:
+    with backend._lock:
+        original = json.loads(json.dumps(backend.k8s_deployments["octobot/octobot"]))
+    request = {"cluster_id": "authz-test-cluster", "namespace": "octobot", "deployment": "octobot",
+        "container": "octobot", "expected_image": original["spec"]["template"]["spec"]["containers"][0]["image"],
+        "image": "ghcr.io/neuralmimicry/octobot@sha256:" + "c" * 64,
+        "request_id": "rejected-rollout-0001", "change_id": "REJECTED-ROLLOUT-0001"}
+    server = NmcServerProcess(backend.base_url, image_rollout_enabled=True, k8s_server_url=backend.base_url)
+    try:
+        server.start()
+        for rejected_status in [409, 415, 422, 503]:
+            with backend._lock: backend.k8s_patch_status_override = rejected_status
+            status, payload = request_json(server.base_url, "POST", "/k8s/deployment/image-rollout",
+                token="continuum-control-token", payload=request)
+            assert_status(status, rejected_status, "Rollout must return the rejected Kubernetes patch status")
+            assert_true(payload.get("success") is False, "Upstream rejection must not claim rollout success")
+            with backend._lock:
+                assert_true(backend.k8s_deployments["octobot/octobot"] == original,
+                    "Rejected rollout must preserve spec, generation and audit annotations")
+    finally:
+        with backend._lock: backend.k8s_patch_status_override = None
         server.stop()
 
 
@@ -5388,6 +5431,7 @@ fi
         test_k8s_image_rollout_requires_control_scope_and_explicit_policy(backend.base_url)
         test_k8s_image_rollout_updates_only_allowlisted_container_and_deduplicates(backend.base_url, backend)
         test_aarnn_fpv_storage_is_scoped_persistent_conditional_and_idempotent(backend)
+        test_k8s_image_rollout_preserves_upstream_patch_rejections(backend)
         test_octobot_configuration_requires_control_scope_and_explicit_policy(backend.base_url)
         test_octobot_configuration_is_allowlisted_conditional_and_idempotent(backend.base_url, backend)
         test_workload_status_and_logs_use_bounded_raw_pod_lists_and_serialize(backend)

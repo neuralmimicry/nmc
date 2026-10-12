@@ -18,6 +18,18 @@
 namespace NMC::Server {
 namespace {
 
+char* mergePatchNamespacedResource(genericClient_t* client, const char* ns,
+                                   const char* name, const char* body) {
+    // The generated client otherwise sends application/json, which Kubernetes
+    // rejects for PATCH even though the same body is valid JSON merge patch.
+    std::unique_ptr<list_t, decltype(&list_freeList)> contentTypes(list_createList(), &list_freeList);
+    if (!contentTypes) throw std::runtime_error("Patch content type could not be allocated.");
+    char contentType[] = "application/merge-patch+json";
+    list_addElement(contentTypes.get(), contentType);
+    return Generic_patchNamespacedResource(client, ns, name, body,
+        nullptr, nullptr, nullptr, nullptr, contentTypes.get());
+}
+
 std::string trimCopy(const std::string& value) {
     const auto first = std::find_if_not(value.begin(), value.end(), [](unsigned char ch) {
         return std::isspace(ch) != 0;
@@ -1394,20 +1406,16 @@ void K8sHandlers::handleRestartDeployment(const httplib::Request& req, httplib::
                 }}
         };
         const std::string patchBody = patch.dump();
-        char* patchedRaw = Generic_patchNamespacedResource(
+        char* patchedRaw = mergePatchNamespacedResource(
                 deploymentClient,
                 const_cast<char*>(namespaceName.c_str()),
                 const_cast<char*>(deploymentName.c_str()),
-                const_cast<char*>(patchBody.c_str()),
-                nullptr,
-                nullptr,
-                nullptr,
-                nullptr,
-                nullptr
+                patchBody.c_str()
         );
         const int patchStatus = apiClient ? apiClient->response_code : 0;
         genericClient_free(deploymentClient);
-        if (!patchedRaw) {
+        if (!patchedRaw || patchStatus < 200 || patchStatus >= 300) {
+            free(patchedRaw);
             return sendErrorResponse(res, patchStatus >= 400 ? patchStatus : 503,
                     "Kubernetes rejected the conditional deployment restart request.");
         }
@@ -2027,20 +2035,16 @@ void K8sHandlers::handleRolloutDeploymentImage(const httplib::Request& req, http
                 }}}}
         };
         const std::string patchBody = patch.dump();
-        char* rawPatched = Generic_patchNamespacedResource(
+        char* rawPatched = mergePatchNamespacedResource(
                 deploymentClient,
                 const_cast<char*>(namespaceName.c_str()),
                 const_cast<char*>(deploymentName.c_str()),
-                const_cast<char*>(patchBody.c_str()),
-                nullptr,
-                nullptr,
-                nullptr,
-                nullptr,
-                nullptr
+                patchBody.c_str()
         );
         const int patchStatus = workloadLogsApiClient->response_code;
         genericClient_free(deploymentClient);
-        if (!rawPatched) {
+        if (!rawPatched || patchStatus < 200 || patchStatus >= 300) {
+            free(rawPatched);
             return sendErrorResponse(res, patchStatus >= 400 ? patchStatus : 503,
                     "Kubernetes rejected the conditional Deployment image rollout.");
         }
@@ -2225,9 +2229,10 @@ void K8sHandlers::handleConfigureAarnnFpvStorage(const httplib::Request& req,
         if (changed) patch["spec"] = {{"template", podTemplate}};
         char ns[] = "aarnn";
         const auto encoded = patch.dump();
-        std::unique_ptr<char, decltype(&free)> raw(Generic_patchNamespacedResource(client.get(), ns,
-            const_cast<char*>(name.c_str()), const_cast<char*>(encoded.c_str()), nullptr, nullptr, nullptr, nullptr, nullptr), &free);
-        if (!raw) return sendErrorResponse(res, workloadLogsApiClient->response_code >= 400 ? workloadLogsApiClient->response_code : 502,
+        std::unique_ptr<char, decltype(&free)> raw(mergePatchNamespacedResource(client.get(), ns,
+            name.c_str(), encoded.c_str()), &free);
+        if (!raw || workloadLogsApiClient->response_code < 200 || workloadLogsApiClient->response_code >= 300)
+            return sendErrorResponse(res, workloadLogsApiClient->response_code >= 400 ? workloadLogsApiClient->response_code : 502,
             "Kubernetes rejected the conditional FPV storage repair.");
         const auto patched = nlohmann::json::parse(raw.get());
         Models::CloudResponse response;
@@ -2580,14 +2585,14 @@ void K8sHandlers::handleConfigureOctoBot(const httplib::Request &req,
                            {"initContainers", initContainers}}}}}};
     }
     const std::string patchBody = patch.dump();
-    char *rawPatched = Generic_patchNamespacedResource(
+    char *rawPatched = mergePatchNamespacedResource(
         deploymentClient, const_cast<char *>(namespaceName.c_str()),
         const_cast<char *>(deploymentName.c_str()),
-        const_cast<char *>(patchBody.c_str()), nullptr, nullptr, nullptr,
-        nullptr, nullptr);
+        patchBody.c_str());
     const int patchStatus = workloadLogsApiClient->response_code;
     genericClient_free(deploymentClient);
-    if (!rawPatched) {
+    if (!rawPatched || patchStatus < 200 || patchStatus >= 300) {
+      free(rawPatched);
       return sendErrorResponse(
           res, patchStatus >= 400 ? patchStatus : 503,
           "Kubernetes rejected the conditional OctoBot configuration request.");
