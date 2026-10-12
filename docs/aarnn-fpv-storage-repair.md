@@ -16,18 +16,23 @@ ambiguous or secret-backed root settings fail closed.
 
 ```bash
 nmc k8s configure-aarnn-fpv --cluster-id rk1 \
-  --deployment aarnn-fpv-workers --expected-image CURRENT_IMAGE \
+  --deployment aarnn-fpv-workers --expected-image CURRENT_IMAGE --image RUNNING_DIGEST \
   --request-id fpv-workers-storage-20261012-01 --change-id FPV-STORAGE-20261012
 nmc k8s configure-aarnn-fpv --cluster-id rk1 \
-  --deployment aarnn-web-ui --expected-image CURRENT_IMAGE \
+  --deployment aarnn-web-ui --expected-image CURRENT_IMAGE --image RUNNING_DIGEST \
   --request-id fpv-ui-storage-20261012-01 --change-id FPV-STORAGE-20261012
 ```
 
-Obtain each expected image from a fresh typed Deployment status read. The
-server rechecks that image and patches against the observed resourceVersion.
+Obtain each declared expected image and each Pod container's `image_id` from a
+fresh typed Deployment status read. Use the canonical running digest for `--image`
+(remove `docker-pullable://` if present). Every target Pod must be Running and its
+target container Ready with identical image content; incomplete or conflicting
+observations fail closed. The server pins this existing content during the repair
+so restarting an Always-pulled mutable tag cannot silently promote newer code.
+It rechecks the declared image and patches against the observed resourceVersion.
 Request/change identity and the resulting root are recorded as Deployment
 annotations. A repeated matching intent is deduplicated, including after a
-server restart; a conflicting reuse is rejected. Image, authentication,
+server restart; a conflicting reuse is rejected. Running image content, authentication,
 unrelated environment, PVC contents and volume declarations are preserved.
 
 An environment change causes a normal workload rollout. Verify worker readiness

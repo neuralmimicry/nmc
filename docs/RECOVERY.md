@@ -103,8 +103,10 @@ cluster context have been verified.
 ## AARNN FPV storage configuration
 
 The authenticated `continuum:control` operation `POST /k8s/aarnn/fpv-storage`
-and CLI `nmc k8s configure-aarnn-fpv` reconcile only `NM_FPV_JOB_ROOT` inside
-an observed writable shared PVC. The owning UI must be opted into Continuum
+and CLI `nmc k8s configure-aarnn-fpv` reconcile `NM_FPV_JOB_ROOT` inside
+an observed writable shared PVC and pin the existing running image digest.
+All target containers must be Ready with that exact content, preventing an
+implicit code upgrade when a mutable tag restarts. The owning UI must be opted into Continuum
 rollout, the rollout policy must be enabled, and expected-image/resourceVersion
 checks and recorded request/change identities preserve scope and idempotency.
 See [the FPV storage runbook](aarnn-fpv-storage-repair.md) for prerequisites,

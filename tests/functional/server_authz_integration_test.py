@@ -211,6 +211,7 @@ class MockBackend:
         self.k8s_event_message = "0/1 nodes are available: 1 Insufficient memory."
         self.k8s_pod_list_queries: list[dict[str, Any]] = []
         self.k8s_pod_status_override: dict[str, Any] | None = None
+        self.k8s_image_id_overrides: dict[str, str] = {}
         self.home_assistant_status = 200
         self.home_assistant_states = [
             {"entity_id": "sensor.authz_device", "state": "online", "last_changed": "2026-10-07T10:00:00Z"},
@@ -553,6 +554,12 @@ class MockBackend:
                         workload = self.k8s_statefulsets.get(f"{namespace}/{namespace}")
                         owner_kind = "StatefulSet"
                     if workload is None:
+                        workload = next((candidate for key, candidate in self.k8s_deployments.items()
+                            if key.startswith(f"{namespace}/") and label_selector == ",".join(
+                                f"{label}={value}" for label, value in sorted(candidate.get("spec", {}).get(
+                                    "template", {}).get("metadata", {}).get("labels", {}).items()))), None)
+                        owner_kind = "Deployment"
+                    if workload is None:
                         self._send_json(handler, 200, {"apiVersion": "v1", "kind": "PodList", "items": []})
                         return
                     pod_spec = workload.get("spec", {}).get("template", {}).get("spec", {})
@@ -597,6 +604,8 @@ class MockBackend:
                             "containerStatuses": [
                                 {"name": item.get("name", ""), "ready": True,
                                  "image": item.get("image", ""), "restartCount": 0,
+                                 "imageID": self.k8s_image_id_overrides.get(
+                                     f"{namespace}/{workload.get('metadata', {}).get('name', namespace)}", item.get("image", "")),
                                  "state": {"running": {"startedAt": "2026-10-11T00:00:00Z"}}}
                                 for item in containers if item.get("name")
                             ],
@@ -4027,12 +4036,13 @@ def test_k8s_image_rollout_requires_control_scope_and_explicit_policy(backend_ba
 
 def test_aarnn_fpv_storage_is_scoped_persistent_conditional_and_idempotent(backend: MockBackend) -> None:
     image = "ghcr.io/neuralmimicry/aarnn_rust:previous"
+    pinned_image = "ghcr.io/neuralmimicry/aarnn_rust@sha256:" + "a" * 64
     def fixture(name: str, container: str) -> dict[str, Any]:
         return {
             "metadata": {"name": name, "namespace": "aarnn", "uid": name,
                 "resourceVersion": "1", "generation": 1,
                 "labels": {"neuralmimicry.ai/continuum-rollout": "enabled"}},
-            "spec": {"replicas": 1, "template": {"metadata": {"labels": {"app": name}}, "spec": {
+            "spec": {"replicas": 1, "selector": {"matchLabels": {"app": name}}, "template": {"metadata": {"labels": {"app": name}}, "spec": {
                 "volumes": [{"name": "web-ui-data", "persistentVolumeClaim": {"claimName": "retained-brain"}}],
                 "containers": [{"name": container, "image": image,
                     "env": [{"name": "NM_FPV_JOB_ROOT", "value": "/data/fpv-jobs"}, {"name": "KEEP", "value": "unchanged"}],
@@ -4042,7 +4052,10 @@ def test_aarnn_fpv_storage_is_scoped_persistent_conditional_and_idempotent(backe
     with backend._lock:
         backend.k8s_deployments["aarnn/aarnn-web-ui"] = fixture("aarnn-web-ui", "web-ui")
         backend.k8s_deployments["aarnn/aarnn-fpv-workers"] = fixture("aarnn-fpv-workers", "fpv-worker")
+        backend.k8s_image_id_overrides["aarnn/aarnn-web-ui"] = "docker-pullable://" + pinned_image
+        backend.k8s_image_id_overrides["aarnn/aarnn-fpv-workers"] = pinned_image
     request = {"cluster_id": "authz-test-cluster", "deployment": "aarnn-web-ui", "expected_image": image,
+        "image": pinned_image,
         "request_id": "fpv-storage-test-0001", "change_id": "FPV-STORAGE-TEST-0001"}
     server = NmcServerProcess(backend.base_url, image_rollout_enabled=True, k8s_server_url=backend.base_url)
     path = "/k8s/aarnn/fpv-storage"
@@ -4058,12 +4071,31 @@ def test_aarnn_fpv_storage_is_scoped_persistent_conditional_and_idempotent(backe
         status, _ = request_json(server.base_url, "POST", path, token="continuum-control-token",
             payload=dict(request, expected_image="stale-image"))
         assert_status(status, 409, "FPV repair is conditional on current image")
+        before = backend.count_requests("/apis/apps/v1/namespaces/aarnn/deployments/aarnn-web-ui", "PATCH")
+        status, _ = request_json(server.base_url, "POST", path, token="continuum-control-token",
+            payload=dict(request, image="ghcr.io/neuralmimicry/aarnn_rust@sha256:" + "b" * 64))
+        assert_status(status, 409, "Storage repair cannot promote different image content")
+        assert_true(backend.count_requests("/apis/apps/v1/namespaces/aarnn/deployments/aarnn-web-ui", "PATCH") == before,
+            "Different running content must be rejected without patching")
+        for pod_status in [
+            {"phase": "Pending", "containerStatuses": [{"name": "web-ui", "ready": True, "imageID": pinned_image}]},
+            {"phase": "Running", "containerStatuses": [{"name": "web-ui", "ready": False, "imageID": pinned_image}]},
+            {"phase": "Running", "containerStatuses": [{"name": "web-ui", "ready": True}]},
+        ]:
+            with backend._lock: backend.k8s_pod_status_override = pod_status
+            status, _ = request_json(server.base_url, "POST", path, token="continuum-control-token", payload=request)
+            assert_status(status, 409, "Incomplete or unready running content must block storage repair")
+            assert_true(backend.count_requests("/apis/apps/v1/namespaces/aarnn/deployments/aarnn-web-ui", "PATCH") == before,
+                "Unsafe Pod observations must not cause a patch")
+        with backend._lock: backend.k8s_pod_status_override = None
         status, payload = request_json(server.base_url, "POST", path, token="continuum-control-token", payload=request)
         assert_status(status, 200, "FPV root is repaired inside the shared claim")
         assert_true(payload["data"]["job_root"] == "/var/lib/aarnn/fpv-jobs", "FPV root must be derived from the mounted PVC")
         with backend._lock:
             stored = backend.k8s_deployments["aarnn/aarnn-web-ui"]
             env = {item["name"]: item["value"] for item in stored["spec"]["template"]["spec"]["containers"][0]["env"]}
+            assert_true(stored["spec"]["template"]["spec"]["containers"][0]["image"] == pinned_image,
+                "Repair must pin the current content rather than restart an Always-pulled mutable tag")
         assert_true(env == {"NM_FPV_JOB_ROOT": "/var/lib/aarnn/fpv-jobs", "KEEP": "unchanged"}, "Repair must preserve unrelated settings")
         patch_path = "/apis/apps/v1/namespaces/aarnn/deployments/aarnn-web-ui"
         patches = backend.count_requests(patch_path, "PATCH")
@@ -4095,6 +4127,7 @@ def test_aarnn_fpv_storage_is_scoped_persistent_conditional_and_idempotent(backe
         assert_status(status, 200, "FPV consumers receive the same shared path")
         assert_true(payload["data"]["job_root"] == "/var/lib/aarnn/fpv-jobs", "Workers must read producer storage")
     finally:
+        with backend._lock: backend.k8s_pod_status_override = None
         server.stop()
     disabled = NmcServerProcess(backend.base_url, image_rollout_enabled=False)
     try:
@@ -4103,6 +4136,8 @@ def test_aarnn_fpv_storage_is_scoped_persistent_conditional_and_idempotent(backe
         assert_status(status, 403, "Disabled rollout policy must prohibit configuration")
     finally:
         disabled.stop()
+        with backend._lock:
+            backend.k8s_image_id_overrides.clear()
 
 
 def test_k8s_image_rollout_updates_only_allowlisted_container_and_deduplicates(

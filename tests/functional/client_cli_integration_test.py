@@ -1180,14 +1180,16 @@ def test_k8s_image_rollout_uses_exact_digest_and_compare_and_swap_request(server
 
 def test_k8s_configure_aarnn_fpv_uses_only_the_typed_storage_operation(server: MockServer, home_dir: pathlib.Path) -> None:
     server.clear_records()
+    image = "ghcr.io/neuralmimicry/aarnn_rust@sha256:" + "a" * 64
     args = ["--output", "json", "k8s", "configure-aarnn-fpv", "--cluster-id", "rk1",
         "--deployment", "aarnn-web-ui", "--expected-image", "ghcr.io/neuralmimicry/aarnn_rust:previous",
+        "--image", image,
         "--request-id", "fpv-storage-request-0001", "--change-id", "FPV-STORAGE-0001"]
     assert_success(run_nmc(args, home_dir), "Typed FPV storage repair")
     records = server.records()
     assert_true(len(records) == 1 and records[0].path == "/k8s/aarnn/fpv-storage", "Repair must use the fixed Continuum route")
     assert_true(json.loads(records[0].body) == {"cluster_id": "rk1", "deployment": "aarnn-web-ui",
-        "expected_image": "ghcr.io/neuralmimicry/aarnn_rust:previous", "request_id": "fpv-storage-request-0001",
+        "expected_image": "ghcr.io/neuralmimicry/aarnn_rust:previous", "image": image, "request_id": "fpv-storage-request-0001",
         "change_id": "FPV-STORAGE-0001"}, "Caller cannot supply an arbitrary storage path")
     server.clear_records()
     args[args.index("aarnn-web-ui")] = "unrelated-workload"

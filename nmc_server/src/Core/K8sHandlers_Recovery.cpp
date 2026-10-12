@@ -347,6 +347,7 @@ nlohmann::json deploymentStatusData(const nlohmann::json& deployment,
                     ++diagnosticContainerStatusCount;
                     nlohmann::json containerSummary = nlohmann::json::object();
                     addBoundedText(containerSummary, containerStatus, "name", 63);
+                    addBoundedText(containerSummary, containerStatus, "imageID", 512, "image_id");
                     const auto readyValue = containerStatus.find("ready");
                     containerSummary["ready"] = readyValue != containerStatus.end()
                             && readyValue->is_boolean() && readyValue->get<bool>();
@@ -2085,15 +2086,18 @@ void K8sHandlers::handleConfigureAarnnFpvStorage(const httplib::Request& req,
     if (req.body.size() > 8192) return sendErrorResponse(res, 413, "FPV configuration exceeds 8 KiB.");
     try {
         const auto body = nlohmann::json::parse(req.body);
-        if (!containsExactKeySet(body, {"cluster_id", "deployment", "expected_image", "request_id", "change_id"})) {
+        if (!containsExactKeySet(body, {"cluster_id", "deployment", "expected_image", "image", "request_id", "change_id"})) {
             return sendErrorResponse(res, 400, "FPV configuration requires exactly the documented fields.");
         }
-        for (const auto* key : {"cluster_id", "deployment", "expected_image", "request_id", "change_id"}) {
+        for (const auto* key : {"cluster_id", "deployment", "expected_image", "image", "request_id", "change_id"}) {
             if (!body[key].is_string()) return sendErrorResponse(res, 400, "FPV configuration fields must be strings.");
         }
         const auto clusterId = body["cluster_id"].get<std::string>();
         const auto name = body["deployment"].get<std::string>();
         const auto expectedImage = body["expected_image"].get<std::string>();
+        const auto image = body["image"].get<std::string>();
+        static const std::regex pinnedImage(R"(^ghcr\.io/neuralmimicry/aarnn_rust@sha256:[a-f0-9]{64}$)");
+        if (!std::regex_match(image, pinnedImage)) return sendErrorResponse(res, 400, "FPV repair needs the immutable digest currently running in the target Pods.");
         const auto requestId = body["request_id"].get<std::string>();
         const auto changeId = body["change_id"].get<std::string>();
         if ((name != "aarnn-web-ui" && name != "aarnn-fpv-workers") ||
@@ -2130,7 +2134,7 @@ void K8sHandlers::handleConfigureAarnnFpvStorage(const httplib::Request& req,
             if (selected) return sendErrorResponse(res, 409, "Container identity is ambiguous.");
             selected = &container;
         }
-        if (!selected || selected->value("image", "") != expectedImage) return sendErrorResponse(res, 409, "Expected image does not match the observed target; no configuration changed.");
+        if (!selected) return sendErrorResponse(res, 409, "Expected container is absent.");
         // Both producers and consumers must use the same named persistent claim.
         const auto claimFor = [](const nlohmann::json& spec) {
             std::string claim;
@@ -2167,7 +2171,7 @@ void K8sHandlers::handleConfigureAarnnFpvStorage(const httplib::Request& req,
             setting = &item;
         }
         if (!setting) return sendErrorResponse(res, 409, "FPV root setting is missing.");
-        const bool changed = setting->at("value") != desiredRoot;
+        const bool changed = setting->at("value") != desiredRoot || selected->value("image", "") != image;
         auto metadata = deployment.at("metadata");
         auto annotations = metadata.value("annotations", nlohmann::json::object());
         if (annotations.value("neuralmimicry.ai/fpv-storage-request-id", "") == requestId) {
@@ -2181,9 +2185,37 @@ void K8sHandlers::handleConfigureAarnnFpvStorage(const httplib::Request& req,
             response.data = {{"already_applied", true}, {"changed", false}, {"job_root", desiredRoot}, {"deployment", name}};
             return sendJsonResponse(res, response);
         }
+        if (selected->value("image", "") != expectedImage) return sendErrorResponse(res, 409, "Expected image does not match the observed target; no configuration changed.");
+        // Changing an environment setting restarts Pods. Pin their actual running
+        // content so an Always-pulled mutable alias cannot upgrade code implicitly.
+        const auto selector = deploymentLabelSelector(deployment);
+        long podsStatus = 0;
+        const auto pods = selector ? listWorkloadPods("aarnn", *selector, 64, podsStatus) : std::nullopt;
+        const auto observed = deploymentStatusData(deployment, pods ? &*pods : nullptr);
+        const auto desired = deployment.at("spec").value("replicas", 1);
+        if (desired < 1 || !observed.value("pod_diagnostics_available", false) ||
+            observed.value("pod_diagnostics_truncated", true) || observed.at("pods").size() != static_cast<size_t>(desired)) {
+            return sendErrorResponse(res, 409, "Complete running Pod image observations are required before storage repair.");
+        }
+        for (const auto& pod : observed.at("pods")) {
+            if (pod.value("phase", "") != "Running") return sendErrorResponse(res, 409, "Every target Pod must be Running before storage repair.");
+            int matched = 0;
+            for (const auto& container : pod.at("containers")) {
+                if (container.value("name", "") != containerName) continue;
+                auto runningImage = container.value("image_id", "");
+                const std::string prefix = "docker-pullable://";
+                if (runningImage.rfind(prefix, 0) == 0) runningImage.erase(0, prefix.size());
+                if (!container.value("ready", false) || runningImage != image) {
+                    return sendErrorResponse(res, 409, "The pinned image must match every ready target container; code promotion is not a storage repair.");
+                }
+                ++matched;
+            }
+            if (matched != 1) return sendErrorResponse(res, 409, "Target running container observation is incomplete.");
+        }
         const auto resourceVersion = metadata.value("resourceVersion", "");
         if (resourceVersion.empty()) return sendErrorResponse(res, 409, "Deployment resourceVersion is unavailable.");
         (*setting)["value"] = desiredRoot;
+        (*selected)["image"] = image;
         annotations["neuralmimicry.ai/fpv-storage-request-id"] = requestId;
         annotations["neuralmimicry.ai/fpv-storage-change-id"] = changeId;
         annotations["neuralmimicry.ai/fpv-storage-expected-image"] = expectedImage;

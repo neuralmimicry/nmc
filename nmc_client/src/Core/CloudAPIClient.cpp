@@ -771,14 +771,15 @@ namespace NMC::Core {
 
     Models::CloudResponse CloudAPIClient::configureAarnnFpvStorage(
         const std::string& clusterId, const std::string& deployment,
-        const std::string& expectedImage, const std::string& requestId,
+        const std::string& expectedImage, const std::string& image, const std::string& requestId,
         const std::string& changeId) {
         static const std::regex identifier(R"(^[A-Za-z0-9][A-Za-z0-9._-]{7,127}$)");
+        static const std::regex pinnedImage(R"(^ghcr\.io/neuralmimicry/aarnn_rust@sha256:[a-f0-9]{64}$)");
         if (clusterId.empty() || clusterId.size() > 63 ||
             (deployment != "aarnn-web-ui" && deployment != "aarnn-fpv-workers") ||
             expectedImage.empty() || expectedImage.size() > 512 ||
             expectedImage.find_first_of(" \t\r\n") != std::string::npos ||
-            !std::regex_match(requestId, identifier) || !std::regex_match(changeId, identifier)) {
+            !std::regex_match(image, pinnedImage) || !std::regex_match(requestId, identifier) || !std::regex_match(changeId, identifier)) {
             Models::CloudResponse response;
             response.success = false;
             response.statusCode = 400;
@@ -786,7 +787,7 @@ namespace NMC::Core {
             return response;
         }
         nlohmann::json body = {{"cluster_id", clusterId}, {"deployment", deployment},
-            {"expected_image", expectedImage}, {"request_id", requestId}, {"change_id", changeId}};
+            {"expected_image", expectedImage}, {"image", image}, {"request_id", requestId}, {"change_id", changeId}};
         auto res = cli->Post("/k8s/aarnn/fpv-storage", body.dump(), "application/json");
         return processHttpResponse(res, "Continuum FPV storage reconciliation accepted.");
     }

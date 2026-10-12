@@ -489,10 +489,11 @@ int K8sConfigureOctoBotCommand::execute(
 K8sConfigureAarnnFpvCommand::K8sConfigureAarnnFpvCommand(
     std::shared_ptr<NMC::Core::CloudAPIClient> client)
     : BaseCommand("configure-aarnn-fpv", "Repair FPV job storage inside the shared AARNN PVC through Continuum", std::move(client)) {
-    usage = "nmc k8s configure-aarnn-fpv --cluster-id ID --deployment NAME --expected-image REF --request-id ID --change-id ID";
+    usage = "nmc k8s configure-aarnn-fpv --cluster-id ID --deployment NAME --expected-image REF --image RUNNING_DIGEST --request-id ID --change-id ID";
     addFlag(CLI::Flag("c", "cluster-id", "Active Continuum Kubernetes context", CLI::FlagType::String, true));
     addFlag(CLI::Flag("d", "deployment", "aarnn-web-ui or aarnn-fpv-workers", CLI::FlagType::String, true));
     addFlag(CLI::Flag("e", "expected-image", "Freshly observed container image", CLI::FlagType::String, true));
+    addFlag(CLI::Flag("i", "image", "Immutable digest currently running in every target Pod", CLI::FlagType::String, true));
     addFlag(CLI::Flag("r", "request-id", "Stable idempotency identifier", CLI::FlagType::String, true));
     addFlag(CLI::Flag("", "change-id", "Reviewed configuration change identifier", CLI::FlagType::String, true));
 }
@@ -502,7 +503,7 @@ int K8sConfigureAarnnFpvCommand::execute(
     const std::vector<std::string>& parsedArgs, const CLI::GlobalFlags& globalFlags) {
     if (!validateArguments(parsedArgs) || !validateFlags(parsedFlags)) return 1;
     const auto response = apiClient->configureAarnnFpvStorage(parsedFlags.at("cluster-id"),
-        parsedFlags.at("deployment"), parsedFlags.at("expected-image"),
+        parsedFlags.at("deployment"), parsedFlags.at("expected-image"), parsedFlags.at("image"),
         parsedFlags.at("request-id"), parsedFlags.at("change-id"));
     printOutput(response, globalFlags);
     return response.success ? 0 : 1;
