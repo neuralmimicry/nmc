@@ -4603,6 +4603,8 @@ def test_workload_status_and_logs_use_bounded_raw_pod_lists_and_serialize(
         )
     finally:
         server.stop()
+        with backend._lock:
+            backend.k8s_pod_status_override = None
 
 
 def test_statefulset_status_uses_bounded_owned_pods_and_serialized_reads(backend: MockBackend) -> None:
