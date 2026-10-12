@@ -9,6 +9,7 @@ The current test suite focuses on:
 - command-to-route coverage drift
 - bounded Kubernetes Deployment Event diagnostics and read-only authorisation
 - adaptive loop contract drift
+- Tracey per-agent status identity and follower-proxy attribution regressions
 - Tracey network simulation and CLI simulation drift
 - recruited-node capacity contract drift
 - server guard, redaction, and route authorisation regressions
@@ -37,6 +38,9 @@ Current tests:
   - ensures Tracey CLI simulation flags, validation, and client query wiring remain aligned
 - `tracey_network_simulation_contract_test.py`
   - ensures Tracey network expansion payloads and dashboard simulation controls remain wired end to end
+- `tracey_status_identity_contract_test.py`
+  - ensures status polling requests the local snapshot past Tracey's follower proxy
+  - verifies missing or mismatched agent identities fail closed before telemetry is stored
 - `node_recruit_capacity_contract_test.py`
   - ensures recruited-node capacity and Tracey metadata remain represented in the node recruitment flow
 - `server_safety_contract_test.py`
