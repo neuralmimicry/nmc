@@ -3160,6 +3160,68 @@ def test_ipmi_diagnostics_and_actions(backend_base_url: str) -> None:
             and host_recovery_intent.get("host_recovery", {}).get("monitoring", {}).get("state") == "healthy",
             "the durable intent must retain the verified target, hosted-service and monitoring evidence",
         )
+
+        monitoring_outage_request = json.loads(json.dumps(host_recovery_request))
+        monitoring_outage_request["request_id"] = "ipmi-host-recovery-monitor-down-0001"
+        monitoring_outage_request["change_id"] = "IPMI-HOST-RECOVERY-MONITOR-DOWN-1"
+        monitoring_outage_preflight = monitoring_outage_request["preflight"]
+        monitoring_outage_preflight["monitoring_healthy"] = False
+        monitoring_outage_observed_at = int(time.time() * 1000)
+        monitoring_outage_preflight["observed_at_unix_ms"] = monitoring_outage_observed_at
+        monitoring_outage_evidence = monitoring_outage_preflight["host_recovery"]
+        monitoring_outage_evidence["target"]["observed_at_unix_ms"] = monitoring_outage_observed_at
+        for evidence_list in ("hosted_services", "dependencies"):
+            for observation in monitoring_outage_evidence[evidence_list]:
+                observation["observed_at_unix_ms"] = monitoring_outage_observed_at
+        monitoring_outage_evidence["monitoring"] = {
+            "state": "unavailable",
+            "observed_at_unix_ms": monitoring_outage_observed_at,
+            "source": "independent_monitoring_probe",
+            "reference": "test evidence: monitoring endpoints unavailable",
+        }
+        monitoring_unavailable_status, monitoring_unavailable_payload = request_json(
+            server.base_url,
+            "POST",
+            "/devices/controllers/actions",
+            token="continuum-control-token",
+            payload=monitoring_outage_request,
+        )
+        assert_status(monitoring_unavailable_status, 200,
+                      "host recovery with complete outage evidence and unavailable monitoring")
+        assert_true(monitoring_unavailable_payload.get("data", {}).get("verified") is True,
+                    "monitoring outage recovery must still verify the BMC power state")
+        monitoring_unavailable_calls = calls_path.read_text(encoding="utf-8").splitlines()
+        assert_true(sum("chassis power reset" in line for line in monitoring_unavailable_calls) == 3,
+                    "monitoring outage recovery must issue exactly one guarded warm restart")
+
+        inconsistent_monitoring_request = json.loads(json.dumps(monitoring_outage_request))
+        inconsistent_monitoring_request["request_id"] = "ipmi-host-recovery-monitor-flag-0001"
+        inconsistent_monitoring_request["change_id"] = "IPMI-HOST-RECOVERY-MONITOR-FLAG-1"
+        inconsistent_monitoring_request["preflight"]["monitoring_healthy"] = True
+        calls_before_inconsistent_monitoring = calls_path.read_text(encoding="utf-8").splitlines()
+        inconsistent_monitoring_status, inconsistent_monitoring_payload = request_json(
+            server.base_url,
+            "POST",
+            "/devices/controllers/actions",
+            token="continuum-control-token",
+            payload=inconsistent_monitoring_request,
+        )
+        assert_status(inconsistent_monitoring_status, 409, "inconsistent monitoring health assertion")
+        assert_true(inconsistent_monitoring_payload.get("error", {}).get("code") == "controller_preflight_blocked",
+                    "an unavailable monitoring observation must match monitoring_healthy=false")
+        assert_true(calls_path.read_text(encoding="utf-8").splitlines() == calls_before_inconsistent_monitoring,
+                    "inconsistent monitoring evidence must fail before BMC contact")
+
+        audit_records = [json.loads(line) for line in audit_path.read_text(encoding="utf-8").splitlines()]
+        monitoring_outage_intent = next(
+            record for record in audit_records
+            if record.get("request_id") == "ipmi-host-recovery-monitor-down-0001"
+            and record.get("phase") == "intent"
+        )
+        assert_true(
+            monitoring_outage_intent.get("host_recovery", {}).get("monitoring", {}).get("state") == "unavailable",
+            "the durable intent must distinguish an evidenced monitoring outage",
+        )
     finally:
         server.stop()
         mock_dir.cleanup()
