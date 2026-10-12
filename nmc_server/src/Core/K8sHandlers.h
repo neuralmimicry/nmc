@@ -87,6 +87,7 @@ namespace NMC {
             void handleGetWorkloadLogs(const httplib::Request& req, httplib::Response& res);
             void handleScaleRefiner(const httplib::Request& req, httplib::Response& res);
             void handleConfigureOctoBot(const httplib::Request& req, httplib::Response& res);
+            void handleConfigureAarnnFpvStorage(const httplib::Request& req, httplib::Response& res);
 
             // Vcluster management handlers
             void handleCreateVCluster(const httplib::Request& req, httplib::Response& res);

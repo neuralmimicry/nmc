@@ -12,6 +12,8 @@
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
+#include <memory>
+#include <cstdlib>
 
 namespace NMC::Server {
 namespace {
@@ -2072,6 +2074,145 @@ void K8sHandlers::handleRolloutDeploymentImage(const httplib::Request& req, http
       sendErrorResponse(res, 400, "Invalid JSON body.");
     } catch (const std::exception &) {
       sendErrorResponse(res, 500, "Deployment image rollout failed safely.");
+    }
+}
+
+void K8sHandlers::handleConfigureAarnnFpvStorage(const httplib::Request& req,
+                                               httplib::Response& res) {
+    std::lock_guard<std::recursive_mutex> apiClientLock(apiClientMutex);
+    if (!imageRolloutEnabled) return sendErrorResponse(res, 403, "AARNN FPV configuration requires the enabled Continuum rollout policy.");
+    if (!recoveryClientReady || !workloadLogsApiClient) return sendErrorResponse(res, 503, "Authenticated Kubernetes client is unavailable.");
+    if (req.body.size() > 8192) return sendErrorResponse(res, 413, "FPV configuration exceeds 8 KiB.");
+    try {
+        const auto body = nlohmann::json::parse(req.body);
+        if (!containsExactKeySet(body, {"cluster_id", "deployment", "expected_image", "request_id", "change_id"})) {
+            return sendErrorResponse(res, 400, "FPV configuration requires exactly the documented fields.");
+        }
+        for (const auto* key : {"cluster_id", "deployment", "expected_image", "request_id", "change_id"}) {
+            if (!body[key].is_string()) return sendErrorResponse(res, 400, "FPV configuration fields must be strings.");
+        }
+        const auto clusterId = body["cluster_id"].get<std::string>();
+        const auto name = body["deployment"].get<std::string>();
+        const auto expectedImage = body["expected_image"].get<std::string>();
+        const auto requestId = body["request_id"].get<std::string>();
+        const auto changeId = body["change_id"].get<std::string>();
+        if ((name != "aarnn-web-ui" && name != "aarnn-fpv-workers") ||
+            !validRequestId(requestId) || !validRequestId(changeId) || !printableValue(expectedImage, 512)) {
+            return sendErrorResponse(res, 400, "FPV configuration is restricted to the named AARNN workloads and bounded identifiers.");
+        }
+        if (clusterId.empty() || clusterId != activeRecoveryClusterId) return sendErrorResponse(res, 409, "Requested cluster is not the active Kubernetes context.");
+        std::lock_guard<std::mutex> rolloutLock(rolloutMutex);
+        std::lock_guard<std::recursive_mutex> clientLock(workloadLogsClientMutex);
+        char group[] = "apps", version[] = "v1", plural[] = "deployments";
+        std::unique_ptr<genericClient_t, decltype(&genericClient_free)> client(
+            genericClient_create(workloadLogsApiClient, group, version, plural), &genericClient_free);
+        if (!client) return sendErrorResponse(res, 503, "Kubernetes Deployment client is unavailable.");
+        const auto readDeployment = [&](const std::string& deploymentName) {
+            char ns[] = "aarnn";
+            std::unique_ptr<char, decltype(&free)> raw(Generic_readNamespacedResource(
+                client.get(), ns, const_cast<char*>(deploymentName.c_str())), &free);
+            if (!raw) throw std::runtime_error("Scoped AARNN Deployment could not be read.");
+            return nlohmann::json::parse(raw.get());
+        };
+        const auto parent = readDeployment("aarnn-web-ui");
+        if (parent.at("metadata").value("labels", nlohmann::json::object())
+            .value("neuralmimicry.ai/continuum-rollout", "") != "enabled") {
+            return sendErrorResponse(res, 403, "The owning AARNN web UI must explicitly enable Continuum rollout.");
+        }
+        auto deployment = name == "aarnn-web-ui" ? parent : readDeployment(name);
+        const auto containerName = name == "aarnn-web-ui" ? "web-ui" : "fpv-worker";
+        auto podTemplate = deployment.at("spec").at("template");
+        auto& podSpec = podTemplate.at("spec");
+        auto& containers = podSpec.at("containers");
+        nlohmann::json* selected = nullptr;
+        for (auto& container : containers) {
+            if (container.value("name", "") != containerName) continue;
+            if (selected) return sendErrorResponse(res, 409, "Container identity is ambiguous.");
+            selected = &container;
+        }
+        if (!selected || selected->value("image", "") != expectedImage) return sendErrorResponse(res, 409, "Expected image does not match the observed target; no configuration changed.");
+        // Both producers and consumers must use the same named persistent claim.
+        const auto claimFor = [](const nlohmann::json& spec) {
+            std::string claim;
+            for (const auto& volume : spec.at("volumes")) {
+                if (volume.value("name", "") != "web-ui-data") continue;
+                if (!claim.empty()) throw std::runtime_error("Duplicate shared volume.");
+                claim = volume.at("persistentVolumeClaim").at("claimName").get<std::string>();
+            }
+            if (claim.empty()) throw std::runtime_error("Shared persistent claim is missing.");
+            return claim;
+        };
+        if (claimFor(podSpec) != claimFor(parent.at("spec").at("template").at("spec"))) {
+            return sendErrorResponse(res, 409, "FPV workers do not share the owning web UI claim.");
+        }
+        std::string mountPath;
+        for (const auto& mount : selected->at("volumeMounts")) {
+            if (mount.value("name", "") != "web-ui-data") continue;
+            if (!mountPath.empty() || mount.value("readOnly", false) || mount.contains("subPath") || mount.contains("subPathExpr")) {
+                return sendErrorResponse(res, 409, "FPV storage needs one writable shared volume without a subPath.");
+            }
+            mountPath = mount.at("mountPath").get<std::string>();
+        }
+        static const std::regex safePath(R"(^/(?:[A-Za-z0-9_-]+/)*[A-Za-z0-9_-]+$)");
+        if (!std::regex_match(mountPath, safePath)) return sendErrorResponse(res, 409, "Shared mount path is absent or unsafe.");
+        const auto desiredRoot = mountPath + "/fpv-jobs";
+        auto& env = (*selected)["env"];
+        if (!env.is_array()) return sendErrorResponse(res, 409, "Container environment is not an explicit array.");
+        nlohmann::json* setting = nullptr;
+        for (auto& item : env) {
+            if (item.value("name", "") != "NM_FPV_JOB_ROOT") continue;
+            if (setting || item.contains("valueFrom") || !item.contains("value") || !item["value"].is_string()) {
+                return sendErrorResponse(res, 409, "FPV root must be one literal environment setting.");
+            }
+            setting = &item;
+        }
+        if (!setting) return sendErrorResponse(res, 409, "FPV root setting is missing.");
+        const bool changed = setting->at("value") != desiredRoot;
+        auto metadata = deployment.at("metadata");
+        auto annotations = metadata.value("annotations", nlohmann::json::object());
+        if (annotations.value("neuralmimicry.ai/fpv-storage-request-id", "") == requestId) {
+            if (changed || annotations.value("neuralmimicry.ai/fpv-storage-change-id", "") != changeId ||
+                annotations.value("neuralmimicry.ai/fpv-storage-expected-image", "") != expectedImage) {
+                return sendErrorResponse(res, 409, "Request id conflicts with a prior storage repair.");
+            }
+            Models::CloudResponse response;
+            response.success = true;
+            response.message = "FPV storage repair was already applied.";
+            response.data = {{"already_applied", true}, {"changed", false}, {"job_root", desiredRoot}, {"deployment", name}};
+            return sendJsonResponse(res, response);
+        }
+        const auto resourceVersion = metadata.value("resourceVersion", "");
+        if (resourceVersion.empty()) return sendErrorResponse(res, 409, "Deployment resourceVersion is unavailable.");
+        (*setting)["value"] = desiredRoot;
+        annotations["neuralmimicry.ai/fpv-storage-request-id"] = requestId;
+        annotations["neuralmimicry.ai/fpv-storage-change-id"] = changeId;
+        annotations["neuralmimicry.ai/fpv-storage-expected-image"] = expectedImage;
+        annotations["neuralmimicry.ai/fpv-storage-job-root"] = desiredRoot;
+        annotations["neuralmimicry.ai/fpv-storage-requested-at"] = utcTimestamp();
+        nlohmann::json patch = {{"metadata", {{"resourceVersion", resourceVersion}, {"annotations", annotations}}}};
+        if (changed) patch["spec"] = {{"template", podTemplate}};
+        char ns[] = "aarnn";
+        const auto encoded = patch.dump();
+        std::unique_ptr<char, decltype(&free)> raw(Generic_patchNamespacedResource(client.get(), ns,
+            const_cast<char*>(name.c_str()), const_cast<char*>(encoded.c_str()), nullptr, nullptr, nullptr, nullptr, nullptr), &free);
+        if (!raw) return sendErrorResponse(res, workloadLogsApiClient->response_code >= 400 ? workloadLogsApiClient->response_code : 502,
+            "Kubernetes rejected the conditional FPV storage repair.");
+        const auto patched = nlohmann::json::parse(raw.get());
+        Models::CloudResponse response;
+        response.success = true;
+        response.message = "FPV storage repaired; poll Deployment status before claiming application readiness.";
+        response.data = deploymentStatusData(patched);
+        response.data["deployment"] = name;
+        response.data["job_root"] = desiredRoot;
+        response.data["changed"] = changed;
+        response.data["already_applied"] = false;
+        response.data["request_id"] = requestId;
+        response.data["change_id"] = changeId;
+        sendJsonResponse(res, response);
+    } catch (const nlohmann::json::parse_error&) {
+        sendErrorResponse(res, 400, "Invalid FPV configuration JSON.");
+    } catch (const std::exception&) {
+        sendErrorResponse(res, 409, "FPV storage preconditions could not be verified; no further mutation was attempted.");
     }
 }
 

@@ -99,3 +99,13 @@ Ansible exposes the independent image mutation switch as
 `nmc_k8s_image_rollout_enabled`, also defaulting to `false`; enable it only
 after the target Deployment is labelled and the control token and active
 cluster context have been verified.
+
+## AARNN FPV storage configuration
+
+The authenticated `continuum:control` operation `POST /k8s/aarnn/fpv-storage`
+and CLI `nmc k8s configure-aarnn-fpv` reconcile only `NM_FPV_JOB_ROOT` inside
+an observed writable shared PVC. The owning UI must be opted into Continuum
+rollout, the rollout policy must be enabled, and expected-image/resourceVersion
+checks and recorded request/change identities preserve scope and idempotency.
+See [the FPV storage runbook](aarnn-fpv-storage-repair.md) for prerequisites,
+worker-first ordering, availability checks and full projection/render acceptance.

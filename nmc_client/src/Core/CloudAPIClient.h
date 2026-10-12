@@ -124,6 +124,9 @@ namespace NMC::Core {
                                                bool liveExecution,
                                                bool serviceIntegrationsEnabled);
         Models::CloudResponse getDeviceInventory();
+        Models::CloudResponse configureAarnnFpvStorage(const std::string& clusterId,
+            const std::string& deployment, const std::string& expectedImage,
+            const std::string& requestId, const std::string& changeId);
         Models::CloudResponse getDhcpObservations();
         Models::CloudResponse getHomeAssistantDevices();
         /** Reconcile allowlisted Home Assistant states against exact inventory device mappings. */
