@@ -77,6 +77,7 @@ namespace NMC {
             void handleGetDeploymentRecoveryStatus(const httplib::Request& req, httplib::Response& res);
             void handleRestartDeployment(const httplib::Request& req, httplib::Response& res);
             void handleGetDeploymentStatus(const httplib::Request& req, httplib::Response& res);
+            void handleGetStatefulSetStatus(const httplib::Request& req, httplib::Response& res);
             void handleRolloutDeploymentImage(const httplib::Request& req, httplib::Response& res);
             void handleResumeK8sCluster(const httplib::Request& req, httplib::Response& res);
             void handleSuspendK8sCluster(const httplib::Request& req, httplib::Response& res);

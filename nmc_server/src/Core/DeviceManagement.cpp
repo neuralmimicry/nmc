@@ -2162,8 +2162,15 @@ Json DeviceManagement::performControllerAction(const Inventory& inventory,
                 const std::string monitoringState = lower(stringField(monitoring, "state"));
                 const std::string monitoringSource = stringField(monitoring, "source");
                 const std::string monitoringReference = stringField(monitoring, "reference");
+                const bool monitoringFlagConsistent = monitoringState == "healthy"
+                        ? trueField(preflight, "monitoring_healthy")
+                        : monitoringState == "unavailable"
+                        && preflight.contains("monitoring_healthy")
+                        && preflight["monitoring_healthy"].is_boolean()
+                        && !preflight["monitoring_healthy"].get<bool>();
                 hostRecoveryEvidenceValid = observedDependencies.size() == expectedDependencies.size()
-                        && monitoringState == "healthy"
+                        && (monitoringState == "healthy" || monitoringState == "unavailable")
+                        && monitoringFlagConsistent
                         && freshEvidenceTimestamp(monitoring)
                         && safeEvidenceText(monitoringSource, 128)
                         && safeEvidenceText(monitoringReference, 512);
@@ -2206,7 +2213,7 @@ Json DeviceManagement::performControllerAction(const Inventory& inventory,
         || !trueField(preflight, "dependencies_healthy")
         || !trueField(preflight, "dependents_known")
         || !serviceHealthSatisfied
-        || !trueField(preflight, "monitoring_healthy")
+        || (!hostRecoveryMode && !trueField(preflight, "monitoring_healthy"))
         || expectedPowerState != requiredPowerState
         || expectedServices.empty() || suppliedServices != expectedServices
         || suppliedDependencies != expectedDependencies) {

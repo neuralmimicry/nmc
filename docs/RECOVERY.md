@@ -44,6 +44,15 @@ kubeconfig, and returns acceptance separately from rollout readiness.
 container images and the last rollout IDs through the same authenticated
 cluster context. Repeating the same request and intent is deduplicated.
 
+Stateful workloads use the read-only `GET /k8s/statefulset/status` route and
+`nmc k8s statefulset-status --cluster-id <id> --namespace <name> --statefulset
+<name>`. It reports the StatefulSet's observed generation, current/update
+revisions, desired/current/updated/ready replicas, and at most 64 Pods selected
+by the StatefulSet's validated `matchLabels` and verified by owner UID. Pod
+conditions and container state text are bounded; an incomplete or truncated
+Pod list cannot produce a healthy result. This is observation only: it does
+not restart or otherwise modify a StatefulSet.
+
 OctoBot's live-execution and optional-service policy is managed by the typed
 `POST /k8s/octobot/configuration` route and
 `nmc k8s configure-octobot`. It is separately disabled by default behind

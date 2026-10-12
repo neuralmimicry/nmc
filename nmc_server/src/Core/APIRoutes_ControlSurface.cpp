@@ -534,7 +534,8 @@ namespace NMC::Server {
                 || path == "/providers/compute/instances/action") {
                 return {"continuum", SERVICE_ACCESS_CONTROL};
             }
-            if (path == "/k8s/deployment/recovery-status") {
+            if (path == "/k8s/deployment/recovery-status"
+                    || path == "/k8s/statefulset/status") {
                 return {"continuum", SERVICE_ACCESS_OBSERVE};
             }
             if (path == "/k8s/node-resources" && method == "GET") {

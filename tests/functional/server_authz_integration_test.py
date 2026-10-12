@@ -206,6 +206,7 @@ class MockBackend:
         self.active_k8s_requests = 0
         self.max_concurrent_k8s_requests = 0
         self.k8s_pod_log_accept_headers: list[str] = []
+        self.k8s_pod_list_queries: list[dict[str, Any]] = []
         self.k8s_pod_status_override: dict[str, Any] | None = None
         self.home_assistant_status = 200
         self.home_assistant_states = [
@@ -286,6 +287,35 @@ class MockBackend:
                     "updatedReplicas": 1,
                     "readyReplicas": 1,
                     "availableReplicas": 1,
+                },
+            }
+        }
+        self.k8s_statefulsets: dict[str, dict[str, Any]] = {
+            "postgres/postgres": {
+                "apiVersion": "apps/v1",
+                "kind": "StatefulSet",
+                "metadata": {
+                    "name": "postgres",
+                    "namespace": "postgres",
+                    "uid": "test-postgres-uid",
+                    "resourceVersion": "19",
+                    "generation": 4,
+                },
+                "spec": {
+                    "replicas": 1,
+                    "selector": {"matchLabels": {"app.kubernetes.io/name": "postgres"}},
+                    "template": {
+                        "metadata": {"labels": {"app.kubernetes.io/name": "postgres"}},
+                        "spec": {"containers": [{"name": "postgres", "image": "postgres:16"}]},
+                    },
+                },
+                "status": {
+                    "observedGeneration": 4,
+                    "currentReplicas": 1,
+                    "updatedReplicas": 1,
+                    "readyReplicas": 1,
+                    "currentRevision": "postgres-revision-a",
+                    "updateRevision": "postgres-revision-a",
                 },
             }
         }
@@ -477,6 +507,23 @@ class MockBackend:
             self._send_json(handler, 405, {"message": "method not supported"})
             return
 
+        k8s_statefulset_match = re.fullmatch(
+            r"/apis/apps/v1/namespaces/([a-z0-9-]+)/statefulsets/([a-z0-9-]+)", path_only
+        )
+        if k8s_statefulset_match:
+            with self._track_k8s_request():
+                key = f"{k8s_statefulset_match.group(1)}/{k8s_statefulset_match.group(2)}"
+                with self._lock:
+                    statefulset = self.k8s_statefulsets.get(key)
+                    if statefulset is None:
+                        self._send_json(handler, 404, {"message": "statefulset not found"})
+                        return
+                    if handler.command == "GET":
+                        self._send_json(handler, 200, json.loads(json.dumps(statefulset)))
+                        return
+            self._send_json(handler, 405, {"message": "method not supported"})
+            return
+
         k8s_pod_list_match = re.fullmatch(r"/api/v1/namespaces/([a-z0-9-]+)/pods", path_only)
         if k8s_pod_list_match and handler.command == "GET":
             with self._track_k8s_request():
@@ -491,13 +538,24 @@ class MockBackend:
                     self._send_json(handler, 400, {"message": "bounded labelSelector and limit are required"})
                     return
                 with self._lock:
-                    deployment = self.k8s_deployments.get(f"{namespace}/{namespace}")
-                    if deployment is None:
+                    self.k8s_pod_list_queries.append({
+                        "namespace": namespace,
+                        "label_selector": label_selector,
+                        "limit": limit,
+                    })
+                with self._lock:
+                    workload = self.k8s_deployments.get(f"{namespace}/{namespace}")
+                    owner_kind = "Deployment"
+                    if workload is None:
+                        workload = self.k8s_statefulsets.get(f"{namespace}/{namespace}")
+                        owner_kind = "StatefulSet"
+                    if workload is None:
                         self._send_json(handler, 200, {"apiVersion": "v1", "kind": "PodList", "items": []})
                         return
-                    pod_spec = deployment.get("spec", {}).get("template", {}).get("spec", {})
+                    pod_spec = workload.get("spec", {}).get("template", {}).get("spec", {})
                     containers = pod_spec.get("containers", [])
-                    labels = deployment.get("spec", {}).get("template", {}).get("metadata", {}).get("labels", {})
+                    labels = workload.get("spec", {}).get("template", {}).get("metadata", {}).get("labels", {})
+                    owner_uid = workload.get("metadata", {}).get("uid", "")
                     pod_status_override = (
                         json.loads(json.dumps(self.k8s_pod_status_override))
                         if self.k8s_pod_status_override is not None
@@ -514,6 +572,7 @@ class MockBackend:
                             "namespace": namespace,
                             "labels": labels,
                             "uid": f"{namespace}-test-pod-uid",
+                            "ownerReferences": [{"kind": owner_kind, "uid": owner_uid, "controller": True}],
                         },
                         "spec": {
                             "nodeName": "qc01",
@@ -3101,6 +3160,68 @@ def test_ipmi_diagnostics_and_actions(backend_base_url: str) -> None:
             and host_recovery_intent.get("host_recovery", {}).get("monitoring", {}).get("state") == "healthy",
             "the durable intent must retain the verified target, hosted-service and monitoring evidence",
         )
+
+        monitoring_outage_request = json.loads(json.dumps(host_recovery_request))
+        monitoring_outage_request["request_id"] = "ipmi-host-recovery-monitor-down-0001"
+        monitoring_outage_request["change_id"] = "IPMI-HOST-RECOVERY-MONITOR-DOWN-1"
+        monitoring_outage_preflight = monitoring_outage_request["preflight"]
+        monitoring_outage_preflight["monitoring_healthy"] = False
+        monitoring_outage_observed_at = int(time.time() * 1000)
+        monitoring_outage_preflight["observed_at_unix_ms"] = monitoring_outage_observed_at
+        monitoring_outage_evidence = monitoring_outage_preflight["host_recovery"]
+        monitoring_outage_evidence["target"]["observed_at_unix_ms"] = monitoring_outage_observed_at
+        for evidence_list in ("hosted_services", "dependencies"):
+            for observation in monitoring_outage_evidence[evidence_list]:
+                observation["observed_at_unix_ms"] = monitoring_outage_observed_at
+        monitoring_outage_evidence["monitoring"] = {
+            "state": "unavailable",
+            "observed_at_unix_ms": monitoring_outage_observed_at,
+            "source": "independent_monitoring_probe",
+            "reference": "test evidence: monitoring endpoints unavailable",
+        }
+        monitoring_unavailable_status, monitoring_unavailable_payload = request_json(
+            server.base_url,
+            "POST",
+            "/devices/controllers/actions",
+            token="continuum-control-token",
+            payload=monitoring_outage_request,
+        )
+        assert_status(monitoring_unavailable_status, 200,
+                      "host recovery with complete outage evidence and unavailable monitoring")
+        assert_true(monitoring_unavailable_payload.get("data", {}).get("verified") is True,
+                    "monitoring outage recovery must still verify the BMC power state")
+        monitoring_unavailable_calls = calls_path.read_text(encoding="utf-8").splitlines()
+        assert_true(sum("chassis power reset" in line for line in monitoring_unavailable_calls) == 3,
+                    "monitoring outage recovery must issue exactly one guarded warm restart")
+
+        inconsistent_monitoring_request = json.loads(json.dumps(monitoring_outage_request))
+        inconsistent_monitoring_request["request_id"] = "ipmi-host-recovery-monitor-flag-0001"
+        inconsistent_monitoring_request["change_id"] = "IPMI-HOST-RECOVERY-MONITOR-FLAG-1"
+        inconsistent_monitoring_request["preflight"]["monitoring_healthy"] = True
+        calls_before_inconsistent_monitoring = calls_path.read_text(encoding="utf-8").splitlines()
+        inconsistent_monitoring_status, inconsistent_monitoring_payload = request_json(
+            server.base_url,
+            "POST",
+            "/devices/controllers/actions",
+            token="continuum-control-token",
+            payload=inconsistent_monitoring_request,
+        )
+        assert_status(inconsistent_monitoring_status, 409, "inconsistent monitoring health assertion")
+        assert_true(inconsistent_monitoring_payload.get("error", {}).get("code") == "controller_preflight_blocked",
+                    "an unavailable monitoring observation must match monitoring_healthy=false")
+        assert_true(calls_path.read_text(encoding="utf-8").splitlines() == calls_before_inconsistent_monitoring,
+                    "inconsistent monitoring evidence must fail before BMC contact")
+
+        audit_records = [json.loads(line) for line in audit_path.read_text(encoding="utf-8").splitlines()]
+        monitoring_outage_intent = next(
+            record for record in audit_records
+            if record.get("request_id") == "ipmi-host-recovery-monitor-down-0001"
+            and record.get("phase") == "intent"
+        )
+        assert_true(
+            monitoring_outage_intent.get("host_recovery", {}).get("monitoring", {}).get("state") == "unavailable",
+            "the durable intent must distinguish an evidenced monitoring outage",
+        )
     finally:
         server.stop()
         mock_dir.cleanup()
@@ -4544,6 +4665,83 @@ def test_workload_status_and_logs_use_bounded_raw_pod_lists_and_serialize(
         )
     finally:
         server.stop()
+        with backend._lock:
+            backend.k8s_pod_status_override = None
+
+
+def test_statefulset_status_uses_bounded_owned_pods_and_serialized_reads(backend: MockBackend) -> None:
+    statefulset_path = "/apis/apps/v1/namespaces/postgres/statefulsets/postgres"
+    pod_list_path = "/api/v1/namespaces/postgres/pods"
+    statefulset_reads_before = backend.count_requests(statefulset_path, "GET")
+    pod_lists_before = backend.count_requests(pod_list_path, "GET")
+    query_count_before = len(backend.k8s_pod_list_queries)
+    server = NmcServerProcess(
+        backend.base_url,
+        cluster_id="authz-test-cluster",
+        k8s_server_url=backend.base_url,
+    )
+    with backend._lock:
+        backend.active_k8s_requests = 0
+        backend.max_concurrent_k8s_requests = 0
+    try:
+        server.start()
+        path = (
+            "/k8s/statefulset/status?cluster_id=authz-test-cluster"
+            "&namespace=postgres&statefulset=postgres"
+        )
+        with ThreadPoolExecutor(max_workers=12) as pool:
+            responses = list(
+                pool.map(
+                    lambda _: request_json(
+                        server.base_url,
+                        "GET",
+                        path,
+                        token="continuum-observe-token",
+                    ),
+                    range(12),
+                )
+            )
+
+        assert all(status == 200 and payload.get("success") is True
+                   for status, payload in responses), (
+            "Continuum observe access must return StatefulSet status: "
+            + repr([status for status, _ in responses])
+        )
+        data = [payload.get("data", {}) for _, payload in responses]
+        for field, expected in (
+            ("kind", "StatefulSet"),
+            ("cluster_id", "authz-test-cluster"),
+            ("healthy", True),
+            ("desired_replicas", 1),
+            ("ready_replicas", 1),
+            ("current_revision", "postgres-revision-a"),
+        ):
+            actual = [item.get(field) for item in data]
+            assert all(value == expected for value in actual), (
+                f"StatefulSet status field {field!r} must be {expected!r}; "
+                f"observed {actual!r} in {data[0]!r}"
+            )
+        assert all(item.get("pod_diagnostics_available") is True
+                   and item.get("pod_diagnostics_truncated") is False
+                   and item.get("pods", [{}])[0].get("node") == "qc01"
+                   and item.get("pods", [{}])[0].get("ready") is True
+                   and item.get("pods", [{}])[0].get("containers", [{}])[0].get("ready") is True
+                   for item in data), "pod detail must be limited to the target StatefulSet's owned, selected Pods"
+        assert backend.count_requests(statefulset_path, "GET") - statefulset_reads_before == 12
+        assert backend.count_requests(pod_list_path, "GET") - pod_lists_before == 12
+        with backend._lock:
+            queries = list(backend.k8s_pod_list_queries[query_count_before:])
+        assert len(queries) == 12 and all(
+            item.get("namespace") == "postgres"
+            and item.get("label_selector") == "app.kubernetes.io/name=postgres"
+            and item.get("limit") == 64
+            for item in queries
+        ), "StatefulSet pod inspection must use its validated selector and the fixed 64-Pod bound"
+        assert backend.max_concurrent_k8s_requests == 1, (
+            "StatefulSet status must serialize generated Kubernetes C client reads"
+        )
+    finally:
+        server.stop()
 
 
 def main() -> int:
@@ -4687,6 +4885,7 @@ fi
         test_octobot_configuration_requires_control_scope_and_explicit_policy(backend.base_url)
         test_octobot_configuration_is_allowlisted_conditional_and_idempotent(backend.base_url, backend)
         test_workload_status_and_logs_use_bounded_raw_pod_lists_and_serialize(backend)
+        test_statefulset_status_uses_bounded_owned_pods_and_serialized_reads(backend)
     except AssertionError as exc:
         log_output = server.log_path.read_text(encoding="utf-8", errors="replace") if server.log_path.exists() else ""
         print(f"[server-authz-test] FAILED: {exc}", file=sys.stderr)

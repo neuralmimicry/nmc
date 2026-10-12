@@ -98,6 +98,15 @@ public:
                 const CLI::GlobalFlags& globalFlags) override;
 };
 
+/** Read bounded StatefulSet replica readiness and selected Pod placement through Continuum. */
+class K8sStatefulSetStatusCommand : public BaseCommand {
+public:
+    explicit K8sStatefulSetStatusCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client);
+    int execute(const std::map<std::string, std::string>& parsedFlags,
+                const std::vector<std::string>& parsedArgs,
+                const CLI::GlobalFlags& globalFlags) override;
+};
+
 /** Request a compare-and-swap rollout to an immutable NeuralMimicry GHCR digest. */
 class K8sRolloutImageCommand : public BaseCommand {
 public:
