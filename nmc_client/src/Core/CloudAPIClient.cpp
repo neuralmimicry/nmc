@@ -627,6 +627,35 @@ namespace NMC::Core {
         return processHttpResponse(res, "Continuum Deployment Events retrieved.");
     }
 
+    Models::CloudResponse CloudAPIClient::getK8sStatefulSetStatus(
+            const std::string& clusterId,
+            const std::string& namespaceName,
+            const std::string& statefulSetName
+    ) {
+        const auto safeLabel = [](const std::string& value) {
+            return !value.empty() && value.size() <= 63
+                    && value.front() != '-' && value.back() != '-'
+                    && std::all_of(value.begin(), value.end(), [](unsigned char ch) {
+                        return (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '-';
+                    });
+        };
+        if (!safeLabel(clusterId) || !safeLabel(namespaceName) || !safeLabel(statefulSetName)) {
+            Models::CloudResponse response;
+            response.success = false;
+            response.message = "cluster_id, namespace and StatefulSet must be valid Kubernetes DNS labels.";
+            response.statusCode = 400;
+            return response;
+        }
+        std::string path = "/k8s/statefulset/status";
+        appendQueryString(path, "cluster_id", encodeQueryValue(clusterId));
+        appendQueryString(path, "namespace", encodeQueryValue(namespaceName));
+        appendQueryString(path, "statefulset", encodeQueryValue(statefulSetName));
+        auto res = cli->Get(path);
+        auto apiResponse = processHttpResponse(res, "Continuum StatefulSet status retrieved.");
+        unwrapStandardEnvelopeResponse(apiResponse);
+        return apiResponse;
+    }
+
     Models::CloudResponse CloudAPIClient::rolloutK8sDeploymentImage(
             const std::string& clusterId,
             const std::string& namespaceName,

@@ -100,6 +100,10 @@ namespace NMC::Core {
                                                       const std::string& namespaceName,
                                                       const std::string& deploymentName,
                                                       int maxEvents = 20);
+        /** Read bounded StatefulSet readiness and its selected Pods through Continuum. */
+        Models::CloudResponse getK8sStatefulSetStatus(const std::string& clusterId,
+                                                      const std::string& namespaceName,
+                                                      const std::string& statefulSetName);
         /** Request one compare-and-swap rollout to an immutable NeuralMimicry GHCR image digest. */
         Models::CloudResponse rolloutK8sDeploymentImage(const std::string& clusterId,
                                                         const std::string& namespaceName,

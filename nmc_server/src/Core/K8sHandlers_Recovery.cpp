@@ -16,6 +16,17 @@
 namespace NMC::Server {
 namespace {
 
+std::string trimCopy(const std::string& value) {
+    const auto first = std::find_if_not(value.begin(), value.end(), [](unsigned char ch) {
+        return std::isspace(ch) != 0;
+    });
+    const auto last = std::find_if_not(value.rbegin(), value.rend(), [](unsigned char ch) {
+        return std::isspace(ch) != 0;
+    }).base();
+    if (first >= last) return {};
+    return std::string(first, last);
+}
+
 bool validDnsLabel(const std::string& value) {
     static const std::regex pattern(R"(^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$)");
     return value.size() <= 63 && std::regex_match(value, pattern);
@@ -601,6 +612,193 @@ bool nodeHealthy(const nlohmann::json& node, nlohmann::json& reasons) {
         }
     }
     return ready && reasons.empty();
+}
+
+nlohmann::json statefulSetStatusData(const nlohmann::json& statefulSet,
+                                    const nlohmann::json* podList) {
+    const auto metadataValue = statefulSet.value("metadata", nlohmann::json::object());
+    const auto metadata = metadataValue.is_object() ? metadataValue : nlohmann::json::object();
+    const auto specValue = statefulSet.value("spec", nlohmann::json::object());
+    const auto spec = specValue.is_object() ? specValue : nlohmann::json::object();
+    const auto statusValue = statefulSet.value("status", nlohmann::json::object());
+    const auto status = statusValue.is_object() ? statusValue : nlohmann::json::object();
+    const std::string statefulSetUid = metadata.value("uid", "");
+    const int64_t generation = metadata.value("generation", int64_t{0});
+    const int64_t observedGeneration = status.value("observedGeneration", int64_t{0});
+    const int desiredReplicas = std::max(0, spec.value("replicas", 1));
+    bool resourceVersionTruncated = false;
+    bool currentRevisionTruncated = false;
+    bool updateRevisionTruncated = false;
+    const std::string resourceVersion = boundedTextValue(metadata, "resourceVersion", 128, resourceVersionTruncated);
+    const std::string currentRevision = boundedTextValue(status, "currentRevision", 128, currentRevisionTruncated);
+    const std::string updateRevision = boundedTextValue(status, "updateRevision", 128, updateRevisionTruncated);
+
+    bool podListComplete = podList && podList->is_object()
+            && podList->contains("items") && podList->at("items").is_array();
+    bool podDiagnosticsTruncated = false;
+    if (podListComplete) {
+        const auto listMetadata = podList->value("metadata", nlohmann::json::object());
+        if (!listMetadata.is_object()) {
+            podListComplete = false;
+        } else if (!listMetadata.value("continue", "").empty()) {
+            podListComplete = false;
+            podDiagnosticsTruncated = true;
+        }
+    }
+
+    nlohmann::json pods = nlohmann::json::array();
+    int readyPods = 0;
+    if (podListComplete) {
+        constexpr size_t maxDiagnosticPods = 64;
+        constexpr size_t maxDiagnosticConditionsPerPod = 16;
+        constexpr size_t maxDiagnosticContainerStatuses = 128;
+        size_t containerStatusCount = 0;
+        for (const auto& pod : podList->at("items")) {
+            if (!pod.is_object()) {
+                podListComplete = false;
+                break;
+            }
+            const auto podMetadataValue = pod.value("metadata", nlohmann::json::object());
+            const auto podMetadata = podMetadataValue.is_object()
+                    ? podMetadataValue : nlohmann::json::object();
+            const auto deletionTimestamp = podMetadata.value("deletionTimestamp", nlohmann::json());
+            if (deletionTimestamp.is_string() && !deletionTimestamp.get<std::string>().empty()) continue;
+
+            bool ownedByTarget = false;
+            const auto owners = podMetadata.value("ownerReferences", nlohmann::json::array());
+            if (owners.is_array() && !statefulSetUid.empty()) {
+                for (const auto& owner : owners) {
+                    if (owner.is_object() && owner.value("kind", "") == "StatefulSet"
+                            && owner.value("uid", "") == statefulSetUid
+                            && owner.value("controller", false)) {
+                        ownedByTarget = true;
+                        break;
+                    }
+                }
+            }
+            if (!ownedByTarget) continue;
+            if (pods.size() >= maxDiagnosticPods) {
+                podDiagnosticsTruncated = true;
+                podListComplete = false;
+                break;
+            }
+
+            const auto podStatusValue = pod.value("status", nlohmann::json::object());
+            const auto podSpecValue = pod.value("spec", nlohmann::json::object());
+            const auto podStatus = podStatusValue.is_object()
+                    ? podStatusValue : nlohmann::json::object();
+            const auto podSpec = podSpecValue.is_object()
+                    ? podSpecValue : nlohmann::json::object();
+            const bool ready = podReady(pod);
+            if (ready) ++readyPods;
+
+            nlohmann::json summary = nlohmann::json::object();
+            addBoundedText(summary, podMetadata, "name", 63);
+            addBoundedText(summary, podSpec, "nodeName", 253, "node");
+            addBoundedText(summary, podStatus, "phase", 32);
+            if (summary.value("phase", std::string{}).empty()) summary["phase"] = "Unknown";
+            addBoundedText(summary, podStatus, "reason", 128);
+            addBoundedText(summary, podStatus, "message", 512);
+            summary["ready"] = ready;
+
+            nlohmann::json conditions = nlohmann::json::array();
+            const auto conditionList = podStatus.value("conditions", nlohmann::json::array());
+            if (conditionList.is_array()) {
+                for (const auto& condition : conditionList) {
+                    if (!condition.is_object()) continue;
+                    if (conditions.size() >= maxDiagnosticConditionsPerPod) {
+                        podDiagnosticsTruncated = true;
+                        break;
+                    }
+                    nlohmann::json conditionSummary = nlohmann::json::object();
+                    addBoundedText(conditionSummary, condition, "type", 64);
+                    addBoundedText(conditionSummary, condition, "status", 16);
+                    addBoundedText(conditionSummary, condition, "reason", 128);
+                    addBoundedText(conditionSummary, condition, "message", 512);
+                    addBoundedText(conditionSummary, condition, "lastTransitionTime", 64);
+                    conditions.push_back(std::move(conditionSummary));
+                }
+                if (conditionList.size() > maxDiagnosticConditionsPerPod) {
+                    podDiagnosticsTruncated = true;
+                }
+            }
+            summary["conditions"] = std::move(conditions);
+
+            const auto summariseContainerStatuses = [&](const char* fieldName) {
+                nlohmann::json summaries = nlohmann::json::array();
+                const auto statuses = podStatus.value(fieldName, nlohmann::json::array());
+                if (!statuses.is_array()) return summaries;
+                for (const auto& containerStatus : statuses) {
+                    if (!containerStatus.is_object()) continue;
+                    if (containerStatusCount >= maxDiagnosticContainerStatuses) {
+                        podDiagnosticsTruncated = true;
+                        break;
+                    }
+                    ++containerStatusCount;
+                    nlohmann::json containerSummary = nlohmann::json::object();
+                    addBoundedText(containerSummary, containerStatus, "name", 63);
+                    containerSummary["ready"] = containerStatus.value("ready", false);
+                    const auto restartCount = containerStatus.find("restartCount");
+                    containerSummary["restart_count"] = restartCount != containerStatus.end()
+                            && restartCount->is_number_integer()
+                            ? std::max<int64_t>(0, restartCount->get<int64_t>()) : 0;
+                    const auto stateValue = containerStatus.value("state", nlohmann::json::object());
+                    if (stateValue.is_object()) {
+                        for (const char* stateName : {"waiting", "running", "terminated"}) {
+                            const auto stateDetail = stateValue.find(stateName);
+                            if (stateDetail == stateValue.end() || !stateDetail->is_object()) continue;
+                            containerSummary["state"] = stateName;
+                            if (std::string(stateName) == "waiting" || std::string(stateName) == "terminated") {
+                                addBoundedText(containerSummary, *stateDetail, "reason", 128);
+                                addBoundedText(containerSummary, *stateDetail, "message", 512);
+                            }
+                            if (std::string(stateName) == "running") {
+                                addBoundedText(containerSummary, *stateDetail, "startedAt", 64);
+                            }
+                            break;
+                        }
+                    }
+                    summaries.push_back(std::move(containerSummary));
+                }
+                return summaries;
+            };
+            summary["containers"] = summariseContainerStatuses("containerStatuses");
+            summary["init_containers"] = summariseContainerStatuses("initContainerStatuses");
+            pods.push_back(std::move(summary));
+        }
+    }
+
+    const int readyReplicas = std::max(0, status.value("readyReplicas", 0));
+    const int currentReplicas = std::max(0, status.value("currentReplicas", 0));
+    const int updatedReplicas = std::max(0, status.value("updatedReplicas", 0));
+    const bool statusObserved = generation > 0 && observedGeneration >= generation;
+    const bool healthy = podListComplete && desiredReplicas > 0 && statusObserved
+            && readyReplicas >= desiredReplicas && currentReplicas >= desiredReplicas
+            && updatedReplicas >= desiredReplicas && readyPods >= desiredReplicas;
+
+    return {
+            {"kind", "StatefulSet"},
+            {"namespace", metadata.value("namespace", "")},
+            {"statefulset", metadata.value("name", "")},
+            {"uid", statefulSetUid},
+            {"resource_version", resourceVersion},
+            {"resource_version_truncated", resourceVersionTruncated},
+            {"generation", generation},
+            {"observed_generation", observedGeneration},
+            {"status_observed", statusObserved},
+            {"desired_replicas", desiredReplicas},
+            {"current_replicas", currentReplicas},
+            {"updated_replicas", updatedReplicas},
+            {"ready_replicas", readyReplicas},
+            {"current_revision", currentRevision},
+            {"current_revision_truncated", currentRevisionTruncated},
+            {"update_revision", updateRevision},
+            {"update_revision_truncated", updateRevisionTruncated},
+            {"healthy", healthy},
+            {"pod_diagnostics_available", podListComplete},
+            {"pod_diagnostics_truncated", podDiagnosticsTruncated},
+            {"pods", std::move(pods)}
+    };
 }
 
 } // namespace
@@ -1476,6 +1674,96 @@ void K8sHandlers::handleGetDeploymentEvents(const httplib::Request& req, httplib
     } catch (const std::exception &) {
         sendErrorResponse(res, 500, "Deployment Event diagnostics failed safely.");
     }
+}
+
+void K8sHandlers::handleGetStatefulSetStatus(const httplib::Request& req, httplib::Response& res) {
+    std::lock_guard<std::recursive_mutex> apiClientLock(apiClientMutex);
+    const std::string clusterId = req.get_param_value("cluster_id");
+    const std::string namespaceName = req.get_param_value("namespace");
+    const std::string statefulSetName = req.get_param_value("statefulset");
+    if (!validDnsLabel(clusterId) || !validDnsLabel(namespaceName) || !validDnsLabel(statefulSetName)) {
+        return sendErrorResponse(res, 400, "cluster_id, namespace and StatefulSet must be valid Kubernetes DNS labels.");
+    }
+    if (activeRecoveryClusterId.empty() || clusterId != activeRecoveryClusterId) {
+        return sendErrorResponse(res, 409, "Requested cluster does not match Continuum's active Kubernetes context.");
+    }
+    if (!recoveryClientReady || !workloadLogsApiClient) {
+        return sendErrorResponse(res, 503, "StatefulSet status requires the configured authenticated kubeconfig.");
+    }
+
+    std::lock_guard<std::recursive_mutex> clientLock(workloadLogsClientMutex);
+    char group[] = "apps";
+    char version[] = "v1";
+    char plural[] = "statefulsets";
+    genericClient_t* statefulSetClient = genericClient_create(
+            workloadLogsApiClient,
+            group,
+            version,
+            plural
+    );
+    if (!statefulSetClient) {
+        return sendErrorResponse(res, 503, "Continuum could not initialise its Kubernetes StatefulSet reader.");
+    }
+    char* rawStatefulSet = Generic_readNamespacedResource(
+            statefulSetClient,
+            const_cast<char*>(namespaceName.c_str()),
+            const_cast<char*>(statefulSetName.c_str())
+    );
+    const int readStatus = workloadLogsApiClient->response_code;
+    genericClient_free(statefulSetClient);
+    if (!rawStatefulSet) {
+        return sendErrorResponse(res, readStatus == 404 ? 404 : 502,
+                readStatus == 404 ? "StatefulSet was not found in the requested namespace."
+                                  : "Continuum could not read StatefulSet status from Kubernetes.");
+    }
+
+    const std::string responseBody(rawStatefulSet);
+    free(rawStatefulSet);
+    if (responseBody.size() > 2 * 1024 * 1024) {
+        return sendErrorResponse(res, 502, "Kubernetes returned oversized StatefulSet status JSON.");
+    }
+
+    nlohmann::json statefulSet;
+    try {
+        statefulSet = nlohmann::json::parse(responseBody);
+    } catch (const std::exception&) {
+        return sendErrorResponse(res, 502, "Kubernetes returned invalid StatefulSet status JSON.");
+    }
+    try {
+        if (!statefulSet.is_object() || statefulSet.value("kind", "") != "StatefulSet") {
+            return sendErrorResponse(res, 502, "Kubernetes returned an invalid StatefulSet object.");
+        }
+        const auto metadata = statefulSet.value("metadata", nlohmann::json::object());
+        if (!metadata.is_object() || metadata.value("name", "") != statefulSetName
+                || metadata.value("namespace", "") != namespaceName) {
+            return sendErrorResponse(res, 502, "Kubernetes returned a StatefulSet with mismatched identity.");
+        }
+        const auto uid = metadata.value("uid", std::string{});
+        const auto resourceVersion = metadata.value("resourceVersion", std::string{});
+        if (uid.empty() || uid.size() > 128 || resourceVersion.empty() || resourceVersion.size() > 128) {
+            return sendErrorResponse(res, 502, "Kubernetes returned a StatefulSet without bounded live identity.");
+        }
+    } catch (const std::exception&) {
+        return sendErrorResponse(res, 502, "Kubernetes returned malformed StatefulSet identity data.");
+    }
+
+    Models::CloudResponse response;
+    response.success = true;
+    response.message = "Continuum StatefulSet status retrieved.";
+    try {
+        std::optional<nlohmann::json> podList;
+        const auto labelSelector = deploymentLabelSelector(statefulSet);
+        if (labelSelector) {
+            constexpr int maxStatusPods = 64;
+            long podListStatus = 0;
+            podList = listWorkloadPods(namespaceName, *labelSelector, maxStatusPods, podListStatus);
+        }
+        response.data = statefulSetStatusData(statefulSet, podList ? &*podList : nullptr);
+    } catch (const std::exception&) {
+        return sendErrorResponse(res, 502, "Kubernetes returned malformed StatefulSet readiness data.");
+    }
+    response.data["cluster_id"] = clusterId;
+    sendJsonResponse(res, response);
 }
 
 void K8sHandlers::handleRolloutDeploymentImage(const httplib::Request& req, httplib::Response& res) {

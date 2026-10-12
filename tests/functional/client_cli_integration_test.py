@@ -233,6 +233,18 @@ class MockServer:
             )
             return
 
+        if handler.command == "GET" and path_only == "/k8s/statefulset/status":
+            self._send_json(
+                handler,
+                200,
+                {
+                    "success": True,
+                    "message": "Continuum StatefulSet status retrieved.",
+                    "data": {"kind": "StatefulSet", "cluster_id": "rk1", "healthy": True},
+                },
+            )
+            return
+
         if handler.command == "GET" and path_only == "/k8s/workload/logs":
             self._send_json(
                 handler,
@@ -1065,6 +1077,30 @@ def test_k8s_deployment_events_reject_out_of_bounds_before_network(
     )
     assert_failure(result, "non-integer Deployment Events limit")
     assert_true(len(server.records()) == 0, "invalid Deployment Events limits must fail before network access")
+
+
+def test_k8s_statefulset_status_uses_continuum_read_route(server: MockServer, home_dir: pathlib.Path) -> None:
+    server.clear_records()
+    result = run_nmc(
+        [
+            "--output", "json",
+            "k8s", "statefulset-status",
+            "--cluster-id", "rk1",
+            "--namespace", "postgres",
+            "--statefulset", "postgres",
+        ],
+        home_dir,
+    )
+    assert_success(result, "k8s StatefulSet status")
+    output = json.loads(result.stdout)
+    assert_true(output.get("success") is True, "StatefulSet status must emit a successful JSON envelope")
+    assert_true(output.get("data", {}).get("kind") == "StatefulSet", "the response must identify its Kubernetes resource kind")
+    records = server.records()
+    assert_true(len(records) == 1 and records[0].method == "GET", "StatefulSet status must use one read-only request")
+    assert_true(
+        records[0].path == "/k8s/statefulset/status?cluster_id=rk1&namespace=postgres&statefulset=postgres",
+        f"StatefulSet status query was not serialised as expected: {records[0].path}",
+    )
 
 
 def test_k8s_image_rollout_uses_exact_digest_and_compare_and_swap_request(server: MockServer, home_dir: pathlib.Path) -> None:
@@ -2213,6 +2249,7 @@ def main() -> int:
             test_k8s_deployment_status_uses_continuum_read_route(server, home_dir)
             test_k8s_deployment_events_use_bounded_continuum_read_route(server, home_dir)
             test_k8s_deployment_events_reject_out_of_bounds_before_network(server, home_dir)
+            test_k8s_statefulset_status_uses_continuum_read_route(server, home_dir)
             test_k8s_image_rollout_uses_exact_digest_and_compare_and_swap_request(server, home_dir)
             test_k8s_configure_octobot_serializes_explicit_policy(server, home_dir)
             test_k8s_configure_octobot_rejects_implicit_or_invalid_policy_before_network(server, home_dir)
