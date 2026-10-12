@@ -313,6 +313,28 @@ int K8sDeploymentStatusCommand::execute(
     return response.success ? 0 : 1;
 }
 
+K8sStatefulSetStatusCommand::K8sStatefulSetStatusCommand(
+        std::shared_ptr<NMC::Core::CloudAPIClient> client
+) : BaseCommand("statefulset-status", "Read bounded Kubernetes StatefulSet readiness through Continuum", std::move(client)) {
+    usage = "nmc k8s statefulset-status --cluster-id ID --namespace NAME --statefulset NAME";
+    examples = "nmc k8s statefulset-status --cluster-id rk1 --namespace postgres --statefulset postgres";
+    addFlag(CLI::Flag("c", "cluster-id", "Stable identity of the Continuum Kubernetes context", CLI::FlagType::String, true));
+    addFlag(CLI::Flag("n", "namespace", "Workload namespace", CLI::FlagType::String, true));
+    addFlag(CLI::Flag("s", "statefulset", "StatefulSet name", CLI::FlagType::String, true));
+}
+
+int K8sStatefulSetStatusCommand::execute(
+        const std::map<std::string, std::string>& parsedFlags,
+        const std::vector<std::string>& parsedArgs,
+        const CLI::GlobalFlags& globalFlags
+) {
+    if (!validateArguments(parsedArgs) || !validateFlags(parsedFlags)) return 1;
+    const auto response = apiClient->getK8sStatefulSetStatus(
+            parsedFlags.at("cluster-id"), parsedFlags.at("namespace"), parsedFlags.at("statefulset"));
+    printOutput(response, globalFlags);
+    return response.success ? 0 : 1;
+}
+
 K8sRolloutImageCommand::K8sRolloutImageCommand(
         std::shared_ptr<NMC::Core::CloudAPIClient> client
 ) : BaseCommand("rollout-image", "Request a digest-pinned Deployment image rollout through Continuum", std::move(client)) {
