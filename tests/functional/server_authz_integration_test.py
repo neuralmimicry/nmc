@@ -1336,6 +1336,122 @@ class NmcServerProcess:
         self._tmp_dir.cleanup()
 
 
+class K8sRecoveryAPIMock:
+    """Minimal authenticated kube API fixture for the recovery heartbeat gate."""
+
+    def __init__(self) -> None:
+        self._lease_age_seconds = 0
+        self._lock = threading.Lock()
+        owner = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+                path = urlsplit(self.path).path
+                payload = owner._response_for(path)
+                if payload is None:
+                    self.send_response(404)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(b'{"message":"not found"}')
+                    return
+                body = json.dumps(payload).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, fmt: str, *args: Any) -> None:
+                return
+
+        self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self._server.daemon_threads = True
+        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+
+    @property
+    def base_url(self) -> str:
+        host, port = self._server.server_address
+        return f"http://{host}:{port}"
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._server.shutdown()
+        self._server.server_close()
+        self._thread.join(timeout=5)
+
+    def set_lease_age(self, age_seconds: int) -> None:
+        with self._lock:
+            self._lease_age_seconds = age_seconds
+
+    def _response_for(self, path: str) -> dict[str, Any] | None:
+        now = int(time.time())
+        old_node_heartbeat = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now - 300))
+        with self._lock:
+            lease_renew_time = time.strftime(
+                "%Y-%m-%dT%H:%M:%SZ", time.gmtime(now - self._lease_age_seconds)
+            )
+        if path == "/apis/apps/v1/namespaces/gail/deployments/gail":
+            return {
+                "metadata": {
+                    "name": "gail", "namespace": "gail", "uid": "deployment-uid",
+                    "resourceVersion": "10", "generation": 1,
+                    "labels": {"neuralmimicry.ai/recovery": "enabled"},
+                },
+                "spec": {
+                    "replicas": 1,
+                    "selector": {"matchLabels": {"app": "gail"}},
+                    "strategy": {"type": "RollingUpdate", "rollingUpdate": {"maxUnavailable": 0, "maxSurge": 1}},
+                    "template": {"metadata": {"labels": {"app": "gail"}}},
+                },
+                "status": {
+                    "observedGeneration": 1, "readyReplicas": 1, "availableReplicas": 1,
+                    "updatedReplicas": 1,
+                    "conditions": [
+                        {"type": "Available", "status": "True", "reason": "MinimumReplicasAvailable"},
+                        {"type": "Progressing", "status": "True", "reason": "NewReplicaSetAvailable"},
+                    ],
+                },
+            }
+        if path == "/apis/apps/v1/namespaces/gail/replicasets":
+            return {"items": [{
+                "metadata": {
+                    "name": "gail-abc", "uid": "replicaset-uid",
+                    "ownerReferences": [{"uid": "deployment-uid", "kind": "Deployment", "controller": True}],
+                },
+                "spec": {"replicas": 1, "template": {"metadata": {"labels": {"app": "gail"}}}},
+                "status": {"readyReplicas": 1},
+            }]}
+        if path == "/api/v1/namespaces/gail/pods":
+            return {"items": [{
+                "metadata": {
+                    "name": "gail-abc-123", "uid": "pod-uid", "namespace": "gail",
+                    "labels": {"app": "gail"},
+                    "ownerReferences": [{"uid": "replicaset-uid", "kind": "ReplicaSet", "controller": True}],
+                },
+                "spec": {"nodeName": "qc01"},
+                "status": {"phase": "Running", "conditions": [{"type": "Ready", "status": "True"}]},
+            }]}
+        if path == "/api/v1/nodes":
+            return {"items": [{
+                "metadata": {"name": "qc01", "labels": {"kubernetes.io/hostname": "qc01"}},
+                "spec": {"unschedulable": False, "taints": []},
+                "status": {"conditions": [
+                    {"type": "Ready", "status": "True", "lastHeartbeatTime": old_node_heartbeat},
+                    {"type": "MemoryPressure", "status": "False"},
+                    {"type": "DiskPressure", "status": "False"},
+                    {"type": "PIDPressure", "status": "False"},
+                ]},
+            }]}
+        if path == "/apis/coordination.k8s.io/v1/namespaces/kube-node-lease/leases":
+            return {"items": [{
+                "metadata": {"name": "qc01", "namespace": "kube-node-lease"},
+                "spec": {"leaseDurationSeconds": 40, "renewTime": lease_renew_time},
+            }]}
+        return None
+
+
 def reserve_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind(("127.0.0.1", 0))
@@ -3807,6 +3923,56 @@ def test_recovery_requires_an_explicit_valid_enable_value(backend_base_url: str)
             server.stop()
 
 
+def test_recovery_uses_fresh_nodelease_not_node_status_heartbeat(backend_base_url: str) -> None:
+    kube_api = K8sRecoveryAPIMock()
+    kube_api.start()
+    server = NmcServerProcess(
+        backend_base_url,
+        recovery_enabled=True,
+        k8s_server_url=kube_api.base_url,
+    )
+    try:
+        server.start()
+        status, payload = request_json(
+            server.base_url,
+            "GET",
+            "/k8s/deployment/recovery-status?cluster_id=authz-test-cluster&namespace=gail&deployment=gail",
+            token="continuum-observe-token",
+        )
+        assert_status(status, 200, "fresh NodeLease recovery preflight")
+        data = payload.get("data", {})
+        hosts = data.get("hosts", [])
+        assert_true(
+            data.get("eligible") is True
+            and len(hosts) == 1
+            and hosts[0].get("node_lease_healthy") is True
+            and hosts[0].get("healthy") is True,
+            "a current NodeLease must permit a healthy node whose unchanged Node status heartbeat is five minutes old",
+        )
+
+        kube_api.set_lease_age(240)
+        status, payload = request_json(
+            server.base_url,
+            "GET",
+            "/k8s/deployment/recovery-status?cluster_id=authz-test-cluster&namespace=gail&deployment=gail",
+            token="continuum-observe-token",
+        )
+        assert_status(status, 200, "stale NodeLease recovery preflight remains read-only")
+        data = payload.get("data", {})
+        blockers = data.get("blockers", [])
+        hosts = data.get("hosts", [])
+        assert_true(
+            data.get("eligible") is False
+            and any(item.get("code") == "node_lease_stale" for item in blockers)
+            and len(hosts) == 1
+            and hosts[0].get("node_lease_healthy") is False,
+            "a stale NodeLease must block recovery even when the Node Ready condition remains True",
+        )
+    finally:
+        server.stop()
+        kube_api.stop()
+
+
 def test_k8s_image_rollout_requires_control_scope_and_explicit_policy(backend_base_url: str) -> None:
     image = "ghcr.io/neuralmimicry/octobot@sha256:" + "a" * 64
     request = {
@@ -5103,6 +5269,7 @@ fi
         test_recovery_fails_closed_without_configured_cluster_identity(backend.base_url)
         test_recovery_fails_closed_without_authenticated_kubeconfig(backend.base_url)
         test_recovery_requires_an_explicit_valid_enable_value(backend.base_url)
+        test_recovery_uses_fresh_nodelease_not_node_status_heartbeat(backend.base_url)
         test_k8s_image_rollout_requires_control_scope_and_explicit_policy(backend.base_url)
         test_k8s_image_rollout_updates_only_allowlisted_container_and_deduplicates(backend.base_url, backend)
         test_octobot_configuration_requires_control_scope_and_explicit_policy(backend.base_url)

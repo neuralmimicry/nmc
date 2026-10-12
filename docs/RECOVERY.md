@@ -15,6 +15,16 @@ failed availability condition is accepted only for Kubernetes'
 `MinimumReplicasUnavailable` reason, and a progress deadline is recoverable
 only after the observed current template is on every desired replica.
 
+Host liveness freshness is verified from the matching NodeLease in
+`kube-node-lease`, using `spec.renewTime` and its declared lease duration. The
+Node `Ready.lastHeartbeatTime` is not used as a short liveness deadline:
+Kubernetes updates Node status less frequently when the condition is unchanged,
+while kubelet renews its separate Lease for normal heartbeat traffic. A missing,
+stale, malformed or unavailable Lease blocks recovery. This prevents a healthy
+node from being classified as unsafe solely because its Node status has not
+changed recently, while retaining a fail-closed gate when actual heartbeat
+evidence is absent.
+
 Restart requests use `POST /k8s/deployment/restart`. They are disabled by
 default. Operators must explicitly set `NMC_RECOVERY_ENABLED=true` in the
 protected NMC environment file to permit requests. Any unset, false, malformed
