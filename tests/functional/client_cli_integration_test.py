@@ -363,6 +363,11 @@ class MockServer:
             )
             return
 
+        if handler.command == "POST" and path_only == "/k8s/aarnn/fpv-storage":
+            self._send_json(handler, 200, {"success": True, "message": "FPV storage accepted.",
+                "data": {"job_root": "/var/lib/aarnn/fpv-jobs", "changed": True}})
+            return
+
         if handler.command == "POST" and path_only == "/k8s/octobot/configuration":
             try:
                 payload = json.loads(body) if body else {}
@@ -1171,6 +1176,25 @@ def test_k8s_image_rollout_uses_exact_digest_and_compare_and_swap_request(server
         },
         "image rollout must preserve the complete, scoped compare-and-swap intent",
     )
+
+
+def test_k8s_configure_aarnn_fpv_uses_only_the_typed_storage_operation(server: MockServer, home_dir: pathlib.Path) -> None:
+    server.clear_records()
+    image = "ghcr.io/neuralmimicry/aarnn_rust@sha256:" + "a" * 64
+    args = ["--output", "json", "k8s", "configure-aarnn-fpv", "--cluster-id", "rk1",
+        "--deployment", "aarnn-web-ui", "--expected-image", "ghcr.io/neuralmimicry/aarnn_rust:previous",
+        "--image", image,
+        "--request-id", "fpv-storage-request-0001", "--change-id", "FPV-STORAGE-0001"]
+    assert_success(run_nmc(args, home_dir), "Typed FPV storage repair")
+    records = server.records()
+    assert_true(len(records) == 1 and records[0].path == "/k8s/aarnn/fpv-storage", "Repair must use the fixed Continuum route")
+    assert_true(json.loads(records[0].body) == {"cluster_id": "rk1", "deployment": "aarnn-web-ui",
+        "expected_image": "ghcr.io/neuralmimicry/aarnn_rust:previous", "image": image, "request_id": "fpv-storage-request-0001",
+        "change_id": "FPV-STORAGE-0001"}, "Caller cannot supply an arbitrary storage path")
+    server.clear_records()
+    args[args.index("aarnn-web-ui")] = "unrelated-workload"
+    assert_failure(run_nmc(args, home_dir), "Unrelated FPV deployment")
+    assert_true(not server.records(), "Invalid workload must fail before network access")
 
 
 def test_k8s_configure_octobot_serializes_explicit_policy(server: MockServer, home_dir: pathlib.Path) -> None:
@@ -2287,6 +2311,7 @@ def main() -> int:
             test_k8s_statefulset_status_uses_continuum_read_route(server, home_dir)
             test_k8s_image_rollout_uses_exact_digest_and_compare_and_swap_request(server, home_dir)
             test_k8s_configure_octobot_serializes_explicit_policy(server, home_dir)
+            test_k8s_configure_aarnn_fpv_uses_only_the_typed_storage_operation(server, home_dir)
             test_k8s_configure_octobot_rejects_implicit_or_invalid_policy_before_network(server, home_dir)
             test_k8s_image_rollout_rejects_mutable_tag_before_network(server, home_dir)
             test_home_assistant_reconciliation_command_is_read_only(server, home_dir)

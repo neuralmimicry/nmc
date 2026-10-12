@@ -141,6 +141,12 @@ public:
     int execute(const std::map<std::string, std::string>& parsedFlags, const std::vector<std::string>& parsedArgs, const CLI::GlobalFlags& globalFlags) override;
 };
 
+class K8sConfigureAarnnFpvCommand : public BaseCommand {
+public:
+    explicit K8sConfigureAarnnFpvCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client);
+    int execute(const std::map<std::string, std::string>& parsedFlags, const std::vector<std::string>& parsedArgs, const CLI::GlobalFlags& globalFlags) override;
+};
+
 class K8sSuspendCommand : public BaseCommand {
 public:
     K8sSuspendCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client);

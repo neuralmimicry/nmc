@@ -211,6 +211,8 @@ class MockBackend:
         self.k8s_event_message = "0/1 nodes are available: 1 Insufficient memory."
         self.k8s_pod_list_queries: list[dict[str, Any]] = []
         self.k8s_pod_status_override: dict[str, Any] | None = None
+        self.k8s_image_id_overrides: dict[str, str] = {}
+        self.k8s_patch_status_override: int | None = None
         self.home_assistant_status = 200
         self.home_assistant_states = [
             {"entity_id": "sensor.authz_device", "state": "online", "last_changed": "2026-10-07T10:00:00Z"},
@@ -275,8 +277,12 @@ class MockBackend:
                             },
                             {"name": "metrics", "image": "ghcr.io/neuralmimicry/metrics:stable"},
                         ], "initContainers": [
+                            {"name": "bootstrap-runtime", "image": "busybox:1.36"},
+                            {"name": "bootstrap-python-dependencies", "image": "ghcr.io/neuralmimicry/octobot:previous"},
+                            {"name": "bootstrap-tentacles", "image": "ghcr.io/neuralmimicry/octobot:previous"},
                             {
                                 "name": "bootstrap-gail-authority",
+                                "image": "ghcr.io/neuralmimicry/octobot:previous",
                                 "env": [
                                     {"name": "OCTOBOT_LIVE_EXECUTION_ENABLED", "value": "false"},
                                     {"name": "OCTOBOT_SERVICE_INTEGRATIONS_ENABLED", "value": "false"},
@@ -484,6 +490,14 @@ class MockBackend:
                         self._send_json(handler, 200, json.loads(json.dumps(deployment)))
                         return
                     if handler.command == "PATCH":
+                        if handler.headers.get("Content-Type", "").split(";", 1)[0] != "application/merge-patch+json":
+                            self._send_json(handler, 415, {"kind": "Status", "status": "Failure", "code": 415,
+                                "message": "Kubernetes requires an explicit supported patch content type"})
+                            return
+                        if self.k8s_patch_status_override is not None:
+                            self._send_json(handler, self.k8s_patch_status_override, {"kind": "Status", "status": "Failure",
+                                "code": self.k8s_patch_status_override, "message": "conditional patch rejected"})
+                            return
                         patch = parse_json(body)
                         expected_version = patch.get("metadata", {}).get("resourceVersion")
                         if expected_version != deployment.get("metadata", {}).get("resourceVersion"):
@@ -553,6 +567,12 @@ class MockBackend:
                         workload = self.k8s_statefulsets.get(f"{namespace}/{namespace}")
                         owner_kind = "StatefulSet"
                     if workload is None:
+                        workload = next((candidate for key, candidate in self.k8s_deployments.items()
+                            if key.startswith(f"{namespace}/") and label_selector == ",".join(
+                                f"{label}={value}" for label, value in sorted(candidate.get("spec", {}).get(
+                                    "template", {}).get("metadata", {}).get("labels", {}).items()))), None)
+                        owner_kind = "Deployment"
+                    if workload is None:
                         self._send_json(handler, 200, {"apiVersion": "v1", "kind": "PodList", "items": []})
                         return
                     pod_spec = workload.get("spec", {}).get("template", {}).get("spec", {})
@@ -597,6 +617,8 @@ class MockBackend:
                             "containerStatuses": [
                                 {"name": item.get("name", ""), "ready": True,
                                  "image": item.get("image", ""), "restartCount": 0,
+                                 "imageID": self.k8s_image_id_overrides.get(
+                                     f"{namespace}/{workload.get('metadata', {}).get('name', namespace)}", item.get("image", "")),
                                  "state": {"running": {"startedAt": "2026-10-11T00:00:00Z"}}}
                                 for item in containers if item.get("name")
                             ],
@@ -4025,6 +4047,151 @@ def test_k8s_image_rollout_requires_control_scope_and_explicit_policy(backend_ba
         server.stop()
 
 
+def test_aarnn_fpv_storage_is_scoped_persistent_conditional_and_idempotent(backend: MockBackend) -> None:
+    image = "ghcr.io/neuralmimicry/aarnn_rust:previous"
+    pinned_image = "ghcr.io/neuralmimicry/aarnn_rust@sha256:" + "a" * 64
+    def fixture(name: str, container: str) -> dict[str, Any]:
+        return {
+            "metadata": {"name": name, "namespace": "aarnn", "uid": name,
+                "resourceVersion": "1", "generation": 1,
+                "labels": {"neuralmimicry.ai/continuum-rollout": "enabled"}},
+            "spec": {"replicas": 1, "selector": {"matchLabels": {"app": name}}, "template": {"metadata": {"labels": {"app": name}}, "spec": {
+                "volumes": [{"name": "web-ui-data", "persistentVolumeClaim": {"claimName": "retained-brain"}}],
+                "containers": [{"name": container, "image": image,
+                    "env": [{"name": "NM_FPV_JOB_ROOT", "value": "/data/fpv-jobs"}, {"name": "KEEP", "value": "unchanged"}],
+                    "volumeMounts": [{"name": "web-ui-data", "mountPath": "/var/lib/aarnn"}]}]}}},
+            "status": {"observedGeneration": 1, "readyReplicas": 1, "availableReplicas": 1, "updatedReplicas": 1},
+        }
+    with backend._lock:
+        backend.k8s_deployments["aarnn/aarnn-web-ui"] = fixture("aarnn-web-ui", "web-ui")
+        backend.k8s_deployments["aarnn/aarnn-fpv-workers"] = fixture("aarnn-fpv-workers", "fpv-worker")
+        backend.k8s_image_id_overrides["aarnn/aarnn-web-ui"] = "docker-pullable://" + pinned_image
+        backend.k8s_image_id_overrides["aarnn/aarnn-fpv-workers"] = pinned_image
+    request = {"cluster_id": "authz-test-cluster", "deployment": "aarnn-web-ui", "expected_image": image,
+        "image": pinned_image,
+        "request_id": "fpv-storage-test-0001", "change_id": "FPV-STORAGE-TEST-0001"}
+    server = NmcServerProcess(backend.base_url, image_rollout_enabled=True, k8s_server_url=backend.base_url)
+    path = "/k8s/aarnn/fpv-storage"
+    try:
+        server.start()
+        for token, expected in [(None, 401), ("continuum-observe-token", 403)]:
+            status, _ = request_json(server.base_url, "POST", path, token=token, payload=request)
+            assert_status(status, expected, "FPV storage repair requires control scope")
+        for invalid in [dict(request, deployment="octobot"), dict(request, job_root="/tmp/arbitrary"),
+                        dict(request, request_id="short")]:
+            status, _ = request_json(server.base_url, "POST", path, token="continuum-control-token", payload=invalid)
+            assert_status(status, 400, "FPV storage rejects arbitrary scope and fields")
+        status, _ = request_json(server.base_url, "POST", path, token="continuum-control-token",
+            payload=dict(request, expected_image="stale-image"))
+        assert_status(status, 409, "FPV repair is conditional on current image")
+        before = backend.count_requests("/apis/apps/v1/namespaces/aarnn/deployments/aarnn-web-ui", "PATCH")
+        status, _ = request_json(server.base_url, "POST", path, token="continuum-control-token",
+            payload=dict(request, image="ghcr.io/neuralmimicry/aarnn_rust@sha256:" + "b" * 64))
+        assert_status(status, 409, "Storage repair cannot promote different image content")
+        assert_true(backend.count_requests("/apis/apps/v1/namespaces/aarnn/deployments/aarnn-web-ui", "PATCH") == before,
+            "Different running content must be rejected without patching")
+        for pod_status in [
+            {"phase": "Pending", "containerStatuses": [{"name": "web-ui", "ready": True, "imageID": pinned_image}]},
+            {"phase": "Running", "containerStatuses": [{"name": "web-ui", "ready": False, "imageID": pinned_image}]},
+            {"phase": "Running", "containerStatuses": [{"name": "web-ui", "ready": True}]},
+        ]:
+            with backend._lock: backend.k8s_pod_status_override = pod_status
+            status, _ = request_json(server.base_url, "POST", path, token="continuum-control-token", payload=request)
+            assert_status(status, 409, "Incomplete or unready running content must block storage repair")
+            assert_true(backend.count_requests("/apis/apps/v1/namespaces/aarnn/deployments/aarnn-web-ui", "PATCH") == before,
+                "Unsafe Pod observations must not cause a patch")
+        with backend._lock: backend.k8s_pod_status_override = None
+        for rejected_status in [409, 415, 422, 503]:
+            with backend._lock: backend.k8s_patch_status_override = rejected_status
+            status, payload = request_json(server.base_url, "POST", path, token="continuum-control-token", payload=request)
+            assert_status(status, rejected_status, "FPV repair must preserve a non-null Kubernetes Status rejection")
+            assert_true(payload.get("success") is False, "Rejected Kubernetes patch cannot be reported as applied")
+            with backend._lock:
+                assert_true(backend.k8s_deployments["aarnn/aarnn-web-ui"]["spec"]["template"]["spec"]["containers"][0]["image"] == image,
+                    "Rejected patch must preserve the running workload declaration")
+        with backend._lock: backend.k8s_patch_status_override = None
+        status, payload = request_json(server.base_url, "POST", path, token="continuum-control-token", payload=request)
+        assert_status(status, 200, "FPV root is repaired inside the shared claim")
+        assert_true(payload["data"]["job_root"] == "/var/lib/aarnn/fpv-jobs", "FPV root must be derived from the mounted PVC")
+        with backend._lock:
+            stored = backend.k8s_deployments["aarnn/aarnn-web-ui"]
+            env = {item["name"]: item["value"] for item in stored["spec"]["template"]["spec"]["containers"][0]["env"]}
+            assert_true(stored["spec"]["template"]["spec"]["containers"][0]["image"] == pinned_image,
+                "Repair must pin the current content rather than restart an Always-pulled mutable tag")
+        assert_true(env == {"NM_FPV_JOB_ROOT": "/var/lib/aarnn/fpv-jobs", "KEEP": "unchanged"}, "Repair must preserve unrelated settings")
+        patch_path = "/apis/apps/v1/namespaces/aarnn/deployments/aarnn-web-ui"
+        patches = backend.count_requests(patch_path, "PATCH")
+        status, payload = request_json(server.base_url, "POST", path, token="continuum-control-token", payload=request)
+        assert_status(status, 200, "Duplicate FPV storage request")
+        assert_true(payload["data"]["already_applied"] is True and backend.count_requests(patch_path, "PATCH") == patches,
+            "Duplicate repair must not restart or patch again")
+        status, _ = request_json(server.base_url, "POST", path, token="continuum-control-token",
+            payload=dict(request, change_id="FPV-CONFLICT-0001"))
+        assert_status(status, 409, "Repair request id cannot be reused for another intent")
+        worker_request = dict(request, deployment="aarnn-fpv-workers", request_id="fpv-storage-workers-0001")
+        worker_path = "/apis/apps/v1/namespaces/aarnn/deployments/aarnn-fpv-workers"
+        for invalid_kind in ["different-claim", "read-only", "traversal", "duplicate-env", "missing-env", "subpath"]:
+            worker = fixture("aarnn-fpv-workers", "fpv-worker")
+            spec = worker["spec"]["template"]["spec"]
+            if invalid_kind == "different-claim": spec["volumes"][0]["persistentVolumeClaim"]["claimName"] = "unrelated-data"
+            elif invalid_kind == "read-only": spec["containers"][0]["volumeMounts"][0]["readOnly"] = True
+            elif invalid_kind == "traversal": spec["containers"][0]["volumeMounts"][0]["mountPath"] = "/var/lib/aarnn/../private"
+            elif invalid_kind == "duplicate-env": spec["containers"][0]["env"].append({"name": "NM_FPV_JOB_ROOT", "value": "/tmp"})
+            elif invalid_kind == "missing-env": spec["containers"][0]["env"] = []
+            elif invalid_kind == "subpath": spec["containers"][0]["volumeMounts"][0]["subPath"] = "private"
+            with backend._lock: backend.k8s_deployments["aarnn/aarnn-fpv-workers"] = worker
+            before = backend.count_requests(worker_path, "PATCH")
+            status, _ = request_json(server.base_url, "POST", path, token="continuum-control-token", payload=worker_request)
+            assert_status(status, 409, "Unsafe or unrelated FPV storage must be rejected")
+            assert_true(backend.count_requests(worker_path, "PATCH") == before, "Rejected storage must not be patched")
+        with backend._lock: backend.k8s_deployments["aarnn/aarnn-fpv-workers"] = fixture("aarnn-fpv-workers", "fpv-worker")
+        status, payload = request_json(server.base_url, "POST", path, token="continuum-control-token", payload=worker_request)
+        assert_status(status, 200, "FPV consumers receive the same shared path")
+        assert_true(payload["data"]["job_root"] == "/var/lib/aarnn/fpv-jobs", "Workers must read producer storage")
+    finally:
+        with backend._lock: backend.k8s_pod_status_override = None
+        with backend._lock: backend.k8s_patch_status_override = None
+        server.stop()
+    disabled = NmcServerProcess(backend.base_url, image_rollout_enabled=False)
+    try:
+        disabled.start()
+        status, _ = request_json(disabled.base_url, "POST", path, token="continuum-control-token", payload=request)
+        assert_status(status, 403, "Disabled rollout policy must prohibit configuration")
+    finally:
+        disabled.stop()
+        with backend._lock:
+            backend.k8s_image_id_overrides.clear()
+
+
+def test_octobot_image_rollout_rejects_incomplete_or_divergent_bootstrap(backend: MockBackend) -> None:
+    with backend._lock:
+        original = json.loads(json.dumps(backend.k8s_deployments["octobot/octobot"]))
+    request = {"cluster_id": "authz-test-cluster", "namespace": "octobot", "deployment": "octobot",
+        "container": "octobot", "expected_image": original["spec"]["template"]["spec"]["containers"][0]["image"],
+        "image": "ghcr.io/neuralmimicry/octobot@sha256:" + "b" * 64,
+        "request_id": "bootstrap-rollout-0001", "change_id": "BOOTSTRAP-ROLLOUT-0001"}
+    server = NmcServerProcess(backend.base_url, image_rollout_enabled=True, k8s_server_url=backend.base_url)
+    try:
+        server.start()
+        for invalid_kind in ["missing", "duplicate", "different-image"]:
+            deployment = json.loads(json.dumps(original))
+            spec = deployment["spec"]["template"]["spec"]
+            target = next(item for item in spec["initContainers"] if item["name"] == "bootstrap-gail-authority")
+            if invalid_kind == "missing": spec["initContainers"].remove(target)
+            elif invalid_kind == "duplicate": spec["initContainers"].append(dict(target))
+            else: target["image"] = "ghcr.io/neuralmimicry/octobot:unrelated-code"
+            with backend._lock: backend.k8s_deployments["octobot/octobot"] = deployment
+            before = backend.count_requests("/apis/apps/v1/namespaces/octobot/deployments/octobot", "PATCH")
+            status, _ = request_json(server.base_url, "POST", "/k8s/deployment/image-rollout",
+                token="continuum-control-token", payload=request)
+            assert_status(status, 409, "OctoBot bootstrap identity and image coherence must be verified before rollout")
+            assert_true(backend.count_requests("/apis/apps/v1/namespaces/octobot/deployments/octobot", "PATCH") == before,
+                "Divergent or incomplete bootstrap must be rejected without mutation")
+    finally:
+        with backend._lock: backend.k8s_deployments["octobot/octobot"] = original
+        server.stop()
+
+
 def test_k8s_image_rollout_updates_only_allowlisted_container_and_deduplicates(
     backend_base_url: str,
     backend: MockBackend,
@@ -4069,6 +4236,10 @@ def test_k8s_image_rollout_updates_only_allowlisted_container_and_deduplicates(
             "octobot": image,
             "metrics": "ghcr.io/neuralmimicry/metrics:stable",
         }, "rollout must preserve unrelated sidecar images")
+        init_images = {item["name"]: item["image"] for item in stored["spec"]["template"]["spec"]["initContainers"]}
+        assert_true(init_images == {"bootstrap-runtime": "busybox:1.36", "bootstrap-python-dependencies": image,
+            "bootstrap-tentacles": image, "bootstrap-gail-authority": image},
+            "One conditional rollout must update the OctoBot bootstrap code while preserving BusyBox")
 
         status, payload = request_json(
             server.base_url,
@@ -4097,6 +4268,14 @@ def test_k8s_image_rollout_updates_only_allowlisted_container_and_deduplicates(
         patch_path = "/apis/apps/v1/namespaces/octobot/deployments/octobot"
         assert_true(backend.count_requests(patch_path, "PATCH") == 1,
                     "a duplicate request must not issue a second Kubernetes patch")
+        with backend._lock:
+            changed = backend.k8s_deployments["octobot/octobot"]["spec"]["template"]["spec"]["initContainers"]
+            next(item for item in changed if item["name"] == "bootstrap-gail-authority")["image"] = "stale-bootstrap"
+        status, _ = request_json(server.base_url, "POST", "/k8s/deployment/image-rollout",
+            token="continuum-control-token", payload=request)
+        assert_status(status, 409, "A replay cannot hide bootstrap image drift")
+        assert_true(backend.count_requests(patch_path, "PATCH") == 1, "A conflicting replay must not mutate bootstrap")
+        with backend._lock: backend.k8s_deployments["octobot/octobot"] = stored
 
         conflicting = dict(request, request_id="octobot-rollout-request-0002")
         status, _ = request_json(
@@ -4140,6 +4319,30 @@ def test_k8s_image_rollout_updates_only_allowlisted_container_and_deduplicates(
         )
         assert_status(status, 503, "image rollout rejects an unauthenticated fallback Kubernetes client")
     finally:
+        server.stop()
+
+
+def test_k8s_image_rollout_preserves_upstream_patch_rejections(backend: MockBackend) -> None:
+    with backend._lock:
+        original = json.loads(json.dumps(backend.k8s_deployments["octobot/octobot"]))
+    request = {"cluster_id": "authz-test-cluster", "namespace": "octobot", "deployment": "octobot",
+        "container": "octobot", "expected_image": original["spec"]["template"]["spec"]["containers"][0]["image"],
+        "image": "ghcr.io/neuralmimicry/octobot@sha256:" + "c" * 64,
+        "request_id": "rejected-rollout-0001", "change_id": "REJECTED-ROLLOUT-0001"}
+    server = NmcServerProcess(backend.base_url, image_rollout_enabled=True, k8s_server_url=backend.base_url)
+    try:
+        server.start()
+        for rejected_status in [409, 415, 422, 503]:
+            with backend._lock: backend.k8s_patch_status_override = rejected_status
+            status, payload = request_json(server.base_url, "POST", "/k8s/deployment/image-rollout",
+                token="continuum-control-token", payload=request)
+            assert_status(status, rejected_status, "Rollout must return the rejected Kubernetes patch status")
+            assert_true(payload.get("success") is False, "Upstream rejection must not claim rollout success")
+            with backend._lock:
+                assert_true(backend.k8s_deployments["octobot/octobot"] == original,
+                    "Rejected rollout must preserve spec, generation and audit annotations")
+    finally:
+        with backend._lock: backend.k8s_patch_status_override = None
         server.stop()
 
 
@@ -5271,7 +5474,10 @@ fi
         test_recovery_requires_an_explicit_valid_enable_value(backend.base_url)
         test_recovery_uses_fresh_nodelease_not_node_status_heartbeat(backend.base_url)
         test_k8s_image_rollout_requires_control_scope_and_explicit_policy(backend.base_url)
+        test_octobot_image_rollout_rejects_incomplete_or_divergent_bootstrap(backend)
         test_k8s_image_rollout_updates_only_allowlisted_container_and_deduplicates(backend.base_url, backend)
+        test_aarnn_fpv_storage_is_scoped_persistent_conditional_and_idempotent(backend)
+        test_k8s_image_rollout_preserves_upstream_patch_rejections(backend)
         test_octobot_configuration_requires_control_scope_and_explicit_policy(backend.base_url)
         test_octobot_configuration_is_allowlisted_conditional_and_idempotent(backend.base_url, backend)
         test_workload_status_and_logs_use_bounded_raw_pod_lists_and_serialize(backend)

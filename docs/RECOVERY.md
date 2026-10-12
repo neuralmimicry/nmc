@@ -46,7 +46,12 @@ Immutable Deployment image changes use the separate
 labelled `neuralmimicry.ai/continuum-rollout=enabled`. Callers provide the
 expected current image plus stable request and change IDs; Continuum compares
 the current image and Deployment resource version before patching only the
-selected container and recording rollout annotations. The operation is
+selected container and recording rollout annotations. For `octobot/octobot`
+with container `octobot`, it also updates the three named application bootstrap
+containers in that same conditional patch; their existing images must match the
+application before mutation. BusyBox and unrelated containers are preserved.
+Otherwise the Gail guard would still run the old code and the service would
+remain unavailable after a main-container upgrade. The operation is
 disabled by default behind `NMC_K8S_IMAGE_ROLLOUT_ENABLED=true`, requires
 `continuum:control`, the active cluster identity and the authenticated
 kubeconfig, and returns acceptance separately from rollout readiness.
@@ -99,3 +104,15 @@ Ansible exposes the independent image mutation switch as
 `nmc_k8s_image_rollout_enabled`, also defaulting to `false`; enable it only
 after the target Deployment is labelled and the control token and active
 cluster context have been verified.
+
+## AARNN FPV storage configuration
+
+The authenticated `continuum:control` operation `POST /k8s/aarnn/fpv-storage`
+and CLI `nmc k8s configure-aarnn-fpv` reconcile `NM_FPV_JOB_ROOT` inside
+an observed writable shared PVC and pin the existing running image digest.
+All target containers must be Ready with that exact content, preventing an
+implicit code upgrade when a mutable tag restarts. The owning UI must be opted into Continuum
+rollout, the rollout policy must be enabled, and expected-image/resourceVersion
+checks and recorded request/change identities preserve scope and idempotency.
+See [the FPV storage runbook](aarnn-fpv-storage-repair.md) for prerequisites,
+worker-first ordering, availability checks and full projection/render acceptance.

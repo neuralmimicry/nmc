@@ -12,9 +12,23 @@
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
+#include <memory>
+#include <cstdlib>
 
 namespace NMC::Server {
 namespace {
+
+char* mergePatchNamespacedResource(genericClient_t* client, const char* ns,
+                                   const char* name, const char* body) {
+    // The generated client otherwise sends application/json, which Kubernetes
+    // rejects for PATCH even though the same body is valid JSON merge patch.
+    std::unique_ptr<list_t, decltype(&list_freeList)> contentTypes(list_createList(), &list_freeList);
+    if (!contentTypes) throw std::runtime_error("Patch content type could not be allocated.");
+    char contentType[] = "application/merge-patch+json";
+    list_addElement(contentTypes.get(), contentType);
+    return Generic_patchNamespacedResource(client, ns, name, body,
+        nullptr, nullptr, nullptr, nullptr, contentTypes.get());
+}
 
 std::string trimCopy(const std::string& value) {
     const auto first = std::find_if_not(value.begin(), value.end(), [](unsigned char ch) {
@@ -345,6 +359,7 @@ nlohmann::json deploymentStatusData(const nlohmann::json& deployment,
                     ++diagnosticContainerStatusCount;
                     nlohmann::json containerSummary = nlohmann::json::object();
                     addBoundedText(containerSummary, containerStatus, "name", 63);
+                    addBoundedText(containerSummary, containerStatus, "imageID", 512, "image_id");
                     const auto readyValue = containerStatus.find("ready");
                     containerSummary["ready"] = readyValue != containerStatus.end()
                             && readyValue->is_boolean() && readyValue->get<bool>();
@@ -1391,20 +1406,16 @@ void K8sHandlers::handleRestartDeployment(const httplib::Request& req, httplib::
                 }}
         };
         const std::string patchBody = patch.dump();
-        char* patchedRaw = Generic_patchNamespacedResource(
+        char* patchedRaw = mergePatchNamespacedResource(
                 deploymentClient,
                 const_cast<char*>(namespaceName.c_str()),
                 const_cast<char*>(deploymentName.c_str()),
-                const_cast<char*>(patchBody.c_str()),
-                nullptr,
-                nullptr,
-                nullptr,
-                nullptr,
-                nullptr
+                patchBody.c_str()
         );
         const int patchStatus = apiClient ? apiClient->response_code : 0;
         genericClient_free(deploymentClient);
-        if (!patchedRaw) {
+        if (!patchedRaw || patchStatus < 200 || patchStatus >= 300) {
+            free(patchedRaw);
             return sendErrorResponse(res, patchStatus >= 400 ? patchStatus : 503,
                     "Kubernetes rejected the conditional deployment restart request.");
         }
@@ -1963,6 +1974,30 @@ void K8sHandlers::handleRolloutDeploymentImage(const httplib::Request& req, http
             return sendErrorResponse(res, 409, "Current container image is missing or invalid.");
         }
 
+        const bool octobotBootstrap = namespaceName == "octobot" && deploymentName == "octobot"
+                && containerName == "octobot";
+        const std::set<std::string> bootstrapNames = {
+                "bootstrap-python-dependencies", "bootstrap-tentacles", "bootstrap-gail-authority"};
+        auto initContainers = podSpec.value("initContainers", nlohmann::json::array());
+        if (octobotBootstrap) {
+            std::set<std::string> found;
+            if (initContainers.is_array()) {
+                for (const auto& init : initContainers) {
+                    if (!init.is_object() || !init.contains("name") || !init["name"].is_string()) continue;
+                    const auto name = init["name"].get<std::string>();
+                    if (!bootstrapNames.count(name)) continue;
+                    if (!found.insert(name).second || init.value("image", "") != currentImage) {
+                        genericClient_free(deploymentClient);
+                        return sendErrorResponse(res, 409, "OctoBot bootstrap images must match the current application image before an atomic rollout.");
+                    }
+                }
+            }
+            if (found != bootstrapNames) {
+                genericClient_free(deploymentClient);
+                return sendErrorResponse(res, 409, "All three named OctoBot bootstrap containers are required for an atomic image rollout.");
+            }
+        }
+
         auto templateMetadata = podTemplate.value("metadata", nlohmann::json::object());
         auto annotations = templateMetadata.value("annotations", nlohmann::json::object());
         if (!annotations.is_object()) annotations = nlohmann::json::object();
@@ -2007,6 +2042,11 @@ void K8sHandlers::handleRolloutDeploymentImage(const httplib::Request& req, http
         }
 
         selected->operator[]("image") = image;
+        if (octobotBootstrap) {
+            for (auto& init : initContainers) {
+                if (init.is_object() && bootstrapNames.count(init.value("name", ""))) init["image"] = image;
+            }
+        }
         const std::string requestedAt = utcTimestamp();
         annotations["neuralmimicry.ai/rollout-request-id"] = requestId;
         annotations["neuralmimicry.ai/rollout-change-id"] = changeId;
@@ -2016,28 +2056,25 @@ void K8sHandlers::handleRolloutDeploymentImage(const httplib::Request& req, http
         annotations["neuralmimicry.ai/rollout-requested-at"] = requestedAt;
         templateMetadata["annotations"] = annotations;
 
-        const nlohmann::json patch = {
+        nlohmann::json patch = {
                 {"metadata", {{"resourceVersion", resourceVersion}}},
                 {"spec", {{"template", {
                         {"metadata", templateMetadata},
                         {"spec", {{"containers", containers}}}
                 }}}}
         };
+        if (octobotBootstrap) patch["spec"]["template"]["spec"]["initContainers"] = initContainers;
         const std::string patchBody = patch.dump();
-        char* rawPatched = Generic_patchNamespacedResource(
+        char* rawPatched = mergePatchNamespacedResource(
                 deploymentClient,
                 const_cast<char*>(namespaceName.c_str()),
                 const_cast<char*>(deploymentName.c_str()),
-                const_cast<char*>(patchBody.c_str()),
-                nullptr,
-                nullptr,
-                nullptr,
-                nullptr,
-                nullptr
+                patchBody.c_str()
         );
         const int patchStatus = workloadLogsApiClient->response_code;
         genericClient_free(deploymentClient);
-        if (!rawPatched) {
+        if (!rawPatched || patchStatus < 200 || patchStatus >= 300) {
+            free(rawPatched);
             return sendErrorResponse(res, patchStatus >= 400 ? patchStatus : 503,
                     "Kubernetes rejected the conditional Deployment image rollout.");
         }
@@ -2067,11 +2104,183 @@ void K8sHandlers::handleRolloutDeploymentImage(const httplib::Request& req, http
         response.data["requested_at"] = requestedAt;
         response.data["changed"] = true;
         response.data["already_applied"] = false;
+        if (octobotBootstrap) response.data["updated_init_containers"] = bootstrapNames;
         sendJsonResponse(res, response);
     } catch (const nlohmann::json::parse_error&) {
       sendErrorResponse(res, 400, "Invalid JSON body.");
     } catch (const std::exception &) {
       sendErrorResponse(res, 500, "Deployment image rollout failed safely.");
+    }
+}
+
+void K8sHandlers::handleConfigureAarnnFpvStorage(const httplib::Request& req,
+                                               httplib::Response& res) {
+    std::lock_guard<std::recursive_mutex> apiClientLock(apiClientMutex);
+    if (!imageRolloutEnabled) return sendErrorResponse(res, 403, "AARNN FPV configuration requires the enabled Continuum rollout policy.");
+    if (!recoveryClientReady || !workloadLogsApiClient) return sendErrorResponse(res, 503, "Authenticated Kubernetes client is unavailable.");
+    if (req.body.size() > 8192) return sendErrorResponse(res, 413, "FPV configuration exceeds 8 KiB.");
+    try {
+        const auto body = nlohmann::json::parse(req.body);
+        if (!containsExactKeySet(body, {"cluster_id", "deployment", "expected_image", "image", "request_id", "change_id"})) {
+            return sendErrorResponse(res, 400, "FPV configuration requires exactly the documented fields.");
+        }
+        for (const auto* key : {"cluster_id", "deployment", "expected_image", "image", "request_id", "change_id"}) {
+            if (!body[key].is_string()) return sendErrorResponse(res, 400, "FPV configuration fields must be strings.");
+        }
+        const auto clusterId = body["cluster_id"].get<std::string>();
+        const auto name = body["deployment"].get<std::string>();
+        const auto expectedImage = body["expected_image"].get<std::string>();
+        const auto image = body["image"].get<std::string>();
+        static const std::regex pinnedImage(R"(^ghcr\.io/neuralmimicry/aarnn_rust@sha256:[a-f0-9]{64}$)");
+        if (!std::regex_match(image, pinnedImage)) return sendErrorResponse(res, 400, "FPV repair needs the immutable digest currently running in the target Pods.");
+        const auto requestId = body["request_id"].get<std::string>();
+        const auto changeId = body["change_id"].get<std::string>();
+        if ((name != "aarnn-web-ui" && name != "aarnn-fpv-workers") ||
+            !validRequestId(requestId) || !validRequestId(changeId) || !printableValue(expectedImage, 512)) {
+            return sendErrorResponse(res, 400, "FPV configuration is restricted to the named AARNN workloads and bounded identifiers.");
+        }
+        if (clusterId.empty() || clusterId != activeRecoveryClusterId) return sendErrorResponse(res, 409, "Requested cluster is not the active Kubernetes context.");
+        std::lock_guard<std::mutex> rolloutLock(rolloutMutex);
+        std::lock_guard<std::recursive_mutex> clientLock(workloadLogsClientMutex);
+        char group[] = "apps", version[] = "v1", plural[] = "deployments";
+        std::unique_ptr<genericClient_t, decltype(&genericClient_free)> client(
+            genericClient_create(workloadLogsApiClient, group, version, plural), &genericClient_free);
+        if (!client) return sendErrorResponse(res, 503, "Kubernetes Deployment client is unavailable.");
+        const auto readDeployment = [&](const std::string& deploymentName) {
+            char ns[] = "aarnn";
+            std::unique_ptr<char, decltype(&free)> raw(Generic_readNamespacedResource(
+                client.get(), ns, const_cast<char*>(deploymentName.c_str())), &free);
+            if (!raw) throw std::runtime_error("Scoped AARNN Deployment could not be read.");
+            return nlohmann::json::parse(raw.get());
+        };
+        const auto parent = readDeployment("aarnn-web-ui");
+        if (parent.at("metadata").value("labels", nlohmann::json::object())
+            .value("neuralmimicry.ai/continuum-rollout", "") != "enabled") {
+            return sendErrorResponse(res, 403, "The owning AARNN web UI must explicitly enable Continuum rollout.");
+        }
+        auto deployment = name == "aarnn-web-ui" ? parent : readDeployment(name);
+        const auto containerName = name == "aarnn-web-ui" ? "web-ui" : "fpv-worker";
+        auto podTemplate = deployment.at("spec").at("template");
+        auto& podSpec = podTemplate.at("spec");
+        auto& containers = podSpec.at("containers");
+        nlohmann::json* selected = nullptr;
+        for (auto& container : containers) {
+            if (container.value("name", "") != containerName) continue;
+            if (selected) return sendErrorResponse(res, 409, "Container identity is ambiguous.");
+            selected = &container;
+        }
+        if (!selected) return sendErrorResponse(res, 409, "Expected container is absent.");
+        // Both producers and consumers must use the same named persistent claim.
+        const auto claimFor = [](const nlohmann::json& spec) {
+            std::string claim;
+            for (const auto& volume : spec.at("volumes")) {
+                if (volume.value("name", "") != "web-ui-data") continue;
+                if (!claim.empty()) throw std::runtime_error("Duplicate shared volume.");
+                claim = volume.at("persistentVolumeClaim").at("claimName").get<std::string>();
+            }
+            if (claim.empty()) throw std::runtime_error("Shared persistent claim is missing.");
+            return claim;
+        };
+        if (claimFor(podSpec) != claimFor(parent.at("spec").at("template").at("spec"))) {
+            return sendErrorResponse(res, 409, "FPV workers do not share the owning web UI claim.");
+        }
+        std::string mountPath;
+        for (const auto& mount : selected->at("volumeMounts")) {
+            if (mount.value("name", "") != "web-ui-data") continue;
+            if (!mountPath.empty() || mount.value("readOnly", false) || mount.contains("subPath") || mount.contains("subPathExpr")) {
+                return sendErrorResponse(res, 409, "FPV storage needs one writable shared volume without a subPath.");
+            }
+            mountPath = mount.at("mountPath").get<std::string>();
+        }
+        static const std::regex safePath(R"(^/(?:[A-Za-z0-9_-]+/)*[A-Za-z0-9_-]+$)");
+        if (!std::regex_match(mountPath, safePath)) return sendErrorResponse(res, 409, "Shared mount path is absent or unsafe.");
+        const auto desiredRoot = mountPath + "/fpv-jobs";
+        auto& env = (*selected)["env"];
+        if (!env.is_array()) return sendErrorResponse(res, 409, "Container environment is not an explicit array.");
+        nlohmann::json* setting = nullptr;
+        for (auto& item : env) {
+            if (item.value("name", "") != "NM_FPV_JOB_ROOT") continue;
+            if (setting || item.contains("valueFrom") || !item.contains("value") || !item["value"].is_string()) {
+                return sendErrorResponse(res, 409, "FPV root must be one literal environment setting.");
+            }
+            setting = &item;
+        }
+        if (!setting) return sendErrorResponse(res, 409, "FPV root setting is missing.");
+        const bool changed = setting->at("value") != desiredRoot || selected->value("image", "") != image;
+        auto metadata = deployment.at("metadata");
+        auto annotations = metadata.value("annotations", nlohmann::json::object());
+        if (annotations.value("neuralmimicry.ai/fpv-storage-request-id", "") == requestId) {
+            if (changed || annotations.value("neuralmimicry.ai/fpv-storage-change-id", "") != changeId ||
+                annotations.value("neuralmimicry.ai/fpv-storage-expected-image", "") != expectedImage) {
+                return sendErrorResponse(res, 409, "Request id conflicts with a prior storage repair.");
+            }
+            Models::CloudResponse response;
+            response.success = true;
+            response.message = "FPV storage repair was already applied.";
+            response.data = {{"already_applied", true}, {"changed", false}, {"job_root", desiredRoot}, {"deployment", name}};
+            return sendJsonResponse(res, response);
+        }
+        if (selected->value("image", "") != expectedImage) return sendErrorResponse(res, 409, "Expected image does not match the observed target; no configuration changed.");
+        // Changing an environment setting restarts Pods. Pin their actual running
+        // content so an Always-pulled mutable alias cannot upgrade code implicitly.
+        const auto selector = deploymentLabelSelector(deployment);
+        long podsStatus = 0;
+        const auto pods = selector ? listWorkloadPods("aarnn", *selector, 64, podsStatus) : std::nullopt;
+        const auto observed = deploymentStatusData(deployment, pods ? &*pods : nullptr);
+        const auto desired = deployment.at("spec").value("replicas", 1);
+        if (desired < 1 || !observed.value("pod_diagnostics_available", false) ||
+            observed.value("pod_diagnostics_truncated", true) || observed.at("pods").size() != static_cast<size_t>(desired)) {
+            return sendErrorResponse(res, 409, "Complete running Pod image observations are required before storage repair.");
+        }
+        for (const auto& pod : observed.at("pods")) {
+            if (pod.value("phase", "") != "Running") return sendErrorResponse(res, 409, "Every target Pod must be Running before storage repair.");
+            int matched = 0;
+            for (const auto& container : pod.at("containers")) {
+                if (container.value("name", "") != containerName) continue;
+                auto runningImage = container.value("image_id", "");
+                const std::string prefix = "docker-pullable://";
+                if (runningImage.rfind(prefix, 0) == 0) runningImage.erase(0, prefix.size());
+                if (!container.value("ready", false) || runningImage != image) {
+                    return sendErrorResponse(res, 409, "The pinned image must match every ready target container; code promotion is not a storage repair.");
+                }
+                ++matched;
+            }
+            if (matched != 1) return sendErrorResponse(res, 409, "Target running container observation is incomplete.");
+        }
+        const auto resourceVersion = metadata.value("resourceVersion", "");
+        if (resourceVersion.empty()) return sendErrorResponse(res, 409, "Deployment resourceVersion is unavailable.");
+        (*setting)["value"] = desiredRoot;
+        (*selected)["image"] = image;
+        annotations["neuralmimicry.ai/fpv-storage-request-id"] = requestId;
+        annotations["neuralmimicry.ai/fpv-storage-change-id"] = changeId;
+        annotations["neuralmimicry.ai/fpv-storage-expected-image"] = expectedImage;
+        annotations["neuralmimicry.ai/fpv-storage-job-root"] = desiredRoot;
+        annotations["neuralmimicry.ai/fpv-storage-requested-at"] = utcTimestamp();
+        nlohmann::json patch = {{"metadata", {{"resourceVersion", resourceVersion}, {"annotations", annotations}}}};
+        if (changed) patch["spec"] = {{"template", podTemplate}};
+        char ns[] = "aarnn";
+        const auto encoded = patch.dump();
+        std::unique_ptr<char, decltype(&free)> raw(mergePatchNamespacedResource(client.get(), ns,
+            name.c_str(), encoded.c_str()), &free);
+        if (!raw || workloadLogsApiClient->response_code < 200 || workloadLogsApiClient->response_code >= 300)
+            return sendErrorResponse(res, workloadLogsApiClient->response_code >= 400 ? workloadLogsApiClient->response_code : 502,
+            "Kubernetes rejected the conditional FPV storage repair.");
+        const auto patched = nlohmann::json::parse(raw.get());
+        Models::CloudResponse response;
+        response.success = true;
+        response.message = "FPV storage repaired; poll Deployment status before claiming application readiness.";
+        response.data = deploymentStatusData(patched);
+        response.data["deployment"] = name;
+        response.data["job_root"] = desiredRoot;
+        response.data["changed"] = changed;
+        response.data["already_applied"] = false;
+        response.data["request_id"] = requestId;
+        response.data["change_id"] = changeId;
+        sendJsonResponse(res, response);
+    } catch (const nlohmann::json::parse_error&) {
+        sendErrorResponse(res, 400, "Invalid FPV configuration JSON.");
+    } catch (const std::exception&) {
+        sendErrorResponse(res, 409, "FPV storage preconditions could not be verified; no further mutation was attempted.");
     }
 }
 
@@ -2407,14 +2616,14 @@ void K8sHandlers::handleConfigureOctoBot(const httplib::Request &req,
                            {"initContainers", initContainers}}}}}};
     }
     const std::string patchBody = patch.dump();
-    char *rawPatched = Generic_patchNamespacedResource(
+    char *rawPatched = mergePatchNamespacedResource(
         deploymentClient, const_cast<char *>(namespaceName.c_str()),
         const_cast<char *>(deploymentName.c_str()),
-        const_cast<char *>(patchBody.c_str()), nullptr, nullptr, nullptr,
-        nullptr, nullptr);
+        patchBody.c_str());
     const int patchStatus = workloadLogsApiClient->response_code;
     genericClient_free(deploymentClient);
-    if (!rawPatched) {
+    if (!rawPatched || patchStatus < 200 || patchStatus >= 300) {
+      free(rawPatched);
       return sendErrorResponse(
           res, patchStatus >= 400 ? patchStatus : 503,
           "Kubernetes rejected the conditional OctoBot configuration request.");

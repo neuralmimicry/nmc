@@ -56,6 +56,10 @@ namespace NMC::Server {
             if (!guard(req, res)) return;
             k8sHandlers->handleConfigureOctoBot(req, res);
         });
+        svr.Post("/k8s/aarnn/fpv-storage", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            k8sHandlers->handleConfigureAarnnFpvStorage(req, res);
+        });
         svr.Post("/k8s/refiner/scale", [this, guard](const httplib::Request& req, httplib::Response& res) {
             if (!guard(req, res)) return;
             k8sHandlers->handleScaleRefiner(req, res);
