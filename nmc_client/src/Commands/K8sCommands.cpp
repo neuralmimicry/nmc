@@ -151,13 +151,15 @@ K8sHealthCommand::K8sHealthCommand(std::shared_ptr<NMC::Core::CloudAPIClient> cl
 
 K8sLogsCommand::K8sLogsCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client)
     : BaseCommand("logs", "Read bounded Kubernetes workload logs through Continuum", std::move(client)) {
-    usage = "nmc k8s logs --namespace NAMESPACE --deployment DEPLOYMENT [--since-seconds 300] [--tail-lines 500] [--previous]";
+    usage = "nmc k8s logs --namespace NAMESPACE --deployment DEPLOYMENT [--since-seconds 300] [--tail-lines 500] [--previous] [--container NAME] [--init-container]";
     examples = "nmc k8s logs --namespace octobot --deployment octobot --since-seconds 1200 --tail-lines 1000";
     addFlag(CLI::Flag("n", "namespace", "Kubernetes namespace", CLI::FlagType::String, true));
     addFlag(CLI::Flag("d", "deployment", "Kubernetes Deployment", CLI::FlagType::String, true));
     addFlag(CLI::Flag("s", "since-seconds", "Maximum age of log entries (1-86400)", CLI::FlagType::Int, false, "300"));
     addFlag(CLI::Flag("t", "tail-lines", "Maximum lines per container (1-2000)", CLI::FlagType::Int, false, "500"));
     addFlag(CLI::Flag("p", "previous", "Read the previous terminated container instance", CLI::FlagType::Bool, false));
+    addFlag(CLI::Flag("c", "container", "Select one container by Kubernetes name", CLI::FlagType::String, false));
+    addFlag(CLI::Flag("i", "init-container", "Select an init container (requires --container)", CLI::FlagType::Bool, false));
 }
 
 int K8sLogsCommand::execute(const std::map<std::string, std::string>& parsedFlags,
@@ -176,11 +178,18 @@ int K8sLogsCommand::execute(const std::map<std::string, std::string>& parsedFlag
     const std::string namespaceName = parsedFlags.at("namespace");
     const std::string deploymentName = parsedFlags.at("deployment");
     const bool previous = parsedFlags.count("previous") > 0 && parsedFlags.at("previous") == "1";
+    const std::string containerName = parsedFlags.count("container") ? parsedFlags.at("container") : "";
+    const bool initContainer = parsedFlags.count("init-container") > 0 && parsedFlags.at("init-container") == "1";
+    if (initContainer && containerName.empty()) {
+        std::cerr << "Error: --init-container requires --container." << std::endl;
+        return 1;
+    }
     if (sinceSeconds < 1 || sinceSeconds > 86400 || tailLines < 1 || tailLines > 2000) {
         std::cerr << "Error: since-seconds must be 1-86400 and tail-lines must be 1-2000." << std::endl;
         return 1;
     }
-    const auto response = apiClient->getK8sWorkloadLogs(namespaceName, deploymentName, sinceSeconds, tailLines, previous);
+    const auto response = apiClient->getK8sWorkloadLogs(
+            namespaceName, deploymentName, sinceSeconds, tailLines, previous, containerName, initContainer);
     printOutput(response, globalFlags);
     return response.success ? 0 : 1;
 }

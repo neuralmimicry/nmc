@@ -206,6 +206,7 @@ class MockBackend:
         self.active_k8s_requests = 0
         self.max_concurrent_k8s_requests = 0
         self.k8s_pod_log_accept_headers: list[str] = []
+        self.k8s_pod_log_queries: list[dict[str, list[str]]] = []
         self.k8s_event_field_selectors: list[str] = []
         self.k8s_event_message = "0/1 nodes are available: 1 Insufficient memory."
         self.k8s_pod_list_queries: list[dict[str, Any]] = []
@@ -556,6 +557,7 @@ class MockBackend:
                         return
                     pod_spec = workload.get("spec", {}).get("template", {}).get("spec", {})
                     containers = pod_spec.get("containers", [])
+                    init_containers = pod_spec.get("initContainers", [])
                     labels = workload.get("spec", {}).get("template", {}).get("metadata", {}).get("labels", {})
                     owner_uid = workload.get("metadata", {}).get("uid", "")
                     pod_status_override = (
@@ -579,7 +581,9 @@ class MockBackend:
                         "spec": {
                             "nodeName": "qc01",
                             "containers": [{"name": item.get("name", "")}
-                                            for item in containers if item.get("name")]
+                                            for item in containers if item.get("name")],
+                            "initContainers": [{"name": item.get("name", "")}
+                                               for item in init_containers if item.get("name")],
                         },
                         "status": pod_status_override or {
                             "phase": "Running",
@@ -667,8 +671,10 @@ class MockBackend:
         if k8s_pod_log_match and handler.command == "GET":
             with self._track_k8s_request():
                 accept_header = handler.headers.get("Accept", "")
+                query = parse_qs(urlsplit(handler.path).query)
                 with self._lock:
                     self.k8s_pod_log_accept_headers.append(accept_header)
+                    self.k8s_pod_log_queries.append(query)
                 if accept_header.strip().lower() != "application/json":
                     self._send_json(handler, 406, {"message": "pod log negotiation requires Accept: application/json"})
                     return
@@ -4505,6 +4511,55 @@ def test_k8s_workload_logs_require_control_and_enforce_bounds(server: NmcServerP
     )
     assert_status(status, 400, "workload log target must be a Kubernetes DNS label")
 
+    status, _ = request_json(
+        server.base_url,
+        "GET",
+        valid_path + "&init_container=true",
+        token="continuum-control-token",
+    )
+    assert_status(status, 400, "init-container logs require an explicit container name")
+
+    status, _ = request_json(
+        server.base_url,
+        "GET",
+        valid_path + "&container=bootstrap-gail-authority&init_container=maybe",
+        token="continuum-control-token",
+    )
+    assert_status(status, 400, "init-container selection must be an explicit boolean")
+
+
+def test_k8s_workload_logs_can_select_a_bounded_init_container(backend: MockBackend) -> None:
+    server = NmcServerProcess(
+        backend.base_url,
+        cluster_id="authz-test-cluster",
+        k8s_server_url=backend.base_url,
+    )
+    try:
+        server.start()
+        status, payload = request_json(
+            server.base_url,
+            "GET",
+            "/k8s/workload/logs?namespace=octobot&deployment=octobot"
+            "&container=bootstrap-gail-authority&init_container=true"
+            "&since_seconds=1200&tail_lines=20&previous=true",
+            token="continuum-control-token",
+        )
+        assert_status(status, 200, "targeted bounded init-container logs through Continuum")
+        data = payload.get("data", {})
+        items = data.get("items", [])
+        assert_true(data.get("container") == "bootstrap-gail-authority" and data.get("init_container") is True,
+                    "the response must identify the exact requested init container")
+        assert_true(len(items) == 1 and items[0].get("container_type") == "init",
+                    "only the selected init-container stream should be returned")
+        assert_true("bounded mock workload log" in items[0].get("logs", ""),
+                    "the selected terminated init-container output must be returned")
+        assert_true(len(backend.k8s_pod_log_queries) == 1
+                    and backend.k8s_pod_log_queries[0].get("container") == ["bootstrap-gail-authority"]
+                    and backend.k8s_pod_log_queries[0].get("previous") == ["1"],
+                    "Continuum must fetch only the named previous init-container instance")
+    finally:
+        server.stop()
+
 
 def test_k8s_deployment_events_use_observe_scope_and_enforce_bounds(backend_base_url: str) -> None:
     server = NmcServerProcess(
@@ -5028,6 +5083,7 @@ fi
         test_central_auth_outage_returns_503_and_invalid_token_stays_401(server, backend)
         test_continuum_route_authorisation(server, backend)
         test_k8s_workload_logs_require_control_and_enforce_bounds(server)
+        test_k8s_workload_logs_can_select_a_bounded_init_container(backend)
         test_k8s_deployment_events_use_observe_scope_and_enforce_bounds(backend.base_url)
         test_github_actions_routes_require_dedicated_scope_and_backend_credential(server)
         test_refiner_status_serializes_shared_kubernetes_client(backend)

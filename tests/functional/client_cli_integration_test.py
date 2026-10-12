@@ -984,6 +984,29 @@ def test_k8s_workload_logs_serialization(server: MockServer, home_dir: pathlib.P
         f"k8s logs query was not serialised as expected: {records[0].path}",
     )
 
+    server.clear_records()
+    result = run_nmc(
+        [
+            "--output", "json",
+            "k8s", "logs",
+            "--namespace", "octobot",
+            "--deployment", "octobot",
+            "--since-seconds", "1200",
+            "--tail-lines", "1000",
+            "--previous",
+            "--container", "bootstrap-gail-authority",
+            "--init-container",
+        ],
+        home_dir,
+    )
+    assert_success(result, "bounded init-container workload logs")
+    records = server.records()
+    assert_true(len(records) == 1 and records[0].method == "GET", "init-container logs must use one read-only request")
+    assert_true(
+        records[0].path == "/k8s/workload/logs?namespace=octobot&deployment=octobot&since_seconds=1200&tail_lines=1000&previous=true&container=bootstrap-gail-authority&init_container=true",
+        f"init-container log selection was not serialised as expected: {records[0].path}",
+    )
+
 
 def test_k8s_workload_logs_rejects_out_of_bounds_before_network(server: MockServer, home_dir: pathlib.Path) -> None:
     server.clear_records()
@@ -998,6 +1021,18 @@ def test_k8s_workload_logs_rejects_out_of_bounds_before_network(server: MockServ
     )
     assert_failure(result, "out-of-bounds k8s workload logs")
     assert_true(len(server.records()) == 0, "out-of-bounds k8s logs must fail before network access")
+
+    result = run_nmc(
+        [
+            "k8s", "logs",
+            "--namespace", "octobot",
+            "--deployment", "octobot",
+            "--init-container",
+        ],
+        home_dir,
+    )
+    assert_failure(result, "init-container logs without a selected container")
+    assert_true(len(server.records()) == 0, "incomplete init-container selection must fail before network access")
 
 
 def test_k8s_deployment_status_uses_continuum_read_route(server: MockServer, home_dir: pathlib.Path) -> None:

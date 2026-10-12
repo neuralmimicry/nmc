@@ -76,7 +76,9 @@ namespace NMC::Core {
                                                  const std::string& deploymentName,
                                                  int sinceSeconds = 300,
                                                  int tailLines = 500,
-                                                 bool previous = false);
+                                                 bool previous = false,
+                                                 const std::string& containerName = {},
+                                                 bool initContainer = false);
         Models::CloudResponse getRefinerDeploymentStatus(const std::string& namespaceName = "refiner",
                                                          const std::string& deploymentName = "refiner");
         Models::CloudResponse scaleRefinerDeployment(int replicas,

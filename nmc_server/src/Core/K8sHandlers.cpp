@@ -2267,6 +2267,23 @@ users:
                 if (!isDnsLabel(namespaceName) || !isDnsLabel(deploymentName)) {
                     return sendErrorResponse(res, 400, "namespace and deployment must be Kubernetes DNS labels.");
                 }
+                const std::string requestedContainer = req.has_param("container")
+                        ? trimCopy(req.get_param_value("container"))
+                        : std::string{};
+                if (!requestedContainer.empty() && !isDnsLabel(requestedContainer)) {
+                    return sendErrorResponse(res, 400, "container must be a Kubernetes DNS label.");
+                }
+                bool initContainer = false;
+                if (req.has_param("init_container")) {
+                    const std::string rawInitContainer = toLowerCopy(trimCopy(req.get_param_value("init_container")));
+                    if (rawInitContainer != "true" && rawInitContainer != "false") {
+                        return sendErrorResponse(res, 400, "init_container must be true or false.");
+                    }
+                    initContainer = rawInitContainer == "true";
+                }
+                if (initContainer && requestedContainer.empty()) {
+                    return sendErrorResponse(res, 400, "init_container=true requires an explicit container name.");
+                }
 
                 const auto parseBoundedInt = [&req](const char* key, int fallback, int minimum, int maximum,
                                                      int& value) {
@@ -2379,7 +2396,9 @@ users:
                     const std::string podName = pod.value("metadata", nlohmann::json::object()).value("name", "");
                     if (!isDnsLabel(podName)) continue;
                     const std::string phase = pod.value("status", nlohmann::json::object()).value("phase", "Unknown");
-                    const auto containers = pod.value("spec", nlohmann::json::object()).value("containers", nlohmann::json::array());
+                    const auto podSpec = pod.value("spec", nlohmann::json::object());
+                    const auto containers = podSpec.value(
+                            initContainer ? "initContainers" : "containers", nlohmann::json::array());
                     if (!containers.is_array()) continue;
                     ++podCount;
                     for (const auto& containerInfo : containers) {
@@ -2390,6 +2409,7 @@ users:
                         }
                         const std::string containerName = containerInfo.value("name", "");
                         if (!isDnsLabel(containerName)) continue;
+                        if (!requestedContainer.empty() && containerName != requestedContainer) continue;
                         ++containerCount;
                         const size_t remainingBytes = maxResponseLogBytes - totalLogBytes;
                         if (remainingBytes == 0) {
@@ -2399,6 +2419,7 @@ users:
                         int limitBytes = static_cast<int>(std::min(remainingBytes, static_cast<size_t>(perContainerLogBytes)));
                         nlohmann::json logItem = {
                                 {"pod", podName}, {"container", containerName}, {"phase", phase},
+                                {"container_type", initContainer ? "init" : "application"},
                                 {"previous", previous}, {"truncated", false}
                         };
                         bool logTruncated = false;
@@ -2439,6 +2460,9 @@ users:
                     }
                     if (truncated && (totalLogBytes >= maxResponseLogBytes || containerCount >= maxContainers)) break;
                 }
+                if (!requestedContainer.empty() && podCount > 0 && containerCount == 0) {
+                    return sendErrorResponse(res, 404, "Requested container is not present in matching Deployment Pods.");
+                }
 
                 Models::CloudResponse apiResponse;
                 apiResponse.success = true;
@@ -2446,6 +2470,8 @@ users:
                 apiResponse.data = {
                         {"namespace", namespaceName},
                         {"deployment", deploymentName},
+                        {"container", requestedContainer},
+                        {"init_container", initContainer},
                         {"since_seconds", sinceSeconds},
                         {"tail_lines", tailLines},
                         {"previous", previous},

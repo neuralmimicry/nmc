@@ -32,7 +32,7 @@ Within the wider NeuralMimicry estate, Continuum is the `release` and `operate` 
 |---|---|---|
 | Connectivity | `connection`, `server`, `version` | Local connection profiles live in `~/.nmc/config.json`; selected commands also support a server-side connection registry via `--server`. |
 | Core resources | `bucket`, `ssh`, `vm`, `model` | CRUD-style resource endpoints exposed through the CLI and HTTP API. Several of these server-side resources are currently in-memory and non-persistent. |
-| Kubernetes | `k8s` | Cluster create/get/get-config/list/list-locations/health/resume/suspend, bounded Deployment status/logs, gated image rollout and typed OctoBot runtime-policy reconciliation through the authenticated server API. |
+| Kubernetes | `k8s` | Cluster create/get/get-config/list/list-locations/health/resume/suspend, bounded Deployment status/logs (including explicitly selected init containers), gated image rollout and typed OctoBot runtime-policy reconciliation through the authenticated server API. |
 | Virtual clusters | `vcluster` | Create/delete/get/get-config/list plus pause/resume/backup/restore/upgrade/config-get/config-update/metrics/health/resources. Advanced create configuration exists on the server API via a `config` JSON payload; the CLI create command currently exposes `name` and optional `namespace`. |
 | Provider portals | `openshift`, `openstack`, `proxmox` | Capacity listing, cluster listing, cluster request, and polling status workflows against external portal APIs. |
 | Tracey | `tracey` | Heartbeat ingestion, fleet inventory, analytics, the adaptive plan/ramp/optimise/repeat loop, operator-selectable placement policies, CVE status, compromise assessment, per-agent assessment plan/report flows, rack views, agent telemetry, control, deep-dive diagnostics, debounced snapshot persistence, and optional PostgreSQL history storage. |
@@ -216,6 +216,7 @@ returned as null. It does not require mutation-capable AARNN access.
 ./nmc_client/build/nmc refiner status --namespace refiner
 ./nmc_client/build/nmc refiner scale --replicas 3 --namespace refiner
 ./nmc_client/build/nmc k8s logs --namespace octobot --deployment octobot --since-seconds 1200 --tail-lines 1000
+./nmc_client/build/nmc k8s logs --namespace octobot --deployment octobot --container bootstrap-gail-authority --init-container --previous
 ```
 
 `k8s logs` calls Continuum's read-only workload-log API; it does not invoke
@@ -224,6 +225,8 @@ logs can contain sensitive data. It selects pods from the named Deployment's
 own labels and caps age, lines, pods, containers, total log content and the
 serialised response. It reads one bounded pod-list page and sets `truncated`
 when more matching pods remain.
+For a failed init container, select exactly one by name with `--container NAME
+--init-container`; add `--previous` to read its last terminated instance.
 
 ### Server
 

@@ -83,6 +83,9 @@ Server-side:
 `k8s logs` validates DNS-label namespace/Deployment names and bounds the query
 to at most 24 hours, 2,000 lines per container, 20 matching pods, 40 containers,
 128 KiB per container, 1 MiB total log content and an 8 MiB serialised response.
+Init-container logs are opt-in and require a validated `container` name; a
+request reads only that init-container stream and may select its previous
+terminated instance. They share the same bounds and access scope.
 It reads one bounded pod-list page and marks the result truncated when
 Kubernetes reports another page. The server derives its label selector from
 the named Deployment and rejects selector expressions it cannot apply exactly.

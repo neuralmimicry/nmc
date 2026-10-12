@@ -446,7 +446,9 @@ namespace NMC::Core {
             const std::string& deploymentName,
             int sinceSeconds,
             int tailLines,
-            bool previous
+            bool previous,
+            const std::string& containerName,
+            bool initContainer
     ) {
         const auto isDnsLabel = [](const std::string& value) {
             return !value.empty() && value.size() <= 63 && value.front() != '-' && value.back() != '-'
@@ -455,10 +457,12 @@ namespace NMC::Core {
                     });
         };
         if (!isDnsLabel(namespaceName) || !isDnsLabel(deploymentName)
+            || (!containerName.empty() && !isDnsLabel(containerName))
+            || (initContainer && containerName.empty())
             || sinceSeconds < 1 || sinceSeconds > 86400 || tailLines < 1 || tailLines > 2000) {
             Models::CloudResponse response;
             response.success = false;
-            response.message = "namespace/deployment must be Kubernetes DNS labels; since-seconds must be 1-86400 and tail-lines 1-2000.";
+            response.message = "namespace/deployment/container must be Kubernetes DNS labels; init-container requires a container name; since-seconds must be 1-86400 and tail-lines 1-2000.";
             response.statusCode = 400;
             return response;
         }
@@ -467,6 +471,12 @@ namespace NMC::Core {
                 + "&since_seconds=" + std::to_string(sinceSeconds)
                 + "&tail_lines=" + std::to_string(tailLines)
                 + "&previous=" + (previous ? "true" : "false");
+        if (!containerName.empty()) {
+            path += "&container=" + encodeQueryValue(containerName);
+        }
+        if (initContainer) {
+            path += "&init_container=true";
+        }
         auto res = cli->Get(path);
         return processHttpResponse(res, "Bounded Kubernetes workload logs retrieved.");
     }
