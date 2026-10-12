@@ -32,7 +32,7 @@ Within the wider NeuralMimicry estate, Continuum is the `release` and `operate` 
 |---|---|---|
 | Connectivity | `connection`, `server`, `version` | Local connection profiles live in `~/.nmc/config.json`; selected commands also support a server-side connection registry via `--server`. |
 | Core resources | `bucket`, `ssh`, `vm`, `model` | CRUD-style resource endpoints exposed through the CLI and HTTP API. Several of these server-side resources are currently in-memory and non-persistent. |
-| Kubernetes | `k8s` | Cluster create/get/get-config/list/list-locations/health/resume/suspend, bounded Deployment status/logs, gated image rollout and typed OctoBot runtime-policy reconciliation through the authenticated server API. |
+| Kubernetes | `k8s` | Cluster create/get/get-config/list/list-locations/health/resume/suspend, bounded Deployment status/logs (including explicitly selected init containers), gated image rollout and typed OctoBot runtime-policy reconciliation through the authenticated server API. |
 | Virtual clusters | `vcluster` | Create/delete/get/get-config/list plus pause/resume/backup/restore/upgrade/config-get/config-update/metrics/health/resources. Advanced create configuration exists on the server API via a `config` JSON payload; the CLI create command currently exposes `name` and optional `namespace`. |
 | Provider portals | `openshift`, `openstack`, `proxmox` | Capacity listing, cluster listing, cluster request, and polling status workflows against external portal APIs. |
 | Tracey | `tracey` | Heartbeat ingestion, fleet inventory, analytics, the adaptive plan/ramp/optimise/repeat loop, operator-selectable placement policies, CVE status, compromise assessment, per-agent assessment plan/report flows, rack views, agent telemetry, control, deep-dive diagnostics, debounced snapshot persistence, and optional PostgreSQL history storage. |
@@ -126,6 +126,7 @@ Global output formats currently implemented are:
 ./nmc_client/build/nmc k8s health
 ./nmc_client/build/nmc k8s node-resources qc05
 ./nmc_client/build/nmc --output json k8s deployment-status --cluster-id rk1 --namespace octobot --deployment octobot
+./nmc_client/build/nmc --output json k8s deployment-events --cluster-id rk1 --namespace octobot --deployment octobot --max-events 50
 ./nmc_client/build/nmc vcluster create demo --namespace vcluster-demo
 ./nmc_client/build/nmc vcluster create demo-uat --config-file ./vcluster-config.json
 ./nmc_client/build/nmc vcluster health demo
@@ -141,6 +142,11 @@ Metrics API usage sample, its timestamp, age and freshness. Missing Metrics API
 data is returned as explicitly unavailable rather than zero. The response
 does not sum scheduled Pod requests, so it does not claim scheduler request
 headroom; use it as a capacity observation, not placement approval.
+
+`k8s deployment-events` reads bounded scheduling and lifecycle Events for the
+Pods selected by one Deployment. It is useful when a Pod is Pending or logs are
+not yet available. Continuum checks the configured cluster identity, queries
+by the exact Pod UID, and returns at most 100 Events without storing them.
 
 OctoBot policy changes must use `nmc k8s configure-octobot` with a new
 request ID, the current `octobot_config_request_id` from Deployment status as
@@ -210,6 +216,7 @@ returned as null. It does not require mutation-capable AARNN access.
 ./nmc_client/build/nmc refiner status --namespace refiner
 ./nmc_client/build/nmc refiner scale --replicas 3 --namespace refiner
 ./nmc_client/build/nmc k8s logs --namespace octobot --deployment octobot --since-seconds 1200 --tail-lines 1000
+./nmc_client/build/nmc k8s logs --namespace octobot --deployment octobot --container bootstrap-gail-authority --init-container --previous
 ```
 
 `k8s logs` calls Continuum's read-only workload-log API; it does not invoke
@@ -218,6 +225,8 @@ logs can contain sensitive data. It selects pods from the named Deployment's
 own labels and caps age, lines, pods, containers, total log content and the
 serialised response. It reads one bounded pod-list page and sets `truncated`
 when more matching pods remain.
+For a failed init container, select exactly one by name with `--container NAME
+--init-container`; add `--previous` to read its last terminated instance.
 
 ### Server
 

@@ -206,6 +206,9 @@ class MockBackend:
         self.active_k8s_requests = 0
         self.max_concurrent_k8s_requests = 0
         self.k8s_pod_log_accept_headers: list[str] = []
+        self.k8s_pod_log_queries: list[dict[str, list[str]]] = []
+        self.k8s_event_field_selectors: list[str] = []
+        self.k8s_event_message = "0/1 nodes are available: 1 Insufficient memory."
         self.k8s_pod_list_queries: list[dict[str, Any]] = []
         self.k8s_pod_status_override: dict[str, Any] | None = None
         self.home_assistant_status = 200
@@ -554,6 +557,7 @@ class MockBackend:
                         return
                     pod_spec = workload.get("spec", {}).get("template", {}).get("spec", {})
                     containers = pod_spec.get("containers", [])
+                    init_containers = pod_spec.get("initContainers", [])
                     labels = workload.get("spec", {}).get("template", {}).get("metadata", {}).get("labels", {})
                     owner_uid = workload.get("metadata", {}).get("uid", "")
                     pod_status_override = (
@@ -577,7 +581,9 @@ class MockBackend:
                         "spec": {
                             "nodeName": "qc01",
                             "containers": [{"name": item.get("name", "")}
-                                            for item in containers if item.get("name")]
+                                            for item in containers if item.get("name")],
+                            "initContainers": [{"name": item.get("name", "")}
+                                               for item in init_containers if item.get("name")],
                         },
                         "status": pod_status_override or {
                             "phase": "Running",
@@ -607,14 +613,68 @@ class MockBackend:
                 })
                 return
 
+        k8s_event_list_match = re.fullmatch(r"/api/v1/namespaces/([a-z0-9-]+)/events", path_only)
+        if k8s_event_list_match and handler.command == "GET":
+            with self._track_k8s_request():
+                query = parse_qs(urlsplit(handler.path).query)
+                field_selector = query.get("fieldSelector", [""])[0]
+                try:
+                    limit = int(query.get("limit", ["0"])[0])
+                except ValueError:
+                    limit = 0
+                with self._lock:
+                    self.k8s_event_field_selectors.append(field_selector)
+                if not field_selector.startswith("involvedObject.uid=") or limit < 1 or limit > 10:
+                    self._send_json(handler, 400, {"message": "bounded Pod UID fieldSelector and limit are required"})
+                    return
+                target_uid = field_selector.removeprefix("involvedObject.uid=")
+                # Include a stale unrelated Event to verify Continuum checks the
+                # involvedObject UID itself as well as relying on the API selector.
+                items = [
+                    {
+                        "apiVersion": "v1",
+                        "kind": "Event",
+                        "metadata": {
+                            "name": "octobot-test-pod.19f0",
+                            "creationTimestamp": "2026-10-11T20:00:00Z",
+                        },
+                        "involvedObject": {"kind": "Pod", "name": "octobot-test-pod", "uid": target_uid},
+                        "type": "Warning",
+                        "reason": "FailedScheduling",
+                        "message": self.k8s_event_message,
+                        "count": 3,
+                        "firstTimestamp": "2026-10-11T19:58:00Z",
+                        "lastTimestamp": "2026-10-11T20:00:00Z",
+                        "source": {"component": "default-scheduler"},
+                    },
+                    {
+                        "apiVersion": "v1",
+                        "kind": "Event",
+                        "metadata": {"name": "unrelated-pod.19f1"},
+                        "involvedObject": {"kind": "Pod", "name": "unrelated-pod", "uid": "other-pod-uid"},
+                        "type": "Normal",
+                        "reason": "Scheduled",
+                        "message": "This event belongs to an unrelated Pod.",
+                    },
+                ]
+                self._send_json(handler, 200, {
+                    "apiVersion": "v1",
+                    "kind": "EventList",
+                    "metadata": {"resourceVersion": "event-list-resource-version"},
+                    "items": items[:limit],
+                })
+                return
+
         k8s_pod_log_match = re.fullmatch(
             r"/api/v1/namespaces/([a-z0-9-]+)/pods/([a-z0-9-]+)/log", path_only
         )
         if k8s_pod_log_match and handler.command == "GET":
             with self._track_k8s_request():
                 accept_header = handler.headers.get("Accept", "")
+                query = parse_qs(urlsplit(handler.path).query)
                 with self._lock:
                     self.k8s_pod_log_accept_headers.append(accept_header)
+                    self.k8s_pod_log_queries.append(query)
                 if accept_header.strip().lower() != "application/json":
                     self._send_json(handler, 406, {"message": "pod log negotiation requires Accept: application/json"})
                     return
@@ -4451,6 +4511,167 @@ def test_k8s_workload_logs_require_control_and_enforce_bounds(server: NmcServerP
     )
     assert_status(status, 400, "workload log target must be a Kubernetes DNS label")
 
+    status, _ = request_json(
+        server.base_url,
+        "GET",
+        valid_path + "&init_container=true",
+        token="continuum-control-token",
+    )
+    assert_status(status, 400, "init-container logs require an explicit container name")
+
+    status, _ = request_json(
+        server.base_url,
+        "GET",
+        valid_path + "&container=bootstrap-gail-authority&init_container=maybe",
+        token="continuum-control-token",
+    )
+    assert_status(status, 400, "init-container selection must be an explicit boolean")
+
+
+def test_k8s_workload_logs_can_select_a_bounded_init_container(backend: MockBackend) -> None:
+    server = NmcServerProcess(
+        backend.base_url,
+        cluster_id="authz-test-cluster",
+        k8s_server_url=backend.base_url,
+    )
+    try:
+        server.start()
+        status, payload = request_json(
+            server.base_url,
+            "GET",
+            "/k8s/workload/logs?namespace=octobot&deployment=octobot"
+            "&container=bootstrap-gail-authority&init_container=true"
+            "&since_seconds=1200&tail_lines=20&previous=true",
+            token="continuum-control-token",
+        )
+        assert_status(status, 200, "targeted bounded init-container logs through Continuum")
+        data = payload.get("data", {})
+        items = data.get("items", [])
+        assert_true(data.get("container") == "bootstrap-gail-authority" and data.get("init_container") is True,
+                    "the response must identify the exact requested init container")
+        assert_true(len(items) == 1 and items[0].get("container_type") == "init",
+                    "only the selected init-container stream should be returned")
+        assert_true("bounded mock workload log" in items[0].get("logs", ""),
+                    "the selected terminated init-container output must be returned")
+        assert_true(len(backend.k8s_pod_log_queries) == 1
+                    and backend.k8s_pod_log_queries[0].get("container") == ["bootstrap-gail-authority"]
+                    and backend.k8s_pod_log_queries[0].get("previous") == ["1"],
+                    "Continuum must fetch only the named previous init-container instance")
+    finally:
+        server.stop()
+
+
+def test_k8s_deployment_events_use_observe_scope_and_enforce_bounds(backend_base_url: str) -> None:
+    server = NmcServerProcess(
+        backend_base_url,
+        cluster_id="authz-test-cluster",
+        load_kubeconfig=False,
+    )
+    try:
+        server.start()
+        path = (
+            "/k8s/deployment/events?cluster_id=authz-test-cluster"
+            "&namespace=octobot&deployment=octobot"
+        )
+        status, _ = request_json(server.base_url, "GET", path)
+        assert_status(status, 401, "Deployment Events require authentication")
+
+        status, _ = request_json(
+            server.base_url,
+            "GET",
+            path,
+            token="continuum-observe-token",
+        )
+        assert_status(status, 503, "observe scope reaches the read-only Deployment Events handler")
+
+        status, _ = request_json(
+            server.base_url,
+            "GET",
+            path + "&max_events=101",
+            token="continuum-observe-token",
+        )
+        assert_status(status, 400, "Deployment Events enforce the 100-item bound")
+
+        status, _ = request_json(
+            server.base_url,
+            "GET",
+            path + "&max_events=1invalid",
+            token="continuum-observe-token",
+        )
+        assert_status(status, 400, "Deployment Events reject malformed item bounds")
+
+        wrong_cluster = path.replace("authz-test-cluster", "other-cluster")
+        status, _ = request_json(
+            server.base_url,
+            "GET",
+            wrong_cluster,
+            token="continuum-observe-token",
+        )
+        assert_status(status, 409, "Deployment Events must match the configured Continuum context")
+    finally:
+        server.stop()
+
+
+def test_deployment_events_report_bounded_scheduler_diagnostics(backend: MockBackend) -> None:
+    server = NmcServerProcess(
+        backend.base_url,
+        cluster_id="authz-test-cluster",
+        k8s_server_url=backend.base_url,
+    )
+    try:
+        server.start()
+        status, payload = request_json(
+            server.base_url,
+            "GET",
+            "/k8s/deployment/events?cluster_id=authz-test-cluster"
+            "&namespace=octobot&deployment=octobot&max_events=20",
+            token="continuum-observe-token",
+        )
+        assert_status(status, 200, "bounded Deployment Events read through Continuum")
+        data = payload.get("data", {})
+        events = data.get("events", [])
+        assert_true(data.get("event_count") == 1 and len(events) == 1,
+                    "only the Event for the exact Deployment Pod UID may be returned")
+        assert_true(events[0].get("reason") == "FailedScheduling"
+                    and "Insufficient memory" in events[0].get("message", ""),
+                    "the bounded result must preserve the scheduler's actionable reason")
+        assert_true(events[0].get("pod") == "octobot-test-pod"
+                    and events[0].get("node") == "qc01",
+                    "each returned Event must be attributed to its Pod and node")
+        assert_true(backend.k8s_event_field_selectors == ["involvedObject.uid=octobot-test-pod-uid"],
+                    "Kubernetes Events must be queried with the exact Pod UID field selector")
+        assert_true(backend.count_requests("/api/v1/namespaces/octobot/events", "GET") == 1,
+                    "the event reader must perform one bounded namespaced Events request")
+    finally:
+        server.stop()
+
+
+def test_deployment_events_reject_oversized_upstream_event_lists(backend: MockBackend) -> None:
+    backend.k8s_event_message = "x" * (128 * 1024)
+    server = NmcServerProcess(
+        backend.base_url,
+        cluster_id="authz-test-cluster",
+        k8s_server_url=backend.base_url,
+    )
+    try:
+        server.start()
+        status, payload = request_json(
+            server.base_url,
+            "GET",
+            "/k8s/deployment/events?cluster_id=authz-test-cluster"
+            "&namespace=octobot&deployment=octobot&max_events=20",
+            token="continuum-observe-token",
+        )
+        assert_status(status, 200, "oversized event data is reported as a bounded partial diagnostic")
+        data = payload.get("data", {})
+        assert_true(data.get("event_count") == 0 and data.get("error_count") == 1,
+                    "oversized upstream Event lists must be dropped rather than returned")
+        assert_true(data.get("truncated") is True, "oversized upstream Event lists must report truncation")
+        assert_true(data.get("pods", [{}])[0].get("status_code") == 502,
+                    "oversized upstream Event lists must be attributed as a safe upstream error")
+    finally:
+        server.stop()
+
 
 def test_github_actions_routes_require_dedicated_scope_and_backend_credential(server: NmcServerProcess) -> None:
     path = "/github/actions/workflow"
@@ -4862,6 +5083,8 @@ fi
         test_central_auth_outage_returns_503_and_invalid_token_stays_401(server, backend)
         test_continuum_route_authorisation(server, backend)
         test_k8s_workload_logs_require_control_and_enforce_bounds(server)
+        test_k8s_workload_logs_can_select_a_bounded_init_container(backend)
+        test_k8s_deployment_events_use_observe_scope_and_enforce_bounds(backend.base_url)
         test_github_actions_routes_require_dedicated_scope_and_backend_credential(server)
         test_refiner_status_serializes_shared_kubernetes_client(backend)
         test_provider_compute_lifecycle(server, backend)
@@ -4885,6 +5108,8 @@ fi
         test_octobot_configuration_requires_control_scope_and_explicit_policy(backend.base_url)
         test_octobot_configuration_is_allowlisted_conditional_and_idempotent(backend.base_url, backend)
         test_workload_status_and_logs_use_bounded_raw_pod_lists_and_serialize(backend)
+        test_deployment_events_report_bounded_scheduler_diagnostics(backend)
+        test_deployment_events_reject_oversized_upstream_event_lists(backend)
         test_statefulset_status_uses_bounded_owned_pods_and_serialized_reads(backend)
     except AssertionError as exc:
         log_output = server.log_path.read_text(encoding="utf-8", errors="replace") if server.log_path.exists() else ""

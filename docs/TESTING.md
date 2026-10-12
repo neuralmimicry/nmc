@@ -7,6 +7,7 @@ This repository uses a mix of static contract tests and executable CLI/server te
 The current test suite focuses on:
 - client/server interface drift
 - command-to-route coverage drift
+- bounded Kubernetes Deployment Event diagnostics and read-only authorisation
 - adaptive loop contract drift
 - Tracey network simulation and CLI simulation drift
 - recruited-node capacity contract drift
@@ -60,6 +61,7 @@ Covered behaviours:
 - invalid JSON rejection before network execution
 - invalid flag rejection before network execution
 - malformed upstream response handling
+- bounded Deployment Events query serialisation and rejection before network execution
 - AARNN runtime resource reads use a dedicated Continuum observe route and reach only the fixed upstream `GET /api/runtime/resources` endpoint
 
 The functional suite runs the real `nmc` binary against a local mock HTTP server and inspects the emitted HTTP method, path, and body.
@@ -152,6 +154,7 @@ Minimum CI gate for this repository:
 - Sensitive endpoints cannot quietly lose request-body redaction.
 - CLI query strings and JSON payloads are checked against real process execution rather than mocked command objects.
 - Shared `service_access` authorisation is validated end to end for Continuum, Tracey, and AARNN routes.
+- Kubernetes Deployment Event reads require authenticated Continuum observe access, match the configured cluster identity, and verify exact Pod UID attribution.
 - Denied Tracey and AARNN guarded requests are checked to ensure they do not reach protected upstream targets.
 - Release tags are generated from the same build version compiled into the client and server binaries.
 

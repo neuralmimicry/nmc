@@ -446,7 +446,9 @@ namespace NMC::Core {
             const std::string& deploymentName,
             int sinceSeconds,
             int tailLines,
-            bool previous
+            bool previous,
+            const std::string& containerName,
+            bool initContainer
     ) {
         const auto isDnsLabel = [](const std::string& value) {
             return !value.empty() && value.size() <= 63 && value.front() != '-' && value.back() != '-'
@@ -455,10 +457,12 @@ namespace NMC::Core {
                     });
         };
         if (!isDnsLabel(namespaceName) || !isDnsLabel(deploymentName)
+            || (!containerName.empty() && !isDnsLabel(containerName))
+            || (initContainer && containerName.empty())
             || sinceSeconds < 1 || sinceSeconds > 86400 || tailLines < 1 || tailLines > 2000) {
             Models::CloudResponse response;
             response.success = false;
-            response.message = "namespace/deployment must be Kubernetes DNS labels; since-seconds must be 1-86400 and tail-lines 1-2000.";
+            response.message = "namespace/deployment/container must be Kubernetes DNS labels; init-container requires a container name; since-seconds must be 1-86400 and tail-lines 1-2000.";
             response.statusCode = 400;
             return response;
         }
@@ -467,6 +471,12 @@ namespace NMC::Core {
                 + "&since_seconds=" + std::to_string(sinceSeconds)
                 + "&tail_lines=" + std::to_string(tailLines)
                 + "&previous=" + (previous ? "true" : "false");
+        if (!containerName.empty()) {
+            path += "&container=" + encodeQueryValue(containerName);
+        }
+        if (initContainer) {
+            path += "&init_container=true";
+        }
         auto res = cli->Get(path);
         return processHttpResponse(res, "Bounded Kubernetes workload logs retrieved.");
     }
@@ -593,6 +603,38 @@ namespace NMC::Core {
         appendQueryString(path, "deployment", encodeQueryValue(deploymentName));
         auto res = cli->Get(path);
         return processHttpResponse(res, "Continuum Deployment status retrieved.");
+    }
+
+    Models::CloudResponse CloudAPIClient::getK8sDeploymentEvents(const std::string &clusterId,
+                                                                 const std::string &namespaceName,
+                                                                 const std::string &deploymentName, int maxEvents) {
+        const auto safeLabel = [](const std::string &value) {
+            return !value.empty() && value.size() <= 63 && value.front() != '-' && value.back() != '-' &&
+                   std::all_of(value.begin(), value.end(), [](unsigned char ch) {
+                       return (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '-';
+                   });
+        };
+        if (!safeLabel(clusterId) || !safeLabel(namespaceName) || !safeLabel(deploymentName)) {
+            Models::CloudResponse response;
+            response.success = false;
+            response.message = "cluster_id, namespace and deployment must be valid Kubernetes DNS labels.";
+            response.statusCode = 400;
+            return response;
+        }
+        if (maxEvents < 1 || maxEvents > 100) {
+            Models::CloudResponse response;
+            response.success = false;
+            response.message = "max_events must be between 1 and 100.";
+            response.statusCode = 400;
+            return response;
+        }
+        std::string path = "/k8s/deployment/events";
+        appendQueryString(path, "cluster_id", encodeQueryValue(clusterId));
+        appendQueryString(path, "namespace", encodeQueryValue(namespaceName));
+        appendQueryString(path, "deployment", encodeQueryValue(deploymentName));
+        appendQueryString(path, "max_events", std::to_string(maxEvents));
+        auto res = cli->Get(path);
+        return processHttpResponse(res, "Continuum Deployment Events retrieved.");
     }
 
     Models::CloudResponse CloudAPIClient::getK8sStatefulSetStatus(

@@ -40,6 +40,10 @@ namespace NMC::Server {
             if (!guard(req, res)) return;
             k8sHandlers->handleGetDeploymentStatus(req, res);
         });
+        svr.Get("/k8s/deployment/events", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            k8sHandlers->handleGetDeploymentEvents(req, res);
+        });
         svr.Get("/k8s/statefulset/status", [this, guard](const httplib::Request& req, httplib::Response& res) {
             if (!guard(req, res)) return;
             k8sHandlers->handleGetStatefulSetStatus(req, res);

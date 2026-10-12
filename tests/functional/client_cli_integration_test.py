@@ -290,6 +290,18 @@ class MockServer:
             )
             return
 
+        if handler.command == "GET" and path_only == "/k8s/deployment/events":
+            self._send_json(
+                handler,
+                200,
+                {
+                    "success": True,
+                    "message": "Bounded Deployment Pod Events retrieved.",
+                    "data": {"cluster_id": "rk1", "namespace": "octobot", "deployment": "octobot", "events": []},
+                },
+            )
+            return
+
         if handler.command == "GET" and path_only == "/github/actions/workflow":
             self._send_json(
                 handler,
@@ -972,6 +984,29 @@ def test_k8s_workload_logs_serialization(server: MockServer, home_dir: pathlib.P
         f"k8s logs query was not serialised as expected: {records[0].path}",
     )
 
+    server.clear_records()
+    result = run_nmc(
+        [
+            "--output", "json",
+            "k8s", "logs",
+            "--namespace", "octobot",
+            "--deployment", "octobot",
+            "--since-seconds", "1200",
+            "--tail-lines", "1000",
+            "--previous",
+            "--container", "bootstrap-gail-authority",
+            "--init-container",
+        ],
+        home_dir,
+    )
+    assert_success(result, "bounded init-container workload logs")
+    records = server.records()
+    assert_true(len(records) == 1 and records[0].method == "GET", "init-container logs must use one read-only request")
+    assert_true(
+        records[0].path == "/k8s/workload/logs?namespace=octobot&deployment=octobot&since_seconds=1200&tail_lines=1000&previous=true&container=bootstrap-gail-authority&init_container=true",
+        f"init-container log selection was not serialised as expected: {records[0].path}",
+    )
+
 
 def test_k8s_workload_logs_rejects_out_of_bounds_before_network(server: MockServer, home_dir: pathlib.Path) -> None:
     server.clear_records()
@@ -986,6 +1021,18 @@ def test_k8s_workload_logs_rejects_out_of_bounds_before_network(server: MockServ
     )
     assert_failure(result, "out-of-bounds k8s workload logs")
     assert_true(len(server.records()) == 0, "out-of-bounds k8s logs must fail before network access")
+
+    result = run_nmc(
+        [
+            "k8s", "logs",
+            "--namespace", "octobot",
+            "--deployment", "octobot",
+            "--init-container",
+        ],
+        home_dir,
+    )
+    assert_failure(result, "init-container logs without a selected container")
+    assert_true(len(server.records()) == 0, "incomplete init-container selection must fail before network access")
 
 
 def test_k8s_deployment_status_uses_continuum_read_route(server: MockServer, home_dir: pathlib.Path) -> None:
@@ -1009,6 +1056,62 @@ def test_k8s_deployment_status_uses_continuum_read_route(server: MockServer, hom
         records[0].path == "/k8s/deployment/status?cluster_id=rk1&namespace=octobot&deployment=octobot",
         f"Deployment status query was not serialised as expected: {records[0].path}",
     )
+
+
+def test_k8s_deployment_events_use_bounded_continuum_read_route(server: MockServer, home_dir: pathlib.Path) -> None:
+    server.clear_records()
+    result = run_nmc(
+        [
+            "--output", "json",
+            "k8s", "deployment-events",
+            "--cluster-id", "rk1",
+            "--namespace", "octobot",
+            "--deployment", "octobot",
+            "--max-events", "50",
+        ],
+        home_dir,
+    )
+    assert_success(result, "bounded k8s Deployment Events")
+    output = json.loads(result.stdout)
+    assert_true(output.get("success") is True, "Deployment Events must emit a successful JSON envelope")
+    records = server.records()
+    assert_true(len(records) == 1 and records[0].method == "GET", "Deployment Events must use one read-only request")
+    assert_true(
+        records[0].path == "/k8s/deployment/events?cluster_id=rk1&namespace=octobot&deployment=octobot&max_events=50",
+        f"Deployment Events query was not serialised as expected: {records[0].path}",
+    )
+
+
+def test_k8s_deployment_events_reject_out_of_bounds_before_network(
+    server: MockServer,
+    home_dir: pathlib.Path,
+) -> None:
+    server.clear_records()
+    result = run_nmc(
+        [
+            "k8s", "deployment-events",
+            "--cluster-id", "rk1",
+            "--namespace", "octobot",
+            "--deployment", "octobot",
+            "--max-events", "101",
+        ],
+        home_dir,
+    )
+    assert_failure(result, "out-of-bounds Deployment Events")
+    assert_true(len(server.records()) == 0, "out-of-bounds Deployment Events must fail before network access")
+
+    result = run_nmc(
+        [
+            "k8s", "deployment-events",
+            "--cluster-id", "rk1",
+            "--namespace", "octobot",
+            "--deployment", "octobot",
+            "--max-events", "5events",
+        ],
+        home_dir,
+    )
+    assert_failure(result, "non-integer Deployment Events limit")
+    assert_true(len(server.records()) == 0, "invalid Deployment Events limits must fail before network access")
 
 
 def test_k8s_statefulset_status_uses_continuum_read_route(server: MockServer, home_dir: pathlib.Path) -> None:
@@ -2179,6 +2282,8 @@ def main() -> int:
             test_k8s_workload_logs_serialization(server, home_dir)
             test_k8s_workload_logs_rejects_out_of_bounds_before_network(server, home_dir)
             test_k8s_deployment_status_uses_continuum_read_route(server, home_dir)
+            test_k8s_deployment_events_use_bounded_continuum_read_route(server, home_dir)
+            test_k8s_deployment_events_reject_out_of_bounds_before_network(server, home_dir)
             test_k8s_statefulset_status_uses_continuum_read_route(server, home_dir)
             test_k8s_image_rollout_uses_exact_digest_and_compare_and_swap_request(server, home_dir)
             test_k8s_configure_octobot_serializes_explicit_policy(server, home_dir)

@@ -75,6 +75,8 @@ namespace NMC {
             /** Read one node's capacity, allocatable resources and bounded Metrics API usage. */
             void handleGetNodeResources(const httplib::Request& req, httplib::Response& res);
             void handleGetDeploymentRecoveryStatus(const httplib::Request& req, httplib::Response& res);
+            /** Read bounded Kubernetes Events for Pods selected by one Deployment. */
+            void handleGetDeploymentEvents(const httplib::Request& req, httplib::Response& res);
             void handleRestartDeployment(const httplib::Request& req, httplib::Response& res);
             void handleGetDeploymentStatus(const httplib::Request& req, httplib::Response& res);
             void handleGetStatefulSetStatus(const httplib::Request& req, httplib::Response& res);

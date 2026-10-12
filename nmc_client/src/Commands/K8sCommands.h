@@ -98,6 +98,15 @@ public:
                 const CLI::GlobalFlags& globalFlags) override;
 };
 
+/** Read bounded Kubernetes scheduling and lifecycle Events for a Deployment. */
+class K8sDeploymentEventsCommand : public BaseCommand {
+public:
+    explicit K8sDeploymentEventsCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client);
+    int execute(const std::map<std::string, std::string>& parsedFlags,
+                const std::vector<std::string>& parsedArgs,
+                const CLI::GlobalFlags& globalFlags) override;
+};
+
 /** Read bounded StatefulSet replica readiness and selected Pod placement through Continuum. */
 class K8sStatefulSetStatusCommand : public BaseCommand {
 public:

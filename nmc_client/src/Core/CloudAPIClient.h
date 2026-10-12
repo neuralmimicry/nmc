@@ -76,7 +76,9 @@ namespace NMC::Core {
                                                  const std::string& deploymentName,
                                                  int sinceSeconds = 300,
                                                  int tailLines = 500,
-                                                 bool previous = false);
+                                                 bool previous = false,
+                                                 const std::string& containerName = {},
+                                                 bool initContainer = false);
         Models::CloudResponse getRefinerDeploymentStatus(const std::string& namespaceName = "refiner",
                                                          const std::string& deploymentName = "refiner");
         Models::CloudResponse scaleRefinerDeployment(int replicas,
@@ -95,6 +97,11 @@ namespace NMC::Core {
         Models::CloudResponse getK8sDeploymentStatus(const std::string& clusterId,
                                                      const std::string& namespaceName,
                                                      const std::string& deploymentName);
+        /** Read bounded Kubernetes Events for Pods selected by a Deployment. */
+        Models::CloudResponse getK8sDeploymentEvents(const std::string& clusterId,
+                                                      const std::string& namespaceName,
+                                                      const std::string& deploymentName,
+                                                      int maxEvents = 20);
         /** Read bounded StatefulSet readiness and its selected Pods through Continuum. */
         Models::CloudResponse getK8sStatefulSetStatus(const std::string& clusterId,
                                                       const std::string& namespaceName,

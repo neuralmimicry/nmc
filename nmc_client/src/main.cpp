@@ -68,6 +68,7 @@ int main(int argc, char* argv[]) {
     k8sCmd->addSubcommand(std::make_shared<NMC::Commands::K8sRecoveryStatusCommand>(apiClient));
     k8sCmd->addSubcommand(std::make_shared<NMC::Commands::K8sRestartDeploymentCommand>(apiClient));
     k8sCmd->addSubcommand(std::make_shared<NMC::Commands::K8sDeploymentStatusCommand>(apiClient));
+    k8sCmd->addSubcommand(std::make_shared<NMC::Commands::K8sDeploymentEventsCommand>(apiClient));
     k8sCmd->addSubcommand(std::make_shared<NMC::Commands::K8sStatefulSetStatusCommand>(apiClient));
     k8sCmd->addSubcommand(std::make_shared<NMC::Commands::K8sRolloutImageCommand>(apiClient));
     k8sCmd->addSubcommand(std::make_shared<NMC::Commands::K8sConfigureOctoBotCommand>(apiClient));

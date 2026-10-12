@@ -83,6 +83,9 @@ Server-side:
 `k8s logs` validates DNS-label namespace/Deployment names and bounds the query
 to at most 24 hours, 2,000 lines per container, 20 matching pods, 40 containers,
 128 KiB per container, 1 MiB total log content and an 8 MiB serialised response.
+Init-container logs are opt-in and require a validated `container` name; a
+request reads only that init-container stream and may select its previous
+terminated instance. They share the same bounds and access scope.
 It reads one bounded pod-list page and marks the result truncated when
 Kubernetes reports another page. The server derives its label selector from
 the named Deployment and rejects selector expressions it cannot apply exactly.
@@ -90,6 +93,15 @@ The route requires `continuum:control`; logs are sensitive and are returned to
 the caller without being stored by NMC. Workload logs use an isolated,
 serialised Kubernetes client so concurrent routes cannot overwrite its response
 status while a log query is in progress.
+
+`k8s deployment-events` requires `continuum:observe`. It reads events only for
+Pods selected by the named Deployment and scopes each Kubernetes Events query
+to that Pod's UID, then verifies the UID again before returning an event. The
+read is capped at 20 Pods, 10 Events per Pod, 100 returned Events, 128 KiB per
+Kubernetes Event-list response and a 512 KiB serialised response; returned
+messages are limited to 1 KiB. Kubernetes API errors are summarised without
+including raw response bodies. Event data is returned to the caller and is not
+stored by NMC.
 
 `POST /k8s/deployment/image-rollout` requires `continuum:control`, an explicit
 server-side policy switch, the active cluster identity and a Deployment label
