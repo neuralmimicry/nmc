@@ -296,6 +296,9 @@ async fn events(
         at,
     ) {
         Ok(()) => response(StatusCode::NO_CONTENT, String::new()),
+        Err(error) if error.is::<nmc_bmc_observer::PersistenceFailure>() => {
+            response(StatusCode::SERVICE_UNAVAILABLE, String::new())
+        }
         Err(_) => response(StatusCode::BAD_REQUEST, String::new()),
     }
 }
@@ -505,6 +508,18 @@ mod tests {
         assert_eq!(
             request(app, "/events/bmc01", "POST", &"p".repeat(32), body).await,
             StatusCode::TOO_MANY_REQUESTS
+        );
+    }
+    #[tokio::test]
+    async fn receiver_signals_retry_when_journal_cannot_persist() {
+        let (dir, app) = fixture();
+        let target = dir.path().join("target");
+        std::fs::write(&target, "private").unwrap();
+        std::os::unix::fs::symlink(&target, dir.path().join("observations.jsonl")).unwrap();
+        let body = json!({"Context":"continuum-bmc/bmc01","Events":[{"EventId":"1"}]}).to_string();
+        assert_eq!(
+            request(app, "/events/bmc01", "POST", &"p".repeat(32), body).await,
+            StatusCode::SERVICE_UNAVAILABLE
         );
     }
 }

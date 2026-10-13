@@ -297,7 +297,7 @@ pub fn inventory_matches(c: &Controller, inv: &Value, at: i64, max_age: i64) -> 
         })
 }
 pub fn project(d: &Value, at: i64) -> Value {
-    let mut systems:Vec<Value>=array(&d["systems"]).take(32).map(|s|json!({"id":text(&s["id"]),"available":s["available"]==true,"power_state":text(&s["power_state"]),"health":text(s["status"].get("HealthRollup").unwrap_or(&s["status"]["Health"]))})).collect();
+    let mut systems:Vec<Value>=array(&d["systems"]).take(32).map(|s|json!({"id":text(&s["id"]),"available":s["available"]==true && (s["power_state"]=="On" || s["power_state"]=="Off"),"power_state":text(&s["power_state"]),"health":text(s["status"].get("HealthRollup").unwrap_or(&s["status"]["Health"]))})).collect();
     if let Some(nodes) = d["nodes"].as_object() {
         for (slot, power) in nodes.iter().take(4) {
             systems.push(json!({"id":slot,"available":power=="On" || power=="Off","power_state":text(power),"health":""}));
@@ -372,6 +372,14 @@ pub fn project(d: &Value, at: i64) -> Value {
     }
     json!({"observed_at_unix_ms":d["observed_at_unix_ms"].as_i64().unwrap_or(0),"fresh":d["inventory_stale"]==false && fresh(d["observed_at_unix_ms"].as_i64().unwrap_or(0),at,120000),"systems":systems,"firmware":firmware,"sensors":sensors,"faults":faults,"logs_available":logs_available,"log_ids":log_ids,"push_supported":d["event_service"]["push_supported"]==true,"push_capability_known":d["event_service"]["available"]==true || d["event_service"]["capability"]=="not_advertised"})
 }
+#[derive(Debug)]
+pub struct PersistenceFailure;
+impl std::fmt::Display for PersistenceFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("BMC state durability unavailable")
+    }
+}
+impl std::error::Error for PersistenceFailure {}
 pub fn accept_events(
     store: &mut Store,
     c: &Config,
@@ -417,6 +425,7 @@ pub fn accept_events(
         projected.push(json!({"id":e["EventId"],"time":text(&e["EventTimestamp"]),"type":text(&e["EventType"]),"severity":text(&e["Severity"]),"message_id":text(&e["MessageId"])}));
     }
     for e in projected {
+        let previous = store.state.controllers[id_].clone();
         let key = hash(&e);
         let s = store.state.controllers.get_mut(id_).unwrap();
         if s.seen_events.contains(&key) {
@@ -430,17 +439,127 @@ pub fn accept_events(
             .events_total
             .checked_add(1)
             .context("event counter exhausted")?;
-        store.commit(json!({"kind":"push_event","controller_id":id_,"at":at,"event":e}))?;
+        if let Err(error) =
+            store.commit(json!({"kind":"push_event","controller_id":id_,"at":at,"event":e}))
+        {
+            store.state.controllers.insert(id_.into(), previous);
+            return Err(error.context(PersistenceFailure));
+        }
     }
+    let previous = store.state.controllers[id_].push_at;
     store.state.controllers.get_mut(id_).unwrap().push_at = at;
-    store.commit(json!({"kind":"push_receipt","controller_id":id_,"at":at}))
+    if let Err(error) = store.commit(json!({"kind":"push_receipt","controller_id":id_,"at":at})) {
+        store.state.controllers.get_mut(id_).unwrap().push_at = previous;
+        return Err(error.context(PersistenceFailure));
+    }
+    Ok(())
+}
+fn prom_label(value: &str) -> String {
+    let clean: String = value
+        .chars()
+        .filter(|c| !c.is_control() || *c == '\n')
+        .collect();
+    format!(
+        "\"{}\"",
+        clean
+            .replace('\\', "\\\\")
+            .replace('\"', "\\\"")
+            .replace('\n', "\\n")
+    )
 }
 pub fn metrics(c: &Config, state: &State, inventory_at: i64, at: i64) -> String {
     let inventory_fresh = fresh(inventory_at, at, c.inventory_max_age_seconds * 1000);
-    let mut out = format!(
+    let mut out = String::new();
+    for (name, help, type_) in [
+        (
+            "inventory_fresh",
+            "Verified device registry is fresh",
+            "gauge",
+        ),
+        (
+            "available",
+            "BMC observation is fresh and identity verified",
+            "gauge",
+        ),
+        (
+            "identity_valid",
+            "Controller and managed hosts match the fresh registry",
+            "gauge",
+        ),
+        (
+            "last_observation_timestamp_seconds",
+            "BMC observation time in Unix seconds",
+            "gauge",
+        ),
+        (
+            "event_push_supported",
+            "Advertised Redfish Event delivery is supported",
+            "gauge",
+        ),
+        (
+            "event_push_capability_known",
+            "Push capability has been verified for this transport",
+            "gauge",
+        ),
+        (
+            "event_push_configured",
+            "Owned event subscription was reconciled",
+            "gauge",
+        ),
+        (
+            "event_delivery_observed",
+            "Authenticated event delivery has been received",
+            "gauge",
+        ),
+        (
+            "last_push_timestamp_seconds",
+            "Most recent authenticated event receipt in Unix seconds",
+            "gauge",
+        ),
+        (
+            "push_events_total",
+            "Durably accepted distinct BMC events",
+            "counter",
+        ),
+        (
+            "log_collection_available",
+            "BMC event history collection is available",
+            "gauge",
+        ),
+        (
+            "polling_required",
+            "State and event history polling remains required",
+            "gauge",
+        ),
+        (
+            "managed_host_info",
+            "Verified host to controller association",
+            "gauge",
+        ),
+        ("system_state_known", "System power state is known", "gauge"),
+        ("power_on", "System reports power on", "gauge"),
+        ("health_fault", "BMC resource health is not OK", "gauge"),
+        (
+            "firmware_info",
+            "Observed BMC manager firmware version",
+            "gauge",
+        ),
+        ("chassis_fault", "BMC reports a chassis fault", "gauge"),
+        (
+            "sensor_value",
+            "Numeric BMC sensor reading with unit label",
+            "gauge",
+        ),
+        ("sensor_healthy", "BMC sensor status is OK", "gauge"),
+    ] {
+        out.push_str(&format!(
+            "# HELP continuum_bmc_{name} {help}\n# TYPE continuum_bmc_{name} {type_}\n"
+        ));
+    }
+    out.push_str(&format!(
         "continuum_bmc_inventory_fresh {}\n",
         u8::from(inventory_fresh)
-    );
+    ));
     for b in &c.controllers {
         let empty = ControllerState::default();
         let s = state.controllers.get(&b.id).unwrap_or(&empty);
@@ -455,8 +574,8 @@ pub fn metrics(c: &Config, state: &State, inventory_at: i64, at: i64) -> String 
             );
         let base = format!(
             "controller_id={},protocol={}",
-            json!(b.id),
-            json!(b.protocol)
+            prom_label(&b.id),
+            prom_label(&b.protocol)
         );
         let mut metric = |name: &str, value: f64, extra: String| {
             out.push_str(&format!(
@@ -506,10 +625,14 @@ pub fn metrics(c: &Config, state: &State, inventory_at: i64, at: i64) -> String 
             continue;
         }
         for host in &b.manages {
-            metric("managed_host_info", 1., format!("host={}", json!(host)));
+            metric(
+                "managed_host_info",
+                1.,
+                format!("host={}", prom_label(host)),
+            );
         }
         for x in array(&p["systems"]) {
-            let label = format!("system={}", json!(text(&x["id"])));
+            let label = format!("system={}", prom_label(&text(&x["id"])));
             metric(
                 "system_state_known",
                 u8::from(x["available"] == true) as f64,
@@ -523,7 +646,7 @@ pub fn metrics(c: &Config, state: &State, inventory_at: i64, at: i64) -> String 
                 metric(
                     "health_fault",
                     u8::from(h != "OK") as f64,
-                    format!("resource={}", json!(text(&x["id"]))),
+                    format!("resource={}", prom_label(&text(&x["id"]))),
                 );
             }
         }
@@ -533,8 +656,8 @@ pub fn metrics(c: &Config, state: &State, inventory_at: i64, at: i64) -> String 
                 1.,
                 format!(
                     "manager={},version={}",
-                    json!(text(&x["id"])),
-                    json!(text(&x["version"]))
+                    prom_label(&text(&x["id"])),
+                    prom_label(&text(&x["version"]))
                 ),
             );
             let h = text(&x["health"]);
@@ -542,7 +665,7 @@ pub fn metrics(c: &Config, state: &State, inventory_at: i64, at: i64) -> String 
                 metric(
                     "health_fault",
                     u8::from(h != "OK") as f64,
-                    format!("resource={}", json!(text(&x["id"]))),
+                    format!("resource={}", prom_label(&text(&x["id"]))),
                 );
             }
         }
@@ -551,7 +674,7 @@ pub fn metrics(c: &Config, state: &State, inventory_at: i64, at: i64) -> String 
                 metric(
                     "chassis_fault",
                     u8::from(*value == true) as f64,
-                    format!("fault={}", json!(fault)),
+                    format!("fault={}", prom_label(fault)),
                 );
             }
         }
@@ -561,14 +684,14 @@ pub fn metrics(c: &Config, state: &State, inventory_at: i64, at: i64) -> String 
                 x["value"].as_f64().unwrap_or(0.),
                 format!(
                     "sensor={},unit={}",
-                    json!(text(&x["id"])),
-                    json!(text(&x["unit"]))
+                    prom_label(&text(&x["id"])),
+                    prom_label(&text(&x["unit"]))
                 ),
             );
             metric(
                 "sensor_healthy",
                 u8::from(x["healthy"] == true) as f64,
-                format!("sensor={}", json!(text(&x["id"]))),
+                format!("sensor={}", prom_label(&text(&x["id"]))),
             );
         }
     }
@@ -642,7 +765,9 @@ mod tests {
     fn stale_samples_never_export_old_sensor_values_as_current() {
         let (_, s) = store();
         let m = metrics(&config(), &s.state, 1000000, 1180001);
-        assert!(!m.contains("continuum_bmc_sensor_value"));
+        assert!(!m
+            .lines()
+            .any(|line| line.starts_with("continuum_bmc_sensor_value{")));
         assert!(m.contains("continuum_bmc_available{controller_id=\"bmc01\",protocol=\"ipmi\"} 0"));
     }
     #[test]
@@ -694,6 +819,10 @@ mod tests {
             .unwrap();
         assert!(Store::open(dir.path().into()).is_err());
         fs::remove_file(dir.path().join("state.json")).unwrap();
+        fs::set_permissions(dir.path().join("target"), fs::Permissions::from_mode(0o600)).unwrap();
+        fs::hard_link(dir.path().join("target"), dir.path().join("state.json")).unwrap();
+        assert!(Store::open(dir.path().into()).is_err());
+        fs::remove_file(dir.path().join("state.json")).unwrap();
         fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o755)).unwrap();
         assert!(Store::open(dir.path().into()).is_err());
     }
@@ -706,6 +835,12 @@ mod tests {
         c = config();
         c.interval_seconds = 1;
         assert!(c.validate().is_err());
+    }
+    #[test]
+    fn unknown_redfish_power_cannot_be_reported_as_off() {
+        let d = json!({"protocol":"redfish","observed_at_unix_ms":1000000,"inventory_stale":false,"systems":[{"id":"1","available":true,"power_state":"","status":{"Health":"OK"}}]});
+        let p = project(&d, 1000000);
+        assert_eq!(p["systems"][0]["available"], false);
     }
     #[test]
     fn unknown_transport_push_capability_is_not_reported_as_known_unsupported() {
@@ -729,6 +864,29 @@ mod tests {
         assert_eq!(e.request_id, "original-request");
         assert_eq!(e.revision, "original-revision");
         assert_eq!(e.phase, "unknown");
+    }
+    #[test]
+    fn metric_metadata_and_label_escaping_are_valid() {
+        let (_, s) = store();
+        let output = metrics(&config(), &s.state, 1000000, 1000000);
+        assert!(output.contains("# TYPE continuum_bmc_push_events_total counter"));
+        assert!(output.contains("# HELP continuum_bmc_sensor_value"));
+        assert_eq!(prom_label("CPU\t\"Temp\"\n"), "\"CPU\\\"Temp\\\"\\n\"");
+    }
+    #[test]
+    fn unavailable_durable_journal_does_not_accept_or_forget_an_event() {
+        let (dir, mut s) = store();
+        let target = dir.path().join("target");
+        fs::write(&target, "private").unwrap();
+        std::os::unix::fs::symlink(&target, dir.path().join("observations.jsonl")).unwrap();
+        let error =
+            accept_events(&mut s, &config(), "bmc01", event(), 1000000, 1000000).unwrap_err();
+        assert!(error.is::<PersistenceFailure>());
+        assert_eq!(s.state.controllers["bmc01"].events_total, 0);
+        assert!(s.state.controllers["bmc01"].seen_events.is_empty());
+        fs::remove_file(dir.path().join("observations.jsonl")).unwrap();
+        accept_events(&mut s, &config(), "bmc01", event(), 1000000, 1000000).unwrap();
+        assert_eq!(s.state.controllers["bmc01"].events_total, 1);
     }
     #[test]
     fn failed_typed_envelopes_cannot_be_observations() {
