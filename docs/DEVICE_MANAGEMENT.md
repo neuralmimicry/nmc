@@ -49,7 +49,7 @@ owner-only structured observations in a bounded rotating journal, and exports
 bearer-authenticated Prometheus samples. Conductor's recovery review can correlate
 these samples with host boot journals and service evidence. Grafana can retain
 sensor, power, fault, firmware and collection-gap history through Prometheus.
-This observer has no power-action code.
+This native Rust observer has no power-action code.
 
 Copy `bmc-observer.example.json`, replace the example with exact current controller
 IDs/endpoints/managed-host mappings, create a private 0700 state directory and a
@@ -57,8 +57,8 @@ IDs/endpoints/managed-host mappings, create a private 0700 state directory and a
 NMC client configuration. Pin metrics TLS through the estate's approved HTTPS
 proxy. Never expose the listener directly outside the commissioned management
 network or grant a BMC the estate's administrative token. The service is packaged
-but is not enabled by package installation. Verify Node is installed before
-activation. Polls are serialized; inventory changes or collection failures emit
+but is not enabled by package installation. The BMC observer is a native packaged executable; Node remains a separate
+prerequisite for the existing availability watchdog. Polls are serialized; inventory changes or collection failures emit
 explicit gaps, and old sensor values disappear instead of staying green.
 
 Redfish diagnostics follow advertised EventService, subscription and log-service
@@ -99,7 +99,7 @@ BMC test-event receipt, reconnection, credential rejection, renewal and retained
 polling in UAT before production. A quiet event stream is not proof of failure or
 health. Polling and log reconciliation remain required even after push is working.
 
-Validation checkpoint (2026-10-13): ten observer regressions, canonical native
+Validation checkpoint (2026-10-13): ten prototype observer regressions, canonical native
 amd64 client/server verification and actual server authorization/subscription
 mock checks passed; an amd64 server Debian/archive package contains the observer,
 unit and example. Real estate read-only collection returned nine of ten BMCs:
@@ -107,5 +107,18 @@ n1sdp lacks a usable host/credential reference, all six QC SEL reads were unavai
 and both Supermicro SEL reads succeeded. No current QC chassis fault was observed.
 These observations do not qualify BMC push, unattended operation or production
 Prometheus ingestion. Continuum's current host lacks Node, which the new server
-package already declares as a dependency. Runtime activation and native ARM64
+package already declares as a dependency. The prototype was replaced with Rust to meet the estate language preference.
+Runtime activation and native ARM64
 release checks remain required.
+
+Native Rust qualification checkpoint: **14/14 tests pass on both ARM64 and
+amd64**. The canonical amd64 gate also passes the C++ server/client, API/CLI
+parity, actual HTTPS subscription mocks and existing observer tests. The new
+Debian/archive package includes the compiled Rust observer. Its ARM64 executable
+ran read-only on Continuum's actual host, collecting **9/10 controllers and 540
+numeric sensor readings** with no power action or event enrollment. Historical
+state is still a temporary observation: unattended activation and Prometheus
+production ingestion are unverified. CI package smoke checks now extract and
+exercise payloads rather than installing candidate software onto shared runners;
+this fixes the observed old-client dependency failure while keeping matching
+client/server packages a release and installation requirement.

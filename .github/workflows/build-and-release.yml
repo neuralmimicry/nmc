@@ -132,6 +132,11 @@ jobs:
             python3 \
             nodejs
 
+      - name: Prepare native Rust observer toolchain
+        uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249
+        with:
+          toolchain: 1.93.1
+
       - name: Run canonical CI preflight
         env:
           NMC_VERSION: ${{ needs.version.outputs.build_version }}
@@ -304,6 +309,20 @@ jobs:
           set -euo pipefail
           "${{ matrix.executable }}" version --no-check
 
+      - name: Prepare native Rust observer toolchain
+        if: ${{ matrix.component == 'server' && matrix.os == 'linux' }}
+        uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249
+        with:
+          toolchain: 1.93.1
+
+      - name: Verify and build native Rust BMC observer
+        if: ${{ matrix.component == 'server' && matrix.os == 'linux' }}
+        shell: bash
+        run: |
+          cargo fmt --manifest-path nmc_bmc_observer/Cargo.toml --check
+          cargo test --release --locked --manifest-path nmc_bmc_observer/Cargo.toml -j 2
+          cargo build --release --locked --manifest-path nmc_bmc_observer/Cargo.toml -j 2
+
       - name: Package Unix artifact
         shell: bash
         env:
@@ -349,7 +368,7 @@ jobs:
           [[ "$actual_version" == "$expected_version" ]]
           [[ "$actual_arch" == "$DEB_ARCH" ]]
 
-      - name: Smoke install Debian package
+      - name: Smoke test extracted Debian payload
         if: ${{ matrix.deb_arch != '' }}
         shell: bash
         env:
@@ -357,19 +376,21 @@ jobs:
         run: |
           set -euo pipefail
           deb_path="$(readlink -f "$(find dist -maxdepth 1 -type f -name "nmc-${COMPONENT}_*.deb" | head -n 1)")"
-          sudo apt-get update
-          sudo apt-get install -y --allow-downgrades "$deb_path"
+          payload="$(mktemp -d "${RUNNER_TEMP}/nmc-package-smoke.XXXXXX")"
+          trap 'rm -rf "${payload}"' EXIT
+          dpkg-deb --extract "$deb_path" "$payload"
           if [[ "$COMPONENT" == "client" ]]; then
-            nmc version --no-check
+            "$payload/usr/bin/nmc" version --no-check
           else
-            test -x /usr/bin/nmc_server
-            test -f /usr/share/nmc-server/docs/index.html
-            ldd /usr/bin/nmc_server | tee /tmp/nmc-server.ldd
-            ! grep -q 'not found' /tmp/nmc-server.ldd
-            current_rpath="$(patchelf --print-rpath /usr/bin/nmc_server)"
+            test -x "$payload/usr/bin/nmc_server"
+            test -f "$payload/usr/share/nmc-server/docs/index.html"
+            ldd "$payload/usr/bin/nmc_server" | tee "$payload/server.ldd"
+            ! grep -q 'not found' "$payload/server.ldd"
+            current_rpath="$(patchelf --print-rpath "$payload/usr/bin/nmc_server")"
             [[ "$current_rpath" == '$ORIGIN/../lib/nmc-server' ]]
+            "$payload/usr/lib/nmc-server/nmc-bmc-observer" --version
+            test -f "$payload/usr/lib/systemd/system/nmc-bmc-observer.service"
           fi
-          dpkg-query -W -f='${Version}\n' "nmc-${COMPONENT}"
 
       - name: Upload packaged artifacts
         uses: actions/upload-artifact@v4
