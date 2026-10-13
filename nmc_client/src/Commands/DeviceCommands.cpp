@@ -16,6 +16,18 @@ int DeviceCommand::execute(const std::map<std::string, std::string>&,
     return 0;
 }
 
+DeviceRecoveryHistoryCommand::DeviceRecoveryHistoryCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client)
+    : BaseCommand("recovery-history", "Read bounded warm-restart episodes for startup log review", std::move(client)) {
+    usage = "nmc device recovery-history";
+}
+int DeviceRecoveryHistoryCommand::execute(const std::map<std::string, std::string>& flags,
+    const std::vector<std::string>& args, const CLI::GlobalFlags& global) {
+    if (!validateArguments(args) || !validateFlags(flags)) return 1;
+    const auto response = apiClient->getRecoveryHistory();
+    printOutput(response, global);
+    return response.success ? 0 : 1;
+}
+
 DeviceInventoryCommand::DeviceInventoryCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client)
     : BaseCommand("inventory", "Show the versioned network, host and controller inventory", std::move(client)) {
     usage = "nmc device inventory";

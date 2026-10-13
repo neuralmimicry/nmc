@@ -80,6 +80,10 @@ TOKEN_IDENTITIES: dict[str, dict[str, Any]] = {
             "continuum": build_service_access_entry("continuum", "none", "observe"),
         },
     ),
+    "continuum-request-only-token": build_identity(
+        "continuum-requester",
+        service_access={"continuum": build_service_access_entry("continuum", "none", "request")},
+    ),
     "continuum-control-token": build_identity(
         "continuum-controller",
         service_access={
@@ -3452,6 +3456,24 @@ def test_ipmi_diagnostics_and_actions(backend_base_url: str) -> None:
             monitoring_outage_intent.get("host_recovery", {}).get("monitoring", {}).get("state") == "unavailable",
             "the durable intent must distinguish an evidenced monitoring outage",
         )
+        calls_before_history = calls_path.read_text(encoding="utf-8")
+        status, _ = request_json(server.base_url, "GET", "/devices/recovery-history")
+        assert_status(status, 401, "recovery history requires authentication")
+        status, _ = request_json(server.base_url, "GET", "/devices/recovery-history", token="continuum-request-only-token")
+        assert_status(status, 403, "host recovery history requires Continuum observation scope")
+        status, history = request_json(server.base_url, "GET", "/devices/recovery-history", token="continuum-observe-token")
+        assert_status(status, 200, "Conductor can read warm-restart history independently of host action policy")
+        entries = history["data"]["entries"]
+        assert_true(any(entry["request_id"] == "ipmi-host-recovery-0001" and entry["phase"] == "complete" for entry in entries),
+                    "startup review must discover independently recorded warm restarts")
+        assert_true(all(entry["action"] == "warm_restart" for entry in entries), "history must contain scoped restart episodes")
+        assert_true(calls_path.read_text(encoding="utf-8") == calls_before_history, "history reads must not contact the BMC")
+        audit_backup = audit_path.read_text(encoding="utf-8")
+        audit_path.write_text(audit_backup + "invalid-json\n", encoding="utf-8")
+        status, _ = request_json(server.base_url, "GET", "/devices/recovery-history", token="continuum-observe-token")
+        assert_status(status, 503, "missing/corrupt history is an evidence gap, never a clean review")
+        audit_path.write_text(audit_backup, encoding="utf-8")
+
     finally:
         server.stop()
         mock_dir.cleanup()
@@ -4239,7 +4261,7 @@ def test_production_image_rollout_requires_stateless_zero_unavailability(backend
         container["readinessProbe"] = {"httpGet": {"path": "/health", "port": 8080}}
     request = {"cluster_id": "authz-test-cluster", "namespace": "octobot", "deployment": "octobot",
         "container": "octobot", "expected_image": pod["containers"][0]["image"],
-        "image": "ghcr.io/neuralmimicry/octobot@sha256:" + "b" * 64,
+        "image": "ghcr.io/neuralmimicry/octobot@sha256:" + "c" * 64,
         "request_id": "qualified-production-0001", "change_id": "QUALIFIED-PRODUCTION-0001", "require_zero_unavailable": True}
     patch_path = "/apis/apps/v1/namespaces/octobot/deployments/octobot"
     server = NmcServerProcess(backend.base_url, image_rollout_enabled=True, k8s_server_url=backend.base_url)
@@ -5554,7 +5576,6 @@ fi
         test_recovery_uses_fresh_nodelease_not_node_status_heartbeat(backend.base_url)
         test_k8s_image_rollout_requires_control_scope_and_explicit_policy(backend.base_url)
         test_octobot_image_rollout_rejects_incomplete_or_divergent_bootstrap(backend)
-        test_production_image_rollout_requires_stateless_zero_unavailability(backend)
         test_k8s_image_rollout_updates_only_allowlisted_container_and_deduplicates(backend.base_url, backend)
         test_aarnn_fpv_storage_is_scoped_persistent_conditional_and_idempotent(backend)
         test_k8s_image_rollout_preserves_upstream_patch_rejections(backend)
@@ -5564,6 +5585,7 @@ fi
         test_deployment_events_report_bounded_scheduler_diagnostics(backend)
         test_deployment_events_reject_oversized_upstream_event_lists(backend)
         test_statefulset_status_uses_bounded_owned_pods_and_serialized_reads(backend)
+        test_production_image_rollout_requires_stateless_zero_unavailability(backend)
     except AssertionError as exc:
         log_output = server.log_path.read_text(encoding="utf-8", errors="replace") if server.log_path.exists() else ""
         print(f"[server-authz-test] FAILED: {exc}", file=sys.stderr)

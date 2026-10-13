@@ -2527,6 +2527,50 @@ Json DeviceManagement::performControllerAction(const Inventory& inventory,
     return response;
 }
 
+void DeviceManagement::handleGetRecoveryHistory(const httplib::Request&, httplib::Response& res) const {
+    std::lock_guard<std::mutex> localLock(actionMutex_);
+    const std::string path = envValue("NMC_DEVICE_ACTION_AUDIT_PATH");
+    AuditLock auditLock;
+    std::string error;
+    if (path.empty() || !auditLock.acquire(path, error)) {
+        return sendJson(res, 503, errorBody("recovery_history_unavailable", "A secure, readable controller audit is required for post-restart review"));
+    }
+    std::ifstream input(path);
+    if (!input) return sendJson(res, 503, errorBody("recovery_history_unavailable", "Controller recovery history cannot be read"));
+    try {
+        std::unordered_map<std::string, Json> episodes;
+        std::string line;
+        size_t lines = 0, bytes = 0;
+        while (std::getline(input, line)) {
+            bytes += line.size();
+            if (++lines > 100000 || bytes > 16 * 1024 * 1024 || line.size() > 1024 * 1024)
+                return sendJson(res, 503, errorBody("recovery_history_unavailable", "Controller audit exceeds bounded history review; preserve/archive it and reconcile"));
+            const auto record = Json::parse(line);
+            if (record.value("action", std::string{}) != "warm_restart") continue;
+            const auto id = record.value("request_id", std::string{});
+            if (!safeIdentifier(id) || !safeIdentifier(record.value("device_id", std::string{})))
+                throw std::runtime_error("invalid audit identity");
+            episodes[id] = {{"request_id", id}, {"device_id", record.at("device_id")},
+                {"controller_id", record.at("controller_id")}, {"action", "warm_restart"},
+                {"change_id", record.value("change_id", "")}, {"started_at_unix_ms", record.at("started_at_unix_ms")},
+                {"phase", record.value("phase", "unknown")},
+                {"verified", record.value("response", Json::object()).value("data", Json::object()).value("verified", false)}};
+        }
+        if (input.bad()) throw std::runtime_error("incomplete audit read");
+        std::vector<Json> entries;
+        for (const auto& [id, episode] : episodes) entries.push_back(episode);
+        std::sort(entries.begin(), entries.end(), [](const Json& a, const Json& b) {
+            return a.at("started_at_unix_ms").get<int64_t>() > b.at("started_at_unix_ms").get<int64_t>();
+        });
+        const bool truncated = entries.size() > 32;
+        if (truncated) entries.resize(32);
+        sendJson(res, 200, Json{{"success", true}, {"data", {{"schema_version", 1},
+            {"observed_at_unix_ms", nowEpochMs()}, {"truncated", truncated}, {"entries", entries}}}});
+    } catch (...) {
+        sendJson(res, 503, errorBody("recovery_history_unavailable", "Controller recovery audit is malformed or incomplete; no clean-history claim is available"));
+    }
+}
+
 void DeviceManagement::handleControllerAction(const httplib::Request& req, httplib::Response& res) {
     Json request;
     try {

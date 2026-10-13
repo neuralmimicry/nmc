@@ -314,6 +314,10 @@ class MockServer:
             )
             return
 
+        if handler.command == "GET" and path_only == "/devices/recovery-history":
+            self._send_json(handler, 200, {"success": True, "data": {"schema_version": 1, "truncated": False, "entries": []}})
+            return
+
         if handler.command == "GET" and path_only == "/devices/home-assistant/reconciliation":
             self._send_json(
                 handler,
@@ -1272,6 +1276,17 @@ def test_k8s_image_rollout_rejects_mutable_tag_before_network(server: MockServer
     )
     assert_failure(result, "mutable-tag image rollout")
     assert_true(len(server.records()) == 0, "mutable image tags must fail before contacting Continuum")
+
+
+def test_recovery_history_command_is_read_only(server: MockServer, home_dir: pathlib.Path) -> None:
+    server.clear_records()
+    result = run_nmc(["--output", "json", "device", "recovery-history"], home_dir)
+    assert_success(result, "Warm-restart recovery history")
+    output = json.loads(result.stdout)
+    assert_true(output["data"]["data"]["schema_version"] == 1, "CLI must preserve the typed recovery history")
+    records = server.records()
+    assert_true(len(records) == 1 and records[0].method == "GET" and records[0].path == "/devices/recovery-history",
+                "Restart history must issue one bounded read and no mutation")
 
 
 def test_home_assistant_reconciliation_command_is_read_only(server: MockServer, home_dir: pathlib.Path) -> None:
@@ -2315,6 +2330,7 @@ def main() -> int:
             test_k8s_configure_octobot_rejects_implicit_or_invalid_policy_before_network(server, home_dir)
             test_k8s_image_rollout_rejects_mutable_tag_before_network(server, home_dir)
             test_home_assistant_reconciliation_command_is_read_only(server, home_dir)
+            test_recovery_history_command_is_read_only(server, home_dir)
             test_k8s_restart_preflights_and_uses_idempotency_key(server, home_dir)
             test_k8s_restart_rejects_invalid_id_before_network(server, home_dir)
             test_vcluster_create_serializes_advanced_config_file(server, home_dir)
