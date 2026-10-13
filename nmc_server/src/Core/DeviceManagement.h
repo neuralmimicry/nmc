@@ -33,6 +33,8 @@ public:
     void handleGetDhcpObservations(const httplib::Request& req, httplib::Response& res) const;
     /** Query one registered controller using its declared protocol and profile. */
     void handleGetControllerDiagnostics(const httplib::Request& req, httplib::Response& res) const;
+    /** Return bounded non-secret warm-restart episodes for Conductor startup review. */
+    void handleGetRecoveryHistory(const httplib::Request& req, httplib::Response& res) const;
     /** Execute an explicitly enabled, audited, idempotent controller action. */
     void handleControllerAction(const httplib::Request& req, httplib::Response& res);
 

@@ -1,0 +1,62 @@
+{
+  "enabled": false,
+  "cluster_id": "rk1",
+  "conductor": {
+    "namespace": "conductor",
+    "deployment": "conductor"
+  },
+  "hosts": [
+    {
+      "device_id": "qc01",
+      "controller_id": "qc01-bmc",
+      "node": "qc01",
+      "address": "192.168.1.61",
+      "port": 22,
+      "controller_endpoint": "192.168.1.51",
+      "controller_mac": "70:e2:84:1b:a3:dc",
+      "dependencies": [
+        {
+          "device_id": "spirit",
+          "address": "192.168.1.2",
+          "port": 6443
+        },
+        {
+          "device_id": "swrack",
+          "address": "192.168.1.18",
+          "port": 80
+        }
+      ]
+    }
+  ],
+  "services": [
+    {
+      "namespace": "conductor",
+      "deployment": "conductor"
+    },
+    {
+      "namespace": "customers",
+      "deployment": "customers"
+    },
+    {
+      "namespace": "refiner",
+      "deployment": "refiner"
+    },
+    {
+      "namespace": "octobot",
+      "deployment": "octobot"
+    }
+  ],
+  "acceptance_urls": [
+    "https://octobot.neuralmimicry.ai/",
+    "https://conductor.neuralmimicry.ai/"
+  ],
+  "interval_seconds": 30,
+  "failure_samples": 3,
+  "outage_seconds": 120,
+  "cooldown_seconds": 3600,
+  "recovery_seconds": 900,
+  "daily_action_budget": 2,
+  "journal": "/var/lib/nmc/availability-watchdog.jsonl",
+  "inhibit_path": "/var/lib/nmc/availability-watchdog.inhibit",
+  "inventory_max_age_seconds": 86400
+}

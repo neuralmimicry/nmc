@@ -116,3 +116,55 @@ rollout, the rollout policy must be enabled, and expected-image/resourceVersion
 checks and recorded request/change identities preserve scope and idempotency.
 See [the FPV storage runbook](aarnn-fpv-storage-repair.md) for prerequisites,
 worker-first ordering, availability checks and full projection/render acceptance.
+
+## Independent availability recovery
+
+The packaged `nmc-availability-watchdog.service` runs on Continuum's host,
+independently of Conductor, Refiner, Gail and PostgreSQL. It invokes authenticated
+typed NMC operations; it does not execute arbitrary remediation commands or cold
+power cycles. It starts only with `/etc/nmc/availability-watchdog.json`. Copy and
+review the packaged example against fresh inventory, use an owner-only local NMC
+credential/config for the service user, and begin with `enabled: false`. The
+package does not create credentials, enable workload recovery or start mutations.
+Node.js 18 or newer, matching nmc-client and util-linux are package dependencies.
+
+Repeated independently observed Conductor unavailability permits only the
+explicitly listed service/host targets. Healthy hosts receive an eligible typed
+service restart first; `NMC_RECOVERY_ENABLED` and deployment opt-in remain
+mandatory. Warm restart additionally requires a well-formed expired NodeLease,
+NotReady node, independent TCP timeout, exact pinned controller endpoint/MAC,
+power-on/fault preflight and every registered upstream dependency healthy.
+Connection refusal proves host reachability and never authorizes a reset.
+Inventory/evidence drift, unknown health, partial readiness or stale observations
+hold the action. A fresh final collection cancels recovery if Conductor returns.
+
+The OS process lock, owner-only fsynced local journal, persisted intent before
+mutation and unresolved-intent circuit breaker survive process restart. Lost
+responses are reconciled against live state; they are never resubmitted. Typed
+controller actions also enforce a one-hour cross-request target cooldown, no
+second action for the same outage, and at most two independent host actions per
+day across the server audit. The observer further permits at most one host
+restart per day and bounds all recovery actions with its configured budget.
+Failed recovery leaves the circuit open for operator reconciliation. Preserve
+both audit files when investigating; do not erase them to retry an outage.
+
+Create the configured inhibit file for maintenance/rolling delivery and remove it
+only after the owner of the operation releases the target. Deploy the observer
+outside qc01's NFS/PostgreSQL failure domain, using local Spirit storage. Recovery
+requires fresh host/NodeLease, metrics, dependencies, configured service readiness
+and public/authentication-route observations over repeated samples. A 302 or 401
+checks the authentication boundary only; authenticated product acceptance and
+PostgreSQL/NFS data integrity remain separate incident evidence.
+
+## Qualified production image transitions
+
+`POST /k8s/deployment/image-rollout` accepts optional boolean
+`require_zero_unavailable`. When true, the live compare-and-swap preflight requires
+`neuralmimicry.ai/surge-safe=enabled`, RollingUpdate, explicit maxUnavailable zero,
+positive integer maxSurge, minReadySeconds >= 10 and readiness probes on every
+container. Shared PVC/NFS/CSI/hostPath, host ports/networking and other unsupported
+stateful overlap are rejected without a Kubernetes patch. The status field
+`zero_unavailable_rollout_ready` reports this strategy contract, not immunity to
+hardware or software failures. The original rollout opt-in, digest, scope and
+request-identity checks still apply. Stateful applications such as OctoBot need a
+qualified single-writer/traffic-cutover adapter; relabelling them is insufficient.

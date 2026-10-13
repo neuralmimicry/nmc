@@ -15,6 +15,14 @@ public:
                 const CLI::GlobalFlags& globalFlags) override;
 };
 
+class DeviceRecoveryHistoryCommand : public BaseCommand {
+public:
+    explicit DeviceRecoveryHistoryCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client);
+    int execute(const std::map<std::string, std::string>& parsedFlags,
+                const std::vector<std::string>& parsedArgs,
+                const CLI::GlobalFlags& globalFlags) override;
+};
+
 class DeviceInventoryCommand : public BaseCommand {
 public:
     explicit DeviceInventoryCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client);

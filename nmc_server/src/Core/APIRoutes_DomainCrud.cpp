@@ -45,6 +45,10 @@ namespace NMC::Server {
             if (!guard(req, res)) return;
             deviceManagement->handleGetInventory(req, res);
         });
+        svr.Get("/devices/recovery-history", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            deviceManagement->handleGetRecoveryHistory(req, res);
+        });
         svr.Get("/devices/dhcp", [this, guard](const httplib::Request& req, httplib::Response& res) {
             if (!guard(req, res)) return;
             deviceManagement->handleGetDhcpObservations(req, res);

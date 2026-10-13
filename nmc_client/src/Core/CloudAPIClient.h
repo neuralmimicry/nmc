@@ -124,6 +124,7 @@ namespace NMC::Core {
                                                bool liveExecution,
                                                bool serviceIntegrationsEnabled);
         Models::CloudResponse getDeviceInventory();
+        Models::CloudResponse getRecoveryHistory();
         Models::CloudResponse configureAarnnFpvStorage(const std::string& clusterId,
             const std::string& deployment, const std::string& expectedImage, const std::string& image,
             const std::string& requestId, const std::string& changeId);

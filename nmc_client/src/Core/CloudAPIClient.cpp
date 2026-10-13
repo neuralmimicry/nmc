@@ -792,6 +792,11 @@ namespace NMC::Core {
         return processHttpResponse(res, "Continuum FPV storage reconciliation accepted.");
     }
 
+    Models::CloudResponse CloudAPIClient::getRecoveryHistory() {
+        auto res = cli->Get("/devices/recovery-history");
+        return processHttpResponse(res, "Bounded warm-restart recovery history retrieved.");
+    }
+
     Models::CloudResponse CloudAPIClient::getDeviceInventory() {
         auto res = cli->Get("/devices/inventory");
         return processHttpResponse(res, "Device inventory retrieved.");

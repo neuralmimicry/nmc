@@ -1,0 +1,27 @@
+[Unit]
+Description=Continuum independent estate availability observer
+After=network-online.target nmc-server.service
+Wants=network-online.target
+ConditionPathExists=/etc/nmc/availability-watchdog.json
+
+[Service]
+Type=simple
+User=nmc
+Group=nmc
+Environment=HOME=/var/lib/nmc
+WorkingDirectory=/var/lib/nmc
+# The OS lock remains held for the process lifetime. Mutation fencing and
+# cross-request cooldowns are also enforced by Continuum's controller audit.
+ExecStart=/usr/bin/flock --nonblock /var/lib/nmc/availability-watchdog.lock /usr/bin/node /usr/share/nmc-server/availability-watchdog.mjs /etc/nmc/availability-watchdog.json
+Restart=on-failure
+RestartSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/nmc
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

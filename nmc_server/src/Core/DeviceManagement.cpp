@@ -824,6 +824,43 @@ Json findAuditRequest(const std::string& auditPath, const std::string& requestId
     return last;
 }
 
+// Enforce fallback fencing across request IDs and across Conductor/watchdog
+// processes while holding AuditLock. An incomplete intent remains an incident.
+std::string hostRecoveryHistoryBlocker(const std::string& auditPath,
+                                      const std::string& deviceId,
+                                      const std::string& outageId) {
+    std::ifstream input(auditPath);
+    if (!input) return "host recovery audit history is unavailable";
+    std::unordered_map<std::string, Json> intents;
+    std::unordered_set<std::string> completed;
+    std::string line;
+    size_t count = 0;
+    try {
+        while (std::getline(input, line)) {
+            if (++count > 100000 || line.size() > 1024 * 1024) return "host recovery audit history exceeds bounds";
+            const auto record = Json::parse(line);
+            const auto id = record.value("request_id", std::string{});
+            if (record.value("phase", std::string{}) == "intent") intents[id] = record;
+            if (record.value("phase", std::string{}) == "complete") completed.insert(id);
+        }
+        if (input.bad()) return "host recovery audit history could not be read";
+        size_t fallbackActionsToday = 0;
+        const auto now = nowEpochMs();
+        for (const auto& [id, record] : intents) {
+            const auto started = record.at("started_at_unix_ms").get<int64_t>();
+            if (started > now) return "host recovery audit timestamp is in the future";
+            if (record.contains("host_recovery") && now - started < 86400000) ++fallbackActionsToday;
+            if (record.value("device_id", std::string{}) != deviceId) continue;
+            if (!completed.count(id)) return "target has an unresolved controller intent; reconcile before recovery";
+            if (now - started < 3600000) return "target controller action cooldown is one hour";
+            if (record.contains("host_recovery") && record["host_recovery"].value("outage_id", std::string{}) == outageId)
+                return "this host outage already has an acknowledged action; verify recovery instead of resetting again";
+        }
+        if (fallbackActionsToday >= 2) return "independent host recovery daily action budget is exhausted";
+    } catch (...) { return "host recovery audit history is malformed"; }
+    return {};
+}
+
 std::string controllerActionIntentDigest(const std::string& controllerId, const Json& request) {
     const std::string canonicalRequest = controllerId + "\n" + request.dump();
     std::array<unsigned char, SHA256_DIGEST_LENGTH> digest{};
@@ -2220,6 +2257,13 @@ Json DeviceManagement::performControllerAction(const Inventory& inventory,
         statusCode = 409;
         return errorBody("controller_preflight_blocked", "fresh identity, dependency and monitoring evidence must match the active inventory; services must be healthy or have a complete, fresh outage or host-recovery record");
     }
+    if (hostRecoveryMode) {
+        const auto blocker = hostRecoveryHistoryBlocker(auditPath, deviceId, stringField(hostRecovery, "outage_id"));
+        if (!blocker.empty()) {
+            statusCode = 409;
+            return errorBody("host_recovery_history_blocked", blocker);
+        }
+    }
     const std::string intentDigest = controllerActionIntentDigest(controllerId, request);
     Json auditBase{{"request_id", requestId}, {"controller_id", controllerId}, {"device_id", deviceId},
                    {"action", action}, {"change_id", changeId}, {"inventory_revision", inventory.revision},
@@ -2481,6 +2525,50 @@ Json DeviceManagement::performControllerAction(const Inventory& inventory,
         return errorBody("controller_audit_unavailable", "action outcome occurred but its durable audit record could not be committed: " + auditError);
     }
     return response;
+}
+
+void DeviceManagement::handleGetRecoveryHistory(const httplib::Request&, httplib::Response& res) const {
+    std::lock_guard<std::mutex> localLock(actionMutex_);
+    const std::string path = envValue("NMC_DEVICE_ACTION_AUDIT_PATH");
+    AuditLock auditLock;
+    std::string error;
+    if (path.empty() || !auditLock.acquire(path, error)) {
+        return sendJson(res, 503, errorBody("recovery_history_unavailable", "A secure, readable controller audit is required for post-restart review"));
+    }
+    std::ifstream input(path);
+    if (!input) return sendJson(res, 503, errorBody("recovery_history_unavailable", "Controller recovery history cannot be read"));
+    try {
+        std::unordered_map<std::string, Json> episodes;
+        std::string line;
+        size_t lines = 0, bytes = 0;
+        while (std::getline(input, line)) {
+            bytes += line.size();
+            if (++lines > 100000 || bytes > 16 * 1024 * 1024 || line.size() > 1024 * 1024)
+                return sendJson(res, 503, errorBody("recovery_history_unavailable", "Controller audit exceeds bounded history review; preserve/archive it and reconcile"));
+            const auto record = Json::parse(line);
+            if (record.value("action", std::string{}) != "warm_restart") continue;
+            const auto id = record.value("request_id", std::string{});
+            if (!safeIdentifier(id) || !safeIdentifier(record.value("device_id", std::string{})))
+                throw std::runtime_error("invalid audit identity");
+            episodes[id] = {{"request_id", id}, {"device_id", record.at("device_id")},
+                {"controller_id", record.at("controller_id")}, {"action", "warm_restart"},
+                {"change_id", record.value("change_id", "")}, {"started_at_unix_ms", record.at("started_at_unix_ms")},
+                {"phase", record.value("phase", "unknown")},
+                {"verified", record.value("response", Json::object()).value("data", Json::object()).value("verified", false)}};
+        }
+        if (input.bad()) throw std::runtime_error("incomplete audit read");
+        std::vector<Json> entries;
+        for (const auto& [id, episode] : episodes) entries.push_back(episode);
+        std::sort(entries.begin(), entries.end(), [](const Json& a, const Json& b) {
+            return a.at("started_at_unix_ms").get<int64_t>() > b.at("started_at_unix_ms").get<int64_t>();
+        });
+        const bool truncated = entries.size() > 32;
+        if (truncated) entries.resize(32);
+        sendJson(res, 200, Json{{"success", true}, {"data", {{"schema_version", 1},
+            {"observed_at_unix_ms", nowEpochMs()}, {"truncated", truncated}, {"entries", entries}}}});
+    } catch (...) {
+        sendJson(res, 503, errorBody("recovery_history_unavailable", "Controller recovery audit is malformed or incomplete; no clean-history claim is available"));
+    }
 }
 
 void DeviceManagement::handleControllerAction(const httplib::Request& req, httplib::Response& res) {

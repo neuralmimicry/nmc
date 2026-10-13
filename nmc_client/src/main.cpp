@@ -196,6 +196,7 @@ int main(int argc, char* argv[]) {
 
     auto deviceCmd = std::make_shared<NMC::Commands::DeviceCommand>(apiClient);
     deviceCmd->addSubcommand(std::make_shared<NMC::Commands::DeviceInventoryCommand>(apiClient));
+    deviceCmd->addSubcommand(std::make_shared<NMC::Commands::DeviceRecoveryHistoryCommand>(apiClient));
     deviceCmd->addSubcommand(std::make_shared<NMC::Commands::DeviceDhcpCommand>(apiClient));
     deviceCmd->addSubcommand(std::make_shared<NMC::Commands::DeviceHomeAssistantCommand>(apiClient));
     deviceCmd->addSubcommand(std::make_shared<NMC::Commands::DeviceHomeAssistantReconciliationCommand>(apiClient));

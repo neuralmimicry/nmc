@@ -129,7 +129,8 @@ jobs:
             libtool \
             libwebsockets-dev \
             pkg-config \
-            python3
+            python3 \
+            nodejs
 
       - name: Run canonical CI preflight
         env:
