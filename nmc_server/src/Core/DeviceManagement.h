@@ -38,6 +38,9 @@ public:
     /** Execute an explicitly enabled, audited, idempotent controller action. */
     void handleControllerAction(const httplib::Request& req, httplib::Response& res);
 
+    /** Reconcile an operator-configured Redfish event subscription with durable audit. */
+    void handleEventSubscription(const httplib::Request& req, httplib::Response& res);
+
 private:
     struct Inventory {
         nlohmann::json document{nlohmann::json::object()};

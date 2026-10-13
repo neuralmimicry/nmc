@@ -526,7 +526,7 @@ Json queryDhcpServer(const Json& config) {
 Json publicController(const Json& source) {
     Json result = Json::object();
     for (const char* key : {"id", "protocol", "endpoint", "vendor_profile", "mac_address",
-                            "manages", "power_actions_enabled", "source"}) {
+                            "manages", "power_actions_enabled", "event_push_enabled", "source"}) {
         if (source.contains(key)) result[key] = source[key];
     }
     // An omitted per-controller setting inherits the enabled default. Keep the
@@ -1044,6 +1044,13 @@ bool validateInventory(Json& document, std::string& error) {
         if (controller.contains("power_actions_enabled") && !controller["power_actions_enabled"].is_boolean()) {
             error = "controller power_actions_enabled must be a boolean";
             return false;
+        }
+        if (controller.contains("event_push_enabled") && !controller["event_push_enabled"].is_boolean()) {
+            error = "event_push_enabled must be a boolean"; return false;
+        }
+        if (controller.contains("event_push_token_env") && (!controller["event_push_token_env"].is_string()
+            || !safeEnvName(controller["event_push_token_env"].get<std::string>()))) {
+            error = "event_push_token_env must name an environment variable"; return false;
         }
         if (controller.contains("mac_address")
             && (!controller["mac_address"].is_string()
@@ -1776,6 +1783,59 @@ Json DeviceManagement::getControllerDiagnostics(const Inventory& inventory,
                 resources.push_back(std::move(item));
             }
 
+            // Optional resources cannot convert a partial BMC observation into a healthy one.
+            Json eventService{{"available", false}, {"push_supported", false}, {"capability", "unknown"}};
+            if (!root.contains("EventService")) eventService["capability"] = "not_advertised";
+            else if (root["EventService"].is_object()) {
+                const std::string path = root["EventService"].value("@odata.id", std::string{});
+                const auto service = getResource(path);
+                if (service) {
+                    eventService["available"] = true;
+                    eventService["service_enabled"] = service->value("ServiceEnabled", false);
+                    const Json formats = service->value("EventFormatTypes", Json::array());
+                    const bool eventFormat = formats.is_array() && std::find(formats.begin(), formats.end(), "Event") != formats.end();
+                    const std::string subscriptions = service->contains("Subscriptions") && (*service)["Subscriptions"].is_object()
+                        ? (*service)["Subscriptions"].value("@odata.id", std::string{}) : std::string{};
+                    const auto collection = getResource(subscriptions);
+                    const bool collectionValid = collection && collection->contains("Members") && (*collection)["Members"].is_array() && (*collection)["Members"].size() <= 128;
+                    const bool supported = service->value("ServiceEnabled", false) && eventFormat && collectionValid;
+                    eventService["push_supported"] = supported;
+                    eventService["capability"] = supported ? "redfish_events" : "unavailable_or_incompatible";
+                    if (collectionValid) eventService["subscriptions_resource"] = subscriptions;
+                }
+            }
+            Json logs = Json::array();
+            // Traverse at most four advertised log services and twenty entries each.
+            const auto collectLogs = [&](const Json& resource) {
+                if (logs.size() >= 4 || !resource.contains("LogServices") || !resource["LogServices"].is_object()) return;
+                const auto collection = getResource(resource["LogServices"].value("@odata.id", std::string{}));
+                if (!collection || !collection->contains("Members") || !(*collection)["Members"].is_array()) { logs.push_back({{"available", false}}); return; }
+                for (const auto& member : (*collection)["Members"]) {
+                    if (logs.size() >= 4) break;
+                    if (!member.is_object()) continue;
+                    const auto service = getResource(member.value("@odata.id", std::string{}));
+                    Json item{{"available", false}, {"entries", Json::array()}};
+                    if (service && service->contains("Entries") && (*service)["Entries"].is_object()) {
+                        const std::string entriesPath = (*service)["Entries"].value("@odata.id", std::string{});
+                        // Pagination is not followed. Preserve truncation rather than claiming a complete history.
+                        const auto entries = getResource(entriesPath);
+                        if (entries && entries->contains("Members") && (*entries)["Members"].is_array()) {
+                            item["available"] = true;
+                            item["truncated"] = (*entries)["Members"].size() > 20 || entries->contains("Members@odata.nextLink")
+                                || entries->value("Members@odata.count", size_t{0}) > (*entries)["Members"].size();
+                            for (const auto& entry : (*entries)["Members"]) {
+                                if (item["entries"].size() >= 20) break;
+                                if (!entry.is_object()) continue;
+                                Json projected = Json::object();
+                                for (const char* key : {"Id", "Created", "Severity", "EntryType", "MessageId"})
+                                    if (entry.contains(key) && entry[key].is_string()) projected[key] = entry[key].get<std::string>().substr(0, 256);
+                                item["entries"].push_back(std::move(projected));
+                            }
+                        }
+                    }
+                    logs.push_back(std::move(item));
+                }
+            };
             Json managers = Json::array();
             bool managersAvailable = false;
             if (root.contains("Managers") && root["Managers"].is_object()
@@ -1796,6 +1856,7 @@ Json DeviceManagement::getControllerDiagnostics(const Inventory& inventory,
                                 continue;
                             }
                             const Json& manager = *managerDocument;
+                            collectLogs(manager);
                             Json managerStatus = Json::object();
                             if (manager.contains("Status") && manager["Status"].is_object()) {
                                 for (const char* key : {"State", "Health", "HealthRollup"}) {
@@ -1822,7 +1883,7 @@ Json DeviceManagement::getControllerDiagnostics(const Inventory& inventory,
                                 {"detected_vendor", redfishVendor(vendorEvidence)},
                                 {"observed_at_unix_ms", observedAt}, {"inventory_stale", inventory.stale},
                                 {"systems", std::move(resources)}, {"managers_available", managersAvailable},
-                                {"managers", std::move(managers)}};
+                                {"managers", std::move(managers)}, {"event_service", std::move(eventService)}, {"logs", std::move(logs)}};
             addString(controllerData, root, "Vendor", "service_vendor");
             addString(controllerData, root, "Product", "service_product");
             addString(controllerData, root, "RedfishVersion", "redfish_version");
@@ -1931,6 +1992,124 @@ void DeviceManagement::handleGetControllerDiagnostics(const httplib::Request& re
     int statusCode = 500;
     const Json response = getControllerDiagnostics(inventory, controllerId, statusCode);
     sendJson(res, statusCode, response);
+}
+
+void DeviceManagement::handleEventSubscription(const httplib::Request& req, httplib::Response& res) {
+    std::lock_guard<std::mutex> localLock(actionMutex_);
+    const auto fail = [&](int code, const char* error) { sendJson(res, code, errorBody(error, error)); };
+    try {
+        if (req.body.size() > 16384) { fail(413, "event_subscription_request_too_large"); return; }
+        const Json request = Json::parse(req.body);
+        const std::string id = stringField(request, "controller_id");
+        const std::string requestId = stringField(request, "request_id");
+        if (!safeIdentifier(id) || !safeIdentifier(requestId) || !safeIdentifier(stringField(request, "change_id"))
+            || stringField(request, "reason").empty() || stringField(request, "reason").size() > 1024) {
+            fail(400, "event_subscription_request_invalid"); return;
+        }
+        const Inventory inventory = loadInventory();
+        if (!inventory.valid || inventory.stale || stringField(request, "expected_inventory_revision") != inventory.revision) {
+            fail(409, "event_subscription_inventory_not_fresh"); return;
+        }
+        const Json* controller = findById(inventory.document["controllers"], id);
+        if (!controller || controller->value("protocol", std::string{}) != "redfish") {
+            fail(422, "event_push_protocol_unsupported"); return;
+        }
+        if (!controller->value("event_push_enabled", false)) { fail(409, "event_push_not_enabled"); return; }
+        const std::string tokenName = controller->value("event_push_token_env", std::string{});
+        const std::string token = safeEnvName(tokenName) ? envValue(tokenName) : std::string{};
+        const std::string base = envValue("NMC_BMC_EVENT_DESTINATION_BASE");
+        Endpoint callback;
+        std::string error;
+        if (!parseEndpoint(base, false, callback, error) || !callback.tls || base.find_first_of("?#") != std::string::npos
+            || token.size() < 32 || token.size() > 512 || token.find_first_of("\r\n") != std::string::npos) {
+            fail(503, "event_push_callback_or_credential_unconfigured"); return;
+        }
+        // Destination is operator-owned; API callers cannot redirect credentials.
+        const std::string destination = base + (base.back() == '/' ? "" : "/") + id;
+        const std::string context = "continuum-bmc/" + id;
+        Endpoint endpoint;
+        if (!parseControllerEndpoint(*controller, endpoint, error)) { fail(503, "event_push_endpoint_invalid"); return; }
+        const std::string user = controllerUsername(*controller), password = controllerPassword(*controller);
+        if (user.empty() || password.empty()) { fail(503, "event_push_controller_credentials_unavailable"); return; }
+        const auto get = [&](const std::string& path) -> std::optional<Json> {
+            if (!safeRedfishPath(path)) return std::nullopt;
+            auto response = withHttpClient(endpoint, [&](auto& client) {
+                client.set_basic_auth(user, password);
+                return client.Get(appendRedfishPath(endpoint, path));
+            });
+            if (!response || response->status != 200 || response->body.size() > 2 * 1024 * 1024) return std::nullopt;
+            const Json document = Json::parse(response->body);
+            return document.is_object() ? std::optional<Json>(document) : std::nullopt;
+        };
+        const auto root = get("/redfish/v1/");
+        const auto service = root && root->contains("EventService") && (*root)["EventService"].is_object()
+            ? get((*root)["EventService"].value("@odata.id", std::string{})) : std::nullopt;
+        if (!service || !service->value("ServiceEnabled", false) || !service->contains("Subscriptions")
+            || !(*service)["Subscriptions"].is_object()) { fail(422, "event_push_not_advertised"); return; }
+        const Json formats = service->value("EventFormatTypes", Json::array());
+        if (!formats.is_array() || std::find(formats.begin(), formats.end(), "Event") == formats.end()) {
+            fail(422, "event_push_format_unsupported"); return;
+        }
+        const std::string collectionPath = (*service)["Subscriptions"].value("@odata.id", std::string{});
+        const auto collection = get(collectionPath);
+        if (!collection || !collection->contains("Members") || !(*collection)["Members"].is_array()
+            || (*collection)["Members"].size() > 16 || collection->contains("Members@odata.nextLink")
+            || collection->value("Members@odata.count", size_t{0}) > (*collection)["Members"].size()) {
+            fail(409, "event_subscription_history_incomplete"); return;
+        }
+        std::string existing;
+        for (const auto& member : (*collection)["Members"]) {
+            const std::string path = member.is_object() ? member.value("@odata.id", std::string{}) : std::string{};
+            const auto subscription = get(path);
+            if (!subscription) { fail(409, "event_subscription_history_incomplete"); return; }
+            if (subscription->value("Context", std::string{}) == context) {
+                if (!existing.empty() || subscription->value("Destination", std::string{}) != destination
+                    || subscription->value("Protocol", std::string{}) != "Redfish"
+                    || subscription->value("EventFormatType", std::string("Event")) != "Event") {
+                    fail(409, "event_subscription_drift"); return;
+                }
+                existing = path;
+            }
+        }
+        const std::string auditPath = envValue("NMC_DEVICE_ACTION_AUDIT_PATH");
+        AuditLock auditLock;
+        if (!auditLock.acquire(auditPath, error)) { fail(503, "event_subscription_audit_unavailable"); return; }
+        const Json prior = findAuditRequest(auditPath, requestId);
+        const std::string digest = controllerActionIntentDigest(id, request);
+        if (prior.value("audit_scan_error", false)) { fail(503, "event_subscription_audit_incomplete"); return; }
+        if (!prior.empty() && prior.value("intent_sha256", std::string{}) != digest) { fail(409, "event_subscription_id_conflict"); return; }
+        if (existing.empty() && !prior.empty()) { fail(409, "event_subscription_outcome_unknown"); return; }
+        // Audit both adopted and newly created subscriptions. Never change an existing destination or clear other subscriptions.
+        Json record{{"request_id", requestId}, {"change_id", stringField(request, "change_id")},
+                    {"controller_id", id}, {"action", "configure_event_push"}, {"intent_sha256", digest},
+                    {"observed_at_unix_ms", nowEpochMs()}, {"phase", "intent"}};
+        if (prior.empty() && !appendAuditRecord(auditPath, record, error)) { fail(503, "event_subscription_audit_unavailable"); return; }
+        if (existing.empty()) {
+            const Inventory finalInventory = loadInventory();
+            if (!finalInventory.valid || finalInventory.stale || finalInventory.revision != inventory.revision) {
+                fail(409, "event_subscription_inventory_changed"); return;
+            }
+            const Json payload{{"Destination", destination}, {"Protocol", "Redfish"}, {"EventFormatType", "Event"},
+                {"Context", context}, {"SubscriptionType", "RedfishEvent"},
+                {"HTTPHeaders", Json::array({Json{{"Authorization", "Bearer " + token}}})}};
+            auto response = withHttpClient(endpoint, [&](auto& client) {
+                client.set_basic_auth(user, password);
+                return client.Post(appendRedfishPath(endpoint, collectionPath), payload.dump(), "application/json");
+            });
+            if (!response || response->status != 201) { fail(502, "event_subscription_outcome_unknown"); return; }
+            existing = response->get_header_value("Location");
+            const auto verified = get(existing);
+            if (!verified || verified->value("Destination", std::string{}) != destination
+                || verified->value("Context", std::string{}) != context || verified->value("Protocol", std::string{}) != "Redfish") {
+                fail(502, "event_subscription_postcheck_failed"); return;
+            }
+        }
+        const Json result = okBody({{"controller_id", id}, {"subscription_resource", existing},
+            {"configured", true}, {"delivery_validated", false}, {"polling_required", true}, {"observed_at_unix_ms", nowEpochMs()}});
+        record["phase"] = "complete"; record["http_status"] = 200; record["response"] = result;
+        if (!appendAuditRecord(auditPath, record, error)) { fail(503, "event_subscription_audit_unavailable"); return; }
+        sendJson(res, 200, result);
+    } catch (...) { fail(400, "event_subscription_response_or_request_invalid"); }
 }
 
 Json DeviceManagement::performControllerAction(const Inventory& inventory,

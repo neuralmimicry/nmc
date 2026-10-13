@@ -1,0 +1,11 @@
+{
+  "controllers": [{"id": "qc01-bmc", "protocol": "ipmi", "endpoint": "192.168.1.51", "manages": ["qc01"]}],
+  "enroll_push": false,
+  "interval_seconds": 120,
+  "stale_seconds": 600,
+  "inventory_max_age_seconds": 86400,
+  "listen_address": "127.0.0.1",
+  "port": 9105,
+  "state_directory": "/var/lib/nmc/bmc-observer",
+  "metrics_token_file": "/etc/nmc/bmc-metrics-token"
+}

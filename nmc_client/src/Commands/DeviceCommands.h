@@ -77,6 +77,16 @@ public:
                 const CLI::GlobalFlags& globalFlags) override;
 };
 
+
+class DeviceEventSubscribeCommand : public BaseCommand {
+public:
+    explicit DeviceEventSubscribeCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client);
+    /** Submit one operator-reviewed controller action as a JSON request. */
+    int execute(const std::map<std::string, std::string>& parsedFlags,
+                const std::vector<std::string>& parsedArgs,
+                const CLI::GlobalFlags& globalFlags) override;
+};
+
 } // namespace NMC::Commands
 
 #endif // NMC_DEVICE_COMMANDS_H

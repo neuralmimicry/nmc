@@ -89,7 +89,7 @@ while IFS= read -r test_file; do
 done < <(find tests/contracts -maxdepth 1 -type f -name '*_test.py' | sort)
 
 log "testing independent availability observer"
-run node --test tests/functional/availability-watchdog.test.mjs
+run node --test tests/functional/availability-watchdog.test.mjs tests/functional/bmc-observer.test.mjs
 
 log "configuring client"
 run cmake -S nmc_client -B "$CLIENT_BUILD_DIR" \

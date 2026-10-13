@@ -194,8 +194,11 @@ create_debian_package() {
   fi
 
   if [[ "$COMPONENT" == "server" ]]; then
-    install -d -m 0755 "$deb_root/usr/share/nmc-server" "$deb_root/usr/lib/nmc-server"
+    install -d -m 0755 "$deb_root/usr/share/nmc-server" "$deb_root/usr/lib/nmc-server" "$deb_root/usr/lib/systemd/system"
     cp -R "$REPO_ROOT/nmc_server/src/docs" "$deb_root/usr/share/nmc-server/docs"
+    install -m 0644 "$REPO_ROOT/scripts/bmc-observer.mjs" "$deb_root/usr/share/nmc-server/bmc-observer.mjs"
+    install -m 0644 "$REPO_ROOT/packaging/nmc-bmc-observer.service" "$deb_root/usr/lib/systemd/system/"
+    install -m 0644 "$REPO_ROOT/packaging/bmc-observer.example.json" "$docs_root/bmc-observer.example.json"
     install -m 0644 "$REPO_ROOT/scripts/availability-watchdog.mjs" "$deb_root/usr/share/nmc-server/availability-watchdog.mjs"
     install -d -m 0755 "$deb_root/usr/lib/systemd/system"
     install -m 0644 "$REPO_ROOT/packaging/nmc-availability-watchdog.service" "$deb_root/usr/lib/systemd/system/"
@@ -337,6 +340,9 @@ fi
 
 if [[ "$COMPONENT" == "server" ]]; then
   cp -R "$REPO_ROOT/nmc_server/src/docs" "$PAYLOAD_DIR/docs"
+  install -m 0644 "$REPO_ROOT/scripts/bmc-observer.mjs" "$PAYLOAD_DIR/bmc-observer.mjs"
+  install -m 0644 "$REPO_ROOT/packaging/nmc-bmc-observer.service" "$PAYLOAD_DIR/"
+  install -m 0644 "$REPO_ROOT/packaging/bmc-observer.example.json" "$PAYLOAD_DIR/"
   install -m 0644 "$REPO_ROOT/scripts/availability-watchdog.mjs" "$PAYLOAD_DIR/availability-watchdog.mjs"
   install -m 0644 "$REPO_ROOT/packaging/nmc-availability-watchdog.service" "$PAYLOAD_DIR/"
   install -m 0644 "$REPO_ROOT/packaging/availability-watchdog.example.json" "$PAYLOAD_DIR/"
