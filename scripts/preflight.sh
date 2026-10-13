@@ -90,6 +90,11 @@ done < <(find tests/contracts -maxdepth 1 -type f -name '*_test.py' | sort)
 
 log "testing independent availability observer"
 run node --test tests/functional/availability-watchdog.test.mjs
+log "verifying native Rust BMC observer"
+BMC_TARGET_DIR="${CARGO_TARGET_DIR:-$REPO_ROOT/nmc_bmc_observer/target}"
+run env CARGO_TARGET_DIR="$BMC_TARGET_DIR" cargo fmt --manifest-path nmc_bmc_observer/Cargo.toml --check
+run env CARGO_TARGET_DIR="$BMC_TARGET_DIR" cargo test --release --locked --manifest-path nmc_bmc_observer/Cargo.toml -j 2
+run env CARGO_TARGET_DIR="$BMC_TARGET_DIR" cargo build --release --locked --manifest-path nmc_bmc_observer/Cargo.toml -j 2
 
 log "configuring client"
 run cmake -S nmc_client -B "$CLIENT_BUILD_DIR" \

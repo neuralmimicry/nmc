@@ -530,6 +530,7 @@ namespace NMC::Server {
                 || path == "/k8s/octobot/configuration"
                 || path == "/k8s/aarnn/fpv-storage"
                 || path == "/k8s/deployment/restart"
+                || path == "/devices/controllers/event-subscriptions"
                 || path == "/devices/controllers/actions"
                 || path == "/providers/compute/instances/create"
                 || path == "/providers/compute/instances/action") {
@@ -962,6 +963,7 @@ namespace NMC::Server {
                 "/openstack/clusters/request",
                 "/proxmox/clusters/request",
                 "/node/recruit",
+                "/devices/controllers/event-subscriptions",
                 "/devices/controllers/actions",
                 "/github/actions/dispatch",
                 "/services/health/monitoring/auth/login"

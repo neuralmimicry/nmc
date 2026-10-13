@@ -930,6 +930,8 @@ class RedfishBmcMock:
         self._lock = threading.Lock()
         self._profile_name = "hp_ilo"
         self._unsafe_systems_link = False
+        self._subscriptions: dict[str, dict[str, Any]] = {}
+        self._event_service_enabled = True
         self._reset_capabilities = ["GracefulRestart", "PowerCycle"]
         self._httpd: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
@@ -1040,8 +1042,31 @@ class RedfishBmcMock:
                     "Product": profile["product"],
                     "Systems": {"@odata.id": systems_link},
                     "Managers": {"@odata.id": "/redfish/v1/Managers"},
+                    "EventService": {"@odata.id": "/redfish/v1/EventService"},
                 },
             )
+        elif path == "/redfish/v1/EventService":
+            self._send_json(handler, 200, {"ServiceEnabled": self._event_service_enabled,
+                "EventFormatTypes": ["Event"], "Subscriptions": {"@odata.id": "/redfish/v1/EventService/Subscriptions"}})
+        elif path == "/redfish/v1/EventService/Subscriptions":
+            if handler.command == "POST":
+                length = int(handler.headers.get("Content-Length", "0"))
+                value = json.loads(handler.rfile.read(length))
+                resource = f"/redfish/v1/EventService/Subscriptions/{len(self._subscriptions) + 1}"
+                self._subscriptions[resource] = value
+                data = json.dumps(value).encode("utf-8")
+                handler.send_response(201); handler.send_header("Location", resource)
+                handler.send_header("Content-Length", str(len(data))); handler.end_headers(); handler.wfile.write(data)
+            else:
+                self._send_json(handler, 200, {"Members": [{"@odata.id": key} for key in self._subscriptions]})
+        elif path in self._subscriptions:
+            self._send_json(handler, 200, self._subscriptions[path])
+        elif path.endswith("/LogServices"):
+            self._send_json(handler, 200, {"Members": [{"@odata.id": "/redfish/v1/Managers/BMC/LogServices/SEL"}]})
+        elif path == "/redfish/v1/Managers/BMC/LogServices/SEL":
+            self._send_json(handler, 200, {"Entries": {"@odata.id": "/redfish/v1/Managers/BMC/LogServices/SEL/Entries"}})
+        elif path == "/redfish/v1/Managers/BMC/LogServices/SEL/Entries":
+            self._send_json(handler, 200, {"Members": [{"Id": "1", "Created": "2026-10-13T10:00:00Z", "Severity": "Warning", "MessageId": "Hardware.Fault", "Message": "do-not-project-secret-message"}]})
         elif path == "/redfish/v1/Systems":
             self._send_json(handler, 200, {"Members": [{"@odata.id": system_path}]})
         elif path == system_path:
@@ -1076,6 +1101,7 @@ class RedfishBmcMock:
                     "Manufacturer": profile["manufacturer"],
                     "Model": profile["product"],
                     "FirmwareVersion": profile["firmware"],
+                    "LogServices": {"@odata.id": manager_path + "/LogServices"},
                     "Status": {"State": "Enabled", "Health": "OK"},
                 },
             )
@@ -1312,6 +1338,8 @@ class NmcServerProcess:
                 "NMC_GAIL_API_TOKEN": "gail-backend-token",
                 "NMC_GITHUB_ACTIONS_STATE_ROOT": str(self._home_dir / "github-actions-state"),
                 "NMC_DEVICE_INVENTORY_PATH": str(inventory_path),
+                "NMC_BMC_EVENT_DESTINATION_BASE": "https://continuum-events.example.test/events",
+                "NMC_TEST_BMC_EVENTS": "isolated-test-event-token-01234567890123456789",
                 "NMC_DEVICE_ACTION_AUDIT_PATH": str(self._home_dir / ".nmc" / "device-actions.jsonl"),
                 "AUTHZ_DHCP_TOKEN": "authz-dhcp-token",
                 "AUTHZ_BMC_USERNAME": "test-bmc-user",
@@ -2760,6 +2788,50 @@ def test_provider_compute_lifecycle(server: NmcServerProcess, backend: MockBacke
     assert_status(status, 410, "legacy in-memory VM create no longer reports provider success")
 
 
+def test_redfish_event_subscription(server: NmcServerProcess, redfish: RedfishBmcMock) -> None:
+    inventory_path = server.inventory_path
+    original = inventory_path.read_bytes()
+    try:
+        redfish.select_profile("hp_ilo")
+        inv = json.loads(original)
+        controller = inv["controllers"][0]
+        controller.update({"endpoint": redfish.base_url, "tls_ca_file": str(redfish.ca_file),
+            "vendor_profile": "hp_ilo", "event_push_enabled": True, "event_push_token_env": "NMC_TEST_BMC_EVENTS"})
+        inv["devices"][0]["controller_target"] = "1"
+        inventory_path.write_text(json.dumps(inv), encoding="utf-8")
+        request = {"controller_id": controller["id"], "request_id": "authz-events-1", "change_id": "authz-events-1",
+            "reason": "Isolated event subscription regression", "expected_inventory_revision": inv["revision"]}
+        route = "/devices/controllers/event-subscriptions"
+        before = sum(method == "POST" for method, _ in redfish.records())
+        status, _ = request_json(server.base_url, "POST", route, token="continuum-observe-token", payload=request)
+        assert_status(status, 403, "observer must not configure event delivery")
+        status, _ = request_json(server.base_url, "POST", route, token="continuum-control-token", payload={**request, "expected_inventory_revision": "other"})
+        assert_status(status, 409, "inventory drift blocks subscription")
+        redfish._event_service_enabled = False
+        status, _ = request_json(server.base_url, "POST", route, token="continuum-control-token", payload=request)
+        assert_status(status, 422, "disabled EventService must not be enabled as a side effect")
+        redfish._event_service_enabled = True
+        status, payload = request_json(server.base_url, "POST", route, token="continuum-control-token", payload=request)
+        assert_status(status, 200, "operator configured callback should be enrolled")
+        assert_true(payload.get("data", {}).get("delivery_validated") is False, "creation is not delivery validation")
+        assert_true("isolated-test-event-token" not in json.dumps(payload), "response must redact event credential")
+        status, _ = request_json(server.base_url, "POST", route, token="continuum-control-token", payload=request)
+        assert_status(status, 200, "repeated request must reconcile existing subscription")
+        after = sum(method == "POST" for method, _ in redfish.records())
+        assert_true(after == before + 1, "repeated or rejected requests must not create extra subscriptions")
+        subscription = next(iter(redfish._subscriptions.values()))
+        assert_true(subscription["Destination"] == "https://continuum-events.example.test/events/" + controller["id"], "callback must come from operator configuration")
+        subscription["Destination"] = "https://unexpected.example.test/events"
+        status, _ = request_json(server.base_url, "POST", route, token="continuum-control-token", payload={**request, "request_id": "authz-events-2"})
+        assert_status(status, 409, "existing subscription destination drift requires investigation")
+        audit = (server._home_dir / ".nmc" / "device-actions.jsonl").read_text(encoding="utf-8")
+        assert_true("isolated-test-event-token" not in audit, "audit must not contain event credentials")
+    finally:
+        redfish._subscriptions.clear()
+        redfish._event_service_enabled = True
+        inventory_path.write_bytes(original)
+
+
 def test_redfish_vendor_diagnostics(server: NmcServerProcess, redfish: RedfishBmcMock) -> None:
     assert_true(server.inventory_path is not None, "integration server should expose its active device inventory")
     inventory_path = server.inventory_path
@@ -2794,6 +2866,9 @@ def test_redfish_vendor_diagnostics(server: NmcServerProcess, redfish: RedfishBm
             assert_true(len(managers) == 1, f"{profile_name} should expose the linked BMC manager")
             assert_true(managers[0].get("firmware_version") == sample["firmware"], f"{profile_name} firmware should be reported")
             assert_true(managers[0].get("model") == sample["product"], f"{profile_name} manager model should be reported")
+            assert_true(data.get("event_service", {}).get("push_supported") is True, "advertised Redfish EventService must be detected")
+            assert_true(data.get("logs", [{}])[0].get("available") is True, "advertised log service must be collected")
+            assert_true("do-not-project-secret-message" not in json.dumps(data), "raw Redfish log messages must not leak into diagnostics")
             systems = data.get("systems", [])
             assert_true(len(systems) == 1 and systems[0].get("id") == sample["target"], f"{profile_name} system IDs should follow advertised links")
             assert_true(systems[0].get("reset_types") == ["GracefulRestart", "PowerCycle"], "advertised reset capabilities should be reported")
@@ -5561,6 +5636,7 @@ fi
         test_controller_action_rejects_malformed_body_shapes(server)
         test_global_controller_power_gate_can_be_explicitly_disabled(backend.base_url)
         test_redfish_vendor_diagnostics(server, redfish)
+        test_redfish_event_subscription(server, redfish)
         test_redfish_vendor_actions(backend.base_url, redfish)
         test_ipmi_diagnostics_and_actions(backend.base_url)
         test_turingpi_diagnostics_and_actions(backend.base_url)

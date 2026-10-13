@@ -135,4 +135,32 @@ int DeviceActionCommand::execute(const std::map<std::string, std::string>& parse
     }
 }
 
+DeviceEventSubscribeCommand::DeviceEventSubscribeCommand(std::shared_ptr<NMC::Core::CloudAPIClient> client)
+    : BaseCommand("event-subscribe", "Submit an audited, operator-configured BMC event subscription", std::move(client)) {
+    usage = "nmc device event-subscribe --request-json '<enrollment-request>'";
+    examples = "nmc device event-subscribe --request-json '{\"controller_id\":\"bmc01\",...}'";
+    addFlag(CLI::Flag("r", "request-json", "JSON enrollment request with exact fresh inventory revision and audit IDs", CLI::FlagType::String, true));
+}
+
+int DeviceEventSubscribeCommand::execute(const std::map<std::string, std::string>& parsedFlags,
+                                 const std::vector<std::string>& parsedArgs,
+                                 const CLI::GlobalFlags& globalFlags) {
+    if (!validateArguments(parsedArgs) || !validateFlags(parsedFlags)) return 1;
+    const auto requestFlag = parsedFlags.find("request-json");
+    if (requestFlag == parsedFlags.end()) return 1;
+    try {
+        const auto request = nlohmann::json::parse(requestFlag->second);
+        if (!request.is_object()) {
+            std::cerr << "Error: request-json must be a JSON object." << std::endl;
+            return 1;
+        }
+        const auto response = apiClient->configureControllerEventSubscription(request);
+        printOutput(response, globalFlags);
+        return response.success ? 0 : 1;
+    } catch (const std::exception& exception) {
+        std::cerr << "Error: invalid request-json: " << exception.what() << std::endl;
+        return 1;
+    }
+}
+
 } // namespace NMC::Commands

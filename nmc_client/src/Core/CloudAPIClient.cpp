@@ -838,6 +838,11 @@ namespace NMC::Core {
         return processHttpResponse(res, "Controller diagnostics retrieved.");
     }
 
+    Models::CloudResponse CloudAPIClient::configureControllerEventSubscription(const nlohmann::json& request) {
+        auto res = cli->Post("/devices/controllers/event-subscriptions", request.dump(), "application/json");
+        return processHttpResponse(res, "Controller event subscription reconciled.");
+    }
+
     Models::CloudResponse CloudAPIClient::executeControllerAction(const nlohmann::json& request) {
         auto res = cli->Post("/devices/controllers/actions", request.dump(), "application/json");
         return processHttpResponse(res, "Controller action submitted.");

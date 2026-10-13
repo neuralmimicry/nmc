@@ -70,6 +70,11 @@ namespace NMC::Server {
             deviceManagement->handleControllerAction(req, res);
         });
 
+        svr.Post("/devices/controllers/event-subscriptions", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            deviceManagement->handleEventSubscription(req, res);
+        });
+
         // --- Bucket Routes ---
         svr.Post("/bucket/create", [this, guard](const httplib::Request& req, httplib::Response& res) {
             if (!guard(req, res)) return;

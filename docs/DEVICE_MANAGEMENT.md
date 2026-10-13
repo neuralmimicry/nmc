@@ -40,3 +40,85 @@ Both recovery modes require `affected_services_healthy: false` and preserve the 
 Set `NMC_DEVICE_ACTION_AUDIT_PATH` to an owner-only regular file on protected persistent storage. Continuum holds an exclusive audit lock across request de-duplication and the controller operation, fails closed if audit history is malformed or incomplete, and requires each intent/outcome record to reach storage before proceeding. Every audit record stores a SHA-256 digest of the canonical parsed request and controller identifier: an exact retry returns the saved result without contacting hardware, while reuse of a `request_id` for changed intent returns HTTP 409 before controller contact. Legacy completed records without a digest are not replayed; verify controller state and submit a new request ID. Redfish actions require the BMC to advertise the exact action target and requested reset type; IPMI uses fixed system paths unless the trusted `NMC_IPMITOOL_PATH` override is explicitly configured, and always runs with a minimal child environment; Turing Pi actions require an explicit success acknowledgement. Each hardware call has a bounded timeout, and the controller's resulting power state is checked. Conductor remains responsible for obtaining and verifying live Prometheus/Grafana, service, dependency and host evidence before a normal action, then checking affected service health after the restart. A host-recovery caller must provide explicit monitoring-outage evidence when Prometheus/Grafana are unavailable. The host-recovery request is a Continuum control function, not an automatic recovery loop: a caller must first gather the typed, fresh observations above. Mock integration coverage exercises all three protocols; live physical controller actions have not been validated, so retain the existing per-request authorisation and evidence checks for any actual operation.
 
 Current limitations are tracked in `docs/functional_tests_and_validation.md` §0.5n: live hardware diagnostics and supervised action validation remain required for HP iLO, Dell iDRAC, MegaRAC, and Turing Pi. An on-host DHCP collector adapter and the passive ACK capture/export needed for complete received-option evidence do not yet exist. Power control is enabled by default for all adapters, but no physical power action is implied or issued by that default; live controller and end-to-end post-action service validation remain outstanding.
+
+## BMC telemetry and optional event push
+
+The packaged `nmc-bmc-observer.service` collects every explicitly pinned controller
+using the typed diagnostics API. It runs independently of Conductor, preserves
+owner-only structured observations in a bounded rotating journal, and exports
+bearer-authenticated Prometheus samples. Conductor's recovery review can correlate
+these samples with host boot journals and service evidence. Grafana can retain
+sensor, power, fault, firmware and collection-gap history through Prometheus.
+This native Rust observer has no power-action code.
+
+Copy `bmc-observer.example.json`, replace the example with exact current controller
+IDs/endpoints/managed-host mappings, create a private 0700 state directory and a
+0600 dedicated metrics token file, and provision the service's existing scoped
+NMC client configuration. Pin metrics TLS through the estate's approved HTTPS
+proxy. Never expose the listener directly outside the commissioned management
+network or grant a BMC the estate's administrative token. The service is packaged
+but is not enabled by package installation. The BMC observer is a native packaged executable; Node remains a separate
+prerequisite for the existing availability watchdog. Polls are serialized; inventory changes or collection failures emit
+explicit gaps, and old sensor values disappear instead of staying green.
+
+Redfish diagnostics follow advertised EventService, subscription and log-service
+links, with bounded local paths and existing controller TLS verification. Push
+support requires an enabled service, Event format and a readable subscriptions
+collection. An IPMI or Turing Pi transport does not establish whether another
+vendor push interface exists; those capabilities remain unverified until a
+supported, commissioned adapter is available. Do not infer capability from a
+vendor name or enable an unrelated BMC service.
+
+`POST /devices/controllers/event-subscriptions`, also available as
+`nmc device event-subscribe --request-json '<request>'`, requires Continuum control
+access, a fresh exact inventory revision, request/change IDs and a reason. Set
+`event_push_enabled: true` and `event_push_token_env` on the registered Redfish
+controller only after isolated qualification. Continuum's operator-owned
+`NMC_BMC_EVENT_DESTINATION_BASE` supplies an HTTPS callback prefix ending in
+`/events`; the controller ID is appended. API callers cannot choose a destination.
+The referenced event bearer credential must be at least 32 characters, unique to
+that controller, and match the observer's `event_token_env` reference. Provision
+secrets separately on the server and observer without placing values in inventory,
+requests, journals, dashboards or command arguments.
+
+Enrollment preserves other subscriptions, adopts one matching owned context,
+refuses drift or incomplete history and records durable intent before a write.
+An uncertain creation is reconciled using its original request ID, never blindly
+retried. Enable observer `enroll_push` only with that policy and callback commissioned;
+configured subscriptions are rechecked every fifteen minutes. Missing credentials,
+unsupported formats and BMCs that cannot deliver authenticated HTTPS remain visible
+as gaps requiring a supported adapter or continued polling.
+
+The receiver validates the per-controller bearer credential, freshly reconciled
+identity and `continuum-bmc/<controller-id>` context; bounds payloads, connections
+and rate; durably deduplicates the latest 512 projected event identities across
+process restarts. It discards raw messages and keeps only bounded event ID/time,
+type, severity and registry message ID. Push receipt advances a delivery observation,
+not host readiness. Enrollment reports `delivery_validated: false`: qualify a real
+BMC test-event receipt, reconnection, credential rejection, renewal and retained
+polling in UAT before production. A quiet event stream is not proof of failure or
+health. Polling and log reconciliation remain required even after push is working.
+
+Validation checkpoint (2026-10-13): ten prototype observer regressions, canonical native
+amd64 client/server verification and actual server authorization/subscription
+mock checks passed; an amd64 server Debian/archive package contains the observer,
+unit and example. Real estate read-only collection returned nine of ten BMCs:
+n1sdp lacks a usable host/credential reference, all six QC SEL reads were unavailable,
+and both Supermicro SEL reads succeeded. No current QC chassis fault was observed.
+These observations do not qualify BMC push, unattended operation or production
+Prometheus ingestion. Continuum's current host lacks Node, which the new server
+package already declares as a dependency. The prototype was replaced with Rust to meet the estate language preference.
+Runtime activation and native ARM64
+release checks remain required.
+
+Native Rust qualification checkpoint: **14/14 tests pass on both ARM64 and
+amd64**. The canonical amd64 gate also passes the C++ server/client, API/CLI
+parity, actual HTTPS subscription mocks and existing observer tests. The new
+Debian/archive package includes the compiled Rust observer. Its ARM64 executable
+ran read-only on Continuum's actual host, collecting **9/10 controllers and 540
+numeric sensor readings** with no power action or event enrollment. Historical
+state is still a temporary observation: unattended activation and Prometheus
+production ingestion are unverified. CI package smoke checks now extract and
+exercise payloads rather than installing candidate software onto shared runners;
+this fixes the observed old-client dependency failure while keeping matching
+client/server packages a release and installation requirement.

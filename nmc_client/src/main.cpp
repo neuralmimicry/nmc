@@ -202,6 +202,7 @@ int main(int argc, char* argv[]) {
     deviceCmd->addSubcommand(std::make_shared<NMC::Commands::DeviceHomeAssistantReconciliationCommand>(apiClient));
     deviceCmd->addSubcommand(std::make_shared<NMC::Commands::DeviceDiagnosticsCommand>(apiClient));
     deviceCmd->addSubcommand(std::make_shared<NMC::Commands::DeviceActionCommand>(apiClient));
+    deviceCmd->addSubcommand(std::make_shared<NMC::Commands::DeviceEventSubscribeCommand>(apiClient));
     parser.registerCommand(deviceCmd);
 
     auto refinerCmd = std::make_shared<NMC::Commands::RefinerCommand>(apiClient);
