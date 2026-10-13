@@ -824,6 +824,43 @@ Json findAuditRequest(const std::string& auditPath, const std::string& requestId
     return last;
 }
 
+// Enforce fallback fencing across request IDs and across Conductor/watchdog
+// processes while holding AuditLock. An incomplete intent remains an incident.
+std::string hostRecoveryHistoryBlocker(const std::string& auditPath,
+                                      const std::string& deviceId,
+                                      const std::string& outageId) {
+    std::ifstream input(auditPath);
+    if (!input) return "host recovery audit history is unavailable";
+    std::unordered_map<std::string, Json> intents;
+    std::unordered_set<std::string> completed;
+    std::string line;
+    size_t count = 0;
+    try {
+        while (std::getline(input, line)) {
+            if (++count > 100000 || line.size() > 1024 * 1024) return "host recovery audit history exceeds bounds";
+            const auto record = Json::parse(line);
+            const auto id = record.value("request_id", std::string{});
+            if (record.value("phase", std::string{}) == "intent") intents[id] = record;
+            if (record.value("phase", std::string{}) == "complete") completed.insert(id);
+        }
+        if (input.bad()) return "host recovery audit history could not be read";
+        size_t fallbackActionsToday = 0;
+        const auto now = nowEpochMs();
+        for (const auto& [id, record] : intents) {
+            const auto started = record.at("started_at_unix_ms").get<int64_t>();
+            if (started > now) return "host recovery audit timestamp is in the future";
+            if (record.contains("host_recovery") && now - started < 86400000) ++fallbackActionsToday;
+            if (record.value("device_id", std::string{}) != deviceId) continue;
+            if (!completed.count(id)) return "target has an unresolved controller intent; reconcile before recovery";
+            if (now - started < 3600000) return "target controller action cooldown is one hour";
+            if (record.contains("host_recovery") && record["host_recovery"].value("outage_id", std::string{}) == outageId)
+                return "this host outage already has an acknowledged action; verify recovery instead of resetting again";
+        }
+        if (fallbackActionsToday >= 2) return "independent host recovery daily action budget is exhausted";
+    } catch (...) { return "host recovery audit history is malformed"; }
+    return {};
+}
+
 std::string controllerActionIntentDigest(const std::string& controllerId, const Json& request) {
     const std::string canonicalRequest = controllerId + "\n" + request.dump();
     std::array<unsigned char, SHA256_DIGEST_LENGTH> digest{};
@@ -2219,6 +2256,13 @@ Json DeviceManagement::performControllerAction(const Inventory& inventory,
         || suppliedDependencies != expectedDependencies) {
         statusCode = 409;
         return errorBody("controller_preflight_blocked", "fresh identity, dependency and monitoring evidence must match the active inventory; services must be healthy or have a complete, fresh outage or host-recovery record");
+    }
+    if (hostRecoveryMode) {
+        const auto blocker = hostRecoveryHistoryBlocker(auditPath, deviceId, stringField(hostRecovery, "outage_id"));
+        if (!blocker.empty()) {
+            statusCode = 409;
+            return errorBody("host_recovery_history_blocked", blocker);
+        }
     }
     const std::string intentDigest = controllerActionIntentDigest(controllerId, request);
     Json auditBase{{"request_id", requestId}, {"controller_id", controllerId}, {"device_id", deviceId},

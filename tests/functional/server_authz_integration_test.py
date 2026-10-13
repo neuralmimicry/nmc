@@ -3334,6 +3334,23 @@ def test_ipmi_diagnostics_and_actions(backend_base_url: str) -> None:
         assert_true(calls_path.read_text(encoding="utf-8").splitlines() == calls_before_host_recovery,
                     "missing dependency evidence must fail before BMC contact")
 
+        # A fresh prior controller action must fence fallback recovery even
+        # when another caller invents a different request/outage identity.
+        cooldown_status, cooldown_payload = request_json(
+            server.base_url, "POST", "/devices/controllers/actions",
+            token="continuum-control-token", payload=host_recovery_request,
+        )
+        assert_status(cooldown_status, 409, "cross-request host recovery cooldown")
+        assert_true(cooldown_payload.get("error", {}).get("code") == "host_recovery_history_blocked",
+                    "independent recovery must consult the durable controller history")
+        assert_true(calls_path.read_text(encoding="utf-8").splitlines() == calls_before_host_recovery,
+                    "cooldown must suppress BMC contact")
+        # Advance only the mock action history; fresh observation timestamps stay current.
+        old_records = [json.loads(line) for line in audit_path.read_text(encoding="utf-8").splitlines()]
+        for record in old_records:
+            record["started_at_unix_ms"] = int(time.time() * 1000) - 7200000
+        audit_path.write_text("".join(json.dumps(record) + "\n" for record in old_records), encoding="utf-8")
+
         host_recovery_status, host_recovery_payload = request_json(
             server.base_url,
             "POST",
@@ -3359,6 +3376,20 @@ def test_ipmi_diagnostics_and_actions(backend_base_url: str) -> None:
             "the durable intent must retain the verified target, hosted-service and monitoring evidence",
         )
 
+        # Reusing an outage with a new request is not a second recovery decision.
+        duplicate_outage = json.loads(json.dumps(host_recovery_request))
+        duplicate_outage["request_id"] = "ipmi-duplicate-outage-0001"
+        cooldown_status, _ = request_json(server.base_url, "POST", "/devices/controllers/actions",
+            token="continuum-control-token", payload=duplicate_outage)
+        assert_status(cooldown_status, 409, "a second reset is blocked across request IDs")
+        old_records = [json.loads(line) for line in audit_path.read_text(encoding="utf-8").splitlines()]
+        for record in old_records:
+            record["started_at_unix_ms"] = int(time.time() * 1000) - 7200000
+        audit_path.write_text("".join(json.dumps(record) + "\n" for record in old_records), encoding="utf-8")
+        duplicate_status, _ = request_json(server.base_url, "POST", "/devices/controllers/actions",
+            token="continuum-control-token", payload=duplicate_outage)
+        assert_status(duplicate_status, 409, "the same outage remains fenced beyond cooldown")
+
         monitoring_outage_request = json.loads(json.dumps(host_recovery_request))
         monitoring_outage_request["request_id"] = "ipmi-host-recovery-monitor-down-0001"
         monitoring_outage_request["change_id"] = "IPMI-HOST-RECOVERY-MONITOR-DOWN-1"
@@ -3367,6 +3398,7 @@ def test_ipmi_diagnostics_and_actions(backend_base_url: str) -> None:
         monitoring_outage_observed_at = int(time.time() * 1000)
         monitoring_outage_preflight["observed_at_unix_ms"] = monitoring_outage_observed_at
         monitoring_outage_evidence = monitoring_outage_preflight["host_recovery"]
+        monitoring_outage_evidence["outage_id"] = "IPMI-QC00-DIFFERENT-OUTAGE-20261013"
         monitoring_outage_evidence["target"]["observed_at_unix_ms"] = monitoring_outage_observed_at
         for evidence_list in ("hosted_services", "dependencies"):
             for observation in monitoring_outage_evidence[evidence_list]:
@@ -4191,6 +4223,53 @@ def test_octobot_image_rollout_rejects_incomplete_or_divergent_bootstrap(backend
         with backend._lock: backend.k8s_deployments["octobot/octobot"] = original
         server.stop()
 
+
+
+def test_production_image_rollout_requires_stateless_zero_unavailability(backend: MockBackend) -> None:
+    key = "octobot/octobot"
+    with backend._lock:
+        original = json.loads(json.dumps(backend.k8s_deployments[key]))
+    fixture = json.loads(json.dumps(original))
+    fixture["metadata"]["labels"]["neuralmimicry.ai/surge-safe"] = "enabled"
+    fixture["spec"]["minReadySeconds"] = 10
+    fixture["spec"]["strategy"] = {"type": "RollingUpdate", "rollingUpdate": {"maxUnavailable": 0, "maxSurge": 1}}
+    pod = fixture["spec"]["template"]["spec"]
+    pod["volumes"] = []
+    for container in pod["containers"]:
+        container["readinessProbe"] = {"httpGet": {"path": "/health", "port": 8080}}
+    request = {"cluster_id": "authz-test-cluster", "namespace": "octobot", "deployment": "octobot",
+        "container": "octobot", "expected_image": pod["containers"][0]["image"],
+        "image": "ghcr.io/neuralmimicry/octobot@sha256:" + "b" * 64,
+        "request_id": "qualified-production-0001", "change_id": "QUALIFIED-PRODUCTION-0001", "require_zero_unavailable": True}
+    patch_path = "/apis/apps/v1/namespaces/octobot/deployments/octobot"
+    server = NmcServerProcess(backend.base_url, image_rollout_enabled=True, k8s_server_url=backend.base_url)
+    try:
+        server.start()
+        for fault in ["missing-policy", "recreate", "unavailable", "zero-surge", "missing-probe", "shared-state", "host-port", "no-ready-window"]:
+            deployment = json.loads(json.dumps(fixture))
+            spec = deployment["spec"]
+            if fault == "missing-policy": deployment["metadata"]["labels"].pop("neuralmimicry.ai/surge-safe")
+            elif fault == "recreate": spec["strategy"]["type"] = "Recreate"
+            elif fault == "unavailable": spec["strategy"]["rollingUpdate"]["maxUnavailable"] = 1
+            elif fault == "zero-surge": spec["strategy"]["rollingUpdate"]["maxSurge"] = 0
+            elif fault == "missing-probe": spec["template"]["spec"]["containers"][0].pop("readinessProbe")
+            elif fault == "shared-state": spec["template"]["spec"]["volumes"] = [{"name": "data", "persistentVolumeClaim": {"claimName": "production"}}]
+            elif fault == "host-port": spec["template"]["spec"]["containers"][0]["ports"] = [{"containerPort": 8080, "hostPort": 8080}]
+            elif fault == "no-ready-window": spec["minReadySeconds"] = 0
+            with backend._lock: backend.k8s_deployments[key] = deployment
+            before = backend.count_requests(patch_path, "PATCH")
+            status, _ = request_json(server.base_url, "POST", "/k8s/deployment/image-rollout",
+                token="continuum-control-token", payload=request)
+            assert_status(status, 409, "unsafe production transition " + fault)
+            assert_true(backend.count_requests(patch_path, "PATCH") == before, "unsafe rollout must not patch Kubernetes")
+        with backend._lock: backend.k8s_deployments[key] = fixture
+        status, payload = request_json(server.base_url, "POST", "/k8s/deployment/image-rollout",
+            token="continuum-control-token", payload=request)
+        assert_status(status, 200, "explicitly qualified stateless production transition")
+        assert_true(payload["data"]["zero_unavailable_rollout_ready"] is True, "status must expose the supported strategy")
+    finally:
+        server.stop()
+        with backend._lock: backend.k8s_deployments[key] = original
 
 def test_k8s_image_rollout_updates_only_allowlisted_container_and_deduplicates(
     backend_base_url: str,
@@ -5475,6 +5554,7 @@ fi
         test_recovery_uses_fresh_nodelease_not_node_status_heartbeat(backend.base_url)
         test_k8s_image_rollout_requires_control_scope_and_explicit_policy(backend.base_url)
         test_octobot_image_rollout_rejects_incomplete_or_divergent_bootstrap(backend)
+        test_production_image_rollout_requires_stateless_zero_unavailability(backend)
         test_k8s_image_rollout_updates_only_allowlisted_container_and_deduplicates(backend.base_url, backend)
         test_aarnn_fpv_storage_is_scoped_persistent_conditional_and_idempotent(backend)
         test_k8s_image_rollout_preserves_upstream_patch_rejections(backend)

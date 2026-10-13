@@ -196,6 +196,10 @@ create_debian_package() {
   if [[ "$COMPONENT" == "server" ]]; then
     install -d -m 0755 "$deb_root/usr/share/nmc-server" "$deb_root/usr/lib/nmc-server"
     cp -R "$REPO_ROOT/nmc_server/src/docs" "$deb_root/usr/share/nmc-server/docs"
+    install -m 0644 "$REPO_ROOT/scripts/availability-watchdog.mjs" "$deb_root/usr/share/nmc-server/availability-watchdog.mjs"
+    install -d -m 0755 "$deb_root/usr/lib/systemd/system"
+    install -m 0644 "$REPO_ROOT/packaging/nmc-availability-watchdog.service" "$deb_root/usr/lib/systemd/system/"
+    install -m 0644 "$REPO_ROOT/packaging/availability-watchdog.example.json" "$docs_root/availability-watchdog.example.json"
 
     while IFS= read -r bundled_lib; do
       [[ -n "$bundled_lib" ]] || continue
@@ -210,6 +214,10 @@ create_debian_package() {
   depends="$(compute_deb_depends "$deb_root/usr/bin/$RENAME" "$deb_root/usr/lib/nmc-server")"
   if ((${#bundled_libs[@]})); then
     depends="$(filter_bundled_deb_depends "$depends" "${bundled_libs[@]}")"
+  fi
+
+  if [[ "$COMPONENT" == "server" ]]; then
+    depends="${depends:+$depends, }nodejs (>= 18), util-linux, nmc-client (= $deb_version)"
   fi
 
   {
@@ -329,6 +337,9 @@ fi
 
 if [[ "$COMPONENT" == "server" ]]; then
   cp -R "$REPO_ROOT/nmc_server/src/docs" "$PAYLOAD_DIR/docs"
+  install -m 0644 "$REPO_ROOT/scripts/availability-watchdog.mjs" "$PAYLOAD_DIR/availability-watchdog.mjs"
+  install -m 0644 "$REPO_ROOT/packaging/nmc-availability-watchdog.service" "$PAYLOAD_DIR/"
+  install -m 0644 "$REPO_ROOT/packaging/availability-watchdog.example.json" "$PAYLOAD_DIR/"
 fi
 
 case "$PLATFORM" in

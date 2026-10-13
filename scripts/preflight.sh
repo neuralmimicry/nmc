@@ -88,6 +88,9 @@ while IFS= read -r test_file; do
   run python3 "$test_file"
 done < <(find tests/contracts -maxdepth 1 -type f -name '*_test.py' | sort)
 
+log "testing independent availability observer"
+run node --test tests/functional/availability-watchdog.test.mjs
+
 log "configuring client"
 run cmake -S nmc_client -B "$CLIENT_BUILD_DIR" \
   -DCMAKE_BUILD_TYPE=Release \

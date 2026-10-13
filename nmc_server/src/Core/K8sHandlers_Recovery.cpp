@@ -1,4 +1,5 @@
 #include "K8sHandlers.h"
+#include "ReleaseSafety.h"
 
 #include <algorithm>
 #include <chrono>
@@ -439,6 +440,7 @@ nlohmann::json deploymentStatusData(const nlohmann::json& deployment,
             {"updated_replicas", updated},
             {"ready_replicas", ready},
             {"available_replicas", available},
+            {"zero_unavailable_rollout_ready", zeroUnavailableStrategy(deployment)},
             {"container_readiness_available", podListComplete},
             {"pod_diagnostics_available", podListComplete},
             {"pod_diagnostics_truncated", podDiagnosticsTruncated},
@@ -1124,6 +1126,10 @@ nlohmann::json K8sHandlers::inspectDeploymentRecoveryState(
                     {"environment", hostLabels.value("neuralmimicry.ai/environment", "unknown")},
                     {"zone", hostLabels.value("topology.kubernetes.io/zone", "")},
                     {"instance_type", hostLabels.value("node.kubernetes.io/instance-type", "")},
+                    {"node_lease_renew_time", lease != nodeLeasesByName.end()
+                        ? stringField(lease->second.value("spec", nlohmann::json::object()), "renewTime") : ""},
+                    {"node_lease_duration_seconds", lease != nodeLeasesByName.end()
+                        ? lease->second.value("spec", nlohmann::json::object()).value("leaseDurationSeconds", 0) : 0},
                     {"node_lease_healthy", leaseHealthy},
                     {"healthy", healthy},
                     {"reasons", reasons}
@@ -1855,7 +1861,13 @@ void K8sHandlers::handleRolloutDeploymentImage(const httplib::Request& req, http
                 "cluster_id", "namespace", "deployment", "container", "image",
                 "expected_image", "request_id", "change_id"
         };
-        if (!containsExactKeySet(body, expectedKeys)) {
+        auto stringFields = body;
+        if (body.contains("require_zero_unavailable") && !body["require_zero_unavailable"].is_boolean()) return sendErrorResponse(res, 400, "require_zero_unavailable must be boolean.");
+        const bool requireZeroUnavailable = body.value("require_zero_unavailable", false);
+        if (body.contains("require_zero_unavailable")) {
+            stringFields.erase("require_zero_unavailable");
+        }
+        if (!containsExactKeySet(stringFields, expectedKeys)) {
             return sendErrorResponse(res, 400,
                     "Expected exactly cluster_id, namespace, deployment, container, image, expected_image, request_id and change_id.");
         }
@@ -2039,6 +2051,11 @@ void K8sHandlers::handleRolloutDeploymentImage(const httplib::Request& req, http
             response.data["already_applied"] = true;
             sendJsonResponse(res, response);
             return;
+        }
+
+        if (requireZeroUnavailable && !zeroUnavailableStrategy(deployment)) {
+            genericClient_free(deploymentClient);
+            return sendErrorResponse(res, 409, "Production rollout requires an explicitly qualified stateless surge-safe strategy, maxUnavailable=0, positive surge, readiness probes and minimum ready time; shared-state targets require a cutover adapter.");
         }
 
         selected->operator[]("image") = image;
