@@ -7,7 +7,7 @@ It contains no tokens, source records or live operational payloads. Registration
 is not evidence of health, forecast qualification or execution permission.
 
 New server builds expose the catalogue at the guarded observer endpoint
-`GET /platform/products`. The dashboard supports older reviewed servers through
+`GET /platform/products`; new clients expose `nmc platform products --output json`. The dashboard supports older reviewed servers through
 the existing `/services/health/monitoring/public/products.json` asset route when
 that endpoint returns 404, without falling back after an authorization failure.
 A docs-only update can therefore preserve the currently patched server binary.
