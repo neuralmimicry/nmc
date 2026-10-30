@@ -1,4 +1,5 @@
 #include "APIRoutes.h"
+#include "GitHubArtifactTransport.h"
 
 #include <algorithm>
 #include <atomic>
@@ -166,10 +167,7 @@ namespace NMC::Server {
             if (!allowedHost) return {};
 
             httplib::SSLClient client(host, 443);
-            client.set_connection_timeout(5, 0);
-            client.set_read_timeout(60, 0);
-            client.set_write_timeout(10, 0);
-            client.set_follow_location(false);
+            configureGitHubArtifactDownload(client);
             GithubResponse output;
             auto receive = [&](const char* data, std::size_t length) {
                 if (output.body.size() + length > MAX_RESULT_ARCHIVE_BYTES) {
