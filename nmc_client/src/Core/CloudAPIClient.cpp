@@ -481,6 +481,27 @@ namespace NMC::Core {
         return processHttpResponse(res, "Bounded Kubernetes workload logs retrieved.");
     }
 
+    Models::CloudResponse CloudAPIClient::getPlatformProducts() {
+        auto response = cli->Get("/platform/products");
+        // Compatible read-only servers may expose the public metadata as an
+        // existing docs asset while preserving their reviewed native runtime.
+        if (response && response->status == 404) {
+            auto legacy = cli->Get("/services/health/monitoring/public/products.json");
+            if (legacy && legacy->status == 200) {
+                try {
+                    const auto data = nlohmann::json::parse(legacy->body);
+                    if (data.value("schema_version", 0) == 1 && data.contains("products") && data["products"].is_array()) {
+                        return {true, "Declared product catalogue retrieved; runtime qualification is separate.", data, 200};
+                    }
+                } catch (const nlohmann::json::exception&) {
+                    return {false, "Product catalogue is malformed.", nullptr, 502};
+                }
+            }
+            return processHttpResponse(legacy, "Product catalogue retrieved.");
+        }
+        return processHttpResponse(response, "Product catalogue retrieved.");
+    }
+
     Models::CloudResponse CloudAPIClient::getRefinerDeploymentStatus(
             const std::string& namespaceName,
             const std::string& deploymentName

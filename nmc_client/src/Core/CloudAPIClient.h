@@ -52,6 +52,9 @@ namespace NMC::Core {
         CloudAPIClient(const std::string& host, int port, const std::string& configFilePath);
         ~CloudAPIClient();
 
+        /** Declared platform identities; does not imply runtime or model qualification. */
+        Models::CloudResponse getPlatformProducts();
+
         // Bucket Operations
         Models::CloudResponse createBucket(const std::string& name, const std::string& location, const std::string& type);
         Models::CloudResponse deleteBucket(const std::string& name);
