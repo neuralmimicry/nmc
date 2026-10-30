@@ -9,6 +9,7 @@ Type=simple
 User=nmc
 Group=nmc
 WorkingDirectory=/var/lib/nmc
+Environment=HOME=/var/lib/nmc
 EnvironmentFile=-/etc/nmc/bmc-observer.env
 ExecStart=/usr/bin/flock --nonblock /var/lib/nmc/bmc-observer.lock /usr/lib/nmc-server/nmc-bmc-observer /etc/nmc/bmc-observer.json
 Restart=on-failure

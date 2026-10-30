@@ -200,9 +200,12 @@ create_debian_package() {
     install -m 0644 "$REPO_ROOT/packaging/nmc-bmc-observer.service" "$deb_root/usr/lib/systemd/system/"
     install -m 0644 "$REPO_ROOT/packaging/bmc-observer.example.json" "$docs_root/bmc-observer.example.json"
     install -m 0644 "$REPO_ROOT/scripts/availability-watchdog.mjs" "$deb_root/usr/share/nmc-server/availability-watchdog.mjs"
+    install -m 0644 "$REPO_ROOT/scripts/host-boot-journal.mjs" "$deb_root/usr/share/nmc-server/host-boot-journal.mjs"
     install -d -m 0755 "$deb_root/usr/lib/systemd/system"
     install -m 0644 "$REPO_ROOT/packaging/nmc-availability-watchdog.service" "$deb_root/usr/lib/systemd/system/"
     install -m 0644 "$REPO_ROOT/packaging/availability-watchdog.example.json" "$docs_root/availability-watchdog.example.json"
+    install -m 0644 "$REPO_ROOT/scripts/bmc-log-guard.mjs" "$deb_root/usr/share/nmc-server/bmc-log-guard.mjs"
+    install -m 0644 "$REPO_ROOT/packaging/nmc-bmc-log-guard.service" "$REPO_ROOT/packaging/nmc-bmc-log-guard.timer" "$deb_root/usr/lib/systemd/system/"
 
     while IFS= read -r bundled_lib; do
       [[ -n "$bundled_lib" ]] || continue
@@ -344,8 +347,10 @@ if [[ "$COMPONENT" == "server" ]]; then
   install -m 0644 "$REPO_ROOT/packaging/nmc-bmc-observer.service" "$PAYLOAD_DIR/"
   install -m 0644 "$REPO_ROOT/packaging/bmc-observer.example.json" "$PAYLOAD_DIR/"
   install -m 0644 "$REPO_ROOT/scripts/availability-watchdog.mjs" "$PAYLOAD_DIR/availability-watchdog.mjs"
+  install -m 0644 "$REPO_ROOT/scripts/host-boot-journal.mjs" "$PAYLOAD_DIR/host-boot-journal.mjs"
   install -m 0644 "$REPO_ROOT/packaging/nmc-availability-watchdog.service" "$PAYLOAD_DIR/"
   install -m 0644 "$REPO_ROOT/packaging/availability-watchdog.example.json" "$PAYLOAD_DIR/"
+  install -m 0644 "$REPO_ROOT/scripts/bmc-log-guard.mjs" "$REPO_ROOT/packaging/nmc-bmc-log-guard.service" "$REPO_ROOT/packaging/nmc-bmc-log-guard.timer" "$PAYLOAD_DIR/"
 fi
 
 case "$PLATFORM" in

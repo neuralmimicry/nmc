@@ -307,8 +307,14 @@ pub fn project(d: &Value, at: i64) -> Value {
     let mut sensors = Vec::new();
     let mut faults = BTreeMap::new();
     let mut log_ids = Vec::new();
+    let mut log_used_percent = None;
     let logs_available;
     if d["protocol"] == "ipmi" {
+        if d["system_event_log"]["info_available"] == true {
+            let re = regex::Regex::new(r"(?m)^Percent Used\s*:\s*(\d+)%").unwrap();
+            log_used_percent = re.captures(d["system_event_log"]["info"].as_str().unwrap_or(""))
+                .and_then(|m| m[1].parse::<u8>().ok()).filter(|p| *p <= 100);
+        }
         let chassis = d["chassis_status"].as_str().unwrap_or("");
         let power = regex::Regex::new(r"(?i)System Power\s*:\s*(on|off)\b")
             .unwrap()
@@ -370,7 +376,7 @@ pub fn project(d: &Value, at: i64) -> Value {
             }
         }
     }
-    json!({"observed_at_unix_ms":d["observed_at_unix_ms"].as_i64().unwrap_or(0),"fresh":d["inventory_stale"]==false && fresh(d["observed_at_unix_ms"].as_i64().unwrap_or(0),at,120000),"systems":systems,"firmware":firmware,"sensors":sensors,"faults":faults,"logs_available":logs_available,"log_ids":log_ids,"push_supported":d["event_service"]["push_supported"]==true,"push_capability_known":d["event_service"]["available"]==true || d["event_service"]["capability"]=="not_advertised"})
+    json!({"observed_at_unix_ms":d["observed_at_unix_ms"].as_i64().unwrap_or(0),"fresh":d["inventory_stale"]==false && fresh(d["observed_at_unix_ms"].as_i64().unwrap_or(0),at,120000),"systems":systems,"firmware":firmware,"sensors":sensors,"faults":faults,"logs_available":logs_available,"log_used_percent":log_used_percent,"log_ids":log_ids,"push_supported":d["event_service"]["push_supported"]==true,"push_capability_known":d["event_service"]["available"]==true || d["event_service"]["capability"]=="not_advertised"})
 }
 #[derive(Debug)]
 pub struct PersistenceFailure;
@@ -551,6 +557,8 @@ pub fn metrics(c: &Config, state: &State, inventory_at: i64, at: i64) -> String 
             "gauge",
         ),
         ("sensor_healthy", "BMC sensor status is OK", "gauge"),
+        ("log_capacity_available", "BMC SEL capacity evidence is fresh", "gauge"),
+        ("log_used_percent", "BMC SEL capacity used, percent", "gauge"),
     ] {
         out.push_str(&format!(
             "# HELP continuum_bmc_{name} {help}\n# TYPE continuum_bmc_{name} {type_}\n"
@@ -621,6 +629,12 @@ pub fn metrics(c: &Config, state: &State, inventory_at: i64, at: i64) -> String 
             u8::from(is_fresh && p["logs_available"] == true) as f64,
         );
         plain("polling_required", 1.);
+        plain("log_capacity_available", u8::from(is_fresh && p["log_used_percent"].is_number()) as f64);
+        if is_fresh {
+            if let Some(percent) = p["log_used_percent"].as_f64() {
+                plain("log_used_percent", percent);
+            }
+        }
         if !is_fresh {
             continue;
         }

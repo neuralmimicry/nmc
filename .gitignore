@@ -40,3 +40,5 @@ check_errors.txt
 logs/
 tracey.log*
 loader/tracey-loader.manifest.json
+nmc_bmc_observer/target/
+__pycache__/

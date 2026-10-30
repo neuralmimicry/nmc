@@ -1,5 +1,6 @@
 // server/TraceyStateStore.cpp
 #include "TraceyStateStore.h"
+#include "PostgresBounds.h"
 
 #include <algorithm>
 #include <chrono>
@@ -71,6 +72,8 @@ namespace {
 #ifdef NMC_HAS_LIBPQXX
     void ensureTraceySchema(pqxx::connection& connection) {
         pqxx::work txn(connection);
+        txn.exec("SET LOCAL statement_timeout = '5s'");
+        txn.exec("SET LOCAL lock_timeout = '2s'");
         txn.exec(R"sql(
             CREATE TABLE IF NOT EXISTS nmc_tracey_snapshots (
                 snapshot_key TEXT PRIMARY KEY,
@@ -114,7 +117,7 @@ namespace {
             return json::object();
         }
         try {
-            pqxx::connection connection(dsn);
+            pqxx::connection connection(NMC::Server::boundedPostgresDsn(dsn));
             ensureTraceySchema(connection);
             pqxx::nontransaction txn(connection);
             const pqxx::result result = txn.exec_params(
@@ -328,7 +331,7 @@ namespace NMC::Server {
             }
             lastPostgresAttemptMs = currentMs;
             try {
-                postgresConnection = std::make_unique<pqxx::connection>(config_.postgresDsn);
+                postgresConnection = std::make_unique<pqxx::connection>(boundedPostgresDsn(config_.postgresDsn));
                 ensureTraceySchema(*postgresConnection);
                 postgresSchemaReady = true;
                 return true;
@@ -403,6 +406,8 @@ namespace NMC::Server {
                 if (ensurePostgresReady()) {
                     try {
                         pqxx::work txn(*postgresConnection);
+                        txn.exec("SET LOCAL statement_timeout = '5s'");
+                        txn.exec("SET LOCAL lock_timeout = '2s'");
                         if (snapshotEnvelope.is_object()) {
                             const json payload = snapshotEnvelope.value("payload", json::object());
                             txn.exec_params(
