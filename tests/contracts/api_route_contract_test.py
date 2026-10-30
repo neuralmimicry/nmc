@@ -283,12 +283,19 @@ def server_has_route_for_client(client_route: Route, server_routes: Sequence[Rou
     for server_route in server_routes:
         if server_route.method != client_route.method:
             continue
-        if is_docs_route(server_route):
-            continue
         for sample in endpoint_samples(client_route.path):
             if route_matches_endpoint(server_route, sample):
                 return True
     return False
+
+
+def verify_docs_fallbacks_are_registered(server_routes: Sequence[Route]) -> bool:
+    valid = Route("Get", "/services/health/monitoring/public/products.json", False)
+    traversal = Route("Get", "/services/health/monitoring/public/../../private", False)
+    if not server_has_route_for_client(valid, server_routes) or server_has_route_for_client(traversal, server_routes):
+        print("[contract-test] public catalogue fallback must match its real basename-only route")
+        return False
+    return True
 
 
 def main() -> int:
@@ -299,6 +306,8 @@ def main() -> int:
 
     client_routes = collect_client_routes(client_src)
     server_routes = collect_server_routes(server_src)
+    if not verify_docs_fallbacks_are_registered(server_routes):
+        return 1
     server_api_routes = [route for route in server_routes if not is_docs_route(route)]
 
     client_missing_on_server: List[Route] = []
