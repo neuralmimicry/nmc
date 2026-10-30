@@ -125,6 +125,14 @@ run cmake -S nmc_server -B "$SERVER_BUILD_DIR" \
 log "building server"
 run cmake --build "$SERVER_BUILD_DIR" --config Release --parallel "$BUILD_JOBS"
 
+log "verifying signed artifact transport through a real HTTP fixture"
+ARTIFACT_TEST_DIR=$(mktemp -d)
+trap 'rm -rf -- "$ARTIFACT_TEST_DIR"' EXIT
+run "${CXX:-c++}" -std=c++17 -Wall -Wextra -Werror -pthread \
+  -I "$SERVER_BUILD_DIR/_deps/httplib-src" \
+  tests/unit/github_artifact_transport_test.cpp -o "$ARTIFACT_TEST_DIR/github-artifact-transport-test"
+run "$ARTIFACT_TEST_DIR/github-artifact-transport-test"
+
 log "running functional server authorisation integration test"
 run env NMC_SERVER_BIN="$SERVER_BIN" python3 tests/functional/server_authz_integration_test.py
 
