@@ -23,6 +23,27 @@
 namespace {
     constexpr curl_off_t maxBoundedPodListBytes = 8 * 1024 * 1024;
 
+    struct ScopedKubernetesDeadline {
+        apiClient_t* client;
+        decltype(apiClient_t::progress_func) previous;
+        void* previousData;
+        std::chrono::steady_clock::time_point deadline;
+        ScopedKubernetesDeadline(apiClient_t* c, int seconds)
+            : client(c), previous(c ? c->progress_func : nullptr),
+              previousData(c ? c->progress_data : nullptr),
+              deadline(std::chrono::steady_clock::now() + std::chrono::seconds(seconds)) {
+            if (client) {
+                client->progress_data = this;
+                client->progress_func = [](void* data, curl_off_t, curl_off_t, curl_off_t, curl_off_t) {
+                    return std::chrono::steady_clock::now() >= static_cast<ScopedKubernetesDeadline*>(data)->deadline ? 1 : 0;
+                };
+            }
+        }
+        ~ScopedKubernetesDeadline() {
+            if (client) { client->progress_func = previous; client->progress_data = previousData; }
+        }
+    };
+
     struct BoundedWorkloadLogDownload {
         curl_off_t maxBytes;
         bool exceeded{false};
@@ -2103,21 +2124,35 @@ users:
         }
 
         void K8sHandlers::handleGetNodeResources(const httplib::Request& req, httplib::Response& res) {
-            std::lock_guard<std::recursive_mutex> apiClientLock(apiClientMutex);
+            const bool livenessOnly = req.has_param("liveness_only") && req.get_param_value("liveness_only") == "true";
+            if (!apiClient) return sendErrorResponse(res, 503, "Kubernetes API client is unavailable.");
+            std::unique_lock<std::recursive_mutex> apiClientLock(apiClientMutex, std::defer_lock);
+            if (!livenessOnly) apiClientLock.lock();
+            // The authenticated configuration is immutable for this handler's
+            // lifetime. A private client keeps recovery independent of stalled
+            // aggregate metrics calls holding the normal client's mutex.
+            const auto releaseClient = [](apiClient_t* client) {
+                if (client) { std::free(client->dataReceived); client->dataReceived = nullptr; apiClient_free(client); }
+            };
+            std::unique_ptr<apiClient_t, decltype(releaseClient)> privateClient(
+                    livenessOnly ? apiClient_create_with_base_path(apiClient->basePath, apiClient->sslConfig, apiClient->apiKeys_BearerToken) : nullptr,
+                    releaseClient);
+            apiClient_t* requestClient = livenessOnly ? privateClient.get() : apiClient;
+            ScopedKubernetesDeadline deadline(requestClient, livenessOnly ? 5 : 8);
             try {
                 const std::string nodeName = req.has_param("node") ? trimCopy(req.get_param_value("node")) : "";
                 if (!isKubernetesNodeName(nodeName)) {
                     return sendErrorResponse(res, 400, "A valid Kubernetes node name is required in the node query parameter.");
                 }
-                if (!apiClient) {
+                if (!requestClient) {
                     return sendErrorResponse(res, 503, "Kubernetes API client is unavailable.");
                 }
 
                 std::unique_ptr<v1_node_t, decltype(&v1_node_free)> node(
-                        CoreV1API_readNode(apiClient, const_cast<char*>(nodeName.c_str()), nullptr),
+                        CoreV1API_readNode(requestClient, const_cast<char*>(nodeName.c_str()), nullptr),
                         &v1_node_free);
                 if (!node) {
-                    const int statusCode = apiClient->response_code;
+                    const int statusCode = requestClient->response_code;
                     return sendErrorResponse(
                             res,
                             statusCode >= 400 && statusCode <= 599 ? statusCode : 502,
@@ -2151,12 +2186,12 @@ users:
                 };
 
                 std::unique_ptr<genericClient_t, decltype(&genericClient_free)> metricsClient(
-                        genericClient_create(apiClient, "metrics.k8s.io", "v1beta1", "nodes"),
+                        genericClient_create(requestClient, "metrics.k8s.io", "v1beta1", "nodes"),
                         &genericClient_free);
-                if (metricsClient) {
+                if (metricsClient && !livenessOnly) {
                     std::unique_ptr<char, decltype(&std::free)> metricsRaw(
                             Generic_readResource(metricsClient.get(), nodeName.c_str()), &std::free);
-                    const int metricsStatusCode = apiClient->response_code;
+                    const int metricsStatusCode = requestClient->response_code;
                     if (metricsStatusCode > 0) metrics["status_code"] = metricsStatusCode;
                     if (metricsRaw) {
                         try {
@@ -2195,6 +2230,38 @@ users:
                     metrics["reason"] = "metrics_client_unavailable";
                 }
 
+                // Host recovery must survive Pod eviction and application outages.
+                // Query the named node's Lease directly instead of deriving host
+                // liveness from the current placement of a Deployment's Pods.
+                nlohmann::json lease = {{"available", false}, {"healthy", nullptr},
+                                        {"renew_time", nullptr}, {"duration_seconds", nullptr}};
+                std::unique_ptr<genericClient_t, decltype(&genericClient_free)> leaseClient(
+                        genericClient_create(requestClient, "coordination.k8s.io", "v1", "leases"),
+                        &genericClient_free);
+                if (leaseClient) {
+                    std::unique_ptr<char, decltype(&std::free)> rawLease(
+                            Generic_readNamespacedResource(leaseClient.get(),
+                                    const_cast<char*>("kube-node-lease"), const_cast<char*>(nodeName.c_str())),
+                            &std::free);
+                    if (rawLease && requestClient->response_code >= 200 && requestClient->response_code < 300) {
+                        const auto document = nlohmann::json::parse(rawLease.get(), nullptr, false);
+                        if (document.is_object() && document.value("metadata", nlohmann::json::object()).value("name", "") == nodeName
+                            && document.contains("spec") && document["spec"].is_object()) {
+                            const auto& spec = document["spec"];
+                            if (spec.contains("renewTime") && spec["renewTime"].is_string()
+                                && spec.contains("leaseDurationSeconds") && spec["leaseDurationSeconds"].is_number_integer()) {
+                                const auto renewed = parseRfc3339EpochMilliseconds(spec["renewTime"].get<std::string>());
+                                const auto duration = spec["leaseDurationSeconds"].get<int64_t>();
+                                const auto current = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                        std::chrono::system_clock::now().time_since_epoch()).count();
+                                if (renewed && duration > 0 && duration <= 3600 && *renewed <= current) {
+                                    lease = {{"available", true}, {"healthy", current - *renewed <= duration * 1000},
+                                             {"renew_time", spec["renewTime"]}, {"duration_seconds", duration}};
+                                }
+                            }
+                        }
+                    }
+                }
                 Models::CloudResponse response;
                 response.success = true;
                 response.message = "Kubernetes node resources retrieved.";
@@ -2202,6 +2269,9 @@ users:
                         {"node", nodeName},
                         {"observed_at_unix_ms", observedAtUnixMs},
                         {"ready", ready},
+                        {"boot_id", node->status && node->status->node_info && node->status->node_info->boot_id
+                                ? nlohmann::json(node->status->node_info->boot_id) : nlohmann::json(nullptr)},
+                        {"lease", std::move(lease)},
                         {"capacity", resourceQuantityMap(node->status ? node->status->capacity : nullptr)},
                         {"allocatable", resourceQuantityMap(node->status ? node->status->allocatable : nullptr)},
                         {"metrics", std::move(metrics)},

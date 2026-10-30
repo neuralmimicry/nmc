@@ -1,3 +1,4 @@
+#include "Commands/PlatformCommands.h"
 #include "CLI/CLIParser.h"
 #include "Commands/RootCommand.h"
 #include "Commands/BucketCommands.h"
@@ -44,7 +45,12 @@ int main(int argc, char* argv[]) {
             8080,
             NMC::Core::Utils::getConfigPath());
 
+    auto platformCmd = std::make_shared<NMC::Commands::PlatformCommand>(apiClient);
+    platformCmd->addSubcommand(std::make_shared<NMC::Commands::PlatformProductsCommand>(apiClient));
+    parser.registerCommand(platformCmd);
+
     // Register top-level commands and their subcommand workflows.
+
     auto bucketCmd = std::make_shared<NMC::Commands::BucketCommand>(apiClient);
     bucketCmd->addSubcommand(std::make_shared<NMC::Commands::BucketCreateCommand>(apiClient));
     bucketCmd->addSubcommand(std::make_shared<NMC::Commands::BucketDeleteCommand>(apiClient));

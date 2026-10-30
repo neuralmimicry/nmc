@@ -781,6 +781,13 @@ bool appendAuditRecord(const std::string& auditPath, const Json& record, std::st
         return false;
     }
     const std::string line = record.dump() + "\n";
+    // Preserve controller fencing evidence rather than deleting it to admit
+    // another power action. Even pathological action traffic cannot fill disk.
+    if (info.st_size < 0 || static_cast<uint64_t>(info.st_size) + line.size() > 16 * 1024 * 1024) {
+        ::close(fd);
+        error = "controller audit reached its 16 MiB limit; archive and reconcile before further actions";
+        return false;
+    }
     size_t offset = 0;
     while (offset < line.size()) {
         const ssize_t written = ::write(fd, line.data() + offset, line.size() - offset);
@@ -1308,6 +1315,7 @@ void DeviceManagement::handleGetInventory(const httplib::Request&, httplib::Resp
         {"revision", inventory.revision},
         {"dependency_graph_revision", inventory.document["dependency_graph_revision"]},
         {"generated_at_unix_ms", inventory.document["generated_at_unix_ms"]},
+        {"max_age_ms", inventory.document.value("max_age_ms", int64_t{300000})},
         {"stale", inventory.stale},
         {"devices", std::move(devices)},
         {"controllers", std::move(controllers)}
@@ -1906,8 +1914,14 @@ Json DeviceManagement::getControllerDiagnostics(const Inventory& inventory,
             return errorBody(chassis.exitCode == 127 ? "ipmitool_unavailable" : "ipmi_diagnostics_failed",
                              chassis.output.empty() ? "IPMI chassis status failed" : chassis.output.substr(0, 4096));
         }
-        const CommandResult sensors = runIpmitool(*controller, {"sensor", "list"});
-        const CommandResult eventLog = runIpmitool(*controller, {"sel", "list", "last", "20"});
+        // Optional history/sensor reads must not serially delay liveness or
+        // consume the recovery caller's entire observation deadline.
+        auto sensorRead = std::async(std::launch::async, [&] { return runIpmitool(*controller, {"sensor", "list"}); });
+        auto eventRead = std::async(std::launch::async, [&] { return runIpmitool(*controller, {"sel", "list", "last", "20"}); });
+        auto infoRead = std::async(std::launch::async, [&] { return runIpmitool(*controller, {"sel", "info"}); });
+        const CommandResult sensors = sensorRead.get();
+        const CommandResult eventLog = eventRead.get();
+        const CommandResult eventInfo = infoRead.get();
         statusCode = 200;
         return okBody({{"controller_id", controllerId}, {"protocol", protocol},
                        {"observed_at_unix_ms", observedAt}, {"inventory_stale", inventory.stale},
@@ -1915,7 +1929,9 @@ Json DeviceManagement::getControllerDiagnostics(const Inventory& inventory,
                        {"sensors", {{"available", sensors.exitCode == 0 && !sensors.timedOut},
                                     {"output", sensors.output.substr(0, 32768)}}},
                        {"system_event_log", {{"available", eventLog.exitCode == 0 && !eventLog.timedOut},
-                                             {"output", eventLog.output.substr(0, 32768)}}}});
+                                             {"output", eventLog.output.substr(0, 32768)},
+                                             {"info_available", eventInfo.exitCode == 0 && !eventInfo.timedOut},
+                                             {"info", eventInfo.output.substr(0, 4096)}}}});
     }
 
     if (protocol == "turingpi") {
@@ -2706,47 +2722,108 @@ Json DeviceManagement::performControllerAction(const Inventory& inventory,
     return response;
 }
 
-void DeviceManagement::handleGetRecoveryHistory(const httplib::Request&, httplib::Response& res) const {
+void DeviceManagement::handleGetRecoveryHistory(const httplib::Request& req, httplib::Response& res) const {
     std::lock_guard<std::mutex> localLock(actionMutex_);
     const std::string path = envValue("NMC_DEVICE_ACTION_AUDIT_PATH");
     AuditLock auditLock;
     std::string error;
-    if (path.empty() || !auditLock.acquire(path, error)) {
-        return sendJson(res, 503, errorBody("recovery_history_unavailable", "A secure, readable controller audit is required for post-restart review"));
-    }
-    std::ifstream input(path);
-    if (!input) return sendJson(res, 503, errorBody("recovery_history_unavailable", "Controller recovery history cannot be read"));
+    if (path.empty() || !auditLock.acquire(path, error))
+        return sendJson(res, 503, errorBody("recovery_history_unavailable", "A secure controller audit is required for reset review"));
     try {
         std::unordered_map<std::string, Json> episodes;
-        std::string line;
         size_t lines = 0, bytes = 0;
-        while (std::getline(input, line)) {
-            bytes += line.size();
-            if (++lines > 100000 || bytes > 16 * 1024 * 1024 || line.size() > 1024 * 1024)
-                return sendJson(res, 503, errorBody("recovery_history_unavailable", "Controller audit exceeds bounded history review; preserve/archive it and reconcile"));
-            const auto record = Json::parse(line);
-            if (record.value("action", std::string{}) != "warm_restart") continue;
-            const auto id = record.value("request_id", std::string{});
-            if (!safeIdentifier(id) || !safeIdentifier(record.value("device_id", std::string{})))
-                throw std::runtime_error("invalid audit identity");
-            episodes[id] = {{"request_id", id}, {"device_id", record.at("device_id")},
-                {"controller_id", record.at("controller_id")}, {"action", "warm_restart"},
-                {"change_id", record.value("change_id", "")}, {"started_at_unix_ms", record.at("started_at_unix_ms")},
-                {"phase", record.value("phase", "unknown")},
-                {"verified", record.value("response", Json::object()).value("data", Json::object()).value("verified", false)}};
+        const auto readRecords = [&](const std::string& file, bool boots) {
+            std::ifstream input(file);
+            if (!input) throw std::runtime_error("reset history cannot be read");
+            std::string line;
+            while (std::getline(input, line)) {
+                bytes += line.size();
+                if (++lines > 100000 || bytes > 32 * 1024 * 1024 || line.size() > 1024 * 1024)
+                    throw std::runtime_error("reset history exceeds bounds");
+                const auto record = Json::parse(line);
+                const auto action = record.value("action", std::string{});
+                if (action != "warm_restart" && action != "cold_restart" && !(boots && action == "reboot")) continue;
+                const auto id = record.value("request_id", std::string{});
+                const auto host = record.value("device_id", std::string{});
+                if (!safeIdentifier(id) || !safeIdentifier(host) || !safeIdentifier(record.value("controller_id", std::string{}))
+                    || !record.contains("started_at_unix_ms") || !record["started_at_unix_ms"].is_number_integer())
+                    throw std::runtime_error("invalid reset identity");
+                Json episode{{"request_id", id}, {"device_id", host}, {"controller_id", record.at("controller_id")},
+                    {"action", action}, {"change_id", record.value("change_id", "")}, {"started_at_unix_ms", record.at("started_at_unix_ms")},
+                    {"phase", record.value("phase", "unknown")}, {"reason", record.value("reason", "").substr(0, 512)},
+                    {"verified", boots ? record.value("verified", false) : record.value("response", Json::object()).value("data", Json::object()).value("verified", false)}};
+                if (boots) for (const auto* field : {"boot_id", "previous_boot_id", "previous_observed_at_unix_ms", "observed_at_unix_ms", "source"})
+                    if (record.contains(field)) episode[field] = record[field];
+                episodes[id] = std::move(episode);
+            }
+            if (input.bad()) throw std::runtime_error("incomplete reset history");
+        };
+        readRecords(path, false);
+        std::string boots = envValue("NMC_DEVICE_BOOT_AUDIT_PATH");
+        if (boots.empty()) boots = (std::filesystem::path(path).parent_path() / "host-boot-observations.jsonl").string();
+        for (int rotation = 4; rotation >= 0; --rotation) {
+            const auto file = boots + (rotation ? "." + std::to_string(rotation) : "");
+#ifndef _WIN32
+            struct stat metadata{};
+            if (::lstat(file.c_str(), &metadata) != 0) {
+                if (errno == ENOENT) continue;
+                throw std::runtime_error("boot audit unavailable");
+            }
+            if (!S_ISREG(metadata.st_mode) || metadata.st_nlink != 1 || metadata.st_uid != ::geteuid()
+                || (metadata.st_mode & 0077) != 0 || metadata.st_size > 2 * 1024 * 1024)
+                throw std::runtime_error("boot audit is not private bounded state");
+            readRecords(file, true);
+#else
+            if (std::filesystem::exists(file)) throw std::runtime_error("boot audit verification unsupported");
+#endif
         }
-        if (input.bad()) throw std::runtime_error("incomplete audit read");
+        // A boot observed after an audited reset is evidence for that incident,
+        // not a second investigation. Keep the original action outcome intact.
+        std::vector<std::string> observations;
+        for (const auto& [id, episode] : episodes) if (episode["action"] == "reboot") observations.push_back(id);
+        for (const auto& id : observations) {
+            const Json observed = episodes.at(id);
+            const auto lastSeen = observed.value("previous_observed_at_unix_ms", observed.at("started_at_unix_ms").get<int64_t>() - 900000);
+            const auto seenAt = observed.value("observed_at_unix_ms", observed.at("started_at_unix_ms").get<int64_t>());
+            std::string match;
+            int64_t newest = 0;
+            for (const auto& [candidate, episode] : episodes) {
+                const auto started = episode.at("started_at_unix_ms").get<int64_t>();
+                if ((episode["action"] == "warm_restart" || episode["action"] == "cold_restart")
+                    && episode["device_id"] == observed["device_id"] && started >= lastSeen && started <= seenAt && started > newest) {
+                    match = candidate; newest = started;
+                }
+            }
+            if (!match.empty()) { episodes[match]["boot_observation"] = observed; episodes.erase(id); }
+        }
         std::vector<Json> entries;
         for (const auto& [id, episode] : episodes) entries.push_back(episode);
         std::sort(entries.begin(), entries.end(), [](const Json& a, const Json& b) {
-            return a.at("started_at_unix_ms").get<int64_t>() > b.at("started_at_unix_ms").get<int64_t>();
+            const auto left = a.at("started_at_unix_ms").get<int64_t>(), right = b.at("started_at_unix_ms").get<int64_t>();
+            return left == right ? a.at("request_id").get<std::string>() > b.at("request_id").get<std::string>() : left > right;
         });
-        const bool truncated = entries.size() > 32;
-        if (truncated) entries.resize(32);
-        sendJson(res, 200, Json{{"success", true}, {"data", {{"schema_version", 1},
-            {"observed_at_unix_ms", nowEpochMs()}, {"truncated", truncated}, {"entries", entries}}}});
+        if (req.has_param("cursor")) {
+            const auto cursor = req.get_param_value("cursor");
+            const auto split = cursor.find(':');
+            if (split == std::string::npos || split == 0 || split > 18 || cursor.size() > 160 || !safeIdentifier(cursor.substr(split + 1))
+                || !std::all_of(cursor.begin(), cursor.begin() + split, [](unsigned char c) { return std::isdigit(c); }))
+                return sendJson(res, 400, errorBody("reset_cursor_invalid", "Invalid reset-history cursor"));
+            const auto before = std::stoll(cursor.substr(0, split));
+            const auto beforeId = cursor.substr(split + 1);
+            entries.erase(std::remove_if(entries.begin(), entries.end(), [&](const Json& e) {
+                const auto at = e.at("started_at_unix_ms").get<int64_t>();
+                return at > before || (at == before && e.at("request_id").get<std::string>() >= beforeId);
+            }), entries.end());
+        }
+        const bool more = entries.size() > 32;
+        if (more) entries.resize(32);
+        Json cursor = nullptr;
+        if (more) cursor = std::to_string(entries.back().at("started_at_unix_ms").get<int64_t>()) + ":" + entries.back().at("request_id").get<std::string>();
+        const bool paged = req.has_param("page") && req.get_param_value("page") == "true";
+        sendJson(res, 200, Json{{"success", true}, {"data", {{"schema_version", 2},
+            {"observed_at_unix_ms", nowEpochMs()}, {"truncated", more && !paged}, {"has_more", more}, {"next_cursor", cursor}, {"entries", entries}}}});
     } catch (...) {
-        sendJson(res, 503, errorBody("recovery_history_unavailable", "Controller recovery audit is malformed or incomplete; no clean-history claim is available"));
+        sendJson(res, 503, errorBody("recovery_history_unavailable", "Reset audit is unavailable, malformed or exceeds bounds; preserve evidence and reconcile"));
     }
 }
 

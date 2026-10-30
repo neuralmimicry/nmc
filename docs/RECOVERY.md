@@ -91,10 +91,9 @@ ready.
 
 Ansible exposes this as `nmc_recovery_enabled`, which defaults to `false` in
 `ansible/deploy.yml`. Do not enable it as part of a routine package rollout.
-This endpoint is a guarded request surface, not the Continuum-owned automatic
-recovery controller. A durable supervisor, validated service dependency graph,
-failure thresholds, cooldowns and restart reconciliation remain required before
-Continuum can act independently when Conductor, Refiner or Gail is unavailable.
+This endpoint is a guarded workload request surface. The independent availability
+observer below supplies the durable supervisor, dependency checks, failure
+thresholds, cooldowns and reconciliation for explicitly commissioned recovery.
 Conductor also defaults to dry-run with no recovery targets; both controls must
 be configured deliberately before an automated recovery can be used.
 If recovery is enabled, Ansible requires `nmc_k8s_cluster_id` to name the
@@ -128,33 +127,84 @@ credential/config for the service user, and begin with `enabled: false`. The
 package does not create credentials, enable workload recovery or start mutations.
 Node.js 18 or newer, matching nmc-client and util-linux are package dependencies.
 
-Repeated independently observed Conductor unavailability permits only the
-explicitly listed service/host targets. Healthy hosts receive an eligible typed
-service restart first; `NMC_RECOVERY_ENABLED` and deployment opt-in remain
-mandatory. Warm restart additionally requires a well-formed expired NodeLease,
-NotReady node, independent TCP timeout, exact pinned controller endpoint/MAC,
-power-on/fault preflight and every registered upstream dependency healthy.
+Warm restart is independent of Conductor health and Deployment Pod placement.
+Only explicitly commissioned hosts are eligible. It requires a well-formed expired
+NodeLease queried directly for the named node, a NotReady node, independent TCP
+timeout, exact pinned controller endpoint/MAC, power-on/fault preflight and every
+registered upstream dependency healthy. The authenticated liveness-only node API
+uses its own Kubernetes client with a five-second deadline, skips the Metrics API
+and does not wait on the ordinary Kubernetes client's mutex. PostgreSQL persistence
+connections have bounded connection, socket, statement and lock timeouts.
+Service restarts remain separately governed by Conductor unavailability,
+`NMC_RECOVERY_ENABLED`, and Deployment opt-in; host warm restarts use the independent
+device power-control gate and do not require workload recovery to be enabled.
 Connection refusal proves host reachability and never authorizes a reset.
 Inventory/evidence drift, unknown health, partial readiness or stale observations
-hold the action. A fresh final collection cancels recovery if Conductor returns.
+hold the action. A fresh final collection cancels a host reset if the host returns.
 
 The OS process lock, owner-only fsynced local journal, persisted intent before
 mutation and unresolved-intent circuit breaker survive process restart. Lost
 responses are reconciled against live state; they are never resubmitted. Typed
 controller actions also enforce a one-hour cross-request target cooldown, no
 second action for the same outage, and at most two independent host actions per
-day across the server audit. The observer further permits at most one host
-restart per day and bounds all recovery actions with its configured budget.
-Failed recovery leaves the circuit open for operator reconciliation. Preserve
-both audit files when investigating; do not erase them to retry an outage.
+day across the server audit. The observer also enforces its configured daily budget
+and per-target cooldown. A completed recovery permits a later independent outage
+within those bounds. A timed-out action stays fenced without being resubmitted;
+fresh direct NodeLease/SSH recovery observations can reconcile it even if unrelated
+applications remain unavailable. Preserve both audit files when investigating;
+do not erase them to retry an outage.
 
 Create the configured inhibit file for maintenance/rolling delivery and remove it
 only after the owner of the operation releases the target. Deploy the observer
 outside qc01's NFS/PostgreSQL failure domain, using local Spirit storage. Recovery
-requires fresh host/NodeLease, metrics, dependencies, configured service readiness
-and public/authentication-route observations over repeated samples. A 302 or 401
+requires fresh direct host/NodeLease and dependency evidence over repeated samples.
+Application readiness, metrics and public routes are collected separately and
+cannot block recovery of an independently unreachable host. A 302 or 401
 checks the authentication boundary only; authenticated product acceptance and
 PostgreSQL/NFS data integrity remain separate incident evidence.
+
+### Commissioning the Spirit recovery observer
+
+The SwarmHPC `continuum_host_recovery_site.yml` playbook preserves the owner's
+`continuum_host_recovery_authorized` setting and installs the observer scripts and
+units. `scripts/configure-recovery.mjs` requires root and explicit
+`NMC_ENABLE_HOST_RECOVERY=true`. It commissions qc01 and qc05 from the fresh private
+inventory and creates an owner-only authenticated local client profile without
+putting credentials in arguments or output. The estate policy uses three failure
+samples spanning at least 120 seconds, an expired Lease at least 120 seconds old,
+a one-hour cooldown, at most two actions in 24 hours, and a 15-minute recovery
+deadline. No cold power cycle is selected. Monitoring runs on Spirit local storage.
+
+### Bounded BMC and observer history
+
+`nmc-bmc-log-guard.timer` checks the commissioned IPMI SELs every five minutes.
+At 80% capacity it reserves the SEL, reads every raw 16-byte record, verifies the
+complete record count, writes and fsyncs a compressed private archive and intent,
+then clears only with that reservation. A changed log, lost reservation, incomplete
+archive, stale inventory, identity mismatch or missing credentials blocks the clear.
+Six snapshots per controller are retained, including failed attempts. The host-reset
+intent/cooldown audit is preserved separately. The BMC observer exports fresh SEL
+capacity alongside availability metrics.
+
+The watchdog compacts only recovered episodes older than seven days into four
+compressed rotations. It retains unresolved intents and the full active cooldown
+and daily-budget window, and bounds the active journal to 16 MiB. The BMC observer
+rotates its own observation journal. NMC's application logger uses 5 MiB files with
+three rotations; host journald, product logrotate and kubelet limits are managed by
+SwarmHPC. Never copytruncate the device-action intent/outcome audit.
+
+The independent observer checkpoints healthy host boot IDs on spirit. A changed
+boot ID produces an fsynced `reboot` event with a stable identity, previous boot
+ID and last healthy observation. Enrollment establishes a baseline. Fresh NodeLease,
+SSH reachability and inventory/controller mapping are required. The boot journal
+uses 1 MiB files and four rotations. `/devices/recovery-history?page=true` includes
+warm resets, cold resets and observed boots with bounded cursor pagination;
+observed boots are correlated with their audited action to avoid duplicate incidents.
+Conductor can therefore catch up after its own host and database return.
+
+The controller action audit has a 16 MiB hard limit and retains its fencing
+evidence. Reaching that limit blocks further power actions pending archival and
+reconciliation; it never silently deletes unresolved intents to permit another reset.
 
 ## Qualified production image transitions
 

@@ -55,6 +55,8 @@ done
 SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 REPO_ROOT=$(CDPATH='' cd -- "$SCRIPT_DIR/.." && pwd)
 BUILD_VERSION="${NMC_VERSION:-$(bash "$REPO_ROOT/scripts/derive-version.sh" --build-version)}"
+BUILD_JOBS="${NMC_BUILD_JOBS:-4}"
+[[ "$BUILD_JOBS" =~ ^[1-9][0-9]*$ ]] || die 'NMC_BUILD_JOBS must be a positive integer'
 CLIENT_BUILD_DIR="$REPO_ROOT/nmc_client/build"
 SERVER_BUILD_DIR="$REPO_ROOT/nmc_server/build"
 CLIENT_BIN="$CLIENT_BUILD_DIR/nmc"
@@ -89,7 +91,7 @@ while IFS= read -r test_file; do
 done < <(find tests/contracts -maxdepth 1 -type f -name '*_test.py' | sort)
 
 log "testing independent availability observer"
-run node --test tests/functional/availability-watchdog.test.mjs
+run node --test tests/functional/availability-watchdog.test.mjs tests/functional/bmc-log-guard.test.mjs tests/functional/product-catalog.test.cjs
 log "verifying native Rust BMC observer"
 BMC_TARGET_DIR="${CARGO_TARGET_DIR:-$REPO_ROOT/nmc_bmc_observer/target}"
 run env CARGO_TARGET_DIR="$BMC_TARGET_DIR" cargo fmt --manifest-path nmc_bmc_observer/Cargo.toml --check
@@ -102,7 +104,7 @@ run cmake -S nmc_client -B "$CLIENT_BUILD_DIR" \
   -DNMC_CLIENT_VERSION="$BUILD_VERSION"
 
 log "building client"
-run cmake --build "$CLIENT_BUILD_DIR" --config Release --parallel
+run cmake --build "$CLIENT_BUILD_DIR" --config Release --parallel "$BUILD_JOBS"
 
 log "smoke testing client version surface"
 run "$CLIENT_BIN" version --no-check
@@ -121,7 +123,7 @@ run cmake -S nmc_server -B "$SERVER_BUILD_DIR" \
   -DNMC_SERVER_VERSION="$BUILD_VERSION"
 
 log "building server"
-run cmake --build "$SERVER_BUILD_DIR" --config Release --parallel
+run cmake --build "$SERVER_BUILD_DIR" --config Release --parallel "$BUILD_JOBS"
 
 log "running functional server authorisation integration test"
 run env NMC_SERVER_BIN="$SERVER_BIN" python3 tests/functional/server_authz_integration_test.py

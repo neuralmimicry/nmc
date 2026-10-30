@@ -4,6 +4,7 @@
 #include "APIRoutes.h"
 #include "Utils.h"
 
+#include <algorithm>
 #include <cctype>
 #include <cstdlib>
 #include <fstream>
@@ -163,6 +164,51 @@ namespace NMC::Server {
     }
 
     void APIRoutes::registerControlMetadataRoutes(httplib::Server& svr, const APIRoutes::RouteGuard& guard) {
+        // Read-only product identity catalogue. It uses the same observer guard
+        // as server metadata; it grants no product or deployment permissions.
+        svr.Get("/platform/products", [this, guard](const httplib::Request& req, httplib::Response& res) {
+            if (!guard(req, res)) return;
+            try {
+                std::ifstream input(resolveDocsDirForRoutes() + "/public/products.json");
+                if (!input) { sendErrorResponse(res, 503, "Product catalogue is unavailable."); return; }
+                nlohmann::json catalogue;
+                input >> catalogue;
+                if (!catalogue.is_object() || catalogue.value("schema_version", 0) != 1
+                    || !catalogue.contains("products") || !catalogue["products"].is_array()) {
+                    sendErrorResponse(res, 503, "Product catalogue contract is invalid."); return;
+                }
+                const char* configured = std::getenv("NMC_K8S_CLUSTER_ID");
+                const std::string cluster = configured ? configured : "";
+                const bool validCluster = !cluster.empty() && cluster.size() <= 63
+                    && cluster.front() != '-' && cluster.back() != '-'
+                    && std::all_of(cluster.begin(), cluster.end(), [](unsigned char c) {
+                        return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-';
+                    });
+                for (auto& product : catalogue["products"]) {
+                    product["observation_status"] = "not_observed";
+                    product["status_path"] = nullptr;
+                    // Only the four concrete shared-role Deployments have a
+                    // runtime target here. Other product identities do not imply
+                    // a Deployment, a public ingress, or a healthy runtime.
+                    if (validCluster && product.contains("runtime_target") && product["runtime_target"].is_object()) {
+                        const auto& target = product["runtime_target"];
+                        const std::string id = product.value("id", "");
+                        if ((id == "cora" || id == "foresight" || id == "verity" || id == "relay")
+                            && target.value("namespace", "") == id && target.value("deployment", "") == id) {
+                            product["status_path"] = "/k8s/deployment/recovery-status?cluster_id=" + cluster + "&namespace=" + id + "&deployment=" + id;
+                        }
+                    }
+                }
+                Models::CloudResponse response;
+                response.success = true;
+                response.message = "Declared product identities; runtime and qualification must be observed separately.";
+                response.data = std::move(catalogue);
+                sendJsonResponse(res, response);
+            } catch (const std::exception&) {
+                sendErrorResponse(res, 503, "Product catalogue could not be read.");
+            }
+        });
+
         // Lightweight probe for CLI connection checks and external monitors.
         svr.Get("/health", [this](const httplib::Request& req, httplib::Response& res) {
             ensureRequestId(req, res);

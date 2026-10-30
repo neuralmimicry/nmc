@@ -1,0 +1,23 @@
+[Unit]
+Description=Continuum preserve and rotate BMC system event logs
+After=network-online.target nmc-server.service
+Wants=network-online.target
+ConditionPathExists=/etc/nmc/bmc-log-guard.json
+
+[Service]
+Type=oneshot
+User=nmc
+Group=nmc
+Environment=HOME=/var/lib/nmc
+EnvironmentFile=/etc/nmc/nmc.env
+ExecStart=/usr/bin/flock --nonblock /var/lib/nmc/bmc-log-guard.lock /usr/bin/node /usr/share/nmc-server/bmc-log-guard.mjs /etc/nmc/bmc-log-guard.json
+TimeoutStartSec=10min
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/nmc
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

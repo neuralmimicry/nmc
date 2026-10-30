@@ -8444,12 +8444,26 @@
         }
     }
 
+    async function refreshPlatformProducts() {
+        const root = document.getElementById("platformProducts");
+        const status = document.getElementById("platformProductsStatus");
+        if (!root || !status || !window.NMCProductCatalog) return;
+        if (!hasContinuumVisibility()) {
+            root.replaceChildren();
+            status.textContent = "Continuum observe access is required to inspect product deployments.";
+            return;
+        }
+        await window.NMCProductCatalog.refresh(root, status, fetchJson);
+    }
+
     async function refreshDashboardOnce() {
+
         setPill(nodes.refreshPill, "Refresh", "Updating", "rgba(245,158,11,0.8)");
         const traceyVisible = hasTraceyVisibility();
         const continuumVisible = hasContinuumVisibility();
         const tradingVisible = hasGailTradingVisibility();
 
+        const productRefresh = refreshPlatformProducts();
         const [
             k8sListRes,
             vclusterListRes,
@@ -8468,6 +8482,7 @@
             proxmoxResourcesRes,
             gailTradingOverviewRes
         ] = await Promise.all([
+            // Product catalogue refresh has its own read-only requests below.
             fetchJson("/k8s/list"),
             fetchJson("/vcluster/list"),
             fetchJson("/openshift/clusters"),
@@ -8536,6 +8551,7 @@
             proxmoxResourcesRes,
             gailTradingOverviewRes
         ];
+        await productRefresh;
         updateAuthPill(allResponses);
 
         const k8sItems = arrayFromUnknown(k8sListRes.payload);

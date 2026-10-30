@@ -1946,3 +1946,11 @@ a.ghost:hover {
         max-height: 90vh;
     }
 }
+
+.platform-product-grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(230px,1fr)); gap: 1rem; }
+.platform-product-card { border: 1px solid var(--border-color,#49616f); border-radius: 12px; padding: 1rem; min-width: 0; }
+.platform-product-card h4 { margin: 0 0 .7rem; font-size: 1.15rem; }
+.platform-product-card p { line-height: 1.55; overflow-wrap: anywhere; }
+.platform-product-observation { font-weight: 700; }
+.platform-product-card a { color: #f6b180; }
+.platform-product-card a:focus-visible { outline: 2px solid #f6b180; outline-offset: 4px; }

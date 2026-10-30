@@ -61,6 +61,8 @@ class RequestRecord:
 class MockServer:
     def __init__(self) -> None:
         self._records: List[RequestRecord] = []
+        self.product_catalog_status = 200
+        self.legacy_product_catalog: object = {"schema_version": 1, "products": [{"id": "cora"}]}
         self._lock = threading.Lock()
         self._httpd: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
@@ -174,6 +176,15 @@ class MockServer:
         )
 
         path_only = handler.path.split("?", 1)[0]
+        if handler.command == "GET" and path_only == "/platform/products":
+            self._send_json(handler, self.product_catalog_status, {
+                "success": self.product_catalog_status == 200,
+                "data": {"schema_version": 1, "products": [{"id": "cora"}]},
+            })
+            return
+        if handler.command == "GET" and path_only == "/services/health/monitoring/public/products.json":
+            self._send_json(handler, 200, self.legacy_product_catalog)
+            return
         rack_match = re.match(r"^/tracey/racks/([^/]+)$", path_only)
         analysis_match = re.match(r"^/tracey/agents/([^/]+)/analysis$", path_only)
         server_match = re.match(r"^/tracey/agents/([^/]+)/server$", path_only)
@@ -851,6 +862,38 @@ def assert_failure(result: subprocess.CompletedProcess[str], label: str) -> None
         result.returncode != 0,
         f"{label} unexpectedly succeeded\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}",
     )
+
+
+def test_platform_catalogue_compatibility(server: MockServer, home_dir: pathlib.Path) -> None:
+    """A missing native route permits metadata fallback; auth failures do not."""
+    try:
+        for status in (200, 404, 401, 403):
+            server.product_catalog_status = status
+            server.clear_records()
+            result = run_nmc(["--output", "json", "platform", "products"], home_dir)
+            if status in (200, 404):
+                assert_success(result, f"product catalogue HTTP {status}")
+                assert_true(json.loads(result.stdout)["data"]["data"]["products"][0]["id"] == "cora",
+                            "product metadata must survive native and legacy response formats")
+            else:
+                assert_failure(result, f"product catalogue HTTP {status}")
+            expected_paths = ["/platform/products"]
+            if status == 404:
+                expected_paths.append("/services/health/monitoring/public/products.json")
+            records = server.records()
+            assert_true([record.path for record in records] == expected_paths,
+                        "only HTTP 404 may fall back to the existing metadata asset")
+            assert_true(all(record.method == "GET" for record in records),
+                        "product catalogue command must remain read-only")
+
+        server.product_catalog_status = 404
+        for payload in ({"schema_version": 2, "products": []}, {"schema_version": 1, "products": "invalid"}):
+            server.legacy_product_catalog = payload
+            result = run_nmc(["--output", "json", "platform", "products"], home_dir)
+            assert_failure(result, "unsupported legacy product catalogue")
+    finally:
+        server.product_catalog_status = 200
+        server.legacy_product_catalog = {"schema_version": 1, "products": [{"id": "cora"}]}
 
 
 def test_root_help_handles_long_command_names(home_dir: pathlib.Path) -> None:
@@ -2314,6 +2357,7 @@ def main() -> int:
             write_connection_config(home_dir, server.base_url)
 
             test_root_help_handles_long_command_names(home_dir)
+            test_platform_catalogue_compatibility(server, home_dir)
             test_github_actions_workflow_command_accepts_operation_and_uses_continuum(server, home_dir)
             test_analytics_query_serialization(server, home_dir)
             test_k8s_recovery_status_serialization(server, home_dir)

@@ -1,0 +1,199 @@
+{
+  "schema_version": 1,
+  "runtime_cluster_id": null,
+  "description": "Declared product identities. Registration is not a live observation or execution approval.",
+  "products": [
+    {
+      "id": "cora",
+      "name": "Cora",
+      "description": "Permissioned organisational memory for facts, decisions, obligations and sourced briefings.",
+      "repository": "https://github.com/neuralmimicry/cora",
+      "website_path": "/cora",
+      "related_products": [
+        "relay",
+        "gail",
+        "verity"
+      ],
+      "dependencies": [
+        "customers",
+        "postgres",
+        "relay",
+        "gail"
+      ],
+      "delivery_authority": "conductor",
+      "operations_authority": "continuum",
+      "runtime_target": {
+        "namespace": "cora",
+        "deployment": "cora",
+        "container": "cora"
+      }
+    },
+    {
+      "id": "foresight",
+      "name": "Foresight",
+      "description": "Typed capacity-planning tasks and forecast requests through Gail’s numerical qualification boundary.",
+      "repository": "https://github.com/neuralmimicry/foresight",
+      "website_path": "/foresight",
+      "related_products": [
+        "cora",
+        "gail",
+        "verity"
+      ],
+      "dependencies": [
+        "customers",
+        "postgres",
+        "relay",
+        "verity",
+        "gail"
+      ],
+      "delivery_authority": "conductor",
+      "operations_authority": "continuum",
+      "runtime_target": {
+        "namespace": "foresight",
+        "deployment": "foresight",
+        "container": "foresight"
+      }
+    },
+    {
+      "id": "verity",
+      "name": "Verity",
+      "description": "Task-specific evaluation contracts, evidence records and observed outcomes that remain separate from model estimates.",
+      "repository": "https://github.com/neuralmimicry/verity",
+      "website_path": "/verity",
+      "related_products": [
+        "foresight",
+        "conductor",
+        "relay"
+      ],
+      "dependencies": [
+        "customers",
+        "postgres",
+        "relay"
+      ],
+      "delivery_authority": "conductor",
+      "operations_authority": "continuum",
+      "runtime_target": {
+        "namespace": "verity",
+        "deployment": "verity",
+        "container": "verity"
+      }
+    },
+    {
+      "id": "relay",
+      "name": "Relay",
+      "description": "Durable source ingestion, current source rights and actor-bound delivery receipts over Refiner’s existing connectors.",
+      "repository": "https://github.com/neuralmimicry/relay",
+      "website_path": "/relay",
+      "related_products": [
+        "refiner",
+        "conductor",
+        "cora"
+      ],
+      "dependencies": [
+        "customers",
+        "postgres",
+        "refiner",
+        "conductor"
+      ],
+      "delivery_authority": "conductor",
+      "operations_authority": "continuum",
+      "runtime_target": {
+        "namespace": "relay",
+        "deployment": "relay",
+        "container": "relay"
+      }
+    },
+    {
+      "id": "gail",
+      "name": "Gail",
+      "description": "Model routing, context-only briefings and evidence-gated numerical requests across the platform.",
+      "repository": "https://github.com/neuralmimicry/gail",
+      "website_path": "/gail",
+      "related_products": [
+        "cora",
+        "foresight",
+        "aria"
+      ],
+      "dependencies": [],
+      "delivery_authority": "conductor",
+      "operations_authority": "continuum",
+      "runtime_target": null
+    },
+    {
+      "id": "conductor",
+      "name": "Conductor",
+      "description": "Platform discovery, prioritisation, approval gates and governed change orchestration.",
+      "repository": "https://github.com/neuralmimicry/conductor",
+      "website_path": "/conductor",
+      "related_products": [
+        "relay",
+        "refiner",
+        "continuum"
+      ],
+      "dependencies": [],
+      "delivery_authority": "conductor",
+      "operations_authority": "continuum",
+      "runtime_target": null
+    },
+    {
+      "id": "refiner",
+      "name": "Refiner",
+      "description": "Engineering execution and existing connector adapters",
+      "repository": "https://github.com/neuralmimicry/rag_demo",
+      "website_path": "/refiner",
+      "related_products": [],
+      "dependencies": [],
+      "delivery_authority": "conductor",
+      "operations_authority": "continuum",
+      "runtime_target": null
+    },
+    {
+      "id": "continuum",
+      "name": "Continuum",
+      "description": "Infrastructure release and operations",
+      "repository": "https://github.com/neuralmimicry/nmc",
+      "website_path": "/continuum",
+      "related_products": [],
+      "dependencies": [],
+      "delivery_authority": "conductor",
+      "operations_authority": "continuum",
+      "runtime_target": null
+    },
+    {
+      "id": "tracey",
+      "name": "Tracey",
+      "description": "Fleet telemetry and governed resilience",
+      "repository": "https://github.com/neuralmimicry/tracey",
+      "website_path": "/tracey",
+      "related_products": [],
+      "dependencies": [],
+      "delivery_authority": "conductor",
+      "operations_authority": "continuum",
+      "runtime_target": null
+    },
+    {
+      "id": "aria",
+      "name": "Aria",
+      "description": "Configured request and response assessment",
+      "repository": "https://github.com/neuralmimicry/aria",
+      "website_path": "/aria",
+      "related_products": [],
+      "dependencies": [],
+      "delivery_authority": "conductor",
+      "operations_authority": "continuum",
+      "runtime_target": null
+    },
+    {
+      "id": "aarnn",
+      "name": "AARNN",
+      "description": "Neuromorphic runtime and research",
+      "repository": "https://github.com/neuralmimicry/aarnn_rust",
+      "website_path": "/aarnn-neuroscience",
+      "related_products": [],
+      "dependencies": [],
+      "delivery_authority": "conductor",
+      "operations_authority": "continuum",
+      "runtime_target": null
+    }
+  ]
+}

@@ -1395,6 +1395,8 @@ class K8sRecoveryAPIMock:
 
     def __init__(self) -> None:
         self._lease_age_seconds = 0
+        self._metrics_delay_seconds = 0
+        self.metrics_started = threading.Event()
         self._lock = threading.Lock()
         owner = self
 
@@ -1446,6 +1448,10 @@ class K8sRecoveryAPIMock:
             lease_renew_time = time.strftime(
                 "%Y-%m-%dT%H:%M:%SZ", time.gmtime(now - self._lease_age_seconds)
             )
+        if path == "/apis/metrics.k8s.io/v1beta1/nodes/qc01":
+            self.metrics_started.set()
+            time.sleep(self._metrics_delay_seconds)
+            return {"timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)), "window": "10s", "usage": {"cpu": "1", "memory": "1Gi"}}
         if path == "/apis/apps/v1/namespaces/gail/deployments/gail":
             return {
                 "metadata": {
@@ -1498,6 +1504,13 @@ class K8sRecoveryAPIMock:
                     {"type": "PIDPressure", "status": "False"},
                 ]},
             }]}
+        if path == "/api/v1/nodes/qc01":
+            return self._response_for("/api/v1/nodes")["items"][0]
+        if path == "/apis/coordination.k8s.io/v1/namespaces/kube-node-lease/leases/qc01":
+            return {
+                "metadata": {"name": "qc01", "namespace": "kube-node-lease"},
+                "spec": {"leaseDurationSeconds": 40, "renewTime": lease_renew_time},
+            }
         if path == "/apis/coordination.k8s.io/v1/namespaces/kube-node-lease/leases":
             return {"items": [{
                 "metadata": {"name": "qc01", "namespace": "kube-node-lease"},
@@ -1661,6 +1674,9 @@ case "$*" in
     ;;
   *"sel list last 20")
     printf 'No entries\\n'
+    ;;
+  *"sel info")
+    printf 'Entries: 0\\nPercent Used: 0%%\\n'
     ;;
   *)
     exit 64
@@ -1983,6 +1999,7 @@ def test_continuum_route_authorisation(server: NmcServerProcess, backend: MockBa
     assert_true(status == 200, f"device inventory observe route expected HTTP 200, got {status}: {payload}")
     inventory = payload.get("data", {})
     assert_true(inventory.get("revision") == "authz-device-inventory-v1", "inventory should expose its active revision")
+    assert_true(inventory.get("max_age_ms", 0) > 0, "inventory must expose its expiry policy for authenticated evidence collectors")
     assert_true(len(inventory.get("devices", [])) == 1, "inventory should include the registered host")
     assert_true(len(inventory.get("controllers", [])) == 1, "inventory should include the registered BMC")
     assert_true(
@@ -3150,6 +3167,8 @@ def test_ipmi_diagnostics_and_actions(backend_base_url: str) -> None:
                     "IPMI sensor diagnostics should be available")
         assert_true(diagnostics.get("system_event_log", {}).get("available") is True,
                     "IPMI SEL diagnostics should be available")
+        assert_true(diagnostics.get("system_event_log", {}).get("info_available") is True,
+                    "IPMI SEL capacity must be observable independently of event-list output")
 
         actions = [
             ("warm_restart", "On", "ipmi-warm-restart-0001"),
@@ -3541,13 +3560,56 @@ def test_ipmi_diagnostics_and_actions(backend_base_url: str) -> None:
         entries = history["data"]["entries"]
         assert_true(any(entry["request_id"] == "ipmi-host-recovery-0001" and entry["phase"] == "complete" for entry in entries),
                     "startup review must discover independently recorded warm restarts")
-        assert_true(all(entry["action"] == "warm_restart" for entry in entries), "history must contain scoped restart episodes")
+        assert_true(all(entry["action"] in {"warm_restart", "cold_restart"} for entry in entries), "history must contain scoped reset episodes")
         assert_true(calls_path.read_text(encoding="utf-8") == calls_before_history, "history reads must not contact the BMC")
         audit_backup = audit_path.read_text(encoding="utf-8")
         audit_path.write_text(audit_backup + "invalid-json\n", encoding="utf-8")
         status, _ = request_json(server.base_url, "GET", "/devices/recovery-history", token="continuum-observe-token")
         assert_status(status, 503, "missing/corrupt history is an evidence gap, never a clean review")
         audit_path.write_text(audit_backup, encoding="utf-8")
+
+        # Catch-up includes cold resets and independent boot observations,
+        # while correlating an observed boot with its audited reset once.
+        boot_path = audit_path.parent / "host-boot-observations.jsonl"
+        stamp = int(time.time() * 1000) - 100
+        cold = {"request_id": "cold-catchup-0001", "device_id": "qc01", "controller_id": "qc01-bmc",
+                "action": "cold_restart", "phase": "complete", "started_at_unix_ms": stamp}
+        audit_path.write_text(audit_backup + json.dumps(cold) + "\n", encoding="utf-8")
+        observations = [{"request_id": f"boot-catchup-{i:04d}", "device_id": "qc01", "controller_id": "qc01-bmc",
+                         "action": "reboot", "phase": "observed", "verified": True,
+                         "started_at_unix_ms": stamp - 100000 - i, "observed_at_unix_ms": stamp - 100000 - i,
+                         "previous_observed_at_unix_ms": stamp - 100001 - i, "boot_id": f"boot-{i}"} for i in range(35)]
+        observations.append({**observations[0], "request_id": "boot-correlated-0001", "started_at_unix_ms": stamp + 1,
+                             "observed_at_unix_ms": stamp + 1, "previous_observed_at_unix_ms": stamp - 1})
+        boot_path.write_text("".join(json.dumps(row) + "\n" for row in observations), encoding="utf-8")
+        boot_path.chmod(0o600)
+        status, legacy = request_json(server.base_url, "GET", "/devices/recovery-history", token="continuum-observe-token")
+        assert_status(status, 200, "legacy bounded history")
+        assert_true(legacy["data"]["truncated"], "legacy client must see incomplete catch-up")
+        caught_up, cursor = [], ""
+        for _ in range(4):
+            route = "/devices/recovery-history?page=true" + ("&cursor=" + cursor if cursor else "")
+            status, page = request_json(server.base_url, "GET", route, token="continuum-observe-token")
+            assert_status(status, 200, "paged reset history")
+            assert_true(not page["data"]["truncated"], "each page must be complete")
+            caught_up.extend(page["data"]["entries"])
+            if not page["data"]["has_more"]:
+                break
+            cursor = page["data"]["next_cursor"]
+        assert_true(len(caught_up) == len(entries) + 36, "pagination must retain every independent episode")
+        assert_true(len({row["request_id"] for row in caught_up}) == len(caught_up), "catch-up must not duplicate episodes")
+        assert_true(any(row["action"] == "cold_restart" and "boot_observation" in row for row in caught_up),
+                    "observed boot must enrich its audited reset")
+        for cursor in [":bad", "9999999999999999999:bad"]:
+            status, _ = request_json(server.base_url, "GET", "/devices/recovery-history?page=true&cursor=" + cursor,
+                                     token="continuum-observe-token")
+            assert_status(status, 400, "invalid reset cursor")
+        boot_path.chmod(0o644)
+        status, _ = request_json(server.base_url, "GET", "/devices/recovery-history", token="continuum-observe-token")
+        assert_status(status, 503, "unsafe boot audit must fail closed")
+        boot_path.unlink()
+        audit_path.write_text(audit_backup, encoding="utf-8")
+        assert_true(calls_path.read_text(encoding="utf-8") == calls_before_history, "catch-up never contacts BMC")
 
     finally:
         server.stop()
@@ -4084,6 +4146,10 @@ def test_recovery_uses_fresh_nodelease_not_node_status_heartbeat(backend_base_ur
     )
     try:
         server.start()
+        status, payload = request_json(server.base_url, "GET", "/k8s/node-resources?node=qc01", token="continuum-observe-token")
+        assert_status(status, 200, "direct node liveness is independent of pod placement")
+        assert_true(payload["data"]["lease"]["available"] is True and payload["data"]["lease"]["healthy"] is True,
+                    "direct node resources must return the authenticated fresh NodeLease")
         status, payload = request_json(
             server.base_url,
             "GET",
@@ -4102,6 +4168,10 @@ def test_recovery_uses_fresh_nodelease_not_node_status_heartbeat(backend_base_ur
         )
 
         kube_api.set_lease_age(240)
+        status, payload = request_json(server.base_url, "GET", "/k8s/node-resources?node=qc01", token="continuum-observe-token")
+        assert_status(status, 200, "direct expired lease remains observable")
+        assert_true(payload["data"]["lease"]["available"] is True and payload["data"]["lease"]["healthy"] is False,
+                    "direct host evidence must expose expiry even when application pods have been evicted")
         status, payload = request_json(
             server.base_url,
             "GET",
@@ -4119,6 +4189,20 @@ def test_recovery_uses_fresh_nodelease_not_node_status_heartbeat(backend_base_ur
             and hosts[0].get("node_lease_healthy") is False,
             "a stale NodeLease must block recovery even when the Node Ready condition remains True",
         )
+        # A failed aggregated metrics API must not occupy the host-recovery
+        # client's request state or mutex. Exercise real simultaneous HTTP calls.
+        kube_api._metrics_delay_seconds = 10
+        kube_api.metrics_started.clear()
+        normal = threading.Thread(target=lambda: request_json(server.base_url, "GET", "/k8s/node-resources?node=qc01", token="continuum-observe-token"), daemon=True)
+        normal.start()
+        assert_true(kube_api.metrics_started.wait(timeout=3), "normal resource request must enter the blocked Metrics API")
+        started = time.monotonic()
+        status, payload = request_json(server.base_url, "GET", "/k8s/node-resources?node=qc01&liveness_only=true", token="continuum-observe-token")
+        assert_status(status, 200, "liveness-only evidence bypasses blocked metrics")
+        assert_true(time.monotonic() - started < 2 and payload["data"]["lease"]["available"] is True,
+                    "host recovery must retain direct Lease evidence while Metrics API is blocked")
+        normal.join(timeout=12)
+        assert_true(not normal.is_alive(), "normal metrics observation must also have a bounded deadline")
     finally:
         server.stop()
         kube_api.stop()
