@@ -873,7 +873,7 @@ def test_platform_catalogue_compatibility(server: MockServer, home_dir: pathlib.
             result = run_nmc(["--output", "json", "platform", "products"], home_dir)
             if status in (200, 404):
                 assert_success(result, f"product catalogue HTTP {status}")
-                assert_true(json.loads(result.stdout)["data"]["products"][0]["id"] == "cora",
+                assert_true(json.loads(result.stdout)["data"]["data"]["products"][0]["id"] == "cora",
                             "product metadata must survive native and legacy response formats")
             else:
                 assert_failure(result, f"product catalogue HTTP {status}")

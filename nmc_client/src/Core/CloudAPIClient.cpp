@@ -491,7 +491,10 @@ namespace NMC::Core {
                 try {
                     const auto data = nlohmann::json::parse(legacy->body);
                     if (data.value("schema_version", 0) == 1 && data.contains("products") && data["products"].is_array()) {
-                        return {true, "Declared product catalogue retrieved; runtime qualification is separate.", data, 200};
+                        // Match the native server envelope consumed by the
+                        // other CloudAPIClient methods and JSON CLI output.
+                        return {true, "Declared product catalogue retrieved; runtime qualification is separate.",
+                                {{"success", true}, {"data", data}}, 200};
                     }
                     return {false, "Product catalogue has an unsupported schema.", nullptr, 502};
                 } catch (const nlohmann::json::exception&) {
