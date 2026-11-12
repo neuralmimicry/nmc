@@ -42,3 +42,27 @@ tracey.log*
 loader/tracey-loader.manifest.json
 nmc_bmc_observer/target/
 __pycache__/
+
+# project_solver ignore additions
+.refiner/
+.research_cache/
+.venv/
+project_solver_output/
+delivery_pipeline_output/
+node_modules/
+dist/
+.cache/
+.next/
+.nuxt/
+.turbo/
+coverage/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+*.egg-info/
+.eggs/
+target/
+cmake-build-*/
